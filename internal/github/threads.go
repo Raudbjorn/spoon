@@ -109,6 +109,35 @@ func (t ReviewThread) RequiresBody() bool {
 	return false
 }
 
+// ReplyToThread appends a reply comment to a review thread. Returns the new
+// comment id.
+func (c *Client) ReplyToThread(ctx context.Context, threadID, body string) (string, error) {
+	if c.gql == nil {
+		return "", fmt.Errorf("GraphQL client not available (auth required)")
+	}
+	const mutation = `
+mutation($threadId: ID!, $body: String!) {
+  addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: $threadId, body: $body }) {
+    comment { id }
+  }
+}`
+	// go-gh's DoWithContext unmarshals the GraphQL "data" field directly into
+	// the target — no outer wrapper needed (mirrors FetchForksGraphQL /
+	// ListThreads pattern).
+	var resp struct {
+		AddPullRequestReviewThreadReply struct {
+			Comment struct {
+				ID string `json:"id"`
+			} `json:"comment"`
+		} `json:"addPullRequestReviewThreadReply"`
+	}
+	vars := map[string]interface{}{"threadId": threadID, "body": body}
+	if err := c.gql.DoWithContext(ctx, mutation, vars, &resp); err != nil {
+		return "", fmt.Errorf("reply to thread %s: %w", threadID, err)
+	}
+	return resp.AddPullRequestReviewThreadReply.Comment.ID, nil
+}
+
 // ListThreads fetches review threads for a PR. resolvedStates should be one of
 // ThreadStateAll, ThreadStateUnresolved, or ThreadStateResolved.
 func (c *Client) ListThreads(ctx context.Context, owner, repo string, number int, resolvedStates string) ([]ReviewThread, error) {
