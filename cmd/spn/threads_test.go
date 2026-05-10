@@ -52,3 +52,32 @@ func TestSpnThreadsList_emitsJSONArray(t *testing.T) {
 		t.Errorf("requiresBody should be present and false for bot thread")
 	}
 }
+
+type replyStub struct {
+	stubAPI
+	posted github.ThreadComment
+}
+
+func (r *replyStub) ReplyToThread(_ context.Context, _, _ string) (github.ThreadComment, error) {
+	return r.posted, nil
+}
+
+func TestSpnThreadsReply_emitsComment(t *testing.T) {
+	prev := apiFactory
+	defer func() { apiFactory = prev }()
+	apiFactory = func() (threadsops.API, *agentio.Error) {
+		return &replyStub{posted: github.ThreadComment{ID: "PRC_new", Body: "ack"}}, nil
+	}
+	var stdout, stderr bytes.Buffer
+	exit := runThreadsWith([]string{"reply", "owner/repo#1", "PRRT_1", "--body", "ack"}, &stdout, &stderr)
+	if exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("stdout not JSON: %v\n%s", err, stdout.String())
+	}
+	if got["id"] != "PRC_new" {
+		t.Errorf("got %+v", got)
+	}
+}
