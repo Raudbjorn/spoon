@@ -6,7 +6,7 @@ import (
 	"sync"
 )
 
-// Thread state filters for ListThreads.
+// Thread state filters for FetchPR.
 const (
 	ThreadStateAll        = ""
 	ThreadStateUnresolved = "UNRESOLVED"
@@ -183,7 +183,7 @@ mutation($threadId: ID!, $body: String!) {
 }`
 	// go-gh's DoWithContext unmarshals the GraphQL "data" field directly into
 	// the target — no outer wrapper needed (mirrors FetchForksGraphQL /
-	// ListThreads pattern).
+	// FetchPR pattern).
 	var resp struct {
 		AddPullRequestReviewThreadReply struct {
 			Comment struct {
@@ -259,7 +259,7 @@ func (r *BulkResult) AddFailure(id string, err error) {
 
 // ResolveAllThreads resolves every currently-unresolved thread on a PR.
 func (c *Client) ResolveAllThreads(ctx context.Context, owner, repo string, number, workers int) (*BulkResult, error) {
-	threads, err := c.ListThreads(ctx, owner, repo, number, ThreadStateUnresolved)
+	_, threads, err := c.FetchPR(ctx, owner, repo, number, ThreadStateUnresolved)
 	if err != nil {
 		return nil, err
 	}
@@ -272,7 +272,7 @@ func (c *Client) ResolveAllThreads(ctx context.Context, owner, repo string, numb
 
 // UnresolveAllThreads unresolves every currently-resolved thread on a PR.
 func (c *Client) UnresolveAllThreads(ctx context.Context, owner, repo string, number, workers int) (*BulkResult, error) {
-	threads, err := c.ListThreads(ctx, owner, repo, number, ThreadStateResolved)
+	_, threads, err := c.FetchPR(ctx, owner, repo, number, ThreadStateResolved)
 	if err != nil {
 		return nil, err
 	}
@@ -311,18 +311,32 @@ func (c *Client) bulkFlip(ctx context.Context, ids []string, resolved bool, work
 	return res
 }
 
-// ListThreads fetches review threads for a PR. resolvedStates should be one of
-// ThreadStateAll, ThreadStateUnresolved, or ThreadStateResolved. Filtering
-// happens client-side because GitHub's GraphQL schema does not expose a
-// thread-state filter on reviewThreads.
-func (c *Client) ListThreads(ctx context.Context, owner, repo string, number int, resolvedStates string) ([]ReviewThread, error) {
+// FetchPR fetches the PR status and review threads in one GraphQL round trip.
+// resolvedStates should be one of ThreadStateAll, ThreadStateUnresolved, or
+// ThreadStateResolved (filtering is client-side; the server does not expose a
+// resolvedStates filter on reviewThreads). UnresolvedThreads in the returned
+// status is computed from ALL threads, not just the filtered subset.
+func (c *Client) FetchPR(ctx context.Context, owner, repo string, number int, resolvedStates string) (PullRequestStatus, []ReviewThread, error) {
 	if c.gql == nil {
-		return nil, fmt.Errorf("GraphQL client not available (auth required)")
+		return PullRequestStatus{}, nil, fmt.Errorf("GraphQL client not available (auth required)")
 	}
 	const query = `
 query($owner: String!, $name: String!, $number: Int!, $after: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
+      title
+      isDraft
+      merged
+      mergeable
+      mergeStateStatus
+      reviewDecision
+      commits(last: 1) {
+        nodes {
+          commit {
+            statusCheckRollup { state }
+          }
+        }
+      }
       reviewThreads(first: 100, after: $after) {
         pageInfo { hasNextPage endCursor }
         nodes {
@@ -345,8 +359,10 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
     }
   }
 }`
+	var status PullRequestStatus
 	var all []ReviewThread
 	var cursor *string
+	firstPage := true
 	for {
 		vars := map[string]interface{}{
 			"owner":  owner,
@@ -354,19 +370,25 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
 			"number": number,
 			"after":  cursor,
 		}
-		// go-gh's DoWithContext unmarshals the GraphQL "data" field directly
-		// into the target — no outer wrapper needed (mirrors FetchForksGraphQL).
 		var resp listThreadsData
 		if err := c.gql.DoWithContext(ctx, query, vars, &resp); err != nil {
-			return nil, fmt.Errorf("list threads: %w", err)
+			return PullRequestStatus{}, nil, fmt.Errorf("fetch PR: %w", err)
 		}
-		all = append(all, parseListThreadsResponse(resp)...)
+		pageStatus, pageThreads := parseFetchPRResponse(resp)
+		if firstPage {
+			status = pageStatus
+			firstPage = false
+		}
+		all = append(all, pageThreads...)
 		page := resp.Repository.PullRequest.ReviewThreads.PageInfo
 		if !page.HasNextPage || page.EndCursor == nil {
 			break
 		}
 		cursor = page.EndCursor
 	}
+	// Apply client-side state filter (the server does not expose a thread-state filter).
+	// Note: status.UnresolvedThreads was set by parseFetchPRResponse on the unfiltered set;
+	// we do NOT overwrite it here.
 	if resolvedStates == ThreadStateResolved {
 		filtered := all[:0]
 		for _, t := range all {
@@ -384,5 +406,5 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
 		}
 		all = filtered
 	}
-	return all, nil
+	return status, all, nil
 }

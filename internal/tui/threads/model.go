@@ -15,8 +15,9 @@ type Model struct {
 	owner   string
 	repo    string
 	number  int
-	threads []gh.ReviewThread
-	loaded  bool
+	prStatus gh.PullRequestStatus
+	threads  []gh.ReviewThread
+	loaded   bool
 	cursor  int
 	err     error
 	width   int
@@ -44,8 +45,9 @@ func New(client *gh.Client, owner, repo string, number int, includeResolved bool
 	}
 }
 
-// loadedMsg is delivered when ListThreads completes.
+// loadedMsg is delivered when FetchPR completes.
 type loadedMsg struct {
+	status  gh.PullRequestStatus
 	threads []gh.ReviewThread
 	err     error
 }
@@ -57,8 +59,8 @@ func (m Model) loadCmd() tea.Cmd {
 		if m.includeResolved {
 			state = gh.ThreadStateAll
 		}
-		ts, err := m.client.ListThreads(context.Background(), m.owner, m.repo, m.number, state)
-		return loadedMsg{threads: ts, err: err}
+		status, ts, err := m.client.FetchPR(context.Background(), m.owner, m.repo, m.number, state)
+		return loadedMsg{status: status, threads: ts, err: err}
 	}
 }
 
@@ -73,6 +75,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case loadedMsg:
 		m.loaded = true
+		m.prStatus = msg.status
 		m.threads = msg.threads
 		m.err = msg.err
 		if m.cursor >= len(m.threads) {
