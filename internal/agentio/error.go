@@ -53,6 +53,7 @@ func (e *Error) WithRetryAfter(seconds int) *Error {
 }
 
 // Emit writes the envelope as JSON to w and returns the process exit code.
+// w is typically os.Stderr — agent callers reserve stdout for success data.
 func (e *Error) Emit(w io.Writer) int {
 	body := map[string]any{
 		"code":        string(e.Code),
@@ -68,6 +69,8 @@ func (e *Error) Emit(w io.Writer) int {
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
+	// Write errors are intentionally discarded: if the writer is unusable
+	// (closed pipe, full disk) the caller still gets a meaningful exit code.
 	_ = enc.Encode(map[string]any{"error": body})
 	return ExitCode(e.Code)
 }

@@ -58,3 +58,16 @@ func TestError_WithDetails(t *testing.T) {
 		t.Errorf("details.thread_id=%v", d["thread_id"])
 	}
 }
+
+func TestError_Emit_upstreamError_retryable(t *testing.T) {
+	var b bytes.Buffer
+	exit := NewError(CodeUpstream, "graphql failed", "retry shortly").Emit(&b)
+	if exit != 1 {
+		t.Errorf("upstream_error exits 1, got %d", exit)
+	}
+	var env map[string]map[string]any
+	_ = json.Unmarshal(b.Bytes(), &env)
+	if env["error"]["retryable"] != true {
+		t.Errorf("upstream_error should default to retryable=true")
+	}
+}
