@@ -35,10 +35,38 @@ type ThreadComment struct {
 	CreatedAt  string `json:"createdAt"`
 }
 
+// PullRequestStatus carries the top-of-output mergeability summary.
+// Empty-string fields mean "not applicable" (e.g. no checks configured).
+type PullRequestStatus struct {
+	Title             string `json:"title"`
+	IsDraft           bool   `json:"isDraft"`
+	Merged            bool   `json:"merged"`
+	Mergeable         string `json:"mergeable"`        // MERGEABLE | CONFLICTING | UNKNOWN
+	MergeStateStatus  string `json:"mergeStateStatus"` // CLEAN | BEHIND | DIRTY | BLOCKED | DRAFT | HAS_HOOKS | UNSTABLE | UNKNOWN
+	ReviewDecision    string `json:"reviewDecision"`   // APPROVED | REVIEW_REQUIRED | CHANGES_REQUESTED | ""
+	ChecksState       string `json:"checksState"`      // SUCCESS | FAILURE | PENDING | ERROR | EXPECTED | ""
+	UnresolvedThreads int    `json:"unresolvedThreads"`
+}
+
 // listThreadsData mirrors the GraphQL response under data.
 type listThreadsData struct {
 	Repository struct {
 		PullRequest struct {
+			Title            string `json:"title"`
+			IsDraft          bool   `json:"isDraft"`
+			Merged           bool   `json:"merged"`
+			Mergeable        string `json:"mergeable"`
+			MergeStateStatus string `json:"mergeStateStatus"`
+			ReviewDecision   string `json:"reviewDecision"`
+			Commits          struct {
+				Nodes []struct {
+					Commit struct {
+						StatusCheckRollup *struct {
+							State string `json:"state"`
+						} `json:"statusCheckRollup"`
+					} `json:"commit"`
+				} `json:"nodes"`
+			} `json:"commits"`
 			ReviewThreads struct {
 				PageInfo struct {
 					HasNextPage bool    `json:"hasNextPage"`
@@ -100,6 +128,31 @@ func parseListThreadsResponse(data listThreadsData) []ReviewThread {
 		out = append(out, t)
 	}
 	return out
+}
+
+// parseFetchPRResponse extracts both the PR status and the threads from a
+// FetchPR response. UnresolvedThreads is computed from all threads (not
+// affected by client-side state filtering).
+func parseFetchPRResponse(data listThreadsData) (PullRequestStatus, []ReviewThread) {
+	pr := data.Repository.PullRequest
+	status := PullRequestStatus{
+		Title:            pr.Title,
+		IsDraft:          pr.IsDraft,
+		Merged:           pr.Merged,
+		Mergeable:        pr.Mergeable,
+		MergeStateStatus: pr.MergeStateStatus,
+		ReviewDecision:   pr.ReviewDecision,
+	}
+	if len(pr.Commits.Nodes) > 0 && pr.Commits.Nodes[0].Commit.StatusCheckRollup != nil {
+		status.ChecksState = pr.Commits.Nodes[0].Commit.StatusCheckRollup.State
+	}
+	threads := parseListThreadsResponse(data)
+	for _, t := range threads {
+		if !t.IsResolved {
+			status.UnresolvedThreads++
+		}
+	}
+	return status, threads
 }
 
 // RequiresBody reports whether resolving this thread requires a reply body.

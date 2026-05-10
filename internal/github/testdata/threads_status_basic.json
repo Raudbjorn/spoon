@@ -1,0 +1,46 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "title": "Add feature X",
+        "isDraft": false,
+        "merged": false,
+        "mergeable": "CONFLICTING",
+        "mergeStateStatus": "DIRTY",
+        "reviewDecision": "REVIEW_REQUIRED",
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "statusCheckRollup": { "state": "FAILURE" }
+              }
+            }
+          ]
+        },
+        "reviewThreads": {
+          "pageInfo": { "hasNextPage": false, "endCursor": null },
+          "nodes": [
+            {
+              "id": "PRRT_1",
+              "isResolved": false,
+              "path": "x.go",
+              "line": 1,
+              "startLine": null,
+              "diffSide": "RIGHT",
+              "comments": {
+                "nodes": [
+                  {
+                    "id": "PRRC_1",
+                    "body": "fix this",
+                    "createdAt": "2026-05-10T09:00:00Z",
+                    "author": { "__typename": "User", "login": "alice" }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
