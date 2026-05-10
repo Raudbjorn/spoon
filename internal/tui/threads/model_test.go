@@ -48,13 +48,48 @@ func TestResolveKeyOnBotThreadSkipsCompose(t *testing.T) {
 	m := New(nil, "o", "r", 1)
 	m.threads = []gh.ReviewThread{{ID: "a", Comments: []gh.ThreadComment{{AuthorType: "Bot"}}}}
 	m.loaded = true
-	// 'R' on a bot thread should set pendingResolve and not enter composing.
+	// 'R' on a bot thread should set mutating and not enter composing.
 	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}})
 	mm := out.(Model)
 	if mm.composing {
 		t.Errorf("composing should be false on bot thread")
 	}
-	if !mm.pendingResolve {
-		t.Errorf("pendingResolve should be true on bot thread")
+	if !mm.mutating {
+		t.Errorf("mutating should be true on bot thread")
+	}
+}
+
+func TestResolveAllRequiresConfirm(t *testing.T) {
+	m := New(nil, "o", "r", 1)
+	m.threads = []gh.ReviewThread{{ID: "a"}}
+	m.loaded = true
+
+	// 'a' should set confirm state, NOT fire the cmd.
+	out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	mm := out.(Model)
+	if mm.confirm != "resolve-all" {
+		t.Errorf("confirm=%q want resolve-all", mm.confirm)
+	}
+	if cmd != nil {
+		t.Errorf("expected no cmd until confirm; got %v", cmd)
+	}
+
+	// Anything other than y cancels.
+	out2, _ := mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	if out2.(Model).confirm != "" {
+		t.Errorf("confirm should clear after non-y key; got %q", out2.(Model).confirm)
+	}
+}
+
+func TestMutatingBlocksReply(t *testing.T) {
+	m := New(nil, "o", "r", 1)
+	m.threads = []gh.ReviewThread{{ID: "a", Comments: []gh.ThreadComment{{AuthorType: "User"}}}}
+	m.loaded = true
+	m.mutating = true
+
+	// 'r' should NOT enter composing mode while a mutation is in flight.
+	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	if out.(Model).composing {
+		t.Errorf("composing should be false while mutating")
 	}
 }

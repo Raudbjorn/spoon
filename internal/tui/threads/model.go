@@ -20,11 +20,12 @@ type Model struct {
 	width   int
 	height  int
 
-	composing      bool
-	composeBuf     []rune
-	composeFor     string // "reply" or "resolve"
-	pendingResolve bool   // bot-only resolve queued for the next tick
-	status         string // last status line
+	composing  bool
+	composeBuf []rune
+	composeFor string // "reply" or "resolve"
+	mutating   bool   // true while a mutation command is in flight
+	confirm    string // non-empty while waiting for y/n on a bulk action: "resolve-all" or "unresolve-all"
+	status     string // last status line
 }
 
 // New constructs an empty Model.
@@ -69,7 +70,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case mutationDoneMsg:
-		m.pendingResolve = false
+		m.mutating = false
 		if msg.err != nil {
 			m.status = "error: " + msg.err.Error()
 		} else {
@@ -78,6 +79,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Refresh the thread list.
 		return m, m.loadCmd()
 	case tea.KeyMsg:
+		if m.confirm != "" {
+			// Awaiting y/n on a bulk action.
+			s := msg.String()
+			pending := m.confirm
+			m.confirm = ""
+			if s == "y" || s == "Y" {
+				m.mutating = true
+				switch pending {
+				case "resolve-all":
+					return m, m.resolveAllCmd()
+				case "unresolve-all":
+					return m, m.unresolveAllCmd()
+				}
+			}
+			// Anything else cancels.
+			return m, nil
+		}
 		if m.composing {
 			switch msg.Type {
 			case tea.KeyEsc:
@@ -91,6 +109,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				targetID := m.threads[m.cursor].ID
+				m.mutating = true
 				switch m.composeFor {
 				case "reply":
 					return m, m.replyCmd(targetID, body)
@@ -120,12 +139,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor++
 			}
 		case actReply:
+			if m.mutating {
+				return m, nil
+			}
 			if len(m.threads) > 0 {
 				m.composing = true
 				m.composeFor = "reply"
 				m.composeBuf = nil
 			}
 		case actResolve:
+			if m.mutating {
+				return m, nil
+			}
 			if len(m.threads) > 0 {
 				cur := m.threads[m.cursor]
 				if cur.RequiresBody() {
@@ -133,14 +158,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.composeFor = "resolve"
 					m.composeBuf = nil
 				} else {
-					m.pendingResolve = true
+					m.mutating = true
 					return m, m.resolveCmd(cur.ID)
 				}
 			}
 		case actResolveAll:
-			return m, m.resolveAllCmd()
+			if m.mutating || m.confirm != "" {
+				return m, nil
+			}
+			m.confirm = "resolve-all"
 		case actUnresolveAll:
-			return m, m.unresolveAllCmd()
+			if m.mutating || m.confirm != "" {
+				return m, nil
+			}
+			m.confirm = "unresolve-all"
 		case actQuit:
 			return m, tea.Quit
 		}
