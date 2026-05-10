@@ -25,11 +25,11 @@ func (s *stubAPI) FetchPR(_ context.Context, _, _ string, _ int, _ string) (gith
 func (s *stubAPI) ReplyToThread(_ context.Context, _, _ string) (github.ThreadComment, error) {
 	return github.ThreadComment{}, nil
 }
-func (s *stubAPI) ResolveThread(_ context.Context, _ string) error                          { return nil }
-func (s *stubAPI) UnresolveThread(_ context.Context, _ string) error                        { return nil }
-func (s *stubAPI) ResolveAllThreads(_ context.Context, _, _ string, _, _ int) (*github.BulkResult, error) { return nil, nil }
-func (s *stubAPI) UnresolveAllThreads(_ context.Context, _, _ string, _, _ int) (*github.BulkResult, error) { return nil, nil }
-func (s *stubAPI) CurrentUserLogin(_ context.Context) (string, error)                       { return "", errors.New("no user") }
+func (s *stubAPI) ResolveThread(_ context.Context, _ string) error   { return nil }
+func (s *stubAPI) UnresolveThread(_ context.Context, _ string) error { return nil }
+func (s *stubAPI) CurrentUserLogin(_ context.Context) (string, error) {
+	return "", errors.New("no user")
+}
 
 func TestSpnThreadsList_emitsJSONArray(t *testing.T) {
 	prev := apiFactory

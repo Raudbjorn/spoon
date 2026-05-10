@@ -307,6 +307,7 @@ func translateResolveErr(op *threadsops.OpError, prRef, threadID string, stderr 
 		rem = agentio.RemediationInternal()
 	}
 	e := agentio.NewError(code, op.Message, rem)
+	e.Retryable = op.Retryable
 	if op.Details != nil {
 		e = e.WithDetails(op.Details)
 	}
@@ -329,6 +330,7 @@ func translateOpErr(op *threadsops.OpError, stderr io.Writer) int {
 		rem = "Re-run with --help for usage details."
 	}
 	e := agentio.NewError(code, op.Message, rem)
+	e.Retryable = op.Retryable
 	if op.Details != nil {
 		e = e.WithDetails(op.Details)
 	}
