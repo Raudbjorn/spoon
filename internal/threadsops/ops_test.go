@@ -18,11 +18,11 @@ func (f *fakeAPI) FetchPR(_ context.Context, _, _ string, _ int, _ string) (gith
 	return f.status, f.threads, f.err
 }
 func (f *fakeAPI) ReplyToThread(_ context.Context, _, _ string) (github.ThreadComment, error) { return github.ThreadComment{}, nil }
-func (f *fakeAPI) ResolveThread(_ context.Context, _ string) error                            { return nil }
-func (f *fakeAPI) UnresolveThread(_ context.Context, _ string) error                          { return nil }
-func (f *fakeAPI) ResolveAllThreads(_ context.Context, _, _ string, _, _ int) (*github.BulkResult, error) { return nil, nil }
-func (f *fakeAPI) UnresolveAllThreads(_ context.Context, _, _ string, _, _ int) (*github.BulkResult, error) { return nil, nil }
-func (f *fakeAPI) CurrentUserLogin(_ context.Context) (string, error)                         { return "", errors.New("not stubbed") }
+func (f *fakeAPI) ResolveThread(_ context.Context, _ string) error   { return nil }
+func (f *fakeAPI) UnresolveThread(_ context.Context, _ string) error { return nil }
+func (f *fakeAPI) CurrentUserLogin(_ context.Context) (string, error) {
+	return "", errors.New("not stubbed")
+}
 
 func TestList_annotatesPolicy(t *testing.T) {
 	f := &fakeAPI{threads: []github.ReviewThread{

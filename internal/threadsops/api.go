@@ -13,8 +13,6 @@ type API interface {
 	ReplyToThread(ctx context.Context, threadID, body string) (github.ThreadComment, error)
 	ResolveThread(ctx context.Context, threadID string) error
 	UnresolveThread(ctx context.Context, threadID string) error
-	ResolveAllThreads(ctx context.Context, owner, repo string, number, workers int) (*github.BulkResult, error)
-	UnresolveAllThreads(ctx context.Context, owner, repo string, number, workers int) (*github.BulkResult, error)
 	CurrentUserLogin(ctx context.Context) (string, error)
 }
 
