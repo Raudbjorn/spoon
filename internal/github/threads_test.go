@@ -90,3 +90,33 @@ func TestBulkResultMerge(t *testing.T) {
 		t.Errorf("failure capture broken: %+v", r.Failed[0])
 	}
 }
+
+func TestParseFetchPRResponse(t *testing.T) {
+	data, err := os.ReadFile("testdata/threads_status_basic.json")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	var raw struct {
+		Data listThreadsData `json:"data"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	status, threads := parseFetchPRResponse(raw.Data)
+
+	if status.Title != "Add feature X" {
+		t.Errorf("title %q", status.Title)
+	}
+	if status.Mergeable != "CONFLICTING" || status.MergeStateStatus != "DIRTY" {
+		t.Errorf("mergeable=%q state=%q", status.Mergeable, status.MergeStateStatus)
+	}
+	if status.ReviewDecision != "REVIEW_REQUIRED" {
+		t.Errorf("review=%q", status.ReviewDecision)
+	}
+	if status.ChecksState != "FAILURE" {
+		t.Errorf("checks=%q", status.ChecksState)
+	}
+	if len(threads) != 1 || threads[0].ID != "PRRT_1" {
+		t.Errorf("threads: %+v", threads)
+	}
+}
