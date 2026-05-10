@@ -2,6 +2,7 @@ package github
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"testing"
 )
@@ -66,5 +67,18 @@ func TestRequiresBody(t *testing.T) {
 				t.Errorf("got %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestBulkResultMerge(t *testing.T) {
+	r := BulkResult{}
+	r.AddSuccess("a")
+	r.AddSuccess("b")
+	r.AddFailure("c", fmt.Errorf("boom"))
+	if len(r.Succeeded) != 2 || len(r.Failed) != 1 {
+		t.Fatalf("got %+v", &r)
+	}
+	if r.Failed[0].ID != "c" || r.Failed[0].Err == nil {
+		t.Errorf("failure capture broken: %+v", r.Failed[0])
 	}
 }

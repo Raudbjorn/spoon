@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"fmt"
+	"sync"
 )
 
 // Thread state filters for ListThreads.
@@ -170,6 +171,85 @@ mutation($threadId: ID!) {
 		return fmt.Errorf("%s thread %s: %w", verb, threadID, err)
 	}
 	return nil
+}
+
+// BulkResult aggregates the outcome of a bulk thread operation.
+type BulkResult struct {
+	mu        sync.Mutex
+	Succeeded []string
+	Failed    []BulkFailure
+}
+
+// BulkFailure captures a single mutation error.
+type BulkFailure struct {
+	ID  string
+	Err error
+}
+
+func (r *BulkResult) AddSuccess(id string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.Succeeded = append(r.Succeeded, id)
+}
+
+func (r *BulkResult) AddFailure(id string, err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.Failed = append(r.Failed, BulkFailure{ID: id, Err: err})
+}
+
+// ResolveAllThreads resolves every currently-unresolved thread on a PR.
+func (c *Client) ResolveAllThreads(ctx context.Context, owner, repo string, number, workers int) (*BulkResult, error) {
+	threads, err := c.ListThreads(ctx, owner, repo, number, ThreadStateUnresolved)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, len(threads))
+	for i, t := range threads {
+		ids[i] = t.ID
+	}
+	return c.bulkFlip(ctx, ids, true, workers), nil
+}
+
+// UnresolveAllThreads unresolves every currently-resolved thread on a PR.
+func (c *Client) UnresolveAllThreads(ctx context.Context, owner, repo string, number, workers int) (*BulkResult, error) {
+	threads, err := c.ListThreads(ctx, owner, repo, number, ThreadStateResolved)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, len(threads))
+	for i, t := range threads {
+		ids[i] = t.ID
+	}
+	return c.bulkFlip(ctx, ids, false, workers), nil
+}
+
+func (c *Client) bulkFlip(ctx context.Context, ids []string, resolved bool, workers int) *BulkResult {
+	if workers < 1 {
+		workers = 4
+	}
+	res := &BulkResult{}
+	jobs := make(chan string)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for id := range jobs {
+				if err := c.flipResolve(ctx, id, resolved); err != nil {
+					res.AddFailure(id, err)
+				} else {
+					res.AddSuccess(id)
+				}
+			}
+		}()
+	}
+	for _, id := range ids {
+		jobs <- id
+	}
+	close(jobs)
+	wg.Wait()
+	return res
 }
 
 // ListThreads fetches review threads for a PR. resolvedStates should be one of
