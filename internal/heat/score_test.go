@@ -431,13 +431,16 @@ func TestTinySetScore_HighStars(t *testing.T) {
 }
 
 func TestIsGhostFork(t *testing.T) {
-	if !IsGhostFork("2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z", false, false) {
+	t1, _ := time.Parse(time.RFC3339, "2024-01-01T00:00:00Z")
+	t2, _ := time.Parse(time.RFC3339, "2024-06-01T00:00:00Z")
+
+	if !IsGhostFork(t1, t1, false) {
 		t.Error("Same push time should be ghost")
 	}
-	if !IsGhostFork("2024-06-01T00:00:00Z", "2024-01-01T00:00:00Z", true, false) {
+	if !IsGhostFork(t2, t1, true) {
 		t.Error("Archived should be ghost")
 	}
-	if IsGhostFork("2024-06-01T00:00:00Z", "2024-01-01T00:00:00Z", false, false) {
+	if IsGhostFork(t2, t1, false) {
 		t.Error("Different push time, not archived, should NOT be ghost")
 	}
 }

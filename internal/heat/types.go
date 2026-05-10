@@ -1,5 +1,7 @@
 package heat
 
+import "time"
+
 // Signal represents a named component of the heat score (legacy v1 API).
 type Signal struct {
 	Name   string  // e.g., "stars", "recency", "ahead"
@@ -84,10 +86,10 @@ type LoneWolfResult struct {
 }
 
 // IsGhostFork returns true if the fork appears to have never been touched.
-func IsGhostFork(forkPushedAt, parentPushedAt string, archived, disabled bool) bool {
-	if archived || disabled {
+func IsGhostFork(forkPushedAt, parentPushedAt time.Time, archived bool) bool {
+	if archived {
 		return true
 	}
 	// If push timestamps match exactly, the fork was never pushed to
-	return forkPushedAt == parentPushedAt
+	return forkPushedAt.Equal(parentPushedAt)
 }

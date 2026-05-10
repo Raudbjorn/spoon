@@ -32,7 +32,7 @@ func (m Model) viewTable() string {
 
 	hasCompare := false
 	for _, f := range m.forks {
-		if f.Compare != nil {
+		if f.T2 != nil {
 			hasCompare = true
 			break
 		}
@@ -90,8 +90,8 @@ func (m Model) viewTable() string {
 		scoreColor := HeatColor(sf.Heat.Score)
 		scoreStyled := lipgloss.NewStyle().Foreground(scoreColor).Render(score)
 
-		name := sf.Fork.FullName
-		pushed := relativeTime(sf.Fork.PushedAt)
+		name := sf.Fork.ID
+		pushed := relativeTimeSince(sf.Fork.PushedAt)
 
 		// Badges
 		badges := renderBadges(sf)
@@ -103,9 +103,9 @@ func (m Model) viewTable() string {
 			}
 			ahead := "  -"
 			behind := "  -"
-			if sf.Compare != nil {
-				ahead = fmt.Sprintf("%5d", sf.Compare.AheadBy)
-				behind = fmt.Sprintf("%6d", sf.Compare.BehindBy)
+			if sf.T2 != nil {
+				ahead = fmt.Sprintf("%5d", sf.T2.AheadCount)
+				behind = fmt.Sprintf("%6d", sf.T2.BehindCount)
 			} else if sf.Enriching {
 				ahead = "   ~"
 				behind = "    ~"
@@ -117,7 +117,7 @@ func (m Model) viewTable() string {
 				name = name[:27] + "..."
 			}
 			row = fmt.Sprintf("%s%s%s%s  %-30s %5d %5d  %-12s",
-				prefix, scorePrefix, heatBar, scoreStyled, name, sf.Fork.Stars, sf.Fork.Forks, pushed)
+				prefix, scorePrefix, heatBar, scoreStyled, name, sf.Fork.Stars, sf.Fork.SubForkCount, pushed)
 		}
 
 		if isSelected {
@@ -136,7 +136,10 @@ func (m Model) viewTable() string {
 	} else {
 		b.WriteString("\n")
 	}
-	b.WriteString(helpStyle.Render(" ↑↓ navigate  Enter detail  o open  y yank  / filter  s sort  e export  ? help  q quit"))
+	if legend := m.badgeLegend(); legend != "" {
+		b.WriteString(helpStyle.Render(" "+legend) + "\n")
+	}
+	b.WriteString(helpStyle.Render(" ↑↓ navigate  Enter detail  Space mark  e export marked  E export all  o open  y yank  s sort  ? help  q quit"))
 
 	return b.String()
 }
@@ -153,26 +156,71 @@ func renderBadges(sf ScoredFork) string {
 	}
 
 	// Open PR badge
-	if sf.T1Extra != nil && sf.T1Extra.OpenPRCount > 0 {
+	if sf.Fork.OpenPRCount > 0 {
 		badges = append(badges, "📬")
 	}
 
 	// Fork of fork badge
-	if sf.Fork.Forks > 0 {
+	if sf.Fork.SubForkCount > 0 {
 		badges = append(badges, "⛓")
 	}
 
 	// Side branch badge
-	if sf.ActiveBranch != "" && sf.ActiveBranch != sf.Fork.DefaultBranch {
+	if sf.T2 != nil && sf.T2.IsBranchWork && sf.T2.ActiveBranch != sf.Fork.DefaultBranch {
 		badges = append(badges, "🌱")
 	}
 
 	// Releases badge
-	if sf.T1Extra != nil && sf.T1Extra.ReleaseCount > 0 {
+	if sf.Fork.ReleaseCount > 0 {
 		badges = append(badges, "🏷️")
 	}
 
 	return strings.Join(badges, " ")
+}
+
+// badgeLegend returns a one-line legend for badges visible in the current fork list.
+// Only includes badges that actually appear, so the legend stays compact.
+func (m Model) badgeLegend() string {
+	var hasWolf, hasPR, hasSubFork, hasBranch, hasRelease bool
+	for _, sf := range m.forks {
+		if (sf.Heat.LoneWolf != nil && sf.Heat.LoneWolf.Detected) ||
+			(sf.Heat.LoneWolfV2 != nil && sf.Heat.LoneWolfV2.Detected) {
+			hasWolf = true
+		}
+		if sf.Fork.OpenPRCount > 0 {
+			hasPR = true
+		}
+		if sf.Fork.SubForkCount > 0 {
+			hasSubFork = true
+		}
+		if sf.T2 != nil && sf.T2.IsBranchWork && sf.T2.ActiveBranch != sf.Fork.DefaultBranch {
+			hasBranch = true
+		}
+		if sf.Fork.ReleaseCount > 0 {
+			hasRelease = true
+		}
+	}
+
+	var parts []string
+	if hasWolf {
+		parts = append(parts, "🐺 lone wolf")
+	}
+	if hasPR {
+		parts = append(parts, "📬 open PR")
+	}
+	if hasSubFork {
+		parts = append(parts, "⛓ has sub-forks")
+	}
+	if hasBranch {
+		parts = append(parts, "🌱 branch work")
+	}
+	if hasRelease {
+		parts = append(parts, "🏷️ releases")
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, "  ")
 }
 
 func (m Model) renderStatusBar() string {
@@ -187,14 +235,13 @@ func (m Model) renderStatusBar() string {
 		parts = append(parts, fmt.Sprintf("T2: %d/%d", m.enrichDone, m.enrichTotal))
 	}
 
-	if m.client != nil {
-		r := m.client.GetRateLimit()
-		if r.Limit > 0 {
-			parts = append(parts, fmt.Sprintf("API: %d/%d", r.Remaining, r.Limit))
-		}
-		if !m.client.IsAuthenticated() {
-			parts = append(parts, warnStyle.Render("⚠ Unauthenticated"))
-		}
+	if m.auth.RateLimit > 0 {
+		headroom := m.provider.Headroom()
+		remaining := int(headroom * float64(m.auth.RateLimit))
+		parts = append(parts, fmt.Sprintf("API: %d/%d", remaining, m.auth.RateLimit))
+	}
+	if !m.auth.Authenticated() {
+		parts = append(parts, warnStyle.Render("⚠ Unauthenticated"))
 	}
 
 	marked := 0
@@ -234,18 +281,18 @@ func (m *Model) sortForks() {
 		case "stars":
 			less = m.forks[i].Fork.Stars < m.forks[j].Fork.Stars
 		case "forks":
-			less = m.forks[i].Fork.Forks < m.forks[j].Fork.Forks
+			less = m.forks[i].Fork.SubForkCount < m.forks[j].Fork.SubForkCount
 		case "ahead":
 			ai, aj := 0, 0
-			if m.forks[i].Compare != nil {
-				ai = m.forks[i].Compare.AheadBy
+			if m.forks[i].T2 != nil {
+				ai = m.forks[i].T2.AheadCount
 			}
-			if m.forks[j].Compare != nil {
-				aj = m.forks[j].Compare.AheadBy
+			if m.forks[j].T2 != nil {
+				aj = m.forks[j].T2.AheadCount
 			}
 			less = ai < aj
 		case "pushed":
-			less = m.forks[i].Fork.PushedAt < m.forks[j].Fork.PushedAt
+			less = m.forks[i].Fork.PushedAt.Before(m.forks[j].Fork.PushedAt)
 		default:
 			less = m.forks[i].Heat.Score < m.forks[j].Heat.Score
 		}

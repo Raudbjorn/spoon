@@ -9,7 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	gh "github.com/svnbjrn/spoon/internal/github"
+	"github.com/svnbjrn/spoon/internal/forge"
 )
 
 // ExportData is the top-level JSON export structure.
@@ -76,7 +76,18 @@ type exportDoneMsg struct {
 	err  error
 }
 
-func (m *Model) exportMarked() tea.Cmd {
+// defaultExportPath returns a default filename for the export.
+func (m *Model) defaultExportPath() string {
+	if m.parent == nil {
+		return "spoon-export.json"
+	}
+	repoName := strings.ReplaceAll(m.parent.FullName, "/", "-")
+	return fmt.Sprintf("spoon-export-%s-%s.json",
+		repoName, time.Now().Format("2006-01-02"))
+}
+
+// promptExportMarked stages marked forks and shows the path prompt.
+func (m *Model) promptExportMarked() tea.Cmd {
 	if m.parent == nil {
 		return nil
 	}
@@ -88,33 +99,80 @@ func (m *Model) exportMarked() tea.Cmd {
 		}
 	}
 	if len(toExport) == 0 {
+		m.errMsg = "No forks marked — use Space to mark, then e to export"
+		m.errMsgTime = time.Now()
 		return nil
 	}
 
-	return m.doExport(toExport)
+	m.exportForks = toExport
+	m.exportPath = m.defaultExportPath()
+	m.view = viewExportPath
+	return nil
 }
 
-func (m *Model) exportAll() tea.Cmd {
+// promptExportAll stages all forks and shows the path prompt.
+func (m *Model) promptExportAll() tea.Cmd {
 	if m.parent == nil || len(m.forks) == 0 {
 		return nil
 	}
 
 	toExport := make([]ScoredFork, len(m.forks))
 	copy(toExport, m.forks)
-	return m.doExport(toExport)
+	m.exportForks = toExport
+	m.exportPath = m.defaultExportPath()
+	m.view = viewExportPath
+	return nil
 }
 
-func (m *Model) doExport(toExport []ScoredFork) tea.Cmd {
-	parent := m.parent
-	repoName := strings.ReplaceAll(parent.FullName, "/", "-")
-	filename := fmt.Sprintf("spoon-export-%s-%s.json",
-		repoName, time.Now().Format("2006-01-02"))
+// handleExportPathKey handles input in the export path prompt.
+func (m *Model) handleExportPathKey(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "enter":
+		path := strings.TrimSpace(m.exportPath)
+		if path == "" {
+			m.view = viewTable
+			return m, nil
+		}
+		cmd := m.doExport(m.exportForks, path)
+		m.exportForks = nil
+		m.view = viewTable
+		return m, cmd
+	case "esc":
+		m.exportForks = nil
+		m.view = viewTable
+	case "backspace":
+		if len(m.exportPath) > 0 {
+			m.exportPath = m.exportPath[:len(m.exportPath)-1]
+		}
+	case "ctrl+u":
+		m.exportPath = ""
+	default:
+		if len(key) == 1 {
+			m.exportPath += key
+		}
+	}
+	return m, nil
+}
 
+// viewExportPath renders the export path prompt.
+func (m Model) viewExportPath() string {
+	var b strings.Builder
+	b.WriteString("\n")
+	count := len(m.exportForks)
+	b.WriteString(fmt.Sprintf("  Exporting %d fork(s) to JSON\n\n", count))
+	b.WriteString("  Save to: " + m.exportPath + "█\n\n")
+	b.WriteString("  " + helpStyle.Render("Enter confirm  Esc cancel  Ctrl+U clear") + "\n")
+	return b.String()
+}
+
+func (m *Model) doExport(toExport []ScoredFork, filename string) tea.Cmd {
+	parent := m.parent
+	auth := m.auth
 	return func() tea.Msg {
 		data := ExportData{
 			Parent: ExportParent{
 				FullName:      parent.FullName,
-				URL:           "https://github.com/" + parent.FullName,
+				URL:           parent.URL,
 				Stars:         parent.Stars,
 				DefaultBranch: parent.DefaultBranch,
 			},
@@ -123,38 +181,25 @@ func (m *Model) doExport(toExport []ScoredFork) tea.Cmd {
 
 		for _, sf := range toExport {
 			ef := ExportFork{
-				FullName:   sf.Fork.FullName,
-				URL:        "https://github.com/" + sf.Fork.FullName,
-				Owner:      sf.Fork.Owner.Login,
+				FullName:   sf.Fork.ID,
+				URL:        sf.Fork.URL,
+				Owner:      sf.Fork.Owner,
 				Stars:      sf.Fork.Stars,
-				Forks:      sf.Fork.Forks,
+				Forks:      sf.Fork.SubForkCount,
 				OpenIssues: sf.Fork.OpenIssues,
 				Language:   sf.Fork.Language,
-				PushedAt:   sf.Fork.PushedAt,
-				CreatedAt:  sf.Fork.CreatedAt,
+				PushedAt:   sf.Fork.PushedAt.Format(time.RFC3339),
+				CreatedAt:  sf.Fork.CreatedAt.Format(time.RFC3339),
 				Heat: ExportHeat{
 					Score:      sf.Heat.Score,
 					Tier:       sf.Heat.Tier,
 					Confidence: sf.Heat.Confidence,
 				},
-				CompareURL: fmt.Sprintf("https://github.com/%s/compare/%s...%s:%s",
-					parent.FullName, parent.DefaultBranch, sf.Fork.Owner.Login, sf.Fork.DefaultBranch),
+				CompareURL: forge.CompareURL(auth.Provider, auth.Host,
+					parent.FullName, parent.DefaultBranch, sf.Fork.Owner, sf.Fork.DefaultBranch),
 			}
 
-			if sf.Compare != nil {
-				totalAdds, totalDels := 0, 0
-				for _, f := range sf.Compare.Files {
-					totalAdds += f.Additions
-					totalDels += f.Deletions
-				}
-				ef.Divergence = &ExportDiv{
-					Ahead:        sf.Compare.AheadBy,
-					Behind:       sf.Compare.BehindBy,
-					FilesChanged: len(sf.Compare.Files),
-					Additions:    totalAdds,
-					Deletions:    totalDels,
-				}
-			}
+			ef.Divergence = forgeT2ToExportDiv(sf.T2)
 
 			// Lone wolf
 			if sf.Heat.LoneWolf != nil && sf.Heat.LoneWolf.Detected {
@@ -184,26 +229,26 @@ func (m *Model) doExport(toExport []ScoredFork) tea.Cmd {
 }
 
 // GenerateWhyDistinct produces human-readable reasons why a fork is distinct.
-func GenerateWhyDistinct(sf ScoredFork, parent *gh.RepoInfo) []string {
+func GenerateWhyDistinct(sf ScoredFork, parent *forge.ParentData) []string {
 	var reasons []string
 
 	// From compare data
-	if sf.Compare != nil {
-		c := sf.Compare
-		if c.AheadBy > 0 {
-			reasons = append(reasons, fmt.Sprintf("+%d commits ahead of upstream", c.AheadBy))
+	if sf.T2 != nil {
+		t2 := sf.T2
+		if t2.AheadCount > 0 {
+			reasons = append(reasons, fmt.Sprintf("+%d commits ahead of upstream", t2.AheadCount))
 		}
-		if len(c.Files) > 0 {
-			reasons = append(reasons, fmt.Sprintf("%d files changed", len(c.Files)))
+		if len(t2.Diffs) > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d files changed", len(t2.Diffs)))
 		}
 		totalAdds := 0
-		for _, f := range c.Files {
-			totalAdds += f.Additions
+		for _, d := range t2.Diffs {
+			totalAdds += d.Additions
 		}
 		if totalAdds > 100 {
 			reasons = append(reasons, fmt.Sprintf("+%d lines added", totalAdds))
 		}
-		authors := gh.UniqueAuthors(*c)
+		authors := forge.UniqueAuthors(t2.Commits)
 		if len(authors) == 1 {
 			reasons = append(reasons, "Single contributor")
 		} else if len(authors) > 1 {
@@ -222,11 +267,11 @@ func GenerateWhyDistinct(sf ScoredFork, parent *gh.RepoInfo) []string {
 	if sf.Fork.Stars > 0 {
 		reasons = append(reasons, fmt.Sprintf("%d stars", sf.Fork.Stars))
 	}
-	if sf.Fork.Description != "" && sf.Fork.Description != parent.Description {
+	if sf.Fork.Description != "" && parent != nil && sf.Fork.Description != parent.Description {
 		reasons = append(reasons, fmt.Sprintf("Custom description: %q", truncate(sf.Fork.Description, 60)))
 	}
 
-	pushed := relativeTime(sf.Fork.PushedAt)
+	pushed := relativeTimeSince(sf.Fork.PushedAt)
 	reasons = append(reasons, "Last pushed "+pushed)
 
 	// Limit to 5 reasons

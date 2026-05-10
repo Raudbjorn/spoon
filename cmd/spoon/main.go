@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -10,6 +11,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/svnbjrn/spoon/internal/dump"
+	"github.com/svnbjrn/spoon/internal/forge"
+	gh "github.com/svnbjrn/spoon/internal/github"
+	"github.com/svnbjrn/spoon/internal/gitlab"
 	"github.com/svnbjrn/spoon/internal/tui"
 )
 
@@ -25,6 +29,9 @@ func main() {
 	tier := 0
 	topN := 0
 	botAllowlist := ""
+	forgeFlag := ""
+	forgeHost := ""
+	outputPath := ""
 
 	args := os.Args[1:]
 	for i := 0; i < len(args); i++ {
@@ -43,6 +50,25 @@ func main() {
 			csvMode = true
 		case "--refresh", "--no-cache":
 			refresh = true
+		case "--forge":
+			if i+1 < len(args) {
+				i++
+				forgeFlag = strings.ToLower(args[i])
+				if forgeFlag != "github" && forgeFlag != "gitlab" {
+					fmt.Fprintln(os.Stderr, "Error: --forge must be 'github' or 'gitlab'")
+					os.Exit(1)
+				}
+			}
+		case "--forge-host":
+			if i+1 < len(args) {
+				i++
+				forgeHost = args[i]
+			}
+		case "-o", "--output":
+			if i+1 < len(args) {
+				i++
+				outputPath = args[i]
+			}
 		case "--concurrency":
 			if i+1 < len(args) {
 				i++
@@ -113,14 +139,26 @@ func main() {
 		}
 	}
 
+	_ = concurrency // TODO: pass to auth overrides
+
+	// Detect provider from repo URL and flags
+	ctx := context.Background()
+	provider, auth, repoArg, err := createProvider(ctx, repo, forgeFlag, forgeHost)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
 	// Dump modes bypass the TUI
 	if jsonMode || csvMode {
-		if repo == "" {
+		if repoArg == "" {
 			fmt.Fprintln(os.Stderr, "Error: owner/repo is required for --json and --csv modes")
 			os.Exit(1)
 		}
-		parts := strings.SplitN(repo, "/", 2)
-		if len(parts) != 2 {
+
+		// Split into owner/repo for the dump API
+		owner, repoName := splitRepo(repoArg)
+		if owner == "" || repoName == "" {
 			fmt.Fprintln(os.Stderr, "Error: invalid repository format, use owner/repo")
 			os.Exit(1)
 		}
@@ -130,28 +168,125 @@ func main() {
 			format = "csv"
 		}
 
-		err := dump.Run(parts[0], parts[1], dump.Options{
+		var w *os.File
+		if outputPath != "" {
+			w, err = os.Create(outputPath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
+				os.Exit(1)
+			}
+			defer w.Close()
+		} else {
+			w = os.Stdout
+		}
+
+		err = dump.Run(provider, auth, owner, repoName, dump.Options{
 			Format:       format,
 			Refresh:      refresh,
-			Concurrency:  concurrency,
 			Tier:         tier,
 			TopN:         topN,
 			BotAllowlist: bots,
-		}, os.Stdout)
+		}, w)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
+		if outputPath != "" {
+			fmt.Fprintf(os.Stderr, "Exported to %s\n", outputPath)
+		}
 		return
 	}
 
-	m := tui.NewModel(repo, refresh)
+	m := tui.NewModel(provider, auth, repoArg, refresh)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// createProvider detects the forge provider from the repo URL and flags,
+// creates the appropriate Forge implementation, and returns it with auth info.
+// repoArg is returned as the owner/repo string to pass to TUI (without host prefix).
+func createProvider(ctx context.Context, repo, forgeFlag, forgeHost string) (forge.Forge, forge.AuthInfo, string, error) {
+	// Determine provider
+	var forceProvider forge.Provider
+	switch forgeFlag {
+	case "gitlab":
+		forceProvider = forge.ProviderGitLab
+	case "github":
+		forceProvider = forge.ProviderGitHub
+	}
+
+	// If no repo given, default to GitHub provider for interactive mode
+	if repo == "" {
+		if forceProvider == forge.ProviderGitLab || forgeHost != "" {
+			host := forgeHost
+			if host == "" {
+				host = "gitlab.com"
+			}
+			auth, err := gitlab.DetectAuth(ctx, host)
+			if err != nil {
+				return nil, forge.AuthInfo{}, "", fmt.Errorf("GitLab auth: %w", err)
+			}
+			token := gitlab.TokenFromAuth(ctx, host)
+			client := gitlab.NewClient(host, token)
+			return gitlab.NewProvider(client, auth), auth, "", nil
+		}
+		// Default: GitHub
+		client, status, err := gh.CheckAuth()
+		if err != nil {
+			return nil, forge.AuthInfo{}, "", fmt.Errorf("GitHub auth: %w", err)
+		}
+		provider := gh.NewGHProvider(client, status)
+		auth, _ := provider.Auth(ctx)
+		return provider, auth, "", nil
+	}
+
+	// Parse repo URL to detect provider
+	parsed, err := forge.Parse(forge.Config{
+		RepoURL:       repo,
+		ForceProvider: forceProvider,
+		ForgeHost:     forgeHost,
+	})
+	if err != nil {
+		return nil, forge.AuthInfo{}, "", err
+	}
+
+	repoArg := parsed.Owner + "/" + parsed.Repo
+
+	switch parsed.Provider {
+	case forge.ProviderGitLab:
+		auth, err := gitlab.DetectAuth(ctx, parsed.Host)
+		if err != nil {
+			return nil, forge.AuthInfo{}, "", fmt.Errorf("GitLab auth: %w", err)
+		}
+		token := gitlab.TokenFromAuth(ctx, parsed.Host)
+		client := gitlab.NewClient(parsed.Host, token)
+		return gitlab.NewProvider(client, auth), auth, repoArg, nil
+
+	case forge.ProviderGitHub:
+		client, status, err := gh.CheckAuth()
+		if err != nil {
+			return nil, forge.AuthInfo{}, "", fmt.Errorf("GitHub auth: %w", err)
+		}
+		provider := gh.NewGHProvider(client, status)
+		auth, _ := provider.Auth(ctx)
+		return provider, auth, repoArg, nil
+
+	default:
+		return nil, forge.AuthInfo{}, "", forge.ErrUnsupportedProvider
+	}
+}
+
+// splitRepo splits "owner/repo" or "group/subgroup/repo" into owner and repo parts.
+func splitRepo(s string) (owner, repo string) {
+	parts := strings.SplitN(s, "/", 2)
+	if len(parts) != 2 {
+		return "", ""
+	}
+	return parts[0], parts[1]
 }
 
 var validHeatWeightKeys = map[string]bool{
@@ -186,11 +321,14 @@ func printHelp() {
 	fmt.Print(`spoon - find useful forks
 
 Usage:
-  spoon [flags] [owner/repo]
+  spoon [flags] [owner/repo | https://gitlab.com/group/repo]
 
 Flags:
-  --json                   Output JSON to stdout (no TUI)
-  --csv                    Output CSV to stdout (no TUI)
+  --json                   Output JSON (no TUI; stdout or -o file)
+  --csv                    Output CSV (no TUI; stdout or -o file)
+  -o, --output PATH        Write output to file instead of stdout
+  --forge github|gitlab    Override provider detection
+  --forge-host HOSTNAME    Self-hosted GitLab/GHES hostname
   --refresh, --no-cache    Bypass cache (re-fetch all data)
   --concurrency N          Override worker pool size (default: 10 authed, 2 unauthed)
   --tier 1|2|3             Cap enrichment depth
@@ -202,22 +340,25 @@ Flags:
   -v, --version            Show version
 
 Examples:
-  spoon                                  Interactive mode
-  spoon golang/go                        Search forks of golang/go
-  spoon --json charmbracelet/bubbletea   JSON output
-  spoon --csv charmbracelet/bubbletea    CSV output
-  spoon --tier 1 golang/go               T1 only (no compare calls)
-  spoon --top 5 golang/go                Enrich only top 5 forks
+  spoon                                          Interactive mode (GitHub)
+  spoon golang/go                                Search forks of golang/go
+  spoon gitlab.com/inkscape/inkscape             GitLab (auto-detected)
+  spoon --forge gitlab group/repo                Force GitLab provider
+  spoon --forge-host gitlab.example.com g/repo   Self-hosted GitLab
+  spoon --json charmbracelet/bubbletea           JSON output
+  spoon --csv charmbracelet/bubbletea            CSV output
+  spoon --tier 1 golang/go                       T1 only (no compare calls)
+  spoon --top 5 golang/go                        Enrich only top 5 forks
 
 Keybindings (TUI mode):
   ↑/↓, j/k     Navigate table
   Enter         View fork details
   o             Open fork in browser
+  c             Compare fork vs upstream
   y             Yank clone command to clipboard
   /             Filter forks
   n             Search new repository
   s             Cycle sort column
-  t             Cycle max enrichment tier
   r             Refresh (bypass cache)
   Space         Mark/unmark fork
   e             Export marked forks to JSON
@@ -225,6 +366,6 @@ Keybindings (TUI mode):
   ?             Help
   q             Quit
 
-Tip: Run 'gh auth login' first for 5,000 requests/hour (vs 60 unauthenticated).
+Tip: Run 'gh auth login' (GitHub) or set GITLAB_TOKEN (GitLab) for higher rate limits.
 `)
 }

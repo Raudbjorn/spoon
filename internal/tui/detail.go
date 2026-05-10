@@ -6,7 +6,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	gh "github.com/svnbjrn/spoon/internal/github"
+	"github.com/svnbjrn/spoon/internal/forge"
 )
 
 func (m Model) viewDetail() string {
@@ -28,7 +28,7 @@ func (m Model) viewDetail() string {
 
 	b.WriteString("\n")
 	b.WriteString("╭" + hr + "╮\n")
-	b.WriteString("│ " + lipgloss.NewStyle().Bold(true).Render("Fork: "+sf.Fork.FullName) + pad(boxWidth-8-len(sf.Fork.FullName), " ") + " │\n")
+	b.WriteString("│ " + lipgloss.NewStyle().Bold(true).Render("Fork: "+sf.Fork.ID) + pad(boxWidth-8-len(sf.Fork.ID), " ") + " │\n")
 
 	// Heat bar
 	scoreColor := HeatColor(sf.Heat.Score)
@@ -108,41 +108,41 @@ func (m Model) viewDetail() string {
 	}
 
 	// Branch info
-	if sf.ActiveBranch != "" && sf.ActiveBranch != sf.Fork.DefaultBranch {
+	if sf.T2 != nil && sf.T2.IsBranchWork && sf.T2.ActiveBranch != sf.Fork.DefaultBranch {
 		b.WriteString("├" + hr + "┤\n")
-		b.WriteString(fmt.Sprintf("│ ⚠  Work is on branch: %-28s │\n", sf.ActiveBranch))
+		b.WriteString(fmt.Sprintf("│ ⚠  Work is on branch: %-28s │\n", sf.T2.ActiveBranch))
 		b.WriteString(fmt.Sprintf("│    [y] Yank clone & checkout command%-14s │\n", ""))
 	}
 
 	// Metadata
 	b.WriteString("├" + hr + "┤\n")
 	b.WriteString(fmt.Sprintf("│ ★ %d stars   ⑂ %d forks   Pushed %s",
-		sf.Fork.Stars, sf.Fork.Forks, relativeTime(sf.Fork.PushedAt)))
+		sf.Fork.Stars, sf.Fork.SubForkCount, relativeTimeSince(sf.Fork.PushedAt)))
 	b.WriteString(pad(boxWidth-45, " ") + " │\n")
 
-	if sf.Compare != nil {
-		c := sf.Compare
+	if sf.T2 != nil {
+		t2 := sf.T2
 		totalAdds, totalDels := 0, 0
-		for _, f := range c.Files {
-			totalAdds += f.Additions
-			totalDels += f.Deletions
+		for _, d := range t2.Diffs {
+			totalAdds += d.Additions
+			totalDels += d.Deletions
 		}
 		b.WriteString(fmt.Sprintf("│ Ahead: %d (+%d/-%d)  Behind: %d  Files: %d",
-			c.AheadBy, totalAdds, totalDels, c.BehindBy, len(c.Files)))
+			t2.AheadCount, totalAdds, totalDels, t2.BehindCount, len(t2.Diffs)))
 		b.WriteString(pad(boxWidth-50, " ") + " │\n")
-		b.WriteString(fmt.Sprintf("│ Authors: %d", len(gh.UniqueAuthors(*c))))
+		b.WriteString(fmt.Sprintf("│ Authors: %d", len(forge.UniqueAuthors(t2.Commits))))
 		b.WriteString(pad(boxWidth-14, " ") + " │\n")
 	}
 
 	// Bottom badges
 	var bottomBadges []string
-	if sf.T1Extra != nil && sf.T1Extra.OpenPRCount > 0 {
+	if sf.Fork.OpenPRCount > 0 {
 		bottomBadges = append(bottomBadges, "📬 Has open PR to upstream")
 	}
-	if sf.T1Extra != nil && sf.T1Extra.ReleaseCount > 0 {
-		bottomBadges = append(bottomBadges, fmt.Sprintf("🏷️  %d release(s)", sf.T1Extra.ReleaseCount))
+	if sf.Fork.ReleaseCount > 0 {
+		bottomBadges = append(bottomBadges, fmt.Sprintf("🏷️  %d release(s)", sf.Fork.ReleaseCount))
 	}
-	if sf.Fork.Forks > 0 {
+	if sf.Fork.SubForkCount > 0 {
 		bottomBadges = append(bottomBadges, "⛓ Fork of fork")
 	}
 	if len(bottomBadges) > 0 {
@@ -175,7 +175,7 @@ func componentDescription(name string, raw, points, max float64) string {
 	case "recency":
 		return fmt.Sprintf("Recency (%.0f days ago) — %.1f/%.0f pts", raw, points, max)
 	case "stars":
-		return fmt.Sprintf("Stars (%s) — %.1f/%.0f pts", gh.FormatStars(int(raw)), points, max)
+		return fmt.Sprintf("Stars (%s) — %.1f/%.0f pts", forge.FormatStars(int(raw)), points, max)
 	case "sub_forks":
 		return fmt.Sprintf("Sub-forks (%.0f) — %.1f/%.0f pts", raw, points, max)
 	case "releases":

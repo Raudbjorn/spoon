@@ -8,7 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	gh "github.com/svnbjrn/spoon/internal/github"
+	"github.com/svnbjrn/spoon/internal/forge"
 )
 
 type clipboardMsg struct {
@@ -23,7 +23,11 @@ func (m *Model) yankCloneCommand() tea.Cmd {
 		return nil
 	}
 	sf := m.forks[m.cursor]
-	cmd := gh.FormatBranchCloneCmd(sf.Fork.HTMLURL, sf.Fork.Name, sf.ActiveBranch, sf.Fork.DefaultBranch)
+	branch := ""
+	if sf.T2 != nil && sf.T2.IsBranchWork {
+		branch = sf.T2.ActiveBranch
+	}
+	cmd := forge.FormatCloneCmd(sf.Fork.URL, sf.Fork.Name, branch, sf.Fork.DefaultBranch)
 
 	return func() tea.Msg {
 		err := copyToClipboard(cmd)

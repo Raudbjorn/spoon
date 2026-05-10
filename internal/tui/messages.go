@@ -1,34 +1,35 @@
 package tui
 
 import (
+	"github.com/svnbjrn/spoon/internal/forge"
 	gh "github.com/svnbjrn/spoon/internal/github"
 )
 
 // Message types for Bubble Tea update loop.
 
-type authCheckedMsg struct {
-	client *gh.Client
-	status gh.AuthStatus
-	err    error
+type authReadyMsg struct {
+	provider forge.Forge
+	auth     forge.AuthInfo
+	err      error
 }
 
 type parentFetchedMsg struct {
-	parent gh.RepoInfo
+	parent forge.ParentData
 	err    error
 }
 
 type forksFetchedMsg struct {
-	forks  []gh.ForkInfo
-	extras map[int64]gh.T1Extra
-	err    error
+	forks []forge.T1Data
+	err   error
 }
 
 type tier2ResultMsg struct {
-	forkID       int64
-	compare      gh.CompareResult
-	activeBranch string // non-empty if work found on a side branch
-	err          error
+	forkID string
+	t2     forge.T2Data
+	err    error
 }
+
+type startFetchMsg struct{}
 
 type enrichBatchTickMsg struct{}
 
@@ -36,9 +37,10 @@ type enrichmentDoneMsg struct{}
 
 type errMsg struct{ err error }
 
+// cachedLoadMsg is used when loading from the GitHub-specific cache.
+// The cache bridge converts gh types to forge types.
 type cachedLoadMsg struct {
-	parent gh.RepoInfo
-	forks  []gh.ForkInfo
-	extras map[int64]gh.T1Extra
-	cache  *gh.CacheEntry
+	parent forge.ParentData
+	forks  []forge.T1Data
+	cache  *gh.CacheEntry // kept for compare cache lookups
 }
