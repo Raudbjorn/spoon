@@ -61,6 +61,37 @@ Run `spoon --help` for the full flag list.
 | `?` | Help |
 | `q` | Quit |
 
+### PR review threads
+
+The `spoon threads` subcommand lists, replies to, and resolves GitHub PR
+review threads. It's the primary way an AI agent reasons about review
+feedback.
+
+```sh
+spoon threads owner/repo#42                   # interactive TUI
+spoon threads owner/repo#42 --json            # all unresolved threads as JSON
+spoon threads owner/repo#42 --next            # one thread (or null) for agent loops
+spoon threads owner/repo#42 --reply PRRT_… --body "fixed"
+spoon threads owner/repo#42 --resolve PRRT_… --body "addressed in 1234abc"
+spoon threads owner/repo#42 --resolve-all     # bulk close
+spoon threads owner/repo#42 --unresolve-all   # inverse
+```
+
+Single-thread `--resolve` enforces a body when any commenter is a human
+reviewer. `--resolve-all`/`--unresolve-all` are deliberate bulk
+operations and accept no body.
+
+Agent loop pattern:
+
+```sh
+while [ "$(spoon threads owner/repo#42 --next)" != "null" ]; do
+  thread=$(spoon threads owner/repo#42 --next)
+  # ... address the comment in code ...
+  id=$(echo "$thread" | jq -r .id)
+  spoon threads owner/repo#42 --resolve "$id" --body "addressed in $(git rev-parse --short HEAD)"
+done
+```
+
 ## Heat scoring
 
 Forks are ranked by a weighted "heat" score combining several signals:
