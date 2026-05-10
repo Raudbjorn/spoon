@@ -44,6 +44,10 @@ func runThreadsWith(args []string, stdout, stderr io.Writer) int {
 		return doThreadsReply(rest, stdout, stderr)
 	case "resolve":
 		return doThreadsResolve(rest, stdout, stderr)
+	case "resolve-all":
+		return doThreadsResolveAll(rest, stdout, stderr)
+	case "unresolve-all":
+		return doThreadsUnresolveAll(rest, stdout, stderr)
 	default:
 		return agentio.NewError(agentio.CodeBadInput, "unknown verb: "+verb, agentio.RemediationBadInput("threads", "")).Emit(stderr)
 	}
@@ -235,6 +239,50 @@ func doThreadsResolve(args []string, stdout, stderr io.Writer) int {
 		return translateResolveErr(opErr, prRef, threadID, stderr)
 	}
 	if err := agentio.WriteJSON(stdout, t); err != nil {
+		return agentio.NewError(agentio.CodeInternal, "encode output: "+err.Error(), agentio.RemediationInternal()).Emit(stderr)
+	}
+	return 0
+}
+
+func doThreadsResolveAll(args []string, stdout, stderr io.Writer) int {
+	if len(args) != 1 {
+		return agentio.NewError(agentio.CodeBadInput, "usage: spn threads resolve-all <pr-ref>", agentio.RemediationBadInput("threads", "resolve-all")).Emit(stderr)
+	}
+	owner, repo, number, ok := resolvePRRef(args[0], stderr)
+	if !ok {
+		return 2
+	}
+	api, authErr := apiFactory()
+	if authErr != nil {
+		return authErr.Emit(stderr)
+	}
+	res, opErr := threadsops.ResolveAll(context.Background(), api, owner, repo, number, true)
+	if opErr != nil {
+		return translateOpErr(opErr, stderr)
+	}
+	if err := agentio.WriteJSON(stdout, res); err != nil {
+		return agentio.NewError(agentio.CodeInternal, "encode output: "+err.Error(), agentio.RemediationInternal()).Emit(stderr)
+	}
+	return 0
+}
+
+func doThreadsUnresolveAll(args []string, stdout, stderr io.Writer) int {
+	if len(args) != 1 {
+		return agentio.NewError(agentio.CodeBadInput, "usage: spn threads unresolve-all <pr-ref>", agentio.RemediationBadInput("threads", "unresolve-all")).Emit(stderr)
+	}
+	owner, repo, number, ok := resolvePRRef(args[0], stderr)
+	if !ok {
+		return 2
+	}
+	api, authErr := apiFactory()
+	if authErr != nil {
+		return authErr.Emit(stderr)
+	}
+	res, opErr := threadsops.UnresolveAll(context.Background(), api, owner, repo, number)
+	if opErr != nil {
+		return translateOpErr(opErr, stderr)
+	}
+	if err := agentio.WriteJSON(stdout, res); err != nil {
 		return agentio.NewError(agentio.CodeInternal, "encode output: "+err.Error(), agentio.RemediationInternal()).Emit(stderr)
 	}
 	return 0

@@ -157,3 +157,48 @@ func TestSpnThreadsResolve_partialFailure(t *testing.T) {
 		t.Errorf("expected comment_posted=true")
 	}
 }
+
+// Append to cmd/spn/threads_test.go
+type bulkStub struct {
+	stubAPI
+	resolveCalls map[string]bool
+}
+
+func (b *bulkStub) ResolveThread(_ context.Context, id string) error {
+	if b.resolveCalls == nil {
+		b.resolveCalls = map[string]bool{}
+	}
+	b.resolveCalls[id] = true
+	return nil
+}
+func (b *bulkStub) UnresolveThread(_ context.Context, _ string) error { return nil }
+
+func TestSpnThreadsResolveAll_skipsHumanThreads(t *testing.T) {
+	prev := apiFactory
+	defer func() { apiFactory = prev }()
+	apiFactory = func() (threadsops.API, *agentio.Error) {
+		return &bulkStub{stubAPI: stubAPI{threads: []github.ReviewThread{
+			{ID: "PRRT_bot", Comments: []github.ThreadComment{{AuthorType: "Bot"}}},
+			{ID: "PRRT_user", Comments: []github.ThreadComment{{AuthorType: "User"}}},
+		}}}, nil
+	}
+	var stdout, stderr bytes.Buffer
+	exit := runThreadsWith([]string{"resolve-all", "owner/repo#1"}, &stdout, &stderr)
+	if exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+	}
+	var got map[string]any
+	_ = json.Unmarshal(stdout.Bytes(), &got)
+	succeeded, _ := got["succeeded"].([]any)
+	skipped, _ := got["skipped"].([]any)
+	if len(succeeded) != 1 || succeeded[0] != "PRRT_bot" {
+		t.Errorf("succeeded=%+v", succeeded)
+	}
+	if len(skipped) != 1 {
+		t.Fatalf("expected 1 skipped, got %+v", skipped)
+	}
+	sk := skipped[0].(map[string]any)
+	if sk["id"] != "PRRT_user" || sk["reason"] != "requires_body" {
+		t.Errorf("skipped item: %+v", sk)
+	}
+}
