@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -248,4 +249,188 @@ func firstCommentTime(t gh.ReviewThread) string {
 		return ""
 	}
 	return t.Comments[0].CreatedAt
+}
+
+// runThreads is the entry point for the "threads" subcommand. It returns
+// an exit code (0/1/2) and writes any error messages to stderr.
+func runThreads(args []string) int {
+	flags, err := parseThreadsFlags(args)
+	if err != nil {
+		if err == errThreadsHelp {
+			printThreadsHelp()
+			return 0
+		}
+		fmt.Fprintln(os.Stderr, "Error:", err)
+		printThreadsHelp()
+		return 2
+	}
+
+	owner, repo, number, err := parsePRRef(flags.prRef, "", "")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error:", err)
+		return 2
+	}
+
+	client, _, err := gh.CheckAuth()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error: GitHub auth:", err)
+		return 1
+	}
+	if !client.IsAuthenticated() {
+		fmt.Fprintln(os.Stderr, "Error: spoon threads requires authentication (run `gh auth login`).")
+		return 1
+	}
+
+	ctx := context.Background()
+
+	switch flags.mode {
+	case modeJSON:
+		states := gh.ThreadStateUnresolved
+		if flags.includeResolved {
+			states = gh.ThreadStateAll
+		}
+		threads, err := client.ListThreads(ctx, owner, repo, number, states)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			return 1
+		}
+		if err := emitJSON(os.Stdout, threads); err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			return 1
+		}
+		return 0
+
+	case modeNext:
+		threads, err := client.ListThreads(ctx, owner, repo, number, gh.ThreadStateUnresolved)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			return 1
+		}
+		if err := emitNext(os.Stdout, threads); err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			return 1
+		}
+		return 0
+
+	case modeReply:
+		if _, err := client.ReplyToThread(ctx, flags.targetID, flags.body); err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			return 1
+		}
+		return 0
+
+	case modeResolve:
+		// Apply bot/human policy: fetch the thread to inspect comments.
+		all, err := client.ListThreads(ctx, owner, repo, number, gh.ThreadStateAll)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			return 1
+		}
+		var target *gh.ReviewThread
+		for i := range all {
+			if all[i].ID == flags.targetID {
+				target = &all[i]
+				break
+			}
+		}
+		if target == nil {
+			fmt.Fprintf(os.Stderr, "Error: thread %s not found on PR\n", flags.targetID)
+			return 1
+		}
+		if target.IsResolved {
+			fmt.Fprintln(os.Stderr, "Warning: thread already resolved; nothing to do")
+			return 0
+		}
+		if target.RequiresBody() && flags.body == "" {
+			fmt.Fprintln(os.Stderr, "Error: thread has a non-bot reviewer; --body (or --body-file) is required")
+			return 2
+		}
+		if flags.body != "" {
+			if _, err := client.ReplyToThread(ctx, flags.targetID, flags.body); err != nil {
+				fmt.Fprintln(os.Stderr, "Error: reply failed:", err)
+				return 1
+			}
+		}
+		if err := client.ResolveThread(ctx, flags.targetID); err != nil {
+			fmt.Fprintln(os.Stderr, "Error: resolve failed (reply already posted):", err)
+			return 1
+		}
+		return 0
+
+	case modeResolveAll:
+		res, err := client.ResolveAllThreads(ctx, owner, repo, number, 4)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			return 1
+		}
+		fmt.Printf("resolved %d threads\n", len(res.Succeeded))
+		if len(res.Failed) > 0 {
+			for _, f := range res.Failed {
+				fmt.Fprintf(os.Stderr, "failed %s: %v\n", f.ID, f.Err)
+			}
+			return 1
+		}
+		return 0
+
+	case modeUnresolveAll:
+		res, err := client.UnresolveAllThreads(ctx, owner, repo, number, 4)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			return 1
+		}
+		fmt.Printf("unresolved %d threads\n", len(res.Succeeded))
+		if len(res.Failed) > 0 {
+			for _, f := range res.Failed {
+				fmt.Fprintf(os.Stderr, "failed %s: %v\n", f.ID, f.Err)
+			}
+			return 1
+		}
+		return 0
+
+	case modeTUI:
+		return runThreadsTUI(ctx, client, owner, repo, number)
+
+	default:
+		fmt.Fprintln(os.Stderr, "Error: unknown mode")
+		return 2
+	}
+}
+
+func printThreadsHelp() {
+	fmt.Print(`spoon threads — operate on PR review threads
+
+Usage:
+  spoon threads <pr-ref> [flags]
+
+PR reference forms:
+  owner/repo#42
+  https://github.com/owner/repo/pull/42
+  #42                  (uses local repo context)
+
+Flags:
+  (no mode flag)        Open the TUI for unresolved threads (default)
+  --json                Print all unresolved threads as JSON
+  --include-resolved    Include resolved threads in --json output
+  --next                Print the oldest unresolved thread as JSON, or null
+  --reply <id> --body T   Append a reply to a thread
+  --resolve <id> [--body T]
+                        Resolve one thread; --body required for non-bot threads
+  --resolve-all         Mark every unresolved thread as resolved
+  --unresolve-all       Mark every resolved thread as unresolved
+  --body T              Comment body
+  --body-file PATH      Read body from file ('-' = stdin)
+  -h, --help            Show this help
+
+Examples:
+  spoon threads owner/repo#42
+  spoon threads owner/repo#42 --json
+  spoon threads owner/repo#42 --resolve PRRT_1 --body "fixed in 1234abc"
+  while [ "$(spoon threads owner/repo#42 --next)" != "null" ]; do ... ; done
+`)
+}
+
+// runThreadsTUI is implemented in Task 13.
+func runThreadsTUI(ctx context.Context, client *gh.Client, owner, repo string, number int) int {
+	fmt.Fprintln(os.Stderr, "TUI mode not implemented yet")
+	return 1
 }
