@@ -37,5 +37,11 @@ func renderModel(m Model) string {
 		}
 	}
 	b.WriteString("\n[r] reply  [R] resolve  [a] resolve-all  [q] quit\n")
+	if m.status != "" {
+		fmt.Fprintf(&b, "\n%s\n", m.status)
+	}
+	if m.composing {
+		fmt.Fprintf(&b, "\n--- compose (%s) — Ctrl+S to send, Esc to cancel ---\n%s_\n", m.composeFor, string(m.composeBuf))
+	}
 	return b.String()
 }

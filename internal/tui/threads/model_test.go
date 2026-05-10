@@ -33,3 +33,28 @@ func TestCursorWraps(t *testing.T) {
 		t.Errorf("cursor=%d want 0 (clamped)", m4.(Model).cursor)
 	}
 }
+
+func TestEnterReplyMode(t *testing.T) {
+	m := New(nil, "o", "r", 1)
+	m.threads = []gh.ReviewThread{{ID: "a", Comments: []gh.ThreadComment{{AuthorType: "User"}}}}
+	m.loaded = true
+	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	if !out.(Model).composing {
+		t.Errorf("expected composing=true after 'r'")
+	}
+}
+
+func TestResolveKeyOnBotThreadSkipsCompose(t *testing.T) {
+	m := New(nil, "o", "r", 1)
+	m.threads = []gh.ReviewThread{{ID: "a", Comments: []gh.ThreadComment{{AuthorType: "Bot"}}}}
+	m.loaded = true
+	// 'R' on a bot thread should set pendingResolve and not enter composing.
+	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}})
+	mm := out.(Model)
+	if mm.composing {
+		t.Errorf("composing should be false on bot thread")
+	}
+	if !mm.pendingResolve {
+		t.Errorf("pendingResolve should be true on bot thread")
+	}
+}
