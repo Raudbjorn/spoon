@@ -40,6 +40,9 @@ func renderModel(m Model) string {
 	if m.status != "" {
 		fmt.Fprintf(&b, "\n%s\n", m.status)
 	}
+	if m.confirm != "" {
+		fmt.Fprintf(&b, "\n[%s] press y to confirm, any other key to cancel\n", m.confirm)
+	}
 	if m.composing {
 		fmt.Fprintf(&b, "\n--- compose (%s) — Ctrl+S to send, Esc to cancel ---\n%s_\n", m.composeFor, string(m.composeBuf))
 	}
