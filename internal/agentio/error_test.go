@@ -92,3 +92,31 @@ func TestRemediation_authScope(t *testing.T) {
 		t.Errorf("scope placeholder not substituted: %q", r)
 	}
 }
+
+func TestRemediation_badInput_noArgs(t *testing.T) {
+	r := RemediationBadInput("", "")
+	if !strings.Contains(r, "spn --help") {
+		t.Errorf("expected top-level help, got %q", r)
+	}
+}
+
+func TestRemediation_badInput_nounOnly(t *testing.T) {
+	r := RemediationBadInput("threads", "")
+	if !strings.Contains(r, "spn threads --help") {
+		t.Errorf("expected noun-level help, got %q", r)
+	}
+}
+
+func TestRemediation_badInput_nounVerb(t *testing.T) {
+	r := RemediationBadInput("threads", "resolve")
+	if !strings.Contains(r, "spn threads resolve --help") {
+		t.Errorf("expected verb-level help, got %q", r)
+	}
+}
+
+func TestRemediation_rateLimited(t *testing.T) {
+	r := RemediationRateLimited("2026-05-10T12:00:00Z", 30)
+	if !strings.Contains(r, "2026-05-10T12:00:00Z") || !strings.Contains(r, "30s") {
+		t.Errorf("placeholders not substituted: %q", r)
+	}
+}
