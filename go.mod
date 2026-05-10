@@ -7,6 +7,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.1-0.20250319133953-166f707985bc
 	github.com/cli/browser v1.3.0
 	github.com/cli/go-gh/v2 v2.13.0
+	github.com/mattn/go-isatty v0.0.20
 )
 
 require (
@@ -25,7 +26,6 @@ require (
 	github.com/henvic/httpretty v0.0.6 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/lucasb-eyer/go-colorful v1.3.0 // indirect
-	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-localereader v0.0.1 // indirect
 	github.com/mattn/go-runewidth v0.0.19 // indirect
 	github.com/muesli/ansi v0.0.0-20230316100256-276c6243b2f6 // indirect
