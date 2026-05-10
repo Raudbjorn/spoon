@@ -71,3 +71,24 @@ func TestError_Emit_upstreamError_retryable(t *testing.T) {
 		t.Errorf("upstream_error should default to retryable=true")
 	}
 }
+
+func TestRemediation_authRequired(t *testing.T) {
+	r := RemediationAuthRequired()
+	if !strings.Contains(r, "gh auth login") {
+		t.Errorf("RemediationAuthRequired should mention gh auth login: %q", r)
+	}
+}
+
+func TestRemediation_policyBodyRequired(t *testing.T) {
+	r := RemediationPolicyBodyRequired("owner/repo#42", "PRRT_xyz")
+	if !strings.Contains(r, "owner/repo#42") || !strings.Contains(r, "PRRT_xyz") {
+		t.Errorf("placeholders not substituted: %q", r)
+	}
+}
+
+func TestRemediation_authScope(t *testing.T) {
+	r := RemediationAuthScope("repo")
+	if !strings.Contains(r, "gh auth refresh -s repo") {
+		t.Errorf("scope placeholder not substituted: %q", r)
+	}
+}
