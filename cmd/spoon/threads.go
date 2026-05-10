@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/mattn/go-isatty"
 	forge "github.com/svnbjrn/spoon/internal/forge"
 	gh "github.com/svnbjrn/spoon/internal/github"
 	threadstui "github.com/svnbjrn/spoon/internal/tui/threads"
@@ -323,11 +324,12 @@ func runThreads(args []string) int {
 		if flags.includeResolved {
 			states = gh.ThreadStateAll
 		}
-		_, threads, err := client.FetchPR(ctx, owner, repo, number, states)
+		status, threads, err := client.FetchPR(ctx, owner, repo, number, states)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "Error:", err)
 			return 1
 		}
+		emitStatus(os.Stderr, status, number, flags.noStatus)
 		if err := emitJSON(os.Stdout, threads); err != nil {
 			fmt.Fprintln(os.Stderr, "Error:", err)
 			return 1
@@ -335,11 +337,12 @@ func runThreads(args []string) int {
 		return 0
 
 	case modeNext:
-		_, threads, err := client.FetchPR(ctx, owner, repo, number, gh.ThreadStateUnresolved)
+		status, threads, err := client.FetchPR(ctx, owner, repo, number, gh.ThreadStateUnresolved)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "Error:", err)
 			return 1
 		}
+		emitStatus(os.Stderr, status, number, flags.noStatus)
 		if err := emitNext(os.Stdout, threads); err != nil {
 			fmt.Fprintln(os.Stderr, "Error:", err)
 			return 1
@@ -347,6 +350,12 @@ func runThreads(args []string) int {
 		return 0
 
 	case modeReply:
+		status, _, err := client.FetchPR(ctx, owner, repo, number, gh.ThreadStateAll)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			return 1
+		}
+		emitStatus(os.Stdout, status, number, flags.noStatus)
 		if _, err := client.ReplyToThread(ctx, flags.targetID, flags.body); err != nil {
 			fmt.Fprintln(os.Stderr, "Error:", err)
 			return 1
@@ -355,11 +364,12 @@ func runThreads(args []string) int {
 
 	case modeResolve:
 		// Apply bot/human policy: fetch the thread to inspect comments.
-		_, all, err := client.FetchPR(ctx, owner, repo, number, gh.ThreadStateAll)
+		status, all, err := client.FetchPR(ctx, owner, repo, number, gh.ThreadStateAll)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "Error:", err)
 			return 1
 		}
+		emitStatus(os.Stdout, status, number, flags.noStatus)
 		var target *gh.ReviewThread
 		for i := range all {
 			if all[i].ID == flags.targetID {
@@ -392,6 +402,12 @@ func runThreads(args []string) int {
 		return 0
 
 	case modeResolveAll:
+		status, _, err := client.FetchPR(ctx, owner, repo, number, gh.ThreadStateAll)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			return 1
+		}
+		emitStatus(os.Stdout, status, number, flags.noStatus)
 		res, err := client.ResolveAllThreads(ctx, owner, repo, number, 4)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "Error:", err)
@@ -407,6 +423,12 @@ func runThreads(args []string) int {
 		return 0
 
 	case modeUnresolveAll:
+		status, _, err := client.FetchPR(ctx, owner, repo, number, gh.ThreadStateAll)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			return 1
+		}
+		emitStatus(os.Stdout, status, number, flags.noStatus)
 		res, err := client.UnresolveAllThreads(ctx, owner, repo, number, 4)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "Error:", err)
@@ -472,4 +494,14 @@ func runThreadsTUI(ctx context.Context, client *gh.Client, owner, repo string, n
 		return 1
 	}
 	return 0
+}
+
+// emitStatus writes the PR status header to w (unless suppressed). glyphs
+// are used when w is a TTY.
+func emitStatus(w *os.File, status gh.PullRequestStatus, number int, noStatus bool) {
+	if noStatus {
+		return
+	}
+	useGlyphs := isatty.IsTerminal(w.Fd())
+	_ = RenderStatusBlock(w, status, number, useGlyphs)
 }
