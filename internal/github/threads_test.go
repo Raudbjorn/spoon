@@ -66,6 +66,8 @@ func TestRequiresBody(t *testing.T) {
 		}}, false},
 		{"unknown author type counts as user", ReviewThread{Comments: []ThreadComment{{AuthorType: ""}}}, true},
 		{"empty thread defaults true", ReviewThread{}, true},
+		{"mannequin counts as user", ReviewThread{Comments: []ThreadComment{{AuthorType: "Mannequin"}}}, true},
+		{"team counts as user", ReviewThread{Comments: []ThreadComment{{AuthorType: "Team"}}}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
