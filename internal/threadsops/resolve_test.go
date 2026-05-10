@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/svnbjrn/spoon/internal/github"
 )
@@ -88,5 +89,70 @@ func TestResolve_humanThread_withBody_postsAndResolves(t *testing.T) {
 	}
 	if f.replyCalls != 1 || f.resolveCalls != 1 {
 		t.Errorf("expected one reply + one resolve, got %d/%d", f.replyCalls, f.resolveCalls)
+	}
+}
+
+func TestResolve_partialFailure_commentPosted(t *testing.T) {
+	f := &resolveFake{
+		fakeAPI:      fakeAPI{threads: []github.ReviewThread{{ID: "PRRT_a", Comments: []github.ThreadComment{{AuthorType: "User", Author: "alice"}}}}},
+		replyComment: github.ThreadComment{ID: "PRC_new"},
+		resolveErr:   errors.New("graphql error"),
+	}
+	_, opErr := Resolve(context.Background(), f, "o", "r", 1, "PRRT_a", "fixed it")
+	if opErr == nil || opErr.Code != OpCodeUpstream {
+		t.Fatalf("expected upstream_error, got %+v", opErr)
+	}
+	if opErr.Details["comment_posted"] != true {
+		t.Errorf("expected details.comment_posted=true, got %+v", opErr.Details)
+	}
+	if opErr.Details["comment_id"] != "PRC_new" {
+		t.Errorf("expected details.comment_id, got %+v", opErr.Details)
+	}
+}
+
+func TestResolve_bodySatisfied_byCurrentUser(t *testing.T) {
+	// requiresBody=true, no --body, but most recent comment is by the agent.
+	f := &resolveFake{
+		fakeAPI: fakeAPI{threads: []github.ReviewThread{{
+			ID: "PRRT_a",
+			Comments: []github.ThreadComment{
+				{AuthorType: "User", Author: "alice", CreatedAt: "2026-05-10T09:00:00Z"},
+				{AuthorType: "User", Author: "agent-bot", CreatedAt: "2026-05-10T10:00:00Z"},
+			},
+		}}},
+		currentUser: "agent-bot",
+	}
+	got, opErr := Resolve(context.Background(), f, "o", "r", 1, "PRRT_a", "")
+	if opErr != nil {
+		t.Fatalf("expected success, got %+v", opErr)
+	}
+	if got == nil {
+		t.Fatal("expected thread, got nil")
+	}
+	if f.replyCalls != 0 {
+		t.Errorf("expected no reply call (body satisfied), got %d", f.replyCalls)
+	}
+	if f.resolveCalls != 1 {
+		t.Errorf("expected one resolve call, got %d", f.resolveCalls)
+	}
+}
+
+func TestResolve_bodySatisfied_byRecencyFallback(t *testing.T) {
+	// requiresBody=true, no --body, currentUser lookup fails, but most recent
+	// comment is within the last 60s.
+	recent := time.Now().UTC().Add(-30 * time.Second).Format(time.RFC3339)
+	f := &resolveFake{
+		fakeAPI: fakeAPI{threads: []github.ReviewThread{{
+			ID:       "PRRT_a",
+			Comments: []github.ThreadComment{{AuthorType: "User", Author: "alice", CreatedAt: recent}},
+		}}},
+		currentUser: "", // lookup fails
+	}
+	got, opErr := Resolve(context.Background(), f, "o", "r", 1, "PRRT_a", "")
+	if opErr != nil {
+		t.Fatalf("expected success via recency fallback, got %+v", opErr)
+	}
+	if got == nil {
+		t.Fatal("expected thread, got nil")
 	}
 }
