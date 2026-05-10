@@ -11,7 +11,9 @@ import (
 	"strconv"
 	"strings"
 
+	tea "github.com/charmbracelet/bubbletea"
 	gh "github.com/svnbjrn/spoon/internal/github"
+	threadstui "github.com/svnbjrn/spoon/internal/tui/threads"
 )
 
 // parsePRRef parses a PR reference into (owner, repo, number).
@@ -429,8 +431,12 @@ Examples:
 `)
 }
 
-// runThreadsTUI is implemented in Task 13.
 func runThreadsTUI(ctx context.Context, client *gh.Client, owner, repo string, number int) int {
-	fmt.Fprintln(os.Stderr, "TUI mode not implemented yet")
-	return 1
+	m := threadstui.New(client, owner, repo, number)
+	p := tea.NewProgram(m, tea.WithAltScreen())
+	if _, err := p.Run(); err != nil {
+		fmt.Fprintln(os.Stderr, "Error:", err)
+		return 1
+	}
+	return 0
 }
