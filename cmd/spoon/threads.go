@@ -12,7 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/mattn/go-isatty"
 	gh "github.com/svnbjrn/spoon/internal/github"
-	threadsops "github.com/svnbjrn/spoon/internal/threadsops"
+	"github.com/svnbjrn/spoon/internal/threadsops"
 	threadstui "github.com/svnbjrn/spoon/internal/tui/threads"
 )
 
