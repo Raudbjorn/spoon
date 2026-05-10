@@ -5,6 +5,13 @@ import (
 	"fmt"
 )
 
+// Thread state filters for ListThreads.
+const (
+	ThreadStateAll        = ""
+	ThreadStateUnresolved = "UNRESOLVED"
+	ThreadStateResolved   = "RESOLVED"
+)
+
 // ReviewThread is the public representation of a PR review thread.
 type ReviewThread struct {
 	ID         string          `json:"id"`
@@ -29,11 +36,10 @@ type ThreadComment struct {
 type listThreadsData struct {
 	Repository struct {
 		PullRequest struct {
-			Title         string `json:"title"`
 			ReviewThreads struct {
 				PageInfo struct {
-					HasNextPage bool   `json:"hasNextPage"`
-					EndCursor   string `json:"endCursor"`
+					HasNextPage bool    `json:"hasNextPage"`
+					EndCursor   *string `json:"endCursor"`
 				} `json:"pageInfo"`
 				Nodes []rawThread `json:"nodes"`
 			} `json:"reviewThreads"`
@@ -89,8 +95,8 @@ func parseListThreadsResponse(data listThreadsData) []ReviewThread {
 	return out
 }
 
-// ListThreads fetches review threads for a PR. resolvedStates is one of
-// "" (all), "UNRESOLVED", "RESOLVED".
+// ListThreads fetches review threads for a PR. resolvedStates should be one of
+// ThreadStateAll, ThreadStateUnresolved, or ThreadStateResolved.
 func (c *Client) ListThreads(ctx context.Context, owner, repo string, number int, resolvedStates string) ([]ReviewThread, error) {
 	if c.gql == nil {
 		return nil, fmt.Errorf("GraphQL client not available (auth required)")
@@ -99,7 +105,6 @@ func (c *Client) ListThreads(ctx context.Context, owner, repo string, number int
 query($owner: String!, $name: String!, $number: Int!, $after: String, $states: [PullRequestReviewThreadState!]) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
-      title
       reviewThreads(first: 100, after: $after, resolvedStates: $states) {
         pageInfo { hasNextPage endCursor }
         nodes {
@@ -144,11 +149,10 @@ query($owner: String!, $name: String!, $number: Int!, $after: String, $states: [
 		}
 		all = append(all, parseListThreadsResponse(resp)...)
 		page := resp.Repository.PullRequest.ReviewThreads.PageInfo
-		if !page.HasNextPage {
+		if !page.HasNextPage || page.EndCursor == nil {
 			break
 		}
-		end := page.EndCursor
-		cursor = &end
+		cursor = page.EndCursor
 	}
 	return all, nil
 }

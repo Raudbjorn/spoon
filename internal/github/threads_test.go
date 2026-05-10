@@ -33,4 +33,10 @@ func TestParseListThreadsResponse(t *testing.T) {
 	if threads[1].Comments[0].AuthorType != "Bot" {
 		t.Errorf("thread[1] author type mismatch: got %q", threads[1].Comments[0].AuthorType)
 	}
+	if !threads[1].IsResolved {
+		t.Errorf("thread[1] should be resolved")
+	}
+	if threads[0].DiffSide != "RIGHT" || threads[1].DiffSide != "RIGHT" {
+		t.Errorf("diffSide mismatch: %q, %q", threads[0].DiffSide, threads[1].DiffSide)
+	}
 }
