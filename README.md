@@ -92,6 +92,15 @@ while [ "$(spoon threads owner/repo#42 --next)" != "null" ]; do
 done
 ```
 
+Every invocation prints a status header above its normal output: PR
+title, mergeability (`CLEAN` / `DIRTY` / `BLOCKED` / …), review
+decision (`APPROVED` / `REVIEW_REQUIRED` / …), check rollup
+(`SUCCESS` / `FAILURE` / …), and unresolved thread count. If anything
+in the header is red, resolving threads alone will not get the PR
+merged — you have to fix the gate first. The header lands on stderr
+for `--json` / `--next` so stdout stays pure JSON. Suppress with
+`--no-status`.
+
 ## Heat scoring
 
 Forks are ranked by a weighted "heat" score combining several signals:
