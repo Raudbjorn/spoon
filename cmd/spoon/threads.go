@@ -121,6 +121,7 @@ type threadsFlags struct {
 	body            string
 	bodyFile        string
 	includeResolved bool
+	noStatus        bool
 }
 
 // parseThreadsFlags parses the args after "spoon threads".
@@ -150,6 +151,8 @@ func parseThreadsFlags(args []string) (threadsFlags, error) {
 			}
 		case "--include-resolved":
 			f.includeResolved = true
+		case "--no-status":
+			f.noStatus = true
 		case "--reply":
 			if err := setMode(modeReply, "reply"); err != nil {
 				return f, err
@@ -442,6 +445,7 @@ Flags:
   (no mode flag)        Open the TUI for unresolved threads (default)
   --json                Print all unresolved threads as JSON
   --include-resolved    Include resolved threads in --json output
+  --no-status           Suppress the PR status header
   --next                Print the oldest unresolved thread as JSON, or null
   --reply <id> --body T   Append a reply to a thread
   --resolve <id> [--body T]
