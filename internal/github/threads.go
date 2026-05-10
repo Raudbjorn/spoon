@@ -259,16 +259,18 @@ func (c *Client) bulkFlip(ctx context.Context, ids []string, resolved bool, work
 }
 
 // ListThreads fetches review threads for a PR. resolvedStates should be one of
-// ThreadStateAll, ThreadStateUnresolved, or ThreadStateResolved.
+// ThreadStateAll, ThreadStateUnresolved, or ThreadStateResolved. Filtering
+// happens client-side because GitHub's GraphQL schema does not expose a
+// thread-state filter on reviewThreads.
 func (c *Client) ListThreads(ctx context.Context, owner, repo string, number int, resolvedStates string) ([]ReviewThread, error) {
 	if c.gql == nil {
 		return nil, fmt.Errorf("GraphQL client not available (auth required)")
 	}
 	const query = `
-query($owner: String!, $name: String!, $number: Int!, $after: String, $states: [PullRequestReviewThreadState!]) {
+query($owner: String!, $name: String!, $number: Int!, $after: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
-      reviewThreads(first: 100, after: $after, resolvedStates: $states) {
+      reviewThreads(first: 100, after: $after) {
         pageInfo { hasNextPage endCursor }
         nodes {
           id
@@ -299,11 +301,6 @@ query($owner: String!, $name: String!, $number: Int!, $after: String, $states: [
 			"number": number,
 			"after":  cursor,
 		}
-		if resolvedStates != "" {
-			vars["states"] = []string{resolvedStates}
-		} else {
-			vars["states"] = nil
-		}
 		// go-gh's DoWithContext unmarshals the GraphQL "data" field directly
 		// into the target — no outer wrapper needed (mirrors FetchForksGraphQL).
 		var resp listThreadsData
@@ -316,6 +313,23 @@ query($owner: String!, $name: String!, $number: Int!, $after: String, $states: [
 			break
 		}
 		cursor = page.EndCursor
+	}
+	if resolvedStates == ThreadStateResolved {
+		filtered := all[:0]
+		for _, t := range all {
+			if t.IsResolved {
+				filtered = append(filtered, t)
+			}
+		}
+		all = filtered
+	} else if resolvedStates == ThreadStateUnresolved {
+		filtered := all[:0]
+		for _, t := range all {
+			if !t.IsResolved {
+				filtered = append(filtered, t)
+			}
+		}
+		all = filtered
 	}
 	return all, nil
 }
