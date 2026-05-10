@@ -86,7 +86,6 @@ thread object:
   "path": "internal/heat/score.go",
   "line": 42,
   "startLine": null,
-  "side": "RIGHT",
   "diffSide": "RIGHT",
   "reviewerType": "User",
   "reviewerLogin": "alice",

@@ -7,14 +7,37 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	forge "github.com/svnbjrn/spoon/internal/forge"
 	gh "github.com/svnbjrn/spoon/internal/github"
 	threadstui "github.com/svnbjrn/spoon/internal/tui/threads"
 )
+
+// detectRepoContext returns owner and repo by parsing the URL of the local
+// `origin` remote. Returns ("", "") on any error (caller will report a
+// clearer error from parsePRRef).
+func detectRepoContext() (owner, repo string) {
+	cmd := exec.Command("git", "remote", "get-url", "origin")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", ""
+	}
+	rawURL := strings.TrimSpace(string(out))
+	// Parse using forge.ParseRepoURL with defaultHost=github.com.
+	provider, _, o, r, err := forge.ParseRepoURL(rawURL, "github.com", 0)
+	if err != nil {
+		return "", ""
+	}
+	if provider != forge.ProviderGitHub {
+		return "", ""
+	}
+	return o, r
+}
 
 // parsePRRef parses a PR reference into (owner, repo, number).
 // Accepted forms:
@@ -267,7 +290,8 @@ func runThreads(args []string) int {
 		return 2
 	}
 
-	owner, repo, number, err := parsePRRef(flags.prRef, "", "")
+	fallbackOwner, fallbackRepo := detectRepoContext()
+	owner, repo, number, err := parsePRRef(flags.prRef, fallbackOwner, fallbackRepo)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)
 		return 2

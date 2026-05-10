@@ -40,6 +40,12 @@ func TestParseListThreadsResponse(t *testing.T) {
 	if threads[0].DiffSide != "RIGHT" || threads[1].DiffSide != "RIGHT" {
 		t.Errorf("diffSide mismatch: %q, %q", threads[0].DiffSide, threads[1].DiffSide)
 	}
+	if threads[0].ReviewerType != "User" || threads[0].ReviewerLogin != "alice" {
+		t.Errorf("thread[0] reviewer mismatch: type=%q login=%q", threads[0].ReviewerType, threads[0].ReviewerLogin)
+	}
+	if threads[1].ReviewerType != "Bot" || threads[1].ReviewerLogin != "dependabot" {
+		t.Errorf("thread[1] reviewer mismatch: type=%q login=%q", threads[1].ReviewerType, threads[1].ReviewerLogin)
+	}
 }
 
 func TestRequiresBody(t *testing.T) {
