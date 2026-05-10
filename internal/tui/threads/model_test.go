@@ -8,7 +8,7 @@ import (
 )
 
 func TestCursorWraps(t *testing.T) {
-	m := New(nil, "owner", "repo", 1)
+	m := New(nil, "owner", "repo", 1, false)
 	m.threads = []gh.ReviewThread{{ID: "a"}, {ID: "b"}, {ID: "c"}}
 	m.loaded = true
 
@@ -35,7 +35,7 @@ func TestCursorWraps(t *testing.T) {
 }
 
 func TestEnterReplyMode(t *testing.T) {
-	m := New(nil, "o", "r", 1)
+	m := New(nil, "o", "r", 1, false)
 	m.threads = []gh.ReviewThread{{ID: "a", Comments: []gh.ThreadComment{{AuthorType: "User"}}}}
 	m.loaded = true
 	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
@@ -45,7 +45,7 @@ func TestEnterReplyMode(t *testing.T) {
 }
 
 func TestResolveKeyOnBotThreadSkipsCompose(t *testing.T) {
-	m := New(nil, "o", "r", 1)
+	m := New(nil, "o", "r", 1, false)
 	m.threads = []gh.ReviewThread{{ID: "a", Comments: []gh.ThreadComment{{AuthorType: "Bot"}}}}
 	m.loaded = true
 	// 'R' on a bot thread should set mutating and not enter composing.
@@ -60,7 +60,7 @@ func TestResolveKeyOnBotThreadSkipsCompose(t *testing.T) {
 }
 
 func TestResolveAllRequiresConfirm(t *testing.T) {
-	m := New(nil, "o", "r", 1)
+	m := New(nil, "o", "r", 1, false)
 	m.threads = []gh.ReviewThread{{ID: "a"}}
 	m.loaded = true
 
@@ -82,7 +82,7 @@ func TestResolveAllRequiresConfirm(t *testing.T) {
 }
 
 func TestMutatingBlocksReply(t *testing.T) {
-	m := New(nil, "o", "r", 1)
+	m := New(nil, "o", "r", 1, false)
 	m.threads = []gh.ReviewThread{{ID: "a", Comments: []gh.ThreadComment{{AuthorType: "User"}}}}
 	m.loaded = true
 	m.mutating = true
@@ -91,5 +91,21 @@ func TestMutatingBlocksReply(t *testing.T) {
 	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
 	if out.(Model).composing {
 		t.Errorf("composing should be false while mutating")
+	}
+}
+
+func TestHelpKeyToggles(t *testing.T) {
+	m := New(nil, "o", "r", 1, false)
+	m.threads = []gh.ReviewThread{{ID: "a"}}
+	m.loaded = true
+
+	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	if !out.(Model).showHelp {
+		t.Errorf("expected showHelp=true after first '?'")
+	}
+
+	out2, _ := out.(Model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	if out2.(Model).showHelp {
+		t.Errorf("expected showHelp=false after second '?'")
 	}
 }

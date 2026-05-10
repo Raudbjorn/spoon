@@ -26,7 +26,7 @@ func dispatchKey(k tea.KeyMsg) keyAction {
 		return actDown
 	case "q", "ctrl+c":
 		return actQuit
-	case "r":
+	case "r", "enter":
 		return actReply
 	case "R":
 		return actResolve

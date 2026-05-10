@@ -2,8 +2,10 @@ package threads
 
 import (
 	"context"
+	"fmt"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/cli/browser"
 	gh "github.com/svnbjrn/spoon/internal/github"
 )
 
@@ -26,15 +28,19 @@ type Model struct {
 	mutating   bool   // true while a mutation command is in flight
 	confirm    string // non-empty while waiting for y/n on a bulk action: "resolve-all" or "unresolve-all"
 	status     string // last status line
+
+	includeResolved bool
+	showHelp        bool
 }
 
 // New constructs an empty Model.
-func New(client *gh.Client, owner, repo string, number int) Model {
+func New(client *gh.Client, owner, repo string, number int, includeResolved bool) Model {
 	return Model{
-		client: client,
-		owner:  owner,
-		repo:   repo,
-		number: number,
+		client:          client,
+		owner:           owner,
+		repo:            repo,
+		number:          number,
+		includeResolved: includeResolved,
 	}
 }
 
@@ -44,10 +50,14 @@ type loadedMsg struct {
 	err     error
 }
 
-// loadCmd fetches unresolved threads.
+// loadCmd fetches threads (unresolved by default, or all if includeResolved is set).
 func (m Model) loadCmd() tea.Cmd {
 	return func() tea.Msg {
-		ts, err := m.client.ListThreads(context.Background(), m.owner, m.repo, m.number, gh.ThreadStateUnresolved)
+		state := gh.ThreadStateUnresolved
+		if m.includeResolved {
+			state = gh.ThreadStateAll
+		}
+		ts, err := m.client.ListThreads(context.Background(), m.owner, m.repo, m.number, state)
 		return loadedMsg{threads: ts, err: err}
 	}
 }
@@ -76,7 +86,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.status = msg.what + " ok"
 		}
-		// Refresh the thread list.
+		// Refresh the thread list (skip for browser open — it's fire-and-forget).
+		if msg.what == "open" {
+			return m, nil
+		}
 		return m, m.loadCmd()
 	case tea.KeyMsg:
 		if m.confirm != "" {
@@ -172,6 +185,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.confirm = "unresolve-all"
+		case actOpen:
+			if len(m.threads) > 0 {
+				return m, m.openCmd()
+			}
+		case actHelp:
+			m.showHelp = !m.showHelp
 		case actQuit:
 			return m, tea.Quit
 		}
@@ -219,6 +238,14 @@ func (m Model) unresolveAllCmd() tea.Cmd {
 	return func() tea.Msg {
 		_, err := m.client.UnresolveAllThreads(context.Background(), m.owner, m.repo, m.number, 4)
 		return mutationDoneMsg{what: "bulk-unresolve", err: err}
+	}
+}
+
+func (m Model) openCmd() tea.Cmd {
+	url := fmt.Sprintf("https://github.com/%s/%s/pull/%d", m.owner, m.repo, m.number)
+	return func() tea.Msg {
+		err := browser.OpenURL(url)
+		return mutationDoneMsg{what: "open", err: err}
 	}
 }
 

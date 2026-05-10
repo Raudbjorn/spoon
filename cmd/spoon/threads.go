@@ -419,7 +419,7 @@ func runThreads(args []string) int {
 		return 0
 
 	case modeTUI:
-		return runThreadsTUI(ctx, client, owner, repo, number)
+		return runThreadsTUI(ctx, client, owner, repo, number, flags.includeResolved)
 
 	default:
 		fmt.Fprintln(os.Stderr, "Error: unknown mode")
@@ -460,8 +460,8 @@ Examples:
 `)
 }
 
-func runThreadsTUI(ctx context.Context, client *gh.Client, owner, repo string, number int) int {
-	m := threadstui.New(client, owner, repo, number)
+func runThreadsTUI(ctx context.Context, client *gh.Client, owner, repo string, number int, includeResolved bool) int {
+	m := threadstui.New(client, owner, repo, number, includeResolved)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)
