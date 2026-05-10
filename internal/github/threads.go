@@ -171,7 +171,7 @@ mutation($threadId: ID!) {
 }`
 		verb = "unresolve"
 	}
-	var resp struct{}
+	resp := struct{}{}
 	vars := map[string]interface{}{"threadId": threadID}
 	if err := c.gql.DoWithContext(ctx, mutation, vars, &resp); err != nil {
 		return fmt.Errorf("%s thread %s: %w", verb, threadID, err)

@@ -89,6 +89,15 @@ func TestParseThreadsFlags(t *testing.T) {
 			args:    []string{"--json"},
 			wantErr: true,
 		},
+		{
+			name: "resolve without body (parser accepts; policy applies in dispatcher)",
+			args: []string{"owner/repo#42", "--resolve", "PRRT_1"},
+			check: func(t *testing.T, f threadsFlags) {
+				if f.mode != modeResolve || f.targetID != "PRRT_1" || f.body != "" {
+					t.Errorf("got %+v", f)
+				}
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

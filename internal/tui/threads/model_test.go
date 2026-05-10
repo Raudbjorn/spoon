@@ -7,7 +7,7 @@ import (
 	gh "github.com/svnbjrn/spoon/internal/github"
 )
 
-func TestCursorWraps(t *testing.T) {
+func TestCursorClamps(t *testing.T) {
 	m := New(nil, "owner", "repo", 1, false)
 	m.threads = []gh.ReviewThread{{ID: "a"}, {ID: "b"}, {ID: "c"}}
 	m.loaded = true
