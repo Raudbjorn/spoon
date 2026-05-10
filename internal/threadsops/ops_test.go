@@ -72,3 +72,25 @@ func TestNext_noUnresolved_returnsNil(t *testing.T) {
 		t.Errorf("expected nil, got %+v", got)
 	}
 }
+
+func TestReply_returnsComment(t *testing.T) {
+	f := &fakeAPI{}
+	// override ReplyToThread via subclassing
+	api := &replyFake{fakeAPI: *f, want: github.ThreadComment{ID: "PRC_x", Body: "ok"}}
+	got, opErr := Reply(context.Background(), api, "PRRT_1", "ok")
+	if opErr != nil {
+		t.Fatalf("opErr: %+v", opErr)
+	}
+	if got.ID != "PRC_x" {
+		t.Errorf("got %+v", got)
+	}
+}
+
+type replyFake struct {
+	fakeAPI
+	want github.ThreadComment
+}
+
+func (r *replyFake) ReplyToThread(_ context.Context, _, _ string) (github.ThreadComment, error) {
+	return r.want, nil
+}
