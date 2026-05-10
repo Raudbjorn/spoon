@@ -240,124 +240,117 @@ func runThreads(args []string) int {
 
 	switch flags.mode {
 	case modeJSON:
-		states := gh.ThreadStateUnresolved
-		if flags.includeResolved {
-			states = gh.ThreadStateAll
-		}
-		status, threads, err := client.FetchPR(ctx, owner, repo, number, states)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "❌ Error:", err)
+		status, threads, opErr := threadsops.List(ctx, client, owner, repo, number, flags.includeResolved)
+		if opErr != nil {
+			fmt.Fprintln(os.Stderr, "❌ Error:", opErr.Message)
 			return 1
 		}
 		emitStatus(os.Stderr, status, number, flags.noStatus)
-		if err := emitJSON(os.Stdout, threads); err != nil {
+		raw := make([]gh.ReviewThread, len(threads))
+		for i, t := range threads {
+			raw[i] = t.ReviewThread
+		}
+		if err := emitJSON(os.Stdout, raw); err != nil {
 			fmt.Fprintln(os.Stderr, "❌ Error:", err)
 			return 1
 		}
 		return 0
 
 	case modeNext:
-		status, threads, err := client.FetchPR(ctx, owner, repo, number, gh.ThreadStateUnresolved)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "❌ Error:", err)
+		status, t, opErr := threadsops.Next(ctx, client, owner, repo, number)
+		if opErr != nil {
+			fmt.Fprintln(os.Stderr, "❌ Error:", opErr.Message)
 			return 1
 		}
 		emitStatus(os.Stderr, status, number, flags.noStatus)
-		if err := emitNext(os.Stdout, threads); err != nil {
+		if t == nil {
+			if _, err := io.WriteString(os.Stdout, "null\n"); err != nil {
+				return 1
+			}
+			return 0
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(t.ReviewThread); err != nil {
 			fmt.Fprintln(os.Stderr, "❌ Error:", err)
 			return 1
 		}
 		return 0
 
 	case modeReply:
-		status, _, err := client.FetchPR(ctx, owner, repo, number, gh.ThreadStateAll)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "❌ Error:", err)
+		// Spoon still wants the status header on stdout — fetch it separately.
+		status, _, ferr := client.FetchPR(ctx, owner, repo, number, gh.ThreadStateAll)
+		if ferr != nil {
+			fmt.Fprintln(os.Stderr, "❌ Error:", ferr)
 			return 1
 		}
 		emitStatus(os.Stdout, status, number, flags.noStatus)
-		if _, err := client.ReplyToThread(ctx, flags.targetID, flags.body); err != nil {
-			fmt.Fprintln(os.Stderr, "❌ Error:", err)
+		if _, opErr := threadsops.Reply(ctx, client, flags.targetID, flags.body); opErr != nil {
+			fmt.Fprintln(os.Stderr, "❌ Error:", opErr.Message)
 			return 1
 		}
 		return 0
 
 	case modeResolve:
-		// Apply bot/human policy: fetch the thread to inspect comments.
-		status, all, err := client.FetchPR(ctx, owner, repo, number, gh.ThreadStateAll)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "❌ Error:", err)
+		status, _, ferr := client.FetchPR(ctx, owner, repo, number, gh.ThreadStateAll)
+		if ferr != nil {
+			fmt.Fprintln(os.Stderr, "❌ Error:", ferr)
 			return 1
 		}
 		emitStatus(os.Stdout, status, number, flags.noStatus)
-		var target *gh.ReviewThread
-		for i := range all {
-			if all[i].ID == flags.targetID {
-				target = &all[i]
-				break
-			}
-		}
-		if target == nil {
-			fmt.Fprintf(os.Stderr, "❌ Error: thread %s not found on PR\n", flags.targetID)
-			return 1
-		}
-		if target.IsResolved {
-			fmt.Fprintln(os.Stderr, "⚠️  Warning: thread already resolved; nothing to do")
-			return 0
-		}
-		if target.RequiresBody() && flags.body == "" {
-			fmt.Fprintln(os.Stderr, "❌ Error: thread has a non-bot reviewer; --body (or --body-file) is required")
-			return 2
-		}
-		if flags.body != "" {
-			if _, err := client.ReplyToThread(ctx, flags.targetID, flags.body); err != nil {
-				fmt.Fprintln(os.Stderr, "❌ Error: reply failed:", err)
+		_, opErr := threadsops.Resolve(ctx, client, owner, repo, number, flags.targetID, flags.body)
+		if opErr != nil {
+			switch opErr.Code {
+			case threadsops.OpCodeNotFound:
+				fmt.Fprintf(os.Stderr, "❌ Error: thread %s not found on PR\n", flags.targetID)
+				return 1
+			case threadsops.OpCodePolicy:
+				fmt.Fprintln(os.Stderr, "❌ Error: thread has a non-bot reviewer; --body (or --body-file) is required")
+				return 2
+			default:
+				fmt.Fprintln(os.Stderr, "❌ Error:", opErr.Message)
 				return 1
 			}
-		}
-		if err := client.ResolveThread(ctx, flags.targetID); err != nil {
-			fmt.Fprintln(os.Stderr, "❌ Error: resolve failed (reply already posted):", err)
-			return 1
 		}
 		return 0
 
 	case modeResolveAll:
-		status, _, err := client.FetchPR(ctx, owner, repo, number, gh.ThreadStateAll)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "❌ Error:", err)
+		status, _, ferr := client.FetchPR(ctx, owner, repo, number, gh.ThreadStateAll)
+		if ferr != nil {
+			fmt.Fprintln(os.Stderr, "❌ Error:", ferr)
 			return 1
 		}
 		emitStatus(os.Stdout, status, number, flags.noStatus)
-		res, err := client.ResolveAllThreads(ctx, owner, repo, number, 4)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "❌ Error:", err)
+		res, opErr := threadsops.ResolveAll(ctx, client, owner, repo, number, false) // legacy spoon mode
+		if opErr != nil {
+			fmt.Fprintln(os.Stderr, "❌ Error:", opErr.Message)
 			return 1
 		}
 		fmt.Printf("✅ resolved %d threads\n", len(res.Succeeded))
 		if len(res.Failed) > 0 {
 			for _, f := range res.Failed {
-				fmt.Fprintf(os.Stderr, "❌ failed %s: %v\n", f.ID, f.Err)
+				fmt.Fprintf(os.Stderr, "❌ failed %s: %s\n", f.ID, f.Error)
 			}
 			return 1
 		}
 		return 0
 
 	case modeUnresolveAll:
-		status, _, err := client.FetchPR(ctx, owner, repo, number, gh.ThreadStateAll)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "❌ Error:", err)
+		status, _, ferr := client.FetchPR(ctx, owner, repo, number, gh.ThreadStateAll)
+		if ferr != nil {
+			fmt.Fprintln(os.Stderr, "❌ Error:", ferr)
 			return 1
 		}
 		emitStatus(os.Stdout, status, number, flags.noStatus)
-		res, err := client.UnresolveAllThreads(ctx, owner, repo, number, 4)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "❌ Error:", err)
+		res, opErr := threadsops.UnresolveAll(ctx, client, owner, repo, number)
+		if opErr != nil {
+			fmt.Fprintln(os.Stderr, "❌ Error:", opErr.Message)
 			return 1
 		}
 		fmt.Printf("✅ unresolved %d threads\n", len(res.Succeeded))
 		if len(res.Failed) > 0 {
 			for _, f := range res.Failed {
-				fmt.Fprintf(os.Stderr, "❌ failed %s: %v\n", f.ID, f.Err)
+				fmt.Fprintf(os.Stderr, "❌ failed %s: %s\n", f.ID, f.Error)
 			}
 			return 1
 		}
