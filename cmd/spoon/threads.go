@@ -5,17 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
-	"os/exec"
 	"sort"
-	"strconv"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/mattn/go-isatty"
-	forge "github.com/svnbjrn/spoon/internal/forge"
 	gh "github.com/svnbjrn/spoon/internal/github"
+	threadsops "github.com/svnbjrn/spoon/internal/threadsops"
 	threadstui "github.com/svnbjrn/spoon/internal/tui/threads"
 )
 
@@ -23,21 +20,7 @@ import (
 // `origin` remote. Returns ("", "") on any error (caller will report a
 // clearer error from parsePRRef).
 func detectRepoContext() (owner, repo string) {
-	cmd := exec.Command("git", "remote", "get-url", "origin")
-	out, err := cmd.Output()
-	if err != nil {
-		return "", ""
-	}
-	rawURL := strings.TrimSpace(string(out))
-	// Parse using forge.ParseRepoURL with defaultHost=github.com.
-	provider, _, o, r, err := forge.ParseRepoURL(rawURL, "github.com", 0)
-	if err != nil {
-		return "", ""
-	}
-	if provider != forge.ProviderGitHub {
-		return "", ""
-	}
-	return o, r
+	return threadsops.DetectRepoContext()
 }
 
 // parsePRRef parses a PR reference into (owner, repo, number).
@@ -48,59 +31,7 @@ func detectRepoContext() (owner, repo string) {
 //
 // Returns an error for GitLab URLs or malformed input.
 func parsePRRef(s, fallbackOwner, fallbackRepo string) (owner, repo string, number int, err error) {
-	if s == "" {
-		return "", "", 0, fmt.Errorf("empty PR ref")
-	}
-
-	// "#42" form
-	if strings.HasPrefix(s, "#") {
-		n, perr := strconv.Atoi(s[1:])
-		if perr != nil {
-			return "", "", 0, fmt.Errorf("invalid PR number in %q", s)
-		}
-		if fallbackOwner == "" || fallbackRepo == "" {
-			return "", "", 0, fmt.Errorf("%q has no repo context (run inside a git checkout or pass owner/repo#N)", s)
-		}
-		return fallbackOwner, fallbackRepo, n, nil
-	}
-
-	// URL form
-	if strings.Contains(s, "://") {
-		u, perr := url.Parse(s)
-		if perr != nil {
-			return "", "", 0, fmt.Errorf("parse %q: %w", s, perr)
-		}
-		host := strings.ToLower(u.Hostname())
-		if host != "github.com" {
-			return "", "", 0, fmt.Errorf("only github.com PR URLs are supported, got %q", host)
-		}
-		parts := strings.Split(strings.Trim(u.Path, "/"), "/")
-		// Expected: owner/repo/pull/N
-		if len(parts) < 4 || parts[2] != "pull" {
-			return "", "", 0, fmt.Errorf("URL %q is not a github.com PR URL", s)
-		}
-		n, perr := strconv.Atoi(parts[3])
-		if perr != nil {
-			return "", "", 0, fmt.Errorf("invalid PR number in %q", s)
-		}
-		return parts[0], parts[1], n, nil
-	}
-
-	// "owner/repo#N" form
-	hash := strings.LastIndex(s, "#")
-	if hash < 0 {
-		return "", "", 0, fmt.Errorf("PR ref %q missing '#N' suffix", s)
-	}
-	n, perr := strconv.Atoi(s[hash+1:])
-	if perr != nil {
-		return "", "", 0, fmt.Errorf("invalid PR number in %q", s)
-	}
-	repoPart := s[:hash]
-	slash := strings.IndexByte(repoPart, '/')
-	if slash < 0 {
-		return "", "", 0, fmt.Errorf("PR ref %q missing 'owner/repo' prefix", s)
-	}
-	return repoPart[:slash], repoPart[slash+1:], n, nil
+	return threadsops.ParsePRRef(s, fallbackOwner, fallbackRepo)
 }
 
 type threadsMode int
@@ -231,18 +162,7 @@ func parseThreadsFlags(args []string) (threadsFlags, error) {
 var errThreadsHelp = fmt.Errorf("threads help requested")
 
 func readBody(path string) (string, error) {
-	if path == "-" {
-		b, err := io.ReadAll(os.Stdin)
-		if err != nil {
-			return "", fmt.Errorf("read stdin: %w", err)
-		}
-		return string(b), nil
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("read body file: %w", err)
-	}
-	return string(b), nil
+	return threadsops.ReadBody(path)
 }
 
 // emitJSON prints all threads as a JSON array.
