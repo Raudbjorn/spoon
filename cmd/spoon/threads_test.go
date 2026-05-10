@@ -98,6 +98,15 @@ func TestParseThreadsFlags(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "no-status sets the flag",
+			args: []string{"owner/repo#42", "--no-status"},
+			check: func(t *testing.T, f threadsFlags) {
+				if !f.noStatus {
+					t.Errorf("noStatus should be true")
+				}
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
