@@ -297,7 +297,7 @@ func runThreads(args []string) int {
 		return 2
 	}
 
-	client, _, err := gh.CheckAuth()
+	client, status, err := gh.CheckAuth()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Error: GitHub auth:", err)
 		return 1
@@ -305,6 +305,11 @@ func runThreads(args []string) int {
 	if !client.IsAuthenticated() {
 		fmt.Fprintln(os.Stderr, "Error: spoon threads requires authentication (run `gh auth login`).")
 		return 1
+	}
+	if !status.HasScope("repo") {
+		fmt.Fprintln(os.Stderr, "Error: spoon threads requires the 'repo' OAuth scope.")
+		fmt.Fprintln(os.Stderr, "Refresh your token with:  gh auth refresh -s repo")
+		return 2
 	}
 
 	ctx := context.Background()

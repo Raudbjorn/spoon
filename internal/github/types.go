@@ -118,7 +118,8 @@ type RateLimit struct {
 type AuthStatus struct {
 	Authenticated bool
 	Host          string
-	TokenSource   string // "gh", "env", "none"
+	TokenSource   string   // "gh", "env", "none"
+	Scopes        []string // OAuth scopes attached to the token (empty if unauthenticated)
 	RateLimit     RateLimit
 }
 
@@ -133,4 +134,15 @@ type T1Extra struct {
 type BranchInfo struct {
 	Name         string
 	LastCommitAt string // RFC3339 timestamp
+}
+
+// HasScope reports whether the authenticated token includes the given OAuth scope.
+// Note: GitHub treats `repo` as a superset of `public_repo`, etc. — this is a literal match.
+func (s AuthStatus) HasScope(want string) bool {
+	for _, sc := range s.Scopes {
+		if sc == want {
+			return true
+		}
+	}
+	return false
 }
