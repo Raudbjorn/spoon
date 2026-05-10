@@ -1,6 +1,7 @@
 package threads
 
 import (
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -107,5 +108,24 @@ func TestHelpKeyToggles(t *testing.T) {
 	out2, _ := out.(Model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
 	if out2.(Model).showHelp {
 		t.Errorf("expected showHelp=false after second '?'")
+	}
+}
+
+func TestViewIncludesStatusHeader(t *testing.T) {
+	m := New(nil, "owner", "repo", 42, false)
+	m.prStatus = gh.PullRequestStatus{
+		Title:            "Test",
+		MergeStateStatus: "CLEAN",
+		ReviewDecision:   "APPROVED",
+		ChecksState:      "SUCCESS",
+	}
+	m.threads = []gh.ReviewThread{{ID: "a", Comments: []gh.ThreadComment{{Author: "alice", AuthorType: "User"}}}}
+	m.loaded = true
+
+	out := m.View()
+	for _, sub := range []string{"PR #42", "Test", "CLEAN", "APPROVED", "SUCCESS"} {
+		if !strings.Contains(out, sub) {
+			t.Errorf("view missing %q\n---\n%s", sub, out)
+		}
 	}
 }
