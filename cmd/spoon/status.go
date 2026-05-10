@@ -41,7 +41,11 @@ func RenderStatusBlock(w io.Writer, s gh.PullRequestStatus, number int, useGlyph
 	if _, err := fmt.Fprintf(w, "  Checks:    %s %s\n", marker(checksSig, useGlyphs), checksText); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(w, "  Threads:   %s %d unresolved\n", marker(threadsSig, useGlyphs), s.UnresolvedThreads); err != nil {
+	threadsIcon := ""
+	if useGlyphs {
+		threadsIcon = "💬 "
+	}
+	if _, err := fmt.Fprintf(w, "  Threads:   %s %s%d unresolved\n", marker(threadsSig, useGlyphs), threadsIcon, s.UnresolvedThreads); err != nil {
 		return err
 	}
 	_, err := fmt.Fprintln(w)
@@ -52,13 +56,13 @@ func marker(sig statusSignal, useGlyphs bool) string {
 	if useGlyphs {
 		switch sig {
 		case signalGreen:
-			return "✓"
+			return "✅"
 		case signalYellow:
-			return "⏳"
+			return "⚠️"
 		case signalRed:
-			return "✗"
+			return "❌"
 		default:
-			return "—"
+			return "➖"
 		}
 	}
 	switch sig {
