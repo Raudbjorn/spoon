@@ -170,15 +170,20 @@ func (t ReviewThread) RequiresBody() bool {
 }
 
 // ReplyToThread appends a reply comment to a review thread. Returns the new
-// comment id.
-func (c *Client) ReplyToThread(ctx context.Context, threadID, body string) (string, error) {
+// comment with body, author, and createdAt populated.
+func (c *Client) ReplyToThread(ctx context.Context, threadID, body string) (ThreadComment, error) {
 	if c.gql == nil {
-		return "", fmt.Errorf("GraphQL client not available (auth required)")
+		return ThreadComment{}, fmt.Errorf("GraphQL client not available (auth required)")
 	}
 	const mutation = `
 mutation($threadId: ID!, $body: String!) {
   addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: $threadId, body: $body }) {
-    comment { id }
+    comment {
+      id
+      body
+      createdAt
+      author { __typename login }
+    }
   }
 }`
 	// go-gh's DoWithContext unmarshals the GraphQL "data" field directly into
@@ -187,15 +192,28 @@ mutation($threadId: ID!, $body: String!) {
 	var resp struct {
 		AddPullRequestReviewThreadReply struct {
 			Comment struct {
-				ID string `json:"id"`
+				ID        string `json:"id"`
+				Body      string `json:"body"`
+				CreatedAt string `json:"createdAt"`
+				Author    struct {
+					Typename string `json:"__typename"`
+					Login    string `json:"login"`
+				} `json:"author"`
 			} `json:"comment"`
 		} `json:"addPullRequestReviewThreadReply"`
 	}
 	vars := map[string]interface{}{"threadId": threadID, "body": body}
 	if err := c.gql.DoWithContext(ctx, mutation, vars, &resp); err != nil {
-		return "", fmt.Errorf("reply to thread %s: %w", threadID, err)
+		return ThreadComment{}, fmt.Errorf("reply to thread %s: %w", threadID, err)
 	}
-	return resp.AddPullRequestReviewThreadReply.Comment.ID, nil
+	c2 := resp.AddPullRequestReviewThreadReply.Comment
+	return ThreadComment{
+		ID:         c2.ID,
+		Body:       c2.Body,
+		CreatedAt:  c2.CreatedAt,
+		Author:     c2.Author.Login,
+		AuthorType: c2.Author.Typename,
+	}, nil
 }
 
 // ResolveThread marks a review thread as resolved.
