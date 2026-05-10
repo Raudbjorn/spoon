@@ -138,6 +138,40 @@ mutation($threadId: ID!, $body: String!) {
 	return resp.AddPullRequestReviewThreadReply.Comment.ID, nil
 }
 
+// ResolveThread marks a review thread as resolved.
+func (c *Client) ResolveThread(ctx context.Context, threadID string) error {
+	return c.flipResolve(ctx, threadID, true)
+}
+
+// UnresolveThread marks a review thread as unresolved.
+func (c *Client) UnresolveThread(ctx context.Context, threadID string) error {
+	return c.flipResolve(ctx, threadID, false)
+}
+
+func (c *Client) flipResolve(ctx context.Context, threadID string, resolved bool) error {
+	if c.gql == nil {
+		return fmt.Errorf("GraphQL client not available (auth required)")
+	}
+	mutation := `
+mutation($threadId: ID!) {
+  resolveReviewThread(input: { threadId: $threadId }) { thread { id isResolved } }
+}`
+	verb := "resolve"
+	if !resolved {
+		mutation = `
+mutation($threadId: ID!) {
+  unresolveReviewThread(input: { threadId: $threadId }) { thread { id isResolved } }
+}`
+		verb = "unresolve"
+	}
+	var resp struct{}
+	vars := map[string]interface{}{"threadId": threadID}
+	if err := c.gql.DoWithContext(ctx, mutation, vars, &resp); err != nil {
+		return fmt.Errorf("%s thread %s: %w", verb, threadID, err)
+	}
+	return nil
+}
+
 // ListThreads fetches review threads for a PR. resolvedStates should be one of
 // ThreadStateAll, ThreadStateUnresolved, or ThreadStateResolved.
 func (c *Client) ListThreads(ctx context.Context, owner, repo string, number int, resolvedStates string) ([]ReviewThread, error) {
