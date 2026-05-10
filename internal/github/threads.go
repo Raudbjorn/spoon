@@ -15,13 +15,15 @@ const (
 
 // ReviewThread is the public representation of a PR review thread.
 type ReviewThread struct {
-	ID         string          `json:"id"`
-	IsResolved bool            `json:"isResolved"`
-	Path       string          `json:"path"`
-	Line       int             `json:"line"`
-	StartLine  *int            `json:"startLine"`
-	DiffSide   string          `json:"diffSide"`
-	Comments   []ThreadComment `json:"comments"`
+	ID            string          `json:"id"`
+	IsResolved    bool            `json:"isResolved"`
+	Path          string          `json:"path"`
+	Line          int             `json:"line"`
+	StartLine     *int            `json:"startLine"`
+	DiffSide      string          `json:"diffSide"`
+	ReviewerType  string          `json:"reviewerType"`  // __typename of first comment's author
+	ReviewerLogin string          `json:"reviewerLogin"` // login of first comment's author
+	Comments      []ThreadComment `json:"comments"`
 }
 
 // ThreadComment is one comment on a review thread.
@@ -90,6 +92,10 @@ func parseListThreadsResponse(data listThreadsData) []ReviewThread {
 				Body:       c.Body,
 				CreatedAt:  c.CreatedAt,
 			})
+		}
+		if len(t.Comments) > 0 {
+			t.ReviewerType = t.Comments[0].AuthorType
+			t.ReviewerLogin = t.Comments[0].Author
 		}
 		out = append(out, t)
 	}
