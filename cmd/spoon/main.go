@@ -20,6 +20,11 @@ import (
 var version = "0.3.0-dev"
 
 func main() {
+	// Subcommand dispatch: "spoon threads <pr-ref> ..."
+	if len(os.Args) >= 2 && os.Args[1] == "threads" {
+		os.Exit(runThreads(os.Args[2:]))
+	}
+
 	var repo string
 	noColor := false
 	jsonMode := false
@@ -365,6 +370,9 @@ Keybindings (TUI mode):
   E             Export all forks to JSON
   ?             Help
   q             Quit
+
+Subcommands:
+  spoon threads <pr-ref>   Operate on PR review threads (see 'spoon threads --help')
 
 Tip: Run 'gh auth login' (GitHub) or set GITLAB_TOKEN (GitLab) for higher rate limits.
 `)
