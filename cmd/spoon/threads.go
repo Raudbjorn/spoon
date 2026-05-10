@@ -289,7 +289,7 @@ func runThreads(args []string) int {
 			printThreadsHelp()
 			return 0
 		}
-		fmt.Fprintln(os.Stderr, "Error:", err)
+		fmt.Fprintln(os.Stderr, "❌ Error:", err)
 		printThreadsHelp()
 		return 2
 	}
@@ -297,21 +297,21 @@ func runThreads(args []string) int {
 	fallbackOwner, fallbackRepo := detectRepoContext()
 	owner, repo, number, err := parsePRRef(flags.prRef, fallbackOwner, fallbackRepo)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "Error:", err)
+		fmt.Fprintln(os.Stderr, "❌ Error:", err)
 		return 2
 	}
 
 	client, status, err := gh.CheckAuth()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "Error: GitHub auth:", err)
+		fmt.Fprintln(os.Stderr, "❌ Error: GitHub auth:", err)
 		return 1
 	}
 	if !client.IsAuthenticated() {
-		fmt.Fprintln(os.Stderr, "Error: spoon threads requires authentication (run `gh auth login`).")
+		fmt.Fprintln(os.Stderr, "❌ Error: spoon threads requires authentication (run `gh auth login`).")
 		return 1
 	}
 	if !status.HasScope("repo") {
-		fmt.Fprintln(os.Stderr, "Error: spoon threads requires the 'repo' OAuth scope.")
+		fmt.Fprintln(os.Stderr, "❌ Error: spoon threads requires the 'repo' OAuth scope.")
 		fmt.Fprintln(os.Stderr, "Refresh your token with:  gh auth refresh -s repo")
 		return 2
 	}
@@ -326,12 +326,12 @@ func runThreads(args []string) int {
 		}
 		status, threads, err := client.FetchPR(ctx, owner, repo, number, states)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "Error:", err)
+			fmt.Fprintln(os.Stderr, "❌ Error:", err)
 			return 1
 		}
 		emitStatus(os.Stderr, status, number, flags.noStatus)
 		if err := emitJSON(os.Stdout, threads); err != nil {
-			fmt.Fprintln(os.Stderr, "Error:", err)
+			fmt.Fprintln(os.Stderr, "❌ Error:", err)
 			return 1
 		}
 		return 0
@@ -339,12 +339,12 @@ func runThreads(args []string) int {
 	case modeNext:
 		status, threads, err := client.FetchPR(ctx, owner, repo, number, gh.ThreadStateUnresolved)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "Error:", err)
+			fmt.Fprintln(os.Stderr, "❌ Error:", err)
 			return 1
 		}
 		emitStatus(os.Stderr, status, number, flags.noStatus)
 		if err := emitNext(os.Stdout, threads); err != nil {
-			fmt.Fprintln(os.Stderr, "Error:", err)
+			fmt.Fprintln(os.Stderr, "❌ Error:", err)
 			return 1
 		}
 		return 0
@@ -352,12 +352,12 @@ func runThreads(args []string) int {
 	case modeReply:
 		status, _, err := client.FetchPR(ctx, owner, repo, number, gh.ThreadStateAll)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "Error:", err)
+			fmt.Fprintln(os.Stderr, "❌ Error:", err)
 			return 1
 		}
 		emitStatus(os.Stdout, status, number, flags.noStatus)
 		if _, err := client.ReplyToThread(ctx, flags.targetID, flags.body); err != nil {
-			fmt.Fprintln(os.Stderr, "Error:", err)
+			fmt.Fprintln(os.Stderr, "❌ Error:", err)
 			return 1
 		}
 		return 0
@@ -366,7 +366,7 @@ func runThreads(args []string) int {
 		// Apply bot/human policy: fetch the thread to inspect comments.
 		status, all, err := client.FetchPR(ctx, owner, repo, number, gh.ThreadStateAll)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "Error:", err)
+			fmt.Fprintln(os.Stderr, "❌ Error:", err)
 			return 1
 		}
 		emitStatus(os.Stdout, status, number, flags.noStatus)
@@ -378,25 +378,25 @@ func runThreads(args []string) int {
 			}
 		}
 		if target == nil {
-			fmt.Fprintf(os.Stderr, "Error: thread %s not found on PR\n", flags.targetID)
+			fmt.Fprintf(os.Stderr, "❌ Error: thread %s not found on PR\n", flags.targetID)
 			return 1
 		}
 		if target.IsResolved {
-			fmt.Fprintln(os.Stderr, "Warning: thread already resolved; nothing to do")
+			fmt.Fprintln(os.Stderr, "⚠️  Warning: thread already resolved; nothing to do")
 			return 0
 		}
 		if target.RequiresBody() && flags.body == "" {
-			fmt.Fprintln(os.Stderr, "Error: thread has a non-bot reviewer; --body (or --body-file) is required")
+			fmt.Fprintln(os.Stderr, "❌ Error: thread has a non-bot reviewer; --body (or --body-file) is required")
 			return 2
 		}
 		if flags.body != "" {
 			if _, err := client.ReplyToThread(ctx, flags.targetID, flags.body); err != nil {
-				fmt.Fprintln(os.Stderr, "Error: reply failed:", err)
+				fmt.Fprintln(os.Stderr, "❌ Error: reply failed:", err)
 				return 1
 			}
 		}
 		if err := client.ResolveThread(ctx, flags.targetID); err != nil {
-			fmt.Fprintln(os.Stderr, "Error: resolve failed (reply already posted):", err)
+			fmt.Fprintln(os.Stderr, "❌ Error: resolve failed (reply already posted):", err)
 			return 1
 		}
 		return 0
@@ -404,19 +404,19 @@ func runThreads(args []string) int {
 	case modeResolveAll:
 		status, _, err := client.FetchPR(ctx, owner, repo, number, gh.ThreadStateAll)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "Error:", err)
+			fmt.Fprintln(os.Stderr, "❌ Error:", err)
 			return 1
 		}
 		emitStatus(os.Stdout, status, number, flags.noStatus)
 		res, err := client.ResolveAllThreads(ctx, owner, repo, number, 4)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "Error:", err)
+			fmt.Fprintln(os.Stderr, "❌ Error:", err)
 			return 1
 		}
-		fmt.Printf("resolved %d threads\n", len(res.Succeeded))
+		fmt.Printf("✅ resolved %d threads\n", len(res.Succeeded))
 		if len(res.Failed) > 0 {
 			for _, f := range res.Failed {
-				fmt.Fprintf(os.Stderr, "failed %s: %v\n", f.ID, f.Err)
+				fmt.Fprintf(os.Stderr, "❌ failed %s: %v\n", f.ID, f.Err)
 			}
 			return 1
 		}
@@ -425,19 +425,19 @@ func runThreads(args []string) int {
 	case modeUnresolveAll:
 		status, _, err := client.FetchPR(ctx, owner, repo, number, gh.ThreadStateAll)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "Error:", err)
+			fmt.Fprintln(os.Stderr, "❌ Error:", err)
 			return 1
 		}
 		emitStatus(os.Stdout, status, number, flags.noStatus)
 		res, err := client.UnresolveAllThreads(ctx, owner, repo, number, 4)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "Error:", err)
+			fmt.Fprintln(os.Stderr, "❌ Error:", err)
 			return 1
 		}
-		fmt.Printf("unresolved %d threads\n", len(res.Succeeded))
+		fmt.Printf("✅ unresolved %d threads\n", len(res.Succeeded))
 		if len(res.Failed) > 0 {
 			for _, f := range res.Failed {
-				fmt.Fprintf(os.Stderr, "failed %s: %v\n", f.ID, f.Err)
+				fmt.Fprintf(os.Stderr, "❌ failed %s: %v\n", f.ID, f.Err)
 			}
 			return 1
 		}
@@ -447,7 +447,7 @@ func runThreads(args []string) int {
 		return runThreadsTUI(ctx, client, owner, repo, number, flags.includeResolved)
 
 	default:
-		fmt.Fprintln(os.Stderr, "Error: unknown mode")
+		fmt.Fprintln(os.Stderr, "❌ Error: unknown mode")
 		return 2
 	}
 }
@@ -490,7 +490,7 @@ func runThreadsTUI(ctx context.Context, client *gh.Client, owner, repo string, n
 	m := threadstui.New(client, owner, repo, number, includeResolved)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
-		fmt.Fprintln(os.Stderr, "Error:", err)
+		fmt.Fprintln(os.Stderr, "❌ Error:", err)
 		return 1
 	}
 	return 0

@@ -56,6 +56,11 @@ func TestRenderStatusBlock(t *testing.T) {
 			missing, 7, true,
 			[]string{"—", "UNKNOWN"},
 		},
+		{
+			"glyph mode emits emoji markers",
+			allGreen, 1, false, // useGlyphs=true via "!tc.ascii"
+			[]string{"✅", "💬", "CLEAN", "APPROVED", "SUCCESS"},
+		},
 	}
 
 	for _, tc := range cases {

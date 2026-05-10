@@ -85,9 +85,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case mutationDoneMsg:
 		m.mutating = false
 		if msg.err != nil {
-			m.status = "error: " + msg.err.Error()
+			m.status = "❌ error: " + msg.err.Error()
 		} else {
-			m.status = msg.what + " ok"
+			m.status = "✅ " + msg.what + " ok"
 		}
 		// Refresh the thread list (skip for browser open — it's fire-and-forget).
 		if msg.what == "open" {
