@@ -40,3 +40,31 @@ func TestParseListThreadsResponse(t *testing.T) {
 		t.Errorf("diffSide mismatch: %q, %q", threads[0].DiffSide, threads[1].DiffSide)
 	}
 }
+
+func TestRequiresBody(t *testing.T) {
+	cases := []struct {
+		name string
+		t    ReviewThread
+		want bool
+	}{
+		{"bot only", ReviewThread{Comments: []ThreadComment{{AuthorType: "Bot"}}}, false},
+		{"single user", ReviewThread{Comments: []ThreadComment{{AuthorType: "User"}}}, true},
+		{"user then bot", ReviewThread{Comments: []ThreadComment{
+			{AuthorType: "User"},
+			{AuthorType: "Bot"},
+		}}, true},
+		{"two bots", ReviewThread{Comments: []ThreadComment{
+			{AuthorType: "Bot"},
+			{AuthorType: "Bot"},
+		}}, false},
+		{"unknown author type counts as user", ReviewThread{Comments: []ThreadComment{{AuthorType: ""}}}, true},
+		{"empty thread defaults true", ReviewThread{}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.t.RequiresBody(); got != tc.want {
+				t.Errorf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
