@@ -1,0 +1,36 @@
+package github
+
+import (
+	"encoding/json"
+	"os"
+	"testing"
+)
+
+func TestParseListThreadsResponse(t *testing.T) {
+	data, err := os.ReadFile("testdata/threads_list_basic.json")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	var raw struct {
+		Data listThreadsData `json:"data"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	threads := parseListThreadsResponse(raw.Data)
+	if len(threads) != 2 {
+		t.Fatalf("want 2 threads, got %d", len(threads))
+	}
+	if threads[0].ID != "PRRT_1" || threads[0].Path != "internal/heat/score.go" || threads[0].Line != 42 {
+		t.Errorf("thread[0] mismatch: %+v", threads[0])
+	}
+	if threads[0].IsResolved {
+		t.Errorf("thread[0] should be unresolved")
+	}
+	if threads[0].Comments[0].AuthorType != "User" || threads[0].Comments[0].Author != "alice" {
+		t.Errorf("thread[0] author mismatch: %+v", threads[0].Comments[0])
+	}
+	if threads[1].Comments[0].AuthorType != "Bot" {
+		t.Errorf("thread[1] author type mismatch: got %q", threads[1].Comments[0].AuthorType)
+	}
+}

@@ -1,0 +1,50 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "title": "Add feature X",
+        "reviewThreads": {
+          "pageInfo": { "hasNextPage": false, "endCursor": null },
+          "nodes": [
+            {
+              "id": "PRRT_1",
+              "isResolved": false,
+              "path": "internal/heat/score.go",
+              "line": 42,
+              "startLine": null,
+              "diffSide": "RIGHT",
+              "comments": {
+                "nodes": [
+                  {
+                    "id": "PRRC_1",
+                    "body": "this can panic",
+                    "createdAt": "2026-05-10T09:01:23Z",
+                    "author": { "__typename": "User", "login": "alice" }
+                  }
+                ]
+              }
+            },
+            {
+              "id": "PRRT_2",
+              "isResolved": true,
+              "path": "go.mod",
+              "line": 1,
+              "startLine": null,
+              "diffSide": "RIGHT",
+              "comments": {
+                "nodes": [
+                  {
+                    "id": "PRRC_2",
+                    "body": "bump dep",
+                    "createdAt": "2026-05-10T08:30:00Z",
+                    "author": { "__typename": "Bot", "login": "dependabot" }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
