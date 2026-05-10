@@ -2,6 +2,103 @@ package main
 
 import "testing"
 
+func TestParseThreadsFlags(t *testing.T) {
+	cases := []struct {
+		name    string
+		args    []string
+		wantErr bool
+		check   func(t *testing.T, f threadsFlags)
+	}{
+		{
+			name: "default mode (TUI)",
+			args: []string{"owner/repo#42"},
+			check: func(t *testing.T, f threadsFlags) {
+				if f.mode != modeTUI {
+					t.Errorf("mode=%v want TUI", f.mode)
+				}
+			},
+		},
+		{
+			name: "json",
+			args: []string{"owner/repo#42", "--json"},
+			check: func(t *testing.T, f threadsFlags) {
+				if f.mode != modeJSON {
+					t.Errorf("mode=%v want JSON", f.mode)
+				}
+			},
+		},
+		{
+			name: "next",
+			args: []string{"owner/repo#42", "--next"},
+			check: func(t *testing.T, f threadsFlags) {
+				if f.mode != modeNext {
+					t.Errorf("mode=%v want Next", f.mode)
+				}
+			},
+		},
+		{
+			name: "reply with body",
+			args: []string{"owner/repo#42", "--reply", "PRRT_1", "--body", "hello"},
+			check: func(t *testing.T, f threadsFlags) {
+				if f.mode != modeReply || f.targetID != "PRRT_1" || f.body != "hello" {
+					t.Errorf("got %+v", f)
+				}
+			},
+		},
+		{
+			name: "resolve",
+			args: []string{"owner/repo#42", "--resolve", "PRRT_1", "--body", "fixed"},
+			check: func(t *testing.T, f threadsFlags) {
+				if f.mode != modeResolve || f.targetID != "PRRT_1" || f.body != "fixed" {
+					t.Errorf("got %+v", f)
+				}
+			},
+		},
+		{
+			name: "resolve-all",
+			args: []string{"owner/repo#42", "--resolve-all"},
+			check: func(t *testing.T, f threadsFlags) {
+				if f.mode != modeResolveAll {
+					t.Errorf("mode=%v", f.mode)
+				}
+			},
+		},
+		{
+			name:    "json + next mutually exclusive",
+			args:    []string{"owner/repo#42", "--json", "--next"},
+			wantErr: true,
+		},
+		{
+			name:    "reply needs target id",
+			args:    []string{"owner/repo#42", "--reply"},
+			wantErr: true,
+		},
+		{
+			name:    "reply needs body",
+			args:    []string{"owner/repo#42", "--reply", "PRRT_1"},
+			wantErr: true,
+		},
+		{
+			name:    "missing pr ref",
+			args:    []string{"--json"},
+			wantErr: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f, err := parseThreadsFlags(tc.args)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err=%v wantErr=%v", err, tc.wantErr)
+			}
+			if tc.wantErr {
+				return
+			}
+			tc.check(t, f)
+		})
+	}
+}
+
+
 func TestParsePRRef(t *testing.T) {
 	cases := []struct {
 		in            string
