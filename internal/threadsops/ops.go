@@ -53,3 +53,15 @@ func firstCommentTime(t github.ReviewThread) string {
 	}
 	return t.Comments[0].CreatedAt
 }
+
+// Reply posts a comment on a thread. Returns the new comment.
+func Reply(ctx context.Context, api API, threadID, body string) (github.ThreadComment, *OpError) {
+	if body == "" {
+		return github.ThreadComment{}, &OpError{Code: OpCodeBadInput, Message: "body is required for reply"}
+	}
+	c, err := api.ReplyToThread(ctx, threadID, body)
+	if err != nil {
+		return github.ThreadComment{}, &OpError{Code: OpCodeUpstream, Message: err.Error(), Retryable: true}
+	}
+	return c, nil
+}
