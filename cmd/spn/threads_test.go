@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/svnbjrn/spoon/internal/agentio"
@@ -79,5 +80,80 @@ func TestSpnThreadsReply_emitsComment(t *testing.T) {
 	}
 	if got["id"] != "PRC_new" {
 		t.Errorf("got %+v", got)
+	}
+}
+
+type resolveStub struct {
+	stubAPI
+	currentUser string
+	posted      github.ThreadComment
+	resolveErr  error
+}
+
+func (r *resolveStub) CurrentUserLogin(_ context.Context) (string, error) {
+	if r.currentUser == "" {
+		return "", errors.New("no user")
+	}
+	return r.currentUser, nil
+}
+func (r *resolveStub) ReplyToThread(_ context.Context, _, _ string) (github.ThreadComment, error) {
+	return r.posted, nil
+}
+func (r *resolveStub) ResolveThread(_ context.Context, _ string) error {
+	return r.resolveErr
+}
+
+func TestSpnThreadsResolve_policyViolation(t *testing.T) {
+	prev := apiFactory
+	defer func() { apiFactory = prev }()
+	apiFactory = func() (threadsops.API, *agentio.Error) {
+		return &resolveStub{stubAPI: stubAPI{threads: []github.ReviewThread{
+			{ID: "PRRT_1", Comments: []github.ThreadComment{{AuthorType: "User", Author: "alice"}}},
+		}}}, nil
+	}
+	var stdout, stderr bytes.Buffer
+	exit := runThreadsWith([]string{"resolve", "owner/repo#1", "PRRT_1"}, &stdout, &stderr)
+	if exit != 2 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("stdout should be empty on error, got %q", stdout.String())
+	}
+	var env map[string]map[string]any
+	if err := json.Unmarshal(stderr.Bytes(), &env); err != nil {
+		t.Fatalf("stderr not JSON: %v\n%s", err, stderr.String())
+	}
+	if env["error"]["code"] != "policy_violation" {
+		t.Errorf("code=%v", env["error"]["code"])
+	}
+	rem, _ := env["error"]["remediation"].(string)
+	if !strings.Contains(rem, "owner/repo#1") || !strings.Contains(rem, "PRRT_1") {
+		t.Errorf("remediation missing placeholders: %q", rem)
+	}
+}
+
+func TestSpnThreadsResolve_partialFailure(t *testing.T) {
+	prev := apiFactory
+	defer func() { apiFactory = prev }()
+	apiFactory = func() (threadsops.API, *agentio.Error) {
+		return &resolveStub{
+			stubAPI:    stubAPI{threads: []github.ReviewThread{{ID: "PRRT_1", Comments: []github.ThreadComment{{AuthorType: "User", Author: "alice"}}}}},
+			posted:     github.ThreadComment{ID: "PRC_new"},
+			resolveErr: errors.New("graphql 500"),
+		}, nil
+	}
+	var stdout, stderr bytes.Buffer
+	exit := runThreadsWith([]string{"resolve", "owner/repo#1", "PRRT_1", "--body", "ack"}, &stdout, &stderr)
+	if exit != 1 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+	}
+	var env map[string]map[string]any
+	_ = json.Unmarshal(stderr.Bytes(), &env)
+	if env["error"]["retryable"] != true {
+		t.Errorf("expected retryable")
+	}
+	d := env["error"]["details"].(map[string]any)
+	if d["comment_posted"] != true {
+		t.Errorf("expected comment_posted=true")
 	}
 }

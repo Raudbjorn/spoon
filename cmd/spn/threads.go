@@ -42,6 +42,8 @@ func runThreadsWith(args []string, stdout, stderr io.Writer) int {
 		return doThreadsNext(rest, stdout, stderr)
 	case "reply":
 		return doThreadsReply(rest, stdout, stderr)
+	case "resolve":
+		return doThreadsResolve(rest, stdout, stderr)
 	default:
 		return agentio.NewError(agentio.CodeBadInput, "unknown verb: "+verb, agentio.RemediationBadInput("threads", "")).Emit(stderr)
 	}
@@ -179,6 +181,88 @@ func doThreadsReply(args []string, stdout, stderr io.Writer) int {
 		return agentio.NewError(agentio.CodeInternal, "encode output: "+err.Error(), agentio.RemediationInternal()).Emit(stderr)
 	}
 	return 0
+}
+
+func doThreadsResolve(args []string, stdout, stderr io.Writer) int {
+	var prRef, threadID, body, bodyFile string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--body":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--body requires a value", agentio.RemediationBadInput("threads", "resolve")).Emit(stderr)
+			}
+			i++
+			body = args[i]
+		case "--body-file":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--body-file requires a path", agentio.RemediationBadInput("threads", "resolve")).Emit(stderr)
+			}
+			i++
+			bodyFile = args[i]
+		default:
+			if strings.HasPrefix(args[i], "--") {
+				return agentio.NewError(agentio.CodeBadInput, "unknown flag: "+args[i], agentio.RemediationBadInput("threads", "resolve")).Emit(stderr)
+			}
+			if prRef == "" {
+				prRef = args[i]
+			} else if threadID == "" {
+				threadID = args[i]
+			} else {
+				return agentio.NewError(agentio.CodeBadInput, "unexpected positional: "+args[i], agentio.RemediationBadInput("threads", "resolve")).Emit(stderr)
+			}
+		}
+	}
+	if prRef == "" || threadID == "" {
+		return agentio.NewError(agentio.CodeBadInput, "usage: spn threads resolve <pr-ref> <thread-id> [--body T]", agentio.RemediationBadInput("threads", "resolve")).Emit(stderr)
+	}
+	if bodyFile != "" && body == "" {
+		b, err := threadsops.ReadBody(bodyFile)
+		if err != nil {
+			return agentio.NewError(agentio.CodeBadInput, err.Error(), agentio.RemediationBadInput("threads", "resolve")).Emit(stderr)
+		}
+		body = b
+	}
+	owner, repo, number, ok := resolvePRRef(prRef, stderr)
+	if !ok {
+		return 2
+	}
+	api, authErr := apiFactory()
+	if authErr != nil {
+		return authErr.Emit(stderr)
+	}
+	t, opErr := threadsops.Resolve(context.Background(), api, owner, repo, number, threadID, body)
+	if opErr != nil {
+		return translateResolveErr(opErr, prRef, threadID, stderr)
+	}
+	if err := agentio.WriteJSON(stdout, t); err != nil {
+		return agentio.NewError(agentio.CodeInternal, "encode output: "+err.Error(), agentio.RemediationInternal()).Emit(stderr)
+	}
+	return 0
+}
+
+// translateResolveErr produces a resolve-specific remediation.
+func translateResolveErr(op *threadsops.OpError, prRef, threadID string, stderr io.Writer) int {
+	code := agentio.Code(op.Code)
+	var rem string
+	switch code {
+	case agentio.CodePolicy:
+		rem = agentio.RemediationPolicyBodyRequired(prRef, threadID)
+	case agentio.CodeNotFound:
+		rem = agentio.RemediationNotFound()
+	case agentio.CodeUpstream:
+		if op.Details != nil && op.Details["comment_posted"] == true {
+			rem = agentio.RemediationResolvePartialFailure(prRef, threadID)
+		} else {
+			rem = agentio.RemediationUpstream()
+		}
+	default:
+		rem = agentio.RemediationInternal()
+	}
+	e := agentio.NewError(code, op.Message, rem)
+	if op.Details != nil {
+		e = e.WithDetails(op.Details)
+	}
+	return e.Emit(stderr)
 }
 
 // translateOpErr converts a threadsops.OpError into an agentio.Error and emits it.
