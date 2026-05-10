@@ -320,7 +320,7 @@ func runThreads(args []string) int {
 		if flags.includeResolved {
 			states = gh.ThreadStateAll
 		}
-		threads, err := client.ListThreads(ctx, owner, repo, number, states)
+		_, threads, err := client.FetchPR(ctx, owner, repo, number, states)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "Error:", err)
 			return 1
@@ -332,7 +332,7 @@ func runThreads(args []string) int {
 		return 0
 
 	case modeNext:
-		threads, err := client.ListThreads(ctx, owner, repo, number, gh.ThreadStateUnresolved)
+		_, threads, err := client.FetchPR(ctx, owner, repo, number, gh.ThreadStateUnresolved)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "Error:", err)
 			return 1
@@ -352,7 +352,7 @@ func runThreads(args []string) int {
 
 	case modeResolve:
 		// Apply bot/human policy: fetch the thread to inspect comments.
-		all, err := client.ListThreads(ctx, owner, repo, number, gh.ThreadStateAll)
+		_, all, err := client.FetchPR(ctx, owner, repo, number, gh.ThreadStateAll)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "Error:", err)
 			return 1
