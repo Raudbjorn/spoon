@@ -17,9 +17,10 @@ import (
 
 // Client wraps go-gh's REST and GraphQL clients with rate limit tracking.
 type Client struct {
-	rest          *ghAPI.RESTClient
-	gql           *ghAPI.GraphQLClient
-	authenticated bool
+	rest             *ghAPI.RESTClient
+	gql              *ghAPI.GraphQLClient
+	authenticated    bool
+	currentUserLogin string // populated lazily by CurrentUserLogin
 
 	mu        sync.Mutex
 	rateLimit RateLimit
