@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sort"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -172,34 +171,6 @@ func emitJSON(w io.Writer, threads []gh.ReviewThread) error {
 	return enc.Encode(threads)
 }
 
-// emitNext prints the single oldest unresolved thread as JSON, or "null".
-func emitNext(w io.Writer, threads []gh.ReviewThread) error {
-	unresolved := make([]gh.ReviewThread, 0, len(threads))
-	for _, t := range threads {
-		if !t.IsResolved {
-			unresolved = append(unresolved, t)
-		}
-	}
-	if len(unresolved) == 0 {
-		_, err := io.WriteString(w, "null\n")
-		return err
-	}
-	sort.Slice(unresolved, func(i, j int) bool {
-		ai, aj := firstCommentTime(unresolved[i]), firstCommentTime(unresolved[j])
-		return ai < aj
-	})
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	return enc.Encode(unresolved[0])
-}
-
-func firstCommentTime(t gh.ReviewThread) string {
-	if len(t.Comments) == 0 {
-		return ""
-	}
-	return t.Comments[0].CreatedAt
-}
-
 // runThreads is the entry point for the "threads" subcommand. It returns
 // an exit code (0/1/2) and writes any error messages to stderr.
 func runThreads(args []string) int {
@@ -292,12 +263,21 @@ func runThreads(args []string) int {
 		return 0
 
 	case modeResolve:
-		status, _, ferr := client.FetchPR(ctx, owner, repo, number, gh.ThreadStateAll)
+		status, all, ferr := client.FetchPR(ctx, owner, repo, number, gh.ThreadStateAll)
 		if ferr != nil {
 			fmt.Fprintln(os.Stderr, "❌ Error:", ferr)
 			return 1
 		}
 		emitStatus(os.Stdout, status, number, flags.noStatus)
+		// Pre-check: warn-and-exit for already-resolved threads, matching the
+		// pre-refactor spoon UX. threadsops.Resolve is silently idempotent;
+		// we surface the no-op to humans.
+		for i := range all {
+			if all[i].ID == flags.targetID && all[i].IsResolved {
+				fmt.Fprintln(os.Stderr, "⚠️  Warning: thread already resolved; nothing to do")
+				return 0
+			}
+		}
 		_, opErr := threadsops.Resolve(ctx, client, owner, repo, number, flags.targetID, flags.body)
 		if opErr != nil {
 			switch opErr.Code {

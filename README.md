@@ -146,7 +146,6 @@ Forks are ranked by a weighted "heat" score combining several signals:
 - `lone_wolf` — solo-developer signal
 - `span` — duration of activity
 
-Override the defaults with `--heat-weights path/to/weights.json` (each value in `[0.0, 2.0]`).
 
 ## Project layout
 

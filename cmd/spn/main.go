@@ -47,7 +47,7 @@ Nouns and verbs:
   threads resolve-all <pr-ref>
   threads unresolve-all <pr-ref>
   pr status <pr-ref>
-  forks list <repo> [--tier 1|2|3] [--top N] [--heat-weights PATH] [--bot-allowlist L] [--refresh] [--forge github|gitlab] [--forge-host H]
+  forks list <repo> [--tier 1|2|3] [--top N] [--bot-allowlist L] [--refresh] [--forge github|gitlab] [--forge-host H]
 
 PR refs accept:
   owner/repo#42
