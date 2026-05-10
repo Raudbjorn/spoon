@@ -1,6 +1,12 @@
 package main
 
-import "testing"
+import (
+	"bytes"
+	"strings"
+	"testing"
+
+	gh "github.com/svnbjrn/spoon/internal/github"
+)
 
 func TestParseThreadsFlags(t *testing.T) {
 	cases := []struct {
@@ -131,4 +137,31 @@ func TestParsePRRef(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestEmitNext(t *testing.T) {
+	t.Run("empty writes null", func(t *testing.T) {
+		var buf bytes.Buffer
+		if err := emitNext(&buf, nil); err != nil {
+			t.Fatal(err)
+		}
+		if buf.String() != "null\n" {
+			t.Errorf("got %q want %q", buf.String(), "null\n")
+		}
+	})
+
+	t.Run("oldest first", func(t *testing.T) {
+		threads := []gh.ReviewThread{
+			{ID: "newer", Comments: []gh.ThreadComment{{CreatedAt: "2026-05-10T10:00:00Z"}}},
+			{ID: "older", Comments: []gh.ThreadComment{{CreatedAt: "2026-05-10T09:00:00Z"}}},
+			{ID: "resolved", IsResolved: true, Comments: []gh.ThreadComment{{CreatedAt: "2026-01-01T00:00:00Z"}}},
+		}
+		var buf bytes.Buffer
+		if err := emitNext(&buf, threads); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(buf.String(), `"id": "older"`) {
+			t.Errorf("expected older thread first, got: %s", buf.String())
+		}
+	})
 }

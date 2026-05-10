@@ -1,12 +1,16 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
+
+	gh "github.com/svnbjrn/spoon/internal/github"
 )
 
 // parsePRRef parses a PR reference into (owner, repo, number).
@@ -209,4 +213,39 @@ func readBody(path string) (string, error) {
 		return "", fmt.Errorf("read body file: %w", err)
 	}
 	return string(b), nil
+}
+
+// emitJSON prints all threads as a JSON array.
+func emitJSON(w io.Writer, threads []gh.ReviewThread) error {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(threads)
+}
+
+// emitNext prints the single oldest unresolved thread as JSON, or "null".
+func emitNext(w io.Writer, threads []gh.ReviewThread) error {
+	unresolved := make([]gh.ReviewThread, 0, len(threads))
+	for _, t := range threads {
+		if !t.IsResolved {
+			unresolved = append(unresolved, t)
+		}
+	}
+	if len(unresolved) == 0 {
+		_, err := io.WriteString(w, "null\n")
+		return err
+	}
+	sort.Slice(unresolved, func(i, j int) bool {
+		ai, aj := firstCommentTime(unresolved[i]), firstCommentTime(unresolved[j])
+		return ai < aj
+	})
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(unresolved[0])
+}
+
+func firstCommentTime(t gh.ReviewThread) string {
+	if len(t.Comments) == 0 {
+		return ""
+	}
+	return t.Comments[0].CreatedAt
 }
