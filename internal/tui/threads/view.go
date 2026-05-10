@@ -3,6 +3,8 @@ package threads
 import (
 	"fmt"
 	"strings"
+
+	gh "github.com/svnbjrn/spoon/internal/github"
 )
 
 func renderModel(m Model) string {
@@ -19,7 +21,8 @@ func renderModel(m Model) string {
 		return "no unresolved threads on this PR\n\npress q to quit"
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "PR #%d — %d unresolved\n\n", m.number, len(m.threads))
+	b.WriteString(renderTUIStatus(m.prStatus, m.number))
+	b.WriteString("\n")
 	for i, t := range m.threads {
 		marker := "  "
 		if i == m.cursor {
@@ -50,6 +53,26 @@ func renderModel(m Model) string {
 		fmt.Fprintf(&b, "\n--- compose (%s) — Ctrl+S to send, Esc to cancel ---\n%s_\n", m.composeFor, string(m.composeBuf))
 	}
 	return b.String()
+}
+
+// renderTUIStatus formats the PR status header for the TUI panel.
+// The TUI always uses dash markers; signal coloring is via lipgloss styles
+// applied by the caller if needed (currently plain text).
+func renderTUIStatus(s gh.PullRequestStatus, number int) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "PR #%d — %s\n", number, s.Title)
+	fmt.Fprintf(&b, "  Mergeable: %s\n", statusOrDash(s.MergeStateStatus))
+	fmt.Fprintf(&b, "  Reviews:   %s\n", statusOrDash(s.ReviewDecision))
+	fmt.Fprintf(&b, "  Checks:    %s\n", statusOrDash(s.ChecksState))
+	fmt.Fprintf(&b, "  Threads:   %d unresolved\n", s.UnresolvedThreads)
+	return b.String()
+}
+
+func statusOrDash(v string) string {
+	if v == "" {
+		return "—"
+	}
+	return v
 }
 
 func renderHelp() string {
