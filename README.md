@@ -101,6 +101,37 @@ merged — you have to fix the gate first. The header lands on stderr
 for `--json` / `--next` so stdout stays pure JSON. Suppress with
 `--no-status`.
 
+## Agent CLI (`spn`)
+
+`spn` is a sibling binary aimed at LLM/agent consumption. JSON-only, no
+TUI, no color, structured error envelope with remediation hints, NDJSON
+streaming for long-running queries.
+
+```sh
+go install github.com/svnbjrn/spoon/cmd/spn@latest
+```
+
+Verbs:
+
+```sh
+spn threads list <pr-ref> [--all]
+spn threads next <pr-ref>
+spn threads reply <pr-ref> <id> --body T
+spn threads resolve <pr-ref> <id> [--body T]
+spn threads resolve-all <pr-ref>     # skips human-raised threads (returned in `skipped`)
+spn threads unresolve-all <pr-ref>
+spn pr status <pr-ref>
+spn forks list <repo> [--tier N] [--top N] [...]   # NDJSON
+```
+
+Success: bare JSON to stdout. Failure: structured envelope to stderr:
+
+```json
+{"error": {"code": "policy_violation", "message": "...", "remediation": "spn threads resolve owner/repo#42 PRRT_... --body \"...\"", "retryable": false, "details": {...}}}
+```
+
+See [`docs/superpowers/specs/2026-05-10-spn-bifurcation-design.md`](docs/superpowers/specs/2026-05-10-spn-bifurcation-design.md) for the full design.
+
 ## Heat scoring
 
 Forks are ranked by a weighted "heat" score combining several signals:
