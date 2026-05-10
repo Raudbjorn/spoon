@@ -2,7 +2,10 @@ package github
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"os/exec"
+	"strings"
 )
 
 // CheckAuth creates a client and probes its authentication state.
@@ -33,16 +36,30 @@ func CheckAuth() (*Client, AuthStatus, error) {
 			} `json:"core"`
 		} `json:"resources"`
 	}
-	if err := client.Get(context.Background(), "rate_limit", &rl); err == nil {
-		status.RateLimit = RateLimit{
-			Limit:     rl.Resources.Core.Limit,
-			Remaining: rl.Resources.Core.Remaining,
-			Used:      rl.Resources.Core.Used,
+	if resp, err := client.GetRaw(context.Background(), "rate_limit"); err == nil {
+		body, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr == nil {
+			if err := json.Unmarshal(body, &rl); err == nil {
+				status.RateLimit = RateLimit{
+					Limit:     rl.Resources.Core.Limit,
+					Remaining: rl.Resources.Core.Remaining,
+					Used:      rl.Resources.Core.Used,
+				}
+				client.mu.Lock()
+				client.rateLimit = status.RateLimit
+				client.mu.Unlock()
+			}
 		}
-		// Also seed the client's rate limit state
-		client.mu.Lock()
-		client.rateLimit = status.RateLimit
-		client.mu.Unlock()
+		// Parse OAuth scopes from response header.
+		if scopesHeader := resp.Header.Get("X-OAuth-Scopes"); scopesHeader != "" {
+			for _, s := range strings.Split(scopesHeader, ",") {
+				s = strings.TrimSpace(s)
+				if s != "" {
+					status.Scopes = append(status.Scopes, s)
+				}
+			}
+		}
 	}
 
 	return client, status, nil
