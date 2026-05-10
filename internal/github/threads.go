@@ -95,6 +95,20 @@ func parseListThreadsResponse(data listThreadsData) []ReviewThread {
 	return out
 }
 
+// RequiresBody reports whether resolving this thread requires a reply body.
+// Returns true unless every comment is authored by a Bot.
+func (t ReviewThread) RequiresBody() bool {
+	if len(t.Comments) == 0 {
+		return true
+	}
+	for _, c := range t.Comments {
+		if c.AuthorType != "Bot" {
+			return true
+		}
+	}
+	return false
+}
+
 // ListThreads fetches review threads for a PR. resolvedStates should be one of
 // ThreadStateAll, ThreadStateUnresolved, or ThreadStateResolved.
 func (c *Client) ListThreads(ctx context.Context, owner, repo string, number int, resolvedStates string) ([]ReviewThread, error) {
