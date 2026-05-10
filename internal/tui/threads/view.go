@@ -6,6 +6,9 @@ import (
 )
 
 func renderModel(m Model) string {
+	if m.showHelp {
+		return renderHelp()
+	}
 	if m.err != nil {
 		return fmt.Sprintf("error: %v\n\npress q to quit", m.err)
 	}
@@ -36,7 +39,7 @@ func renderModel(m Model) string {
 			b.WriteString("\n")
 		}
 	}
-	b.WriteString("\n[r] reply  [R] resolve  [a] resolve-all  [q] quit\n")
+	b.WriteString("\n[r/Enter] reply  [R] resolve  [a] resolve-all  [A] unresolve-all  [o] open  [?] help  [q] quit\n")
 	if m.status != "" {
 		fmt.Fprintf(&b, "\n%s\n", m.status)
 	}
@@ -47,4 +50,24 @@ func renderModel(m Model) string {
 		fmt.Fprintf(&b, "\n--- compose (%s) — Ctrl+S to send, Esc to cancel ---\n%s_\n", m.composeFor, string(m.composeBuf))
 	}
 	return b.String()
+}
+
+func renderHelp() string {
+	return `spoon threads — keybindings
+
+  ↑/↓, j/k     Navigate threads
+  Enter, r     Reply (opens textarea)
+  R            Resolve current thread
+  a            Resolve all (with confirm)
+  A            Unresolve all (with confirm)
+  o            Open PR in browser
+  ?            Toggle this help
+  q            Quit
+
+In the composer:
+  Ctrl+S       Submit
+  Esc          Cancel
+
+Press ? again to return.
+`
 }
