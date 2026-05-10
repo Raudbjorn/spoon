@@ -1,0 +1,141 @@
+package embed
+
+import (
+	"context"
+	"fmt"
+	"math"
+	"strings"
+)
+
+var modalityWeights = [4]float32{0.3, 0.3, 0.2, 0.2}
+
+func isCodeAwareModel(name string) bool {
+	if name == "" {
+		return false
+	}
+	base := strings.ToLower(baseModelName(name))
+	for _, m := range PreferredEmbeddingModels {
+		if m.CodeAware && strings.ToLower(m.Name) == base {
+			return true
+		}
+	}
+	return false
+}
+
+// MultiModalEmbed embeds each modality separately and returns a concatenated
+// vector weighted [paths 0.3, commits 0.3, readme 0.2, diff 0.2]. Missing
+// modalities (empty strings) contribute a zero block. The result is
+// L2-normalized.
+//
+// When embedderModel matches a CodeAware entry in PreferredEmbeddingModels,
+// the call switches to a single-call path: it joins the four modalities with
+// structural separators and embeds once per fork.
+func MultiModalEmbed(ctx context.Context, e Embedder, embedderModel string, fs []ForkFeatures) ([]Vector, error) {
+	if e == nil {
+		return nil, fmt.Errorf("nil embedder")
+	}
+	if len(fs) == 0 {
+		return nil, nil
+	}
+	if isCodeAwareModel(embedderModel) {
+		return codeAwareEmbed(ctx, e, fs)
+	}
+	return modalityBlendEmbed(ctx, e, fs)
+}
+
+func codeAwareEmbed(ctx context.Context, e Embedder, fs []ForkFeatures) ([]Vector, error) {
+	prompts := make([]string, len(fs))
+	for i, f := range fs {
+		var b strings.Builder
+		b.WriteString("<paths>")
+		b.WriteString(f.Paths)
+		b.WriteString("</paths><commits>")
+		b.WriteString(f.Commits)
+		b.WriteString("</commits><readme>")
+		b.WriteString(f.ReadmeDoc)
+		b.WriteString("</readme><diff>")
+		b.WriteString(f.DiffChunk)
+		b.WriteString("</diff>")
+		prompts[i] = b.String()
+	}
+	vecs, err := e.Embed(ctx, prompts)
+	if err != nil {
+		return nil, err
+	}
+	for i := range vecs {
+		l2Normalize(vecs[i])
+	}
+	return vecs, nil
+}
+
+func modalityBlendEmbed(ctx context.Context, e Embedder, fs []ForkFeatures) ([]Vector, error) {
+	const modalityCount = 4
+	prompts := make([]string, 0, len(fs)*modalityCount)
+	present := make([][modalityCount]bool, len(fs))
+	for i, f := range fs {
+		mods := [modalityCount]string{f.Paths, f.Commits, f.ReadmeDoc, f.DiffChunk}
+		for j, m := range mods {
+			if m == "" {
+				continue
+			}
+			present[i][j] = true
+			prompts = append(prompts, m)
+		}
+	}
+
+	var raw []Vector
+	if len(prompts) > 0 {
+		var err error
+		raw, err = e.Embed(ctx, prompts)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	dim := e.Dim()
+	if dim == 0 && len(raw) > 0 {
+		dim = len(raw[0])
+	}
+	if dim == 0 {
+		dim = 1
+	}
+
+	out := make([]Vector, len(fs))
+	cursor := 0
+	for i := range fs {
+		combined := make(Vector, dim*modalityCount)
+		for j := 0; j < modalityCount; j++ {
+			block := combined[j*dim : (j+1)*dim]
+			if !present[i][j] {
+				continue
+			}
+			v := raw[cursor]
+			cursor++
+			w := modalityWeights[j]
+			n := dim
+			if len(v) < n {
+				n = len(v)
+			}
+			for k := 0; k < n; k++ {
+				block[k] = v[k] * w
+			}
+		}
+		l2Normalize(combined)
+		out[i] = combined
+	}
+	return out, nil
+}
+
+func l2Normalize(v Vector) {
+	var sum float64
+	for _, x := range v {
+		sum += float64(x) * float64(x)
+	}
+	if sum == 0 {
+		return
+	}
+	inv := float32(1.0 / math.Sqrt(sum))
+	for i, x := range v {
+		v[i] = x * inv
+	}
+}
