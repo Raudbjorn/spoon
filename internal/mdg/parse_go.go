@@ -8,6 +8,7 @@
 package mdg
 
 import (
+	"errors"
 	"fmt"
 	"go/parser"
 	"go/token"
@@ -46,6 +47,13 @@ var excludedDirs = map[string]bool{
 func parseGoPackages(rootDir string) ([]goPkgInfo, error) {
 	modulePath, err := readGoModulePath(rootDir)
 	if err != nil {
+		// A missing go.mod means there are no Go packages here; that's not
+		// an error for a polyglot Build. Callers that need to distinguish
+		// "no Go" from "malformed go.mod" should inspect the directory
+		// before invoking this function.
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
 		return nil, err
 	}
 

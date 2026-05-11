@@ -81,8 +81,11 @@ func TestParseGoPackages_NoGoMod(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "x.go", "package x\n")
 	pkgs, err := parseGoPackages(root)
-	if err == nil {
-		t.Fatalf("expected error when go.mod is missing, got %d packages", len(pkgs))
+	if err != nil {
+		t.Fatalf("expected (nil, nil) when go.mod is missing, got error: %v", err)
+	}
+	if len(pkgs) != 0 {
+		t.Fatalf("expected 0 packages when go.mod is missing, got %d (%+v)", len(pkgs), pkgs)
 	}
 }
 
