@@ -48,6 +48,7 @@ type PullRequestStatus struct {
 	ChecksState       string `json:"checksState"`      // SUCCESS | FAILURE | PENDING | ERROR | EXPECTED | ""
 	UnresolvedThreads int    `json:"unresolvedThreads"`
 	OutdatedThreads   int    `json:"outdatedThreads"` // count of threads whose anchor lines have shifted (across the whole PR)
+	HeadSHA           string `json:"headSHA,omitempty"` // PR head commit SHA, used by code-context lookups
 }
 
 // listThreadsData mirrors the GraphQL response under data.
@@ -60,6 +61,7 @@ type listThreadsData struct {
 			Mergeable        string `json:"mergeable"`
 			MergeStateStatus string `json:"mergeStateStatus"`
 			ReviewDecision   string `json:"reviewDecision"`
+			HeadRefOid       string `json:"headRefOid"`
 			Commits          struct {
 				Nodes []struct {
 					Commit struct {
@@ -146,6 +148,7 @@ func parseFetchPRResponse(data listThreadsData) (PullRequestStatus, []ReviewThre
 		Mergeable:        pr.Mergeable,
 		MergeStateStatus: pr.MergeStateStatus,
 		ReviewDecision:   pr.ReviewDecision,
+		HeadSHA:          pr.HeadRefOid,
 	}
 	if len(pr.Commits.Nodes) > 0 && pr.Commits.Nodes[0].Commit.StatusCheckRollup != nil {
 		status.ChecksState = pr.Commits.Nodes[0].Commit.StatusCheckRollup.State
@@ -355,6 +358,7 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
       mergeable
       mergeStateStatus
       reviewDecision
+      headRefOid
       commits(last: 1) {
         nodes {
           commit {

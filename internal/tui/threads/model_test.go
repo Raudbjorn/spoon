@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	gh "github.com/svnbjrn/spoon/internal/github"
+	threadsops_pkg "github.com/svnbjrn/spoon/internal/threadsops"
 )
 
 func TestCursorClamps(t *testing.T) {
@@ -156,6 +157,59 @@ func TestViewSurfacesOutdated(t *testing.T) {
 	}
 	if !strings.Contains(out, "Unresolved (outdated") {
 		t.Errorf("expected state label 'Unresolved (outdated …)' for cursor thread — got:\n%s", out)
+	}
+}
+
+func TestViewRendersCodeContextBlock(t *testing.T) {
+	m := New(nil, "owner", "repo", 1, false)
+	m.threads = []gh.ReviewThread{
+		{ID: "PRRT_1", Path: "foo.go", Line: 5, IsResolved: false, IsOutdated: false,
+			Comments: []gh.ThreadComment{{Author: "alice", AuthorType: "User", Body: "fix this"}}},
+	}
+	m.loaded = true
+	m.ShowCodeLines = 2
+	// Inject a pre-fetched code context so we don't need a real client.
+	cc := &threadsops_pkg.CodeContext{
+		Path:      "foo.go",
+		Ref:       "abc1234567890",
+		StartLine: 3,
+		EndLine:   7,
+		Lines:     []string{"L3", "L4", "L5", "L6", "L7"},
+	}
+	m.codeContexts = map[string]*threadsops_pkg.CodeContext{"PRRT_1": cc}
+
+	out := m.View()
+	if !strings.Contains(out, "code at foo.go:3-7") {
+		t.Errorf("expected code-context header — got:\n%s", out)
+	}
+	if !strings.Contains(out, "abc1234") {
+		t.Errorf("expected short ref in header — got:\n%s", out)
+	}
+	if !strings.Contains(out, "← L5") {
+		t.Errorf("expected arrow marker on comment line (L5) — got:\n%s", out)
+	}
+	if !strings.Contains(out, "  L3") {
+		t.Errorf("expected non-marker leading space for context lines — got:\n%s", out)
+	}
+}
+
+func TestViewRendersOutdatedCodeContext(t *testing.T) {
+	m := New(nil, "owner", "repo", 1, false)
+	m.threads = []gh.ReviewThread{
+		{ID: "PRRT_1", Path: "foo.go", Line: 5, IsOutdated: true,
+			Comments: []gh.ThreadComment{{Author: "alice", AuthorType: "User", Body: "fix this"}}},
+	}
+	m.loaded = true
+	m.ShowCodeLines = 1
+	cc := &threadsops_pkg.CodeContext{
+		Path: "foo.go", Ref: "abc", StartLine: 4, EndLine: 6,
+		Lines: []string{"L4", "L5", "L6"}, Outdated: true,
+	}
+	m.codeContexts = map[string]*threadsops_pkg.CodeContext{"PRRT_1": cc}
+
+	out := m.View()
+	if !strings.Contains(out, "(outdated)") {
+		t.Errorf("expected (outdated) tag in code-context header — got:\n%s", out)
 	}
 }
 

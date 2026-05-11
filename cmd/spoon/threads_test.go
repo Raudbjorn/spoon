@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/svnbjrn/spoon/internal/threadsops"
@@ -331,4 +332,53 @@ func TestParseThreadsFlags_DryRun(t *testing.T) {
 
 // silence the unused-import linter if no usage needs threadsops
 var _ = threadsops.FilterAll
+
+// --- G5: --show-code parser tests ------------------------------------------
+
+func TestParseThreadsFlags_ShowCode(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want int
+	}{
+		{"flag with space", []string{"owner/repo#1", "--show-code", "5"}, 5},
+		{"flag with equals", []string{"owner/repo#1", "--show-code=3"}, 3},
+		{"zero explicit", []string{"owner/repo#1", "--show-code", "0"}, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f, err := parseThreadsFlags(tc.args)
+			if err != nil {
+				t.Fatalf("err: %v", err)
+			}
+			if f.showCodeLines != tc.want {
+				t.Errorf("showCodeLines=%d want %d", f.showCodeLines, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseThreadsFlags_ShowCodeNegative(t *testing.T) {
+	_, err := parseThreadsFlags([]string{"owner/repo#1", "--show-code", "-3"})
+	if err == nil {
+		t.Fatal("expected error for negative --show-code")
+	}
+	if !strings.Contains(err.Error(), "show-code") {
+		t.Errorf("error should mention show-code: %v", err)
+	}
+}
+
+func TestParseThreadsFlags_ShowCodeNonInt(t *testing.T) {
+	_, err := parseThreadsFlags([]string{"owner/repo#1", "--show-code", "abc"})
+	if err == nil {
+		t.Fatal("expected error for non-integer --show-code")
+	}
+}
+
+func TestParseThreadsFlags_ShowCodeMissingValue(t *testing.T) {
+	_, err := parseThreadsFlags([]string{"owner/repo#1", "--show-code"})
+	if err == nil {
+		t.Fatal("expected error when --show-code has no value")
+	}
+}
 
