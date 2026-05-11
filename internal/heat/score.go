@@ -285,16 +285,21 @@ func ComputeTier2V2(p Tier2ParamsV2) (float64, []Component) {
 type Tier3ParamsV2 struct {
 	LoneWolf       *LoneWolfResult
 	CommitSpanDays float64
+	NoveltyScore   float64 // 0..1
 }
 
-// ComputeTier3V2 scores T3 with additive point budgets.
+// ComputeTier3V2 scores T3 with additive point budgets. Max 20 points.
+//
+//	lone_wolf : 0..7   (was 0..10)
+//	span      : 0..8   (was 0..10)
+//	novelty   : 0..5   (new)
 func ComputeTier3V2(p Tier3ParamsV2) (float64, []Component) {
-	// Lone Wolf: strength * 10, with archetype multiplier
+	// Lone Wolf: strength * 7, with archetype multiplier (Drifter * 0.8).
 	var lwPts float64
 	var lwRaw float64
 	if p.LoneWolf != nil && p.LoneWolf.Detected {
 		lwRaw = p.LoneWolf.Strength
-		lwPts = p.LoneWolf.Strength * 10
+		lwPts = p.LoneWolf.Strength * 7
 		switch p.LoneWolf.Archetype {
 		case ArchetypeSniper:
 			// Full credit — no change
@@ -304,21 +309,25 @@ func ComputeTier3V2(p Tier3ParamsV2) (float64, []Component) {
 			lwPts *= 0.8
 		}
 	}
-	if lwPts > 10 {
-		lwPts = 10
+	if lwPts > 7 {
+		lwPts = 7
 	}
 
-	// Commit span: logNorm(spanDays, 180) * 10
-	span := LogNormRange(p.CommitSpanDays, 180, 10)
+	// Commit span: logNorm(spanDays, 180) * 8.
+	span := LogNormRange(p.CommitSpanDays, 180, 8)
 
-	total := lwPts + span
+	// Novelty: NoveltyComponent helper returns up to 5.
+	noveltyComp := NoveltyComponent(p.NoveltyScore)
+
+	total := lwPts + span + noveltyComp.Points
 	if total > 20 {
 		total = 20
 	}
 
 	components := []Component{
-		{Name: "lone_wolf", Points: lwPts, Max: 10, Raw: lwRaw},
-		{Name: "span", Points: span, Max: 10, Raw: p.CommitSpanDays},
+		{Name: "lone_wolf", Points: lwPts, Max: 7, Raw: lwRaw},
+		{Name: "span", Points: span, Max: 8, Raw: p.CommitSpanDays},
+		noveltyComp,
 	}
 
 	return total, components

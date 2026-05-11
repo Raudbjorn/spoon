@@ -256,6 +256,96 @@ func TestComputeTier3V2_NoLoneWolf(t *testing.T) {
 	}
 }
 
+func TestComputeTier3V2_WithNovelty(t *testing.T) {
+	p := Tier3ParamsV2{
+		LoneWolf:       &LoneWolfResult{Detected: true, Strength: 1.0, Archetype: ArchetypeSniper},
+		CommitSpanDays: 180,
+		NoveltyScore:   1.0,
+	}
+	total, comps := ComputeTier3V2(p)
+	if total > 20 {
+		t.Errorf("Total %v exceeds max 20", total)
+	}
+
+	got := map[string]Component{}
+	for _, c := range comps {
+		got[c.Name] = c
+	}
+	lw, ok := got["lone_wolf"]
+	if !ok {
+		t.Fatal("missing lone_wolf component")
+	}
+	if !approxEqual(lw.Points, 7, 0.001) {
+		t.Errorf("lone_wolf Points = %v, want 7", lw.Points)
+	}
+	if lw.Max != 7 {
+		t.Errorf("lone_wolf Max = %v, want 7", lw.Max)
+	}
+
+	span, ok := got["span"]
+	if !ok {
+		t.Fatal("missing span component")
+	}
+	if !approxEqual(span.Points, 8, 0.05) {
+		t.Errorf("span Points = %v, want ~8", span.Points)
+	}
+	if span.Max != 8 {
+		t.Errorf("span Max = %v, want 8", span.Max)
+	}
+
+	nov, ok := got["novelty"]
+	if !ok {
+		t.Fatal("missing novelty component")
+	}
+	if !approxEqual(nov.Points, 5, 0.001) {
+		t.Errorf("novelty Points = %v, want 5", nov.Points)
+	}
+	if nov.Max != 5 {
+		t.Errorf("novelty Max = %v, want 5", nov.Max)
+	}
+}
+
+func TestComputeTier3V2_NoveltyZero(t *testing.T) {
+	p := Tier3ParamsV2{
+		CommitSpanDays: 0,
+		NoveltyScore:   0,
+	}
+	total, comps := ComputeTier3V2(p)
+	if total != 0 {
+		t.Errorf("Total = %v, want 0", total)
+	}
+
+	var hasNovelty bool
+	for _, c := range comps {
+		if c.Name == "novelty" {
+			hasNovelty = true
+			if c.Points != 0 {
+				t.Errorf("novelty Points = %v, want 0", c.Points)
+			}
+		}
+	}
+	if !hasNovelty {
+		t.Error("missing novelty component")
+	}
+}
+
+func TestComputeTier3V2_CapAt20(t *testing.T) {
+	// Very high inputs across all components: should be capped at 20.
+	p := Tier3ParamsV2{
+		LoneWolf:       &LoneWolfResult{Detected: true, Strength: 1.0, Archetype: ArchetypeSniper},
+		CommitSpanDays: 10000,
+		NoveltyScore:   1.0,
+	}
+	total, _ := ComputeTier3V2(p)
+	if total > 20 {
+		t.Errorf("Total %v exceeds max 20", total)
+	}
+	// Should also actually reach (or be near) the cap.
+	if total < 19 {
+		t.Errorf("Total %v unexpectedly far below cap of 20", total)
+	}
+}
+
 func TestRawScore_TierProgression(t *testing.T) {
 	input := ScoreInput{
 		T1: Tier1ParamsV2{Stars: 50, SubForks: 2, DaysSincePush: 5, ReleaseCount: 3},
@@ -296,9 +386,9 @@ func TestRawScore_ComponentCount(t *testing.T) {
 	}
 	result := RawScore(input)
 
-	// 4 T1 + 3 T2 + 2 T3 = 9 components
-	if len(result.Components) != 9 {
-		t.Errorf("Expected 9 components, got %d", len(result.Components))
+	// 4 T1 + 3 T2 + 3 T3 = 10 components
+	if len(result.Components) != 10 {
+		t.Errorf("Expected 10 components, got %d", len(result.Components))
 	}
 }
 
