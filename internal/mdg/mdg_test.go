@@ -117,3 +117,43 @@ func TestPageRank_DeterministicOrder(t *testing.T) {
 		}
 	}
 }
+
+func TestEntryPointTeleport_PrefersMainPackages(t *testing.T) {
+	g := NewGraph()
+	g.AddNode(Module{Path: "repo/cmd/foo", Lang: "go", IsMain: true})
+	g.AddNode(Module{Path: "repo/cmd/bar", Lang: "go", IsMain: true})
+	g.AddNode(Module{Path: "repo/internal/util", Lang: "go", IsMain: false})
+
+	tp := g.EntryPointTeleport()
+
+	if len(tp) != 3 {
+		t.Fatalf("teleport len: want 3, got %d", len(tp))
+	}
+	if tp[0] == 0 || tp[1] == 0 {
+		t.Fatalf("main packages should have non-zero teleport: %v", tp)
+	}
+	if tp[2] != 0 {
+		t.Fatalf("non-main package should have zero teleport: %v", tp)
+	}
+	if math.Abs(tp[0]+tp[1]+tp[2]-1.0) > 1e-9 {
+		t.Fatalf("teleport should sum to 1.0, got %v", tp[0]+tp[1]+tp[2])
+	}
+}
+
+func TestEntryPointTeleport_NoMainFallsBackToUniform(t *testing.T) {
+	g := NewGraph()
+	g.AddNode(Module{Path: "a"})
+	g.AddNode(Module{Path: "b"})
+	tp := g.EntryPointTeleport()
+	if math.Abs(tp[0]-0.5) > 1e-9 || math.Abs(tp[1]-0.5) > 1e-9 {
+		t.Fatalf("no main → uniform; got %v", tp)
+	}
+}
+
+func TestEntryPointTeleport_EmptyGraph(t *testing.T) {
+	g := NewGraph()
+	tp := g.EntryPointTeleport()
+	if tp != nil {
+		t.Fatalf("empty graph: want nil teleport, got %v", tp)
+	}
+}
