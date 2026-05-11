@@ -75,6 +75,10 @@ type threadsFlags struct {
 	// emitted in JSON output and rendered in the TUI detail pane. Default off
 	// preserves the historical compact output.
 	verbose bool
+	// interactive enables the open-PR picker when no PR ref is given. With a
+	// PR ref present, the flag is ignored (with a warning) so existing
+	// scripts keep working.
+	interactive bool
 }
 
 // parseThreadsFlags parses the args after "spoon threads".
@@ -226,6 +230,8 @@ func parseThreadsFlags(args []string) (threadsFlags, error) {
 			f.bodyFile = args[i]
 		case a == "--verbose" || a == "-v":
 			f.verbose = true
+		case a == "--interactive" || a == "-i":
+			f.interactive = true
 		case a == "-h" || a == "--help":
 			return f, errThreadsHelp
 		default:
@@ -239,8 +245,8 @@ func parseThreadsFlags(args []string) (threadsFlags, error) {
 		}
 	}
 
-	if f.prRef == "" {
-		return f, fmt.Errorf("missing PR reference (e.g. owner/repo#42)")
+	if f.prRef == "" && !f.interactive {
+		return f, fmt.Errorf("missing PR reference (e.g. owner/repo#42) — pass --interactive/-i to pick one")
 	}
 
 	// Resolve --filter / --include-resolved interaction. --include-resolved is
@@ -378,10 +384,13 @@ func runThreads(args []string) int {
 	}
 
 	fallbackOwner, fallbackRepo := detectRepoContext()
-	owner, repo, number, err := parsePRRef(flags.prRef, fallbackOwner, fallbackRepo)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "❌ Error:", err)
-		return 2
+
+	// --interactive with a PR ref already supplied is a user error in
+	// spirit, but rather than refuse, warn and fall through to the
+	// existing PR-ref code path.
+	if flags.interactive && flags.prRef != "" {
+		fmt.Fprintln(os.Stderr, "⚠️  Warning: --interactive ignored: PR ref already supplied")
+		flags.interactive = false
 	}
 
 	client, status, err := gh.CheckAuth()
@@ -400,6 +409,44 @@ func runThreads(args []string) int {
 	}
 
 	ctx := context.Background()
+
+	// Interactive picker: no PR ref given, --interactive was set, repo
+	// context detected. Fetch open PRs, run the picker, and treat the
+	// chosen PR as if the user had typed it on the command line.
+	if flags.interactive && flags.prRef == "" {
+		if fallbackOwner == "" || fallbackRepo == "" {
+			fmt.Fprintln(os.Stderr, "❌ Error: --interactive needs a git checkout (couldn't detect origin owner/repo)")
+			return 2
+		}
+		prs, perr := client.ListOpenPRs(ctx, fallbackOwner, fallbackRepo, 30)
+		if perr != nil {
+			fmt.Fprintln(os.Stderr, "❌ Error: listing open PRs:", perr)
+			return 1
+		}
+		if len(prs) == 0 {
+			fmt.Println("No open PRs in this repo")
+			return 0
+		}
+		picker := threadstui.NewPicker(prs)
+		final, runErr := tea.NewProgram(picker, tea.WithAltScreen()).Run()
+		if runErr != nil {
+			fmt.Fprintln(os.Stderr, "❌ Error:", runErr)
+			return 1
+		}
+		pm := final.(threadstui.PickerModel)
+		if pm.Cancelled() || pm.Selected() == nil {
+			return 0
+		}
+		// Synthesize the PR ref so the existing parse/dispatch path takes
+		// over unchanged.
+		flags.prRef = fmt.Sprintf("%s/%s#%d", fallbackOwner, fallbackRepo, pm.Selected().Number)
+	}
+
+	owner, repo, number, err := parsePRRef(flags.prRef, fallbackOwner, fallbackRepo)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "❌ Error:", err)
+		return 2
+	}
 
 	switch flags.mode {
 	case modeJSON:
@@ -662,6 +709,7 @@ func printThreadsHelp() {
 
 Usage:
   spoon threads <pr-ref> [flags]
+  spoon threads --interactive [flags]      (pick a PR from a list)
 
 PR reference forms:
   owner/repo#42
@@ -670,6 +718,9 @@ PR reference forms:
 
 Flags:
   (no mode flag)        Open the TUI for the selected filter (default: unresolved)
+  -i, --interactive     If no PR ref is given, present a picker over the open
+                        PRs in the current repo (origin). With a PR ref the
+                        flag is ignored (with a warning).
   --json                Print threads as JSON (filtered by --filter)
   --filter MODE         Which threads to surface. One of:
                           all                  every thread (resolved + unresolved)
