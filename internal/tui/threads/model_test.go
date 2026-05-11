@@ -1,6 +1,7 @@
 package threads
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -249,3 +250,73 @@ func TestViewSurfacesActiveThread(t *testing.T) {
 		t.Errorf("did not expect outdated marker — got:\n%s", out)
 	}
 }
+
+// newTestModelWithThreads builds a Model with one loaded thread. It uses
+// nil for the client because counter-propose goes through replyFunc (a test
+// seam) instead of m.client.
+func newTestModelWithThreads(t *testing.T) Model {
+	t.Helper()
+	m := New(nil, "owner", "repo", 42, false)
+	m.threads = []gh.ReviewThread{{
+		ID:   "THREAD_1",
+		Path: "main.go",
+		Line: 10,
+		Comments: []gh.ThreadComment{{
+			Author:     "reviewer",
+			AuthorType: "User",
+			Body:       "please fix this",
+		}},
+	}}
+	m.loaded = true
+	return m
+}
+
+func TestCounterPropose_emptyEditorContent_cancels(t *testing.T) {
+	m := newTestModelWithThreads(t)
+	m.launchEditor = func(_ context.Context, _, _ string) (string, error) {
+		return "", nil
+	}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("expected a tea.Cmd from c keypress")
+	}
+	msg := cmd()
+	updated, _ = m.Update(msg)
+	m = updated.(Model)
+	if !strings.Contains(strings.ToLower(m.status), "cancel") {
+		t.Errorf("expected cancellation status, got %q", m.status)
+	}
+}
+
+func TestCounterPropose_nonEmptyContent_postsWrappedReply(t *testing.T) {
+	m := newTestModelWithThreads(t)
+	posted := false
+	var postedBody string
+	m.replyFunc = func(_ context.Context, threadID, body string) (gh.ThreadComment, error) {
+		posted = true
+		postedBody = body
+		return gh.ThreadComment{ID: "COMMENT_99"}, nil
+	}
+	m.launchEditor = func(_ context.Context, _, _ string) (string, error) {
+		return "newCode()", nil
+	}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("expected a tea.Cmd from c keypress")
+	}
+	msg := cmd()
+	updated, _ = m.Update(msg)
+	m = updated.(Model)
+	if !posted {
+		t.Fatal("expected replyFunc to be called")
+	}
+	if !strings.Contains(postedBody, "```suggestion") {
+		t.Errorf("body should be wrapped in suggestion fence, got %q", postedBody)
+	}
+	if !strings.Contains(m.status, "COMMENT_99") {
+		t.Errorf("status should mention posted comment ID, got %q", m.status)
+	}
+}
+

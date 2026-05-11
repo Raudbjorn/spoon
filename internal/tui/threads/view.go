@@ -69,7 +69,7 @@ func renderModel(m Model) string {
 			b.WriteString("\n")
 		}
 	}
-	footer := "\n[r/Enter] reply  [R] resolve  [a] apply-suggestion  [A] unresolve-all  [o] open  [?] help  [q] quit\n"
+	footer := "\n[r/Enter] reply  [R] resolve  [a] apply-suggestion  [c] counter-propose  [A] unresolve-all  [o] open  [?] help  [q] quit\n"
 	b.WriteString(footer)
 	if m.status != "" {
 		fmt.Fprintf(&b, "\n%s\n", m.status)
@@ -204,6 +204,9 @@ func renderHelp() string {
   Enter, r     Reply (opens textarea)
   R            Resolve current thread
   a            Apply suggestion on current thread (no-op if thread has none)
+  c            Counter-propose: opens $EDITOR with a temp file; content is
+               wrapped in a suggestion block and posted as a reply.
+               Empty content (or no edits) cancels.
   Ctrl+A       Resolve all (with confirm)
   A            Unresolve all (with confirm)
   o            Open PR in browser
