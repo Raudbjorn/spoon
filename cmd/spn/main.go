@@ -48,6 +48,8 @@ Nouns and verbs:
   threads unresolve-all <pr-ref>
   pr status <pr-ref>
   forks list <repo> [--tier 1|2|3] [--top N] [--bot-allowlist L] [--refresh] [--forge github|gitlab] [--forge-host H]
+                    [--no-cluster] [--cluster-top N] [--embedder URL] [--embedder-model NAME]
+                    [--labeler URL] [--cluster-epsilon F] [--cluster-min-size N] [--auto-pull]
 
 PR refs accept:
   owner/repo#42

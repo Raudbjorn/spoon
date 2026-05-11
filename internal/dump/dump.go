@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/svnbjrn/spoon/internal/forge"
-	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/heat"
 	"github.com/svnbjrn/spoon/internal/tui"
 )
@@ -299,6 +298,7 @@ func writeJSON(w io.Writer, auth forge.AuthInfo, parent *forge.ParentData, forks
 		ef.ClusterLabel = sf.Heat.ClusterLabel
 		ef.NoveltyScore = sf.Heat.NoveltyScore
 		ef.ClusterMemberCount = sf.Heat.ClusterMemberCount
+		ef.ChangeImpact = sf.Heat.ChangeImpact
 
 		if sf.Heat.LoneWolf != nil && sf.Heat.LoneWolf.Detected {
 			lw := sf.Heat.LoneWolf
@@ -374,55 +374,3 @@ func writeCSV(w io.Writer, auth forge.AuthInfo, parent *forge.ParentData, forks 
 	return nil
 }
 
-// runDumpClustering wires the cluster pipeline into the dump path. It builds
-// EnrichedFork pointers over the live scoredForks slice so the pipeline's
-// in-place HeatResult mutations land back in the dump output.
-//
-// When the provider is anything other than *gh.GHProvider, the README,
-// tree, and commit sources are nil. The pipeline tolerates nil sources
-// (README skipped, ChangeImpact = 0).
-func runDumpClustering(
-	ctx context.Context,
-	provider forge.Forge,
-	parent *forge.ParentData,
-	owner, repoName string,
-	scoredForks []scoredFork,
-	opts Options,
-	logger io.Writer,
-) {
-	enriched := make([]EnrichedFork, len(scoredForks))
-	for i := range scoredForks {
-		enriched[i] = EnrichedFork{
-			T1:   scoredForks[i].Fork,
-			T2:   scoredForks[i].T2,
-			Heat: &scoredForks[i].Heat,
-		}
-	}
-
-	inputs := ClusterInputs{
-		Provider:      "github",
-		UpstreamOwner: owner,
-		UpstreamRepo:  repoName,
-		Upstream:      *parent,
-		Forks:         enriched,
-	}
-
-	if ghp, ok := provider.(*gh.GHProvider); ok {
-		client := ghp.Client()
-		if client != nil {
-			defaultBranch := parent.DefaultBranch
-			inputs.TreeSource = &gh.TreeSourceForRepo{Client: client, Ref: defaultBranch}
-			inputs.CommitSource = &gh.CommitSourceForRepo{Client: client}
-			inputs.ReadmeFetcher = client
-		}
-	} else {
-		// Non-GitHub provider (e.g., GitLab). Cluster pipeline still runs
-		// — README and centrality just won't be available. Future work
-		// can plug in GitLab analogues.
-		inputs.Provider = "other"
-	}
-
-	if _, err := runClusterPipeline(ctx, opts.Cluster, inputs, logger); err != nil {
-		fmt.Fprintf(logger, "[cluster] pipeline error: %v (continuing)\n", err)
-	}
-}

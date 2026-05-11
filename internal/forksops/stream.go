@@ -6,11 +6,15 @@ package forksops
 import (
 	"context"
 	"fmt"
+	"io"
 	"sort"
 	"sync"
 	"time"
 
+	"github.com/svnbjrn/spoon/internal/cluster"
+	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/forge"
+	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/heat"
 )
 
@@ -21,7 +25,48 @@ type Options struct {
 	TopN         int
 	BotAllowlist map[string]bool
 	HeatWeights  map[string]float64
+
+	// Cluster configures the optional post-T2 cluster pipeline. When
+	// Cluster.Enabled is true and at least one fork is eligible, Stream will
+	// collect every T1/T2 result, run the shared cluster.RunPipeline, and
+	// emit each fork with its cluster fields populated. When false, Stream
+	// emits forks as soon as their T2 enrichment completes (true streaming).
+	//
+	// Trade-off (vs. the dump path): clustering is a batch operation —
+	// embeddings require all candidate forks present. When clustering is
+	// enabled, Stream collapses to collect-then-emit semantics. The NDJSON
+	// contract (one record per fork) is preserved.
+	Cluster ClusterOptions
+
+	// Logger receives cluster-pipeline progress and warnings. May be nil
+	// (defaults to io.Discard).
+	Logger io.Writer
 }
+
+// ClusterOptions is the spn-side options struct for the cluster pipeline.
+// Mirrors cluster.PipelineOptions but keeps the test seam unexported.
+type ClusterOptions struct {
+	Enabled         bool
+	TopN            int
+	Endpoint        string
+	ModelOverride   string
+	LabelerEndpoint string
+	Epsilon         float64
+	MinClusterSize  int
+	AutoPull        bool
+	NoPrompt        bool
+	NonInteractive  bool
+	Refresh         bool
+
+	// embedderForTest is the test seam for cluster integration tests. Tests
+	// inject a stub embed.Embedder via SetEmbedderForTest; the field is
+	// unexported so production callers cannot bypass SelectEmbedder.
+	embedderForTest embed.Embedder
+}
+
+// SetEmbedderForTest installs an embedder stub on ClusterOptions for tests.
+// Production callers must not use this — they should go through SelectEmbedder.
+func (o *ClusterOptions) SetEmbedderForTest(e embed.Embedder) { o.embedderForTest = e }
 
 // Result is a single fork's outcome. Fork is always populated; Err and the
 // T2/T3 pointers may be nil depending on tier and per-fork errors.
@@ -31,6 +76,21 @@ type Result struct {
 	T3   *forge.T3Data
 	Heat heat.HeatResult
 	Err  *Error
+
+	// ClusterSkip is set when the cluster pipeline was enabled but skipped
+	// for a non-fatal reason (embedder unreachable, no model, etc.). Only the
+	// first Result in the batch carries it; downstream consumers fan out a
+	// single user-facing warning. Nil when clustering ran or was disabled.
+	ClusterSkip *ClusterSkip
+}
+
+// ClusterSkip describes why the cluster pipeline was skipped for this run.
+// Surfaced once per Stream invocation on the first Result.
+type ClusterSkip struct {
+	Code     string
+	Message  string
+	Endpoint string
+	Model    string
 }
 
 // Error is the per-fork error reported on the stream. Distinct from a fatal
@@ -46,6 +106,11 @@ type Error struct {
 //
 // Fatal errors (auth, Parent fetch failure, ctx cancel before any output)
 // are returned synchronously. Per-fork errors are surfaced via Result.Err.
+//
+// When opts.Cluster.Enabled is true, Stream switches from true-streaming to
+// collect-then-emit semantics: every T1+T2-enriched result is buffered, the
+// cluster pipeline runs over the batch, and each Result is then emitted with
+// its cluster fields populated. See Options.Cluster for the trade-off rationale.
 func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts Options) (<-chan Result, error) {
 	parent, err := provider.Parent(ctx, owner, repo)
 	if err != nil {
@@ -54,6 +119,11 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 	t1ch, err := provider.ListForks(ctx, owner, repo)
 	if err != nil {
 		return nil, fmt.Errorf("list forks: %w", err)
+	}
+
+	logger := opts.Logger
+	if logger == nil {
+		logger = io.Discard
 	}
 
 	out := make(chan Result)
@@ -124,6 +194,15 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 			}
 		}()
 
+		// In streaming mode (no clustering) we forward results to `out` as
+		// they finish. In batch mode (clustering enabled) we instead collect
+		// them into `collected` (mu-guarded) and emit at the end.
+		batchMode := opts.Cluster.Enabled
+		var (
+			collectedMu sync.Mutex
+			collected   []Result
+		)
+
 		var wg sync.WaitGroup
 		for w := 0; w < concurrency; w++ {
 			wg.Add(1)
@@ -150,6 +229,12 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 						}
 					}
 					r.Heat = rescore(scorer, s.fork, parent, now, r.T2, r.T3)
+					if batchMode {
+						collectedMu.Lock()
+						collected = append(collected, r)
+						collectedMu.Unlock()
+						continue
+					}
 					select {
 					case out <- r:
 					case <-ctx.Done():
@@ -159,8 +244,111 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 			}()
 		}
 		wg.Wait()
+
+		if !batchMode {
+			return
+		}
+
+		// Cluster pass: build EnrichedFork pointers over `collected`, run the
+		// shared pipeline, then emit each Result. Heat is mutated in place via
+		// the EnrichedFork pointer back into collected[i].Heat.
+		skip := runForksClusterPipeline(ctx, provider, &parent, owner, repo, collected, opts.Cluster, logger)
+
+		// Re-sort emitted output by heat desc to match dump's ordering.
+		sort.SliceStable(collected, func(i, j int) bool {
+			return collected[i].Heat.Score > collected[j].Heat.Score
+		})
+
+		for i, r := range collected {
+			if i == 0 && skip != nil {
+				r.ClusterSkip = skip
+			}
+			select {
+			case out <- r:
+			case <-ctx.Done():
+				return
+			}
+		}
 	}()
 	return out, nil
+}
+
+// runForksClusterPipeline runs the cluster pipeline over collected forks.
+// Heat is mutated in place via the EnrichedFork pointer back into collected[i].Heat.
+// Returns a non-nil ClusterSkip when the pipeline was non-fatally skipped.
+func runForksClusterPipeline(
+	ctx context.Context,
+	provider forge.Forge,
+	parent *forge.ParentData,
+	owner, repoName string,
+	collected []Result,
+	opts ClusterOptions,
+	logger io.Writer,
+) *ClusterSkip {
+	enriched := make([]cluster.EnrichedFork, len(collected))
+	for i := range collected {
+		enriched[i] = cluster.EnrichedFork{
+			T1:   collected[i].Fork,
+			T2:   collected[i].T2,
+			Heat: &collected[i].Heat,
+		}
+	}
+
+	inputs := cluster.PipelineInputs{
+		Provider:      "github",
+		UpstreamOwner: owner,
+		UpstreamRepo:  repoName,
+		Upstream:      *parent,
+		Forks:         enriched,
+	}
+	if ghp, ok := provider.(*gh.GHProvider); ok {
+		client := ghp.Client()
+		if client != nil {
+			defaultBranch := parent.DefaultBranch
+			inputs.TreeSource = &gh.TreeSourceForRepo{Client: client, Ref: defaultBranch}
+			inputs.CommitSource = &gh.CommitSourceForRepo{Client: client}
+			inputs.ReadmeFetcher = client
+		}
+	} else {
+		inputs.Provider = "other"
+	}
+
+	pipelineOpts := cluster.PipelineOptions{
+		Enabled:         opts.Enabled,
+		TopN:            opts.TopN,
+		Endpoint:        opts.Endpoint,
+		ModelOverride:   opts.ModelOverride,
+		LabelerEndpoint: opts.LabelerEndpoint,
+		Epsilon:         opts.Epsilon,
+		MinClusterSize:  opts.MinClusterSize,
+		AutoPull:        opts.AutoPull,
+		NoPrompt:        opts.NoPrompt,
+		NonInteractive:  opts.NonInteractive,
+		Refresh:         opts.Refresh,
+	}
+	if opts.embedderForTest != nil {
+		pipelineOpts.EmbedderForTest = opts.embedderForTest
+	}
+
+	skip, err := cluster.RunPipeline(ctx, pipelineOpts, inputs, logger)
+	if err != nil {
+		fmt.Fprintf(logger, "[cluster] pipeline error: %v (continuing)\n", err)
+		return nil
+	}
+	if skip == nil {
+		return nil
+	}
+	// "disabled" / "no_eligible_forks" are silent — only surface real skips.
+	switch skip.Code {
+	case "disabled", "no_eligible_forks":
+		return nil
+	}
+	return &ClusterSkip{
+		Code:     skip.Code,
+		Message:  skip.Message,
+		Endpoint: skip.Endpoint,
+		Model:    skip.Model,
+	}
 }
 
 // makeStats builds the input slice for heat.NewScorer from T1 fork data.

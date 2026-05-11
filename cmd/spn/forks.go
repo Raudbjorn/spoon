@@ -3,17 +3,25 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"os"
 	"strconv"
 	"strings"
 
 	"github.com/svnbjrn/spoon/internal/agentio"
+	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/forge"
 	"github.com/svnbjrn/spoon/internal/forksops"
 	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/gitlab"
 )
+
+// embedderHookForTest, when non-nil, installs the given embedder onto the
+// forksops cluster options before Stream runs. Tests use it to drive the
+// cluster pipeline deterministically without a live Ollama. Production code
+// leaves this nil so SelectEmbedder runs as usual.
+var embedderHookForTest embed.Embedder
 
 // providerFactory creates the forge provider for the given repo. Overridable in tests.
 var providerFactory = func(ctx context.Context, repo, forgeFlag, forgeHost string) (forge.Forge, string, *agentio.Error) {
@@ -64,7 +72,20 @@ func runForksWith(args []string, stdout, stderr io.Writer) int {
 
 func doForksList(args []string, stdout, stderr io.Writer) int {
 	var repo, forgeFlag, forgeHost, botList string
-	opts := forksops.Options{}
+	opts := forksops.Options{
+		// Default: clustering enabled. Spn is always non-interactive, so the
+		// pipeline will silently skip when no embedder is available and surface
+		// a structured warning on stderr.
+		Cluster: forksops.ClusterOptions{
+			Enabled:        true,
+			TopN:           50,
+			Epsilon:        0.35,
+			MinClusterSize: 3,
+			NonInteractive: true,
+			AutoPull:       os.Getenv("SPOON_AUTO_PULL") == "1",
+			NoPrompt:       true,
+		},
+	}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--tier":
@@ -95,6 +116,7 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 			botList = args[i]
 		case "--refresh", "--no-cache":
 			opts.Refresh = true
+			opts.Cluster.Refresh = true
 		case "--forge":
 			if i+1 >= len(args) {
 				return agentio.NewError(agentio.CodeBadInput, "--forge requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
@@ -107,6 +129,58 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 			}
 			i++
 			forgeHost = args[i]
+		case "--no-cluster":
+			opts.Cluster.Enabled = false
+		case "--cluster-top":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--cluster-top requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n < 1 {
+				return agentio.NewError(agentio.CodeBadInput, "--cluster-top requires a positive integer", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			opts.Cluster.TopN = n
+		case "--embedder":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--embedder requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			opts.Cluster.Endpoint = args[i]
+		case "--embedder-model":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--embedder-model requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			opts.Cluster.ModelOverride = args[i]
+		case "--labeler":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--labeler requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			opts.Cluster.LabelerEndpoint = args[i]
+		case "--cluster-epsilon":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--cluster-epsilon requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			f, err := strconv.ParseFloat(args[i], 64)
+			if err != nil || f < 0 {
+				return agentio.NewError(agentio.CodeBadInput, "--cluster-epsilon requires a non-negative number", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			opts.Cluster.Epsilon = f
+		case "--cluster-min-size":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--cluster-min-size requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n < 1 {
+				return agentio.NewError(agentio.CodeBadInput, "--cluster-min-size requires a positive integer", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			opts.Cluster.MinClusterSize = n
+		case "--auto-pull":
+			opts.Cluster.AutoPull = true
 		default:
 			if strings.HasPrefix(args[i], "--") {
 				return agentio.NewError(agentio.CodeBadInput, "unknown flag: "+args[i], agentio.RemediationBadInput("forks", "list")).Emit(stderr)
@@ -139,11 +213,20 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 	if owner == "" || name == "" {
 		return agentio.NewError(agentio.CodeBadInput, "invalid repo: "+repo, agentio.RemediationBadInput("forks", "list")).Emit(stderr)
 	}
+	// Send cluster-pipeline progress logs to stderr but only after capturing
+	// the first ClusterSkip in case the user wants the structured warning.
+	opts.Logger = io.Discard
+	if embedderHookForTest != nil {
+		opts.Cluster.SetEmbedderForTest(embedderHookForTest)
+	}
 	ch, err := forksops.Stream(ctx, provider, owner, name, opts)
 	if err != nil {
 		return agentio.NewError(agentio.CodeUpstream, err.Error(), agentio.RemediationUpstream()).Emit(stderr)
 	}
 	for r := range ch {
+		if r.ClusterSkip != nil {
+			emitClusterWarning(stderr, r.ClusterSkip)
+		}
 		if r.Err != nil {
 			// Compact one-line stderr error per failing fork.
 			_ = agentio.WriteNDJSON(stderr, map[string]any{
@@ -197,5 +280,65 @@ func forkToJSON(r forksops.Result) map[string]any {
 			"commit_span_days": r.T3.CommitSpanDays,
 		}
 	}
+	if r.Heat.ClusterID != "" {
+		out["clusterId"] = r.Heat.ClusterID
+	}
+	if r.Heat.ClusterLabel != "" {
+		out["clusterLabel"] = r.Heat.ClusterLabel
+	}
+	if r.Heat.NoveltyScore != 0 {
+		out["noveltyScore"] = r.Heat.NoveltyScore
+	}
+	if r.Heat.ClusterMemberCount != 0 {
+		out["clusterMemberCount"] = r.Heat.ClusterMemberCount
+	}
+	if r.Heat.ChangeImpact != 0 {
+		out["changeImpact"] = r.Heat.ChangeImpact
+	}
 	return out
+}
+
+// preferredEmbeddingModels lists the embedding models the cluster pipeline
+// will try in order. Mirrors embed.PreferredEmbeddingModels but only the
+// names — kept in this file so the warning shape is stable even if the
+// embed package's list grows.
+var preferredEmbeddingModels = []string{
+	"nomic-embed-text",
+	"mxbai-embed-large",
+	"bge-m3",
+	"snowflake-arctic-embed",
+}
+
+// emitClusterWarning writes a structured warning to stderr (one JSON object
+// per line) describing why the cluster pipeline was skipped. The shape is
+// intentionally distinct from agentio.Error: this is non-fatal information,
+// not an error envelope.
+func emitClusterWarning(stderr io.Writer, skip *forksops.ClusterSkip) {
+	code := skip.Code
+	message := skip.Message
+	remediation := "ollama pull nomic-embed-text"
+	switch code {
+	case "ollama_unreachable":
+		// Embedder host unreachable — same remediation: start Ollama.
+		remediation = "ensure Ollama is running and reachable at the configured endpoint"
+	case "no_model_installed", "explicit_model_unavailable":
+		// Normalize to the agreed-upon code for the agent contract.
+		code = "embedder_model_missing"
+		if skip.Endpoint != "" {
+			message = "no embedding model installed on Ollama at " + skip.Endpoint
+		}
+	}
+	envelope := map[string]any{
+		"warning": map[string]any{
+			"code":        code,
+			"message":     message,
+			"remediation": remediation,
+			"details": map[string]any{
+				"endpoint":  skip.Endpoint,
+				"preferred": preferredEmbeddingModels,
+			},
+		},
+	}
+	enc := json.NewEncoder(stderr)
+	_ = enc.Encode(envelope)
 }

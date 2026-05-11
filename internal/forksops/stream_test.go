@@ -1,12 +1,15 @@
 package forksops
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/forge"
 )
 
@@ -118,6 +121,173 @@ func TestStream_ghostForksFiltered(t *testing.T) {
 	}
 	if len(ids) != 1 || ids[0] != "o/live" {
 		t.Errorf("ghost fork not filtered: got %v", ids)
+	}
+}
+
+// stubEmbedder gives a deterministic per-input vector. Used by the cluster
+// integration test below.
+type stubEmbedder struct{ dim int }
+
+func (s *stubEmbedder) Embed(_ context.Context, texts []string) ([]embed.Vector, error) {
+	dim := s.dim
+	if dim == 0 {
+		dim = 8
+	}
+	out := make([]embed.Vector, len(texts))
+	for i, t := range texts {
+		v := make(embed.Vector, dim)
+		if t == "" {
+			out[i] = v
+			continue
+		}
+		axis := int(t[0]) % dim
+		v[axis] = 1.0
+		out[i] = v
+	}
+	return out, nil
+}
+
+func (s *stubEmbedder) Dim() int {
+	if s.dim == 0 {
+		return 8
+	}
+	return s.dim
+}
+
+func TestStream_clusterPipelineEnabled(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+
+	now := time.Now()
+	parentPushed := now.Add(-7 * 24 * time.Hour)
+	ids := []string{"o/a1", "o/a2", "o/a3", "o/z1", "o/z2", "o/z3"}
+	paths := map[string]string{
+		"o/a1": "Alpha/x.go", "o/a2": "Alpha/y.go", "o/a3": "Alpha/z.go",
+		"o/z1": "Zeta/p.go", "o/z2": "Zeta/q.go", "o/z3": "Zeta/r.go",
+	}
+	var forks []forge.T1Data
+	t2map := map[string]forge.T2Data{}
+	for _, id := range ids {
+		parts := strings.SplitN(id, "/", 2)
+		forks = append(forks, forge.T1Data{
+			ID: id, Owner: parts[0], Name: parts[1],
+			PushedAt: now, DefaultBranch: "main", Language: "Go",
+		})
+		t2map[id] = forge.T2Data{
+			AheadCount: 3,
+			Diffs:      []forge.FileDiff{{Path: paths[id], Additions: 5, Deletions: 1}},
+		}
+	}
+	ff := &fakeForge{
+		parent: forge.ParentData{DefaultBranch: "main", PushedAt: parentPushed},
+		forks:  forks,
+		t2:     t2map,
+	}
+
+	opts := Options{Tier: 2}
+	opts.Cluster = ClusterOptions{
+		Enabled:        true,
+		TopN:           10,
+		Epsilon:        0.6,
+		MinClusterSize: 3,
+		NonInteractive: true,
+	}
+	opts.Cluster.SetEmbedderForTest(&stubEmbedder{dim: 8})
+	var logBuf bytes.Buffer
+	opts.Logger = &logBuf
+
+	ch, err := Stream(context.Background(), ff, "up", "stream", opts)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	var results []Result
+	for r := range ch {
+		results = append(results, r)
+	}
+	if len(results) != len(ids) {
+		t.Fatalf("expected %d results, got %d", len(ids), len(results))
+	}
+	gotCluster := 0
+	for _, r := range results {
+		if r.Heat.ClusterID != "" && r.Heat.ClusterID != "noise" {
+			gotCluster++
+			if r.Heat.ClusterMemberCount < 1 {
+				t.Errorf("fork %s: ClusterMemberCount=0", r.Fork.ID)
+			}
+		}
+	}
+	if gotCluster == 0 {
+		t.Errorf("expected at least one fork in a non-noise cluster; log:\n%s", logBuf.String())
+	}
+}
+
+func TestStream_clusterDisabled_emitsImmediately(t *testing.T) {
+	ff := &fakeForge{
+		parent: forge.ParentData{DefaultBranch: "main", PushedAt: time.Now()},
+		forks: []forge.T1Data{
+			{ID: "o/a", Owner: "o", Name: "a", PushedAt: time.Now()},
+		},
+	}
+	opts := Options{Tier: 1}
+	opts.Cluster.Enabled = false
+	ch, _ := Stream(context.Background(), ff, "o", "r", opts)
+	var got []Result
+	for r := range ch {
+		got = append(got, r)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(got))
+	}
+	if got[0].Heat.ClusterID != "" {
+		t.Errorf("expected empty ClusterID when disabled, got %q", got[0].Heat.ClusterID)
+	}
+	if got[0].ClusterSkip != nil {
+		t.Errorf("expected nil ClusterSkip when disabled, got %+v", got[0].ClusterSkip)
+	}
+}
+
+func TestStream_clusterEmbedderUnreachable_emitsSkip(t *testing.T) {
+	now := time.Now()
+	ff := &fakeForge{
+		parent: forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
+		forks: []forge.T1Data{
+			{ID: "o/a", Owner: "o", Name: "a", PushedAt: now, DefaultBranch: "main"},
+			{ID: "o/b", Owner: "o", Name: "b", PushedAt: now, DefaultBranch: "main"},
+			{ID: "o/c", Owner: "o", Name: "c", PushedAt: now, DefaultBranch: "main"},
+		},
+		t2: map[string]forge.T2Data{
+			"o/a": {AheadCount: 1, Diffs: []forge.FileDiff{{Path: "a.go", Additions: 1}}},
+			"o/b": {AheadCount: 1, Diffs: []forge.FileDiff{{Path: "b.go", Additions: 1}}},
+			"o/c": {AheadCount: 1, Diffs: []forge.FileDiff{{Path: "c.go", Additions: 1}}},
+		},
+	}
+	opts := Options{Tier: 2}
+	opts.Cluster = ClusterOptions{
+		Enabled:        true,
+		TopN:           10,
+		Epsilon:        0.6,
+		MinClusterSize: 3,
+		NonInteractive: true,
+		Endpoint:       "http://127.0.0.1:1", // unreachable
+	}
+	ch, _ := Stream(context.Background(), ff, "o", "r", opts)
+	var skipSeen *ClusterSkip
+	var anyClusterID bool
+	for r := range ch {
+		if r.ClusterSkip != nil {
+			skipSeen = r.ClusterSkip
+		}
+		if r.Heat.ClusterID != "" {
+			anyClusterID = true
+		}
+	}
+	if skipSeen == nil {
+		t.Fatalf("expected ClusterSkip to be surfaced when embedder unreachable")
+	}
+	if skipSeen.Code == "" {
+		t.Errorf("expected non-empty skip code")
+	}
+	if anyClusterID {
+		t.Errorf("expected no clusterID populated when embedder unreachable")
 	}
 }
 

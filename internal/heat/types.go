@@ -39,6 +39,7 @@ type HeatResult struct {
 	ClusterLabel       string  // human-readable label; "" when clustering didn't run
 	NoveltyScore       float64 // 0..1
 	ClusterMemberCount int     // number of forks in this cluster; 0 when ClusterID == ""
+	ChangeImpact       float64 // 0..1; centrality-weighted impact of touched directories; 0 when centrality unavailable
 }
 
 // LoneWolfSignal describes whether a fork shows lone wolf characteristics (legacy).
