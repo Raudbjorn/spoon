@@ -9,8 +9,9 @@ import (
 // BuildOptions tune the Build process. All fields are optional; the zero
 // value runs the default Phase-A Go-only pipeline.
 type BuildOptions struct {
-	// Languages is a whitelist of language tags ("go") to enable. Empty means
-	// "all supported in this build". Reserved for Phase B/C.
+	// Languages is a whitelist of language tags ("go") to enable. Ignored in
+	// Phase A (Go only); reserved for Phase B/C. Passing non-empty values has
+	// no effect today.
 	Languages []string
 }
 
@@ -19,7 +20,8 @@ type BuildOptions struct {
 // Errors:
 //   - repoPath cannot be read
 //   - no go.mod (Phase A's only supported entry condition)
-//   - context cancellation
+//   - context cancellation (checked before stat and after parsing; the parse
+//     phase itself is not interruptible in Phase A)
 //
 // Per-file or per-package parse failures are logged to stderr and skipped.
 func Build(ctx context.Context, repoPath string, opts BuildOptions) (*Graph, error) {

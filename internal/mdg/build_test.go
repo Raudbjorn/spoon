@@ -62,6 +62,9 @@ func main() { _ = gh.Foo }
 	if got := g.Edges["github.com/cli/go-gh/v2"]; len(got) != 0 {
 		t.Errorf("external import should be a leaf, got %v", got)
 	}
+	if got := g.Edges["example.com/m"]; len(got) != 1 || got[0] != "github.com/cli/go-gh/v2" {
+		t.Errorf("root should import the external leaf: got %v", got)
+	}
 }
 
 func TestBuild_EmptyRepo(t *testing.T) {
