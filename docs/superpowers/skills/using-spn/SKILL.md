@@ -36,9 +36,9 @@ while true; do
   # ... address the feedback in code ...
 
   if [ "$requires_body" = "true" ]; then
-    spn threads resolve "$PR" "$id" --body "Addressed in $(git rev-parse --short HEAD)"
+    spn threads resolve "$PR" "$id" --body "Addressed in $(git rev-parse --short HEAD)" || break
   else
-    spn threads resolve "$PR" "$id"
+    spn threads resolve "$PR" "$id" || break
   fi
 done
 ```
@@ -54,11 +54,11 @@ spn threads resolve-all owner/repo#42
 # → {"succeeded": [...], "failed": [...], "skipped": [...]}
 ```
 
-`skipped` carries threads spn refused to bulk-resolve because they have a human commenter — those need individual `spn threads resolve <id> --body "..."` calls with real per-thread explanations.
+`skipped` carries threads spn refused to bulk-resolve because they have a human commenter — those need individual `spn threads resolve <pr-ref> <thread-id> --body "..."` calls with real per-thread explanations.
 
 ## Output Contract
 
-| | Where | Shape |
+| Case | Where | Shape |
 | --- | --- | --- |
 | Success — single | stdout | one JSON object (or `null` for `threads next` empty) |
 | Success — collection | stdout | JSON array |
@@ -80,7 +80,7 @@ The rule the agent should internalize: **a thread raised by a human gets an expl
 
 ## Partial-Failure Dedup (Critical for Retry Loops)
 
-`spn threads resolve <id> --body T` is internally two GraphQL mutations: post the comment, then resolve. If the reply succeeds but the resolve mutation fails:
+`spn threads resolve <pr-ref> <thread-id> --body T` is internally two GraphQL mutations: post the comment, then resolve. If the reply succeeds but the resolve mutation fails:
 
 ```json
 {"error": {
@@ -90,13 +90,16 @@ The rule the agent should internalize: **a thread raised by a human gets an expl
 }}
 ```
 
-**The retry must omit `--body`**, otherwise the comment double-posts:
+**The retry must omit `--body`**, otherwise the comment double-posts. Capture the error and check `comment_posted`:
 
 ```bash
-if [ "$comment_posted" = "true" ]; then
-  spn threads resolve "$PR" "$id"   # no --body
-else
-  spn threads resolve "$PR" "$id" --body "$msg"
+if ! spn threads resolve "$PR" "$id" --body "$msg" 2>/tmp/err.json; then
+  comment_posted=$(jq -r '.error.details.comment_posted // false' /tmp/err.json)
+  if [ "$comment_posted" = "true" ]; then
+    spn threads resolve "$PR" "$id"   # no --body — comment is already on the thread
+  else
+    spn threads resolve "$PR" "$id" --body "$msg"   # transient; retry with body
+  fi
 fi
 ```
 
@@ -124,7 +127,7 @@ All commands accept any of:
 | Mistake | What to do instead |
 | --- | --- |
 | Hand-rolling `gh api graphql` for review threads | Use `spn` — it handles partial-failure dedup, the body-required gate, and deterministic ordering you'd otherwise have to recreate. |
-| `spn threads reply <id> --body T && spn threads resolve <id>` (two calls) | `spn threads resolve <id> --body T` (one atomic call with dedup-safe retry). |
+| `spn threads reply <pr-ref> <id> --body T && spn threads resolve <pr-ref> <id>` (two calls) | `spn threads resolve <pr-ref> <id> --body T` (one atomic call with dedup-safe retry). |
 | Bulk-resolving when human reviewers commented | `spn threads resolve-all` skips them into `skipped`; resolve each individually with a real per-thread explanation. |
 | Retrying `resolve --body T` with the same body after a partial failure | Check `error.details.comment_posted`; if true, retry with no `--body`. |
 | Reading PR thread state via `gh pr view --comments` (HTML/scraped) | `spn threads list` is JSON with stable IDs and the policy flag baked in. |
