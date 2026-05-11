@@ -206,5 +206,7 @@ All commands accept any of:
 | `spn pr status <pr>` | Mergeability snapshot |
 | `spn forks list <repo>` | NDJSON fork enrichment (separate use case, not for PR review) |
 | `spn forks list <repo> --csv` | Batched CSV with fixed header; switches off NDJSON streaming. Use for spreadsheet/tabular consumers. |
-| `spn embed status \| pull \| models` | Ollama probe / model management for the clustering pipeline |
+| `spn embed status` | Ollama probe / model management for the clustering pipeline |
+| `spn embed pull <model>` | Ollama probe / model management for the clustering pipeline |
+| `spn embed models` | Ollama probe / model management for the clustering pipeline |
 | `spn repo centrality <repo>` | Per-directory centrality JSON (input to clustering, useful standalone) |
