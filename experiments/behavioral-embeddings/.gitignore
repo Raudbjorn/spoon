@@ -4,3 +4,7 @@ __pycache__/
 nomic_vectors.json
 codeexecutor_vectors.json
 hf_cache/
+candidate_browser.md
+candidates_same.md
+candidates_different.md
+dump_stderr.log

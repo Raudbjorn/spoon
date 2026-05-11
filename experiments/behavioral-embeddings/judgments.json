@@ -1,0 +1,8 @@
+[
+  {
+    "a": "pr-4705",
+    "b": "pr-4704",
+    "label": 1,
+    "rationale": "Identical title (baggage attribute mapping for span customization); evidently duplicate or paired observability PRs."
+  }
+]
