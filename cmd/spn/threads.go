@@ -3,10 +3,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/svnbjrn/spoon/internal/agentio"
 	gh "github.com/svnbjrn/spoon/internal/github"
@@ -27,6 +29,11 @@ var apiFactory = func() (threadsops.API, *agentio.Error) {
 		return nil, agentio.NewError(agentio.CodeAuthScope, "missing 'repo' scope", agentio.RemediationAuthScope("repo"))
 	}
 	return client, nil
+}
+
+// listPRsFn fetches open PRs on a repo. Overridable for tests.
+var listPRsFn = func(ctx context.Context, c *gh.Client, owner, repo string, limit int) ([]gh.PullRequest, error) {
+	return c.ListOpenPRs(ctx, owner, repo, limit)
 }
 
 func runThreads(args []string) int { return runThreadsWith(args, os.Stdout, os.Stderr) }
@@ -51,6 +58,8 @@ func runThreadsWith(args []string, stdout, stderr io.Writer) int {
 		return doThreadsUnresolveAll(rest, stdout, stderr)
 	case "apply-suggestion":
 		return doThreadsApplySuggestion(rest, stdout, stderr)
+	case "list-prs":
+		return doThreadsListPRs(rest, stdout, stderr)
 	default:
 		return agentio.NewError(agentio.CodeBadInput, "unknown verb: "+verb, agentio.RemediationBadInput("threads", "")).Emit(stderr)
 	}
@@ -741,4 +750,75 @@ func translateOpErr(op *threadsops.OpError, stderr io.Writer) int {
 		}
 	}
 	return e.Emit(stderr)
+}
+
+func doThreadsListPRs(args []string, stdout, stderr io.Writer) int {
+	var repo string
+	limit := 0
+	state := "open"
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--limit":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--limit requires a value", agentio.RemediationBadInput("threads", "list-prs")).Emit(stderr)
+			}
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n < 1 {
+				return agentio.NewError(agentio.CodeBadInput, "--limit must be a positive integer", agentio.RemediationBadInput("threads", "list-prs")).Emit(stderr)
+			}
+			limit = n
+		case "--state":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--state requires a value", agentio.RemediationBadInput("threads", "list-prs")).Emit(stderr)
+			}
+			i++
+			state = args[i]
+			if state != "open" {
+				return agentio.NewError(agentio.CodeBadInput, "only --state=open is supported in this version", agentio.RemediationBadInput("threads", "list-prs")).Emit(stderr)
+			}
+		default:
+			if strings.HasPrefix(args[i], "--") {
+				return agentio.NewError(agentio.CodeBadInput, "unknown flag: "+args[i], agentio.RemediationBadInput("threads", "list-prs")).Emit(stderr)
+			}
+			if repo != "" {
+				return agentio.NewError(agentio.CodeBadInput, "unexpected positional: "+args[i], agentio.RemediationBadInput("threads", "list-prs")).Emit(stderr)
+			}
+			repo = args[i]
+		}
+	}
+	_ = state // reserved; only "open" accepted today
+	if repo == "" {
+		return agentio.NewError(agentio.CodeBadInput, "usage: spn threads list-prs <owner/repo>", agentio.RemediationBadInput("threads", "list-prs")).Emit(stderr)
+	}
+	owner, name := splitRepoArg(repo)
+	if owner == "" || name == "" {
+		return agentio.NewError(agentio.CodeBadInput, "invalid repo format: use owner/repo", agentio.RemediationBadInput("threads", "list-prs")).Emit(stderr)
+	}
+	api, authErr := apiFactory()
+	if authErr != nil {
+		return authErr.Emit(stderr)
+	}
+	client, ok := api.(*gh.Client)
+	if !ok {
+		return agentio.NewError(agentio.CodeInternal, "list-prs requires a *github.Client API", agentio.RemediationInternal()).Emit(stderr)
+	}
+	prs, err := listPRsFn(context.Background(), client, owner, name, limit)
+	if err != nil {
+		var rl *gh.RateLimitError
+		if errors.As(err, &rl) {
+			resetAt := rl.ResetAt.UTC().Format(time.RFC3339)
+			secs := rl.RetryAfterSeconds()
+			e := agentio.NewError(agentio.CodeRateLimited, "rate limit exceeded",
+				agentio.RemediationRateLimited(resetAt, secs)).
+				WithRetryAfter(secs).
+				WithDetails(map[string]any{"reset_at": resetAt, "retry_after_seconds": secs})
+			return e.Emit(stderr)
+		}
+		return agentio.NewError(agentio.CodeUpstream, err.Error(), agentio.RemediationUpstream()).Emit(stderr)
+	}
+	if err := agentio.WriteJSON(stdout, prs); err != nil {
+		return agentio.NewError(agentio.CodeInternal, "encode output: "+err.Error(), agentio.RemediationInternal()).Emit(stderr)
+	}
+	return 0
 }
