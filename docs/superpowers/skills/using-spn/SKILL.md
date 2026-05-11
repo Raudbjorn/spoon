@@ -192,10 +192,12 @@ GitHub review threads can embed `suggestion` fenced blocks (```suggestion … ``
 ```json
 {
   "suggestions": [
-    {"body": "newCode()", "index": 0, "commentId": "PRC_..."}
+    {"commentId": "PRC_...", "body": "newCode()", "applicable": true}
   ]
 }
 ```
+
+`applicable` is true when the thread has a path + line range so `apply-suggestion` can write to the file. Suggestions appear in document order within a comment; pick by position via `--suggestion-index N`.
 
 ### Applying a suggestion locally
 

@@ -348,7 +348,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 
-			// Step 2: resolve the editor binary.
+			// Step 2: resolve the editor binary. EDITOR / VISUAL frequently
+			// embed flags ("code --wait", "nvim -f"), so split on whitespace
+			// and treat the first token as the binary, the rest as args.
 			editor := os.Getenv("EDITOR")
 			if editor == "" {
 				editor = os.Getenv("VISUAL")
@@ -356,7 +358,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if editor == "" {
 				editor = "vi"
 			}
-			execCmd := exec.Command(editor, tmpPath)
+			editorParts := strings.Fields(editor)
+			execCmd := exec.Command(editorParts[0], append(editorParts[1:], tmpPath)...)
 
 			// Step 3: return tea.ExecProcess which suspends the TUI, runs the editor,
 			// then dispatches the returned tea.Msg when the editor exits.
