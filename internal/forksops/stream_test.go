@@ -325,3 +325,46 @@ func TestStream_heatRecomputedWithT2(t *testing.T) {
 		t.Errorf("expected tier 2 after T2 enrichment, got tier %d (score=%v)", enriched.Heat.Tier, enriched.Heat.Score)
 	}
 }
+
+func TestStream_loneWolfV2Wired(t *testing.T) {
+	pushedAt := time.Now()
+	commit := forge.AheadCommit{
+		SHA:         "abc123",
+		Message:     "Implement feature X end-to-end",
+		AuthorLogin: "solo-dev",
+		AuthorEmail: "solo@example.com",
+		Timestamp:   pushedAt,
+		Files:       []forge.FileDiff{{Path: "internal/feature/x.go", Additions: 250, Deletions: 5}},
+	}
+	ff := &fakeForge{
+		parent: forge.ParentData{DefaultBranch: "main", PushedAt: pushedAt.Add(-30 * 24 * time.Hour)},
+		forks: []forge.T1Data{
+			{ID: "o/a", Owner: "o", Name: "a", PushedAt: pushedAt, DefaultBranch: "main"},
+		},
+		t2: map[string]forge.T2Data{
+			"o/a": {
+				AheadCount: 3,
+				MNA:        245,
+				Commits:    []forge.AheadCommit{commit, commit, commit},
+				Diffs:      []forge.FileDiff{{Path: "internal/feature/x.go", Additions: 750, Deletions: 15}},
+			},
+		},
+	}
+	ch, err := Stream(context.Background(), ff, "o", "r", Options{Tier: 3, TopN: 1})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	r := <-ch
+	if r.Err != nil {
+		t.Fatalf("per-fork err: %+v", r.Err)
+	}
+	if r.Heat.LoneWolfV2 == nil {
+		t.Fatalf("expected Heat.LoneWolfV2 to be populated; got nil")
+	}
+	if r.Heat.LoneWolfV2.EffectiveContribs != 1 {
+		t.Errorf("expected EffectiveContribs=1 (single author), got %d", r.Heat.LoneWolfV2.EffectiveContribs)
+	}
+	if !r.Heat.LoneWolfV2.Detected {
+		t.Errorf("expected LoneWolfV2.Detected=true for single-author high-MNA fork, got Detected=%v Strength=%v", r.Heat.LoneWolfV2.Detected, r.Heat.LoneWolfV2.Strength)
+	}
+}
