@@ -198,3 +198,77 @@ func TestExtractLines_StartPastEnd(t *testing.T) {
 		t.Errorf("want empty slice for start past end, got %v", got)
 	}
 }
+
+// --- URL escaping ------------------------------------------------------------
+//
+// Paths and refs that contain #, ?, %, space, or other reserved characters
+// must be escaped before being interpolated into the GitHub contents endpoint;
+// otherwise the URL is malformed and requests fail or anchor to the wrong
+// resource.
+
+func TestFetchFileContent_PathWithHash(t *testing.T) {
+	var seenRawPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenRawPath = r.URL.EscapedPath()
+		_ = json.NewEncoder(w).Encode(contentsResponse{Encoding: "base64", Content: base64.StdEncoding.EncodeToString([]byte("x"))})
+	}))
+	defer srv.Close()
+	c := newTestClient(t, srv)
+	if _, err := c.FetchFileContent(context.Background(), "foo", "bar", "src/file#1.go", "main"); err != nil {
+		t.Fatalf("FetchFileContent: %v", err)
+	}
+	if !strings.Contains(seenRawPath, "%23") {
+		t.Errorf("expected escaped # (%%23) in path, got %q", seenRawPath)
+	}
+}
+
+func TestFetchFileContent_PathWithSpaces(t *testing.T) {
+	var seenRawPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenRawPath = r.URL.EscapedPath()
+		_ = json.NewEncoder(w).Encode(contentsResponse{Encoding: "base64", Content: base64.StdEncoding.EncodeToString([]byte("x"))})
+	}))
+	defer srv.Close()
+	c := newTestClient(t, srv)
+	if _, err := c.FetchFileContent(context.Background(), "foo", "bar", "my docs/readme.md", "main"); err != nil {
+		t.Fatalf("FetchFileContent: %v", err)
+	}
+	// PathEscape encodes space as %20 (QueryEscape uses + — we want PathEscape).
+	if !strings.Contains(seenRawPath, "%20") {
+		t.Errorf("expected escaped space (%%20) in path, got %q", seenRawPath)
+	}
+}
+
+func TestFetchFileContent_RefWithSlash(t *testing.T) {
+	var seenRawQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenRawQuery = r.URL.RawQuery
+		_ = json.NewEncoder(w).Encode(contentsResponse{Encoding: "base64", Content: base64.StdEncoding.EncodeToString([]byte("x"))})
+	}))
+	defer srv.Close()
+	c := newTestClient(t, srv)
+	if _, err := c.FetchFileContent(context.Background(), "foo", "bar", "a.go", "release/2.0"); err != nil {
+		t.Fatalf("FetchFileContent: %v", err)
+	}
+	// QueryEscape encodes "/" as "%2F".
+	if !strings.Contains(seenRawQuery, "ref=release%2F2.0") {
+		t.Errorf("expected escaped slash in ref, got %q", seenRawQuery)
+	}
+}
+
+func TestFetchFileContent_PreservesSlashes(t *testing.T) {
+	// Per-segment escaping must keep the directory separators intact.
+	var seenRawPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenRawPath = r.URL.EscapedPath()
+		_ = json.NewEncoder(w).Encode(contentsResponse{Encoding: "base64", Content: base64.StdEncoding.EncodeToString([]byte("x"))})
+	}))
+	defer srv.Close()
+	c := newTestClient(t, srv)
+	if _, err := c.FetchFileContent(context.Background(), "foo", "bar", "a/b/c.go", "main"); err != nil {
+		t.Fatalf("FetchFileContent: %v", err)
+	}
+	if !strings.Contains(seenRawPath, "contents/a/b/c.go") {
+		t.Errorf("expected /-separated path segments preserved, got %q", seenRawPath)
+	}
+}

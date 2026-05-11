@@ -671,9 +671,13 @@ func runThreads(args []string) int {
 			return 2
 		}
 		res, applyErr := threadsops.ApplySuggestion(ctx, *target, sugs[flags.suggestionIndex], threadsops.ApplyOptions{
-			RepoRoot: flags.repoRoot,
-			DryRun:   flags.dryRun,
-			Force:    flags.force,
+			RepoRoot:  flags.repoRoot,
+			DryRun:    flags.dryRun,
+			Force:     flags.force,
+			Fetcher:   client,
+			Owner:     owner,
+			Repo:      repo,
+			PRHeadRef: status.HeadSHA,
 		})
 		if applyErr != nil {
 			fmt.Fprintln(os.Stderr, "❌ Error:", applyErr.Message)

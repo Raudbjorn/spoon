@@ -225,3 +225,260 @@ func TestApplySuggestion_NoTrailingNewline(t *testing.T) {
 		t.Errorf("got %q want %q (trailing newline must be preserved as-was)", got, "X\nL2")
 	}
 }
+
+// --- Path traversal guards ---------------------------------------------------
+
+func TestApplySuggestion_PathTraversal_ParentEscape(t *testing.T) {
+	dir := t.TempDir()
+	thr := threadAt("../escape.txt", 1, nil)
+	sug := Suggestion{Body: "x"}
+	_, opErr := ApplySuggestion(context.Background(), thr, sug, ApplyOptions{RepoRoot: dir})
+	if opErr == nil || opErr.Code != OpCodeBadInput {
+		t.Fatalf("expected bad_input for parent escape, got %+v", opErr)
+	}
+	if !strings.Contains(opErr.Message, "escapes repo root") {
+		t.Errorf("error message should mention escape: %q", opErr.Message)
+	}
+}
+
+func TestApplySuggestion_PathTraversal_DeepEscape(t *testing.T) {
+	dir := t.TempDir()
+	thr := threadAt("../../../etc/passwd", 1, nil)
+	sug := Suggestion{Body: "x"}
+	_, opErr := ApplySuggestion(context.Background(), thr, sug, ApplyOptions{RepoRoot: dir})
+	if opErr == nil || opErr.Code != OpCodeBadInput {
+		t.Fatalf("expected bad_input for deep escape, got %+v", opErr)
+	}
+}
+
+func TestApplySuggestion_PathTraversal_Absolute(t *testing.T) {
+	dir := t.TempDir()
+	thr := threadAt("/etc/foo", 1, nil)
+	sug := Suggestion{Body: "x"}
+	_, opErr := ApplySuggestion(context.Background(), thr, sug, ApplyOptions{RepoRoot: dir})
+	if opErr == nil || opErr.Code != OpCodeBadInput {
+		t.Fatalf("expected bad_input for absolute path, got %+v", opErr)
+	}
+}
+
+func TestApplySuggestion_PathTraversal_SymlinkInRepo(t *testing.T) {
+	// Create a tmpdir + a target file OUTSIDE it; symlink under tmpdir points
+	// at the outside target. ApplySuggestion must refuse to write through
+	// the symlink (avoids clobbering arbitrary files via a versioned link).
+	outside := t.TempDir()
+	target := filepath.Join(outside, "outside.txt")
+	if err := os.WriteFile(target, []byte("DO NOT TOUCH\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	link := filepath.Join(dir, "link.go")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink creation not supported: %v", err)
+	}
+	thr := threadAt("link.go", 1, nil)
+	sug := Suggestion{Body: "PWNED"}
+	_, opErr := ApplySuggestion(context.Background(), thr, sug, ApplyOptions{RepoRoot: dir})
+	if opErr == nil || opErr.Code != OpCodeBadInput {
+		t.Fatalf("expected bad_input for symlink, got %+v", opErr)
+	}
+	if !strings.Contains(opErr.Message, "symlink") {
+		t.Errorf("error message should mention symlink: %q", opErr.Message)
+	}
+	// And the outside file must be untouched.
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "DO NOT TOUCH\n" {
+		t.Fatalf("symlink target was clobbered: %q", got)
+	}
+}
+
+func TestApplySuggestion_NormalSubdir(t *testing.T) {
+	// Sanity check: a legitimate nested subpath still works after the
+	// traversal guards.
+	dir := t.TempDir()
+	writeFile(t, dir, "src/foo.go", "L1\nL2\nL3\n")
+	thr := threadAt("src/foo.go", 2, nil)
+	sug := Suggestion{Body: "X"}
+	res, opErr := ApplySuggestion(context.Background(), thr, sug, ApplyOptions{RepoRoot: dir})
+	if opErr != nil {
+		t.Fatalf("opErr: %+v", opErr)
+	}
+	if !res.Applied {
+		t.Errorf("not applied")
+	}
+	got := readFile(t, filepath.Join(dir, "src/foo.go"))
+	if got != "L1\nX\nL3\n" {
+		t.Errorf("got %q", got)
+	}
+}
+
+// --- Dirty-file content check -----------------------------------------------
+
+// applyTestFetcher is an in-memory ContentFetcher for the dirty-file tests.
+// Separate from the stubFetcher in code_context_test.go because we also count
+// invocations here.
+type applyTestFetcher struct {
+	content string
+	err     error
+	calls   int
+}
+
+func (s *applyTestFetcher) FetchFileContent(_ context.Context, _, _, _, _ string) (string, error) {
+	s.calls++
+	return s.content, s.err
+}
+
+func TestApplySuggestion_DirtyFile_Rejected(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "a.go", "LOCAL\nL2\n")
+	fetch := &applyTestFetcher{content: "REMOTE\nL2\n"}
+	thr := threadAt("a.go", 1, nil)
+	sug := Suggestion{Body: "X"}
+	_, opErr := ApplySuggestion(context.Background(), thr, sug, ApplyOptions{
+		RepoRoot:  dir,
+		Fetcher:   fetch,
+		Owner:     "o",
+		Repo:      "r",
+		PRHeadRef: "abc",
+	})
+	if opErr == nil || opErr.Code != OpCodePolicy {
+		t.Fatalf("expected policy_violation, got %+v", opErr)
+	}
+	if fetch.calls != 1 {
+		t.Errorf("expected fetcher called once, got %d", fetch.calls)
+	}
+}
+
+func TestApplySuggestion_DirtyFile_ForceBypasses(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "a.go", "LOCAL\nL2\n")
+	fetch := &applyTestFetcher{content: "REMOTE\nL2\n"}
+	thr := threadAt("a.go", 1, nil)
+	sug := Suggestion{Body: "X"}
+	res, opErr := ApplySuggestion(context.Background(), thr, sug, ApplyOptions{
+		RepoRoot:  dir,
+		Fetcher:   fetch,
+		Owner:     "o",
+		Repo:      "r",
+		PRHeadRef: "abc",
+		Force:     true,
+	})
+	if opErr != nil {
+		t.Fatalf("opErr: %+v", opErr)
+	}
+	if !res.Applied {
+		t.Errorf("Force should apply despite mismatch; res=%+v", res)
+	}
+}
+
+func TestApplySuggestion_FetcherFails_GracefulProceed(t *testing.T) {
+	// A fetcher error is a soft skip: the dirty-file check is a safety net,
+	// not a hard requirement, so the apply still proceeds.
+	dir := t.TempDir()
+	writeFile(t, dir, "a.go", "L1\nL2\n")
+	fetch := &applyTestFetcher{err: errFetchBoom}
+	thr := threadAt("a.go", 1, nil)
+	sug := Suggestion{Body: "X"}
+	res, opErr := ApplySuggestion(context.Background(), thr, sug, ApplyOptions{
+		RepoRoot:  dir,
+		Fetcher:   fetch,
+		Owner:     "o",
+		Repo:      "r",
+		PRHeadRef: "abc",
+	})
+	if opErr != nil {
+		t.Fatalf("opErr: %+v", opErr)
+	}
+	if !res.Applied {
+		t.Errorf("expected apply to proceed on fetch error; res=%+v", res)
+	}
+}
+
+func TestApplySuggestion_NilFetcher_NoCheck(t *testing.T) {
+	// Back-compat: a nil Fetcher (or empty PRHeadRef) skips the check entirely.
+	dir := t.TempDir()
+	writeFile(t, dir, "a.go", "L1\nL2\n")
+	thr := threadAt("a.go", 1, nil)
+	sug := Suggestion{Body: "X"}
+	res, opErr := ApplySuggestion(context.Background(), thr, sug, ApplyOptions{
+		RepoRoot: dir,
+		// Fetcher: nil, PRHeadRef: ""
+	})
+	if opErr != nil {
+		t.Fatalf("opErr: %+v", opErr)
+	}
+	if !res.Applied {
+		t.Errorf("nil Fetcher should skip check and apply; res=%+v", res)
+	}
+}
+
+// errFetchBoom is a distinguishing sentinel for fetcher-error tests.
+var errFetchBoom = stubFetcherError("boom")
+
+type stubFetcherError string
+
+func (e stubFetcherError) Error() string { return string(e) }
+
+// --- Empty-body deletion semantics ------------------------------------------
+
+func TestApplySuggestion_EmptyBody_DeletesRange(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "a.go", "L1\nL2\nL3\nL4\nL5\n")
+	thr := threadAt("a.go", 3, nil)
+	sug := Suggestion{Body: ""}
+	res, opErr := ApplySuggestion(context.Background(), thr, sug, ApplyOptions{RepoRoot: dir})
+	if opErr != nil {
+		t.Fatalf("opErr: %+v", opErr)
+	}
+	if !res.Applied {
+		t.Errorf("not applied")
+	}
+	got := readFile(t, filepath.Join(dir, "a.go"))
+	want := "L1\nL2\nL4\nL5\n"
+	if got != want {
+		t.Errorf("got %q want %q (empty body should DELETE the range, no blank line)", got, want)
+	}
+}
+
+func TestApplySuggestion_EmptyBody_MultiLineRange(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "a.go", "L1\nL2\nL3\nL4\nL5\n")
+	start := 2
+	thr := threadAt("a.go", 4, &start)
+	sug := Suggestion{Body: ""}
+	res, opErr := ApplySuggestion(context.Background(), thr, sug, ApplyOptions{RepoRoot: dir})
+	if opErr != nil {
+		t.Fatalf("opErr: %+v", opErr)
+	}
+	if !res.Applied {
+		t.Errorf("not applied")
+	}
+	got := readFile(t, filepath.Join(dir, "a.go"))
+	want := "L1\nL5\n"
+	if got != want {
+		t.Errorf("got %q want %q", got, want)
+	}
+}
+
+func TestApplySuggestion_SingleEmptyLine_NotDeletion(t *testing.T) {
+	// A single explicit "\n" body still represents "replace with one blank
+	// line" — distinct from the empty-body deletion case.
+	dir := t.TempDir()
+	writeFile(t, dir, "a.go", "L1\nL2\nL3\n")
+	thr := threadAt("a.go", 2, nil)
+	sug := Suggestion{Body: "\n"}
+	res, opErr := ApplySuggestion(context.Background(), thr, sug, ApplyOptions{RepoRoot: dir})
+	if opErr != nil {
+		t.Fatalf("opErr: %+v", opErr)
+	}
+	if !res.Applied {
+		t.Errorf("not applied")
+	}
+	got := readFile(t, filepath.Join(dir, "a.go"))
+	want := "L1\n\nL3\n"
+	if got != want {
+		t.Errorf("got %q want %q", got, want)
+	}
+}
