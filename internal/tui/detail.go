@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
 
@@ -300,22 +301,41 @@ func (m Model) collectSiblings(clusterID, selfID string) []string {
 // of width boxWidth, and appends the closing "│". The input string is
 // expected to start with the opening "│ ".
 //
-// Limitation: width is computed by byte length, not rune width. Multi-byte
-// runes (CJK, emoji) will under-count and produce a slightly wider visual
-// line than the nominal box width. For v1 this is acceptable; a future
-// revision can switch to runewidth.StringWidth + runewidth.Truncate.
+// Width is computed in runes via utf8.RuneCountInString, and truncation
+// happens on rune boundaries, so multi-byte box-drawing characters
+// (e.g. "│") and other non-ASCII runes are handled correctly. Note that
+// "rune count" is not the same as terminal display width — CJK and wide
+// emoji will under-count, but the detail view does not contain such
+// content, so rune count is sufficient here.
 func fitBoxLine(line string, boxWidth int) string {
 	// boxWidth is the total width of the box including borders, so the
 	// content area between the two "│" characters is boxWidth-2 wide.
 	// The closing "│" is appended at column boxWidth-1 (0-indexed) so
-	// the line as-is must occupy boxWidth-1 columns before the trailing
-	// "│" is added.
+	// the line as-is must occupy boxWidth-1 columns (runes) before the
+	// trailing "│" is added.
 	target := boxWidth - 1
-	if len(line) > target {
-		// Truncate, leaving room for the closing border.
-		line = line[:target]
+	width := utf8.RuneCountInString(line)
+	if width > target {
+		// Truncate at a rune boundary, leaving room for the closing border.
+		line = runeTruncate(line, target)
 	} else {
-		line += pad(target-len(line), " ")
+		line += pad(target-width, " ")
 	}
 	return line + "│"
+}
+
+// runeTruncate returns the longest prefix of s that contains at most
+// target runes. Truncation always happens on a rune boundary.
+func runeTruncate(s string, target int) string {
+	if target <= 0 {
+		return ""
+	}
+	r := 0
+	for j := range s {
+		if r >= target {
+			return s[:j]
+		}
+		r++
+	}
+	return s
 }

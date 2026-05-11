@@ -304,7 +304,7 @@ func runForksClusterPipeline(
 	}
 
 	inputs := cluster.PipelineInputs{
-		Provider:      "github",
+		Provider:      providerName(ctx, provider),
 		UpstreamOwner: owner,
 		UpstreamRepo:  repoName,
 		Upstream:      *parent,
@@ -318,8 +318,6 @@ func runForksClusterPipeline(
 			inputs.CommitSource = &gh.CommitSourceForRepo{Client: client}
 			inputs.ReadmeFetcher = client
 		}
-	} else {
-		inputs.Provider = "other"
 	}
 
 	labeler := opts.Labeler
@@ -370,6 +368,28 @@ func runForksClusterPipeline(
 		Message:  skip.Message,
 		Endpoint: skip.Endpoint,
 		Model:    skip.Model,
+	}
+}
+
+// providerName returns the canonical provider string ("github" / "gitlab")
+// derived from forge.AuthInfo. Falls back to "other" when Auth fails or
+// the provider is unknown — the cluster cache keys on this value, so it
+// must be stable per provider.
+func providerName(ctx context.Context, p forge.Forge) string {
+	if p == nil {
+		return "other"
+	}
+	auth, err := p.Auth(ctx)
+	if err != nil {
+		return "other"
+	}
+	switch auth.Provider {
+	case forge.ProviderGitHub:
+		return "github"
+	case forge.ProviderGitLab:
+		return "gitlab"
+	default:
+		return "other"
 	}
 }
 

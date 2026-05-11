@@ -262,7 +262,7 @@ func TestClusterGroupRank_Ordering(t *testing.T) {
 		{"noise", 2},
 	}
 	for _, c := range cases {
-		r, _ := clusterGroupRank(c.id)
+		r, _, _ := clusterGroupRank(c.id)
 		if r != c.rank {
 			t.Errorf("clusterGroupRank(%q) rank = %d; want %d", c.id, r, c.rank)
 		}

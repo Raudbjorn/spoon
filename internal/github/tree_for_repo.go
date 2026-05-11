@@ -31,7 +31,7 @@ type treeResponse struct {
 // tree SHA internally. Pass the default branch name (e.g., "main") for the
 // canonical upstream tree.
 //
-// Returns (nil, err) on 404 — the caller should treat this as "tree
+// Returns (nil, nil) on 404 — the caller should treat this as "tree
 // unavailable" and skip the centrality pass. Returns (nil, err) when the
 // response is truncated: a partial tree would produce misleading centrality
 // scores, so it's better to skip the pass entirely.
@@ -39,6 +39,9 @@ func (c *Client) FetchTree(ctx context.Context, owner, repo, ref string) ([]stri
 	path := fmt.Sprintf("repos/%s/%s/git/trees/%s?recursive=1", owner, repo, ref)
 	resp, err := c.GetRaw(ctx, path)
 	if err != nil {
+		if isNotFound(err) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	defer resp.Body.Close()

@@ -128,7 +128,7 @@ func runDumpClustering(
 	}
 
 	inputs := ClusterInputs{
-		Provider:      "github",
+		Provider:      providerName(ctx, provider),
 		UpstreamOwner: owner,
 		UpstreamRepo:  repoName,
 		Upstream:      *parent,
@@ -143,13 +143,34 @@ func runDumpClustering(
 			inputs.CommitSource = &gh.CommitSourceForRepo{Client: client}
 			inputs.ReadmeFetcher = client
 		}
-	} else {
-		// Non-GitHub provider (e.g., GitLab). Cluster pipeline still runs —
-		// README and centrality just won't be available.
-		inputs.Provider = "other"
 	}
+	// Non-GitHub providers (e.g., GitLab) leave TreeSource / CommitSource /
+	// ReadmeFetcher nil. The cluster pipeline tolerates nil sources: README
+	// and centrality just won't be available.
 
 	if _, err := cluster.RunPipeline(ctx, opts.Cluster.toPipeline(), inputs, logger); err != nil {
 		fmt.Fprintf(logger, "[cluster] pipeline error: %v (continuing)\n", err)
+	}
+}
+
+// providerName returns the canonical provider string ("github" / "gitlab")
+// derived from forge.AuthInfo. Falls back to "other" when Auth fails or
+// the provider is unknown — the cluster cache keys on this value, so it
+// must be stable per provider.
+func providerName(ctx context.Context, p forge.Forge) string {
+	if p == nil {
+		return "other"
+	}
+	auth, err := p.Auth(ctx)
+	if err != nil {
+		return "other"
+	}
+	switch auth.Provider {
+	case forge.ProviderGitHub:
+		return "github"
+	case forge.ProviderGitLab:
+		return "gitlab"
+	default:
+		return "other"
 	}
 }

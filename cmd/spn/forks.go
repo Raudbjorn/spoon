@@ -219,10 +219,10 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 	if owner == "" || name == "" {
 		return agentio.NewError(agentio.CodeBadInput, "invalid repo: "+repo, agentio.RemediationBadInput("forks", "list")).Emit(stderr)
 	}
-	// Discard the cluster pipeline's free-form progress logs. Structured
-	// ClusterSkip warnings are emitted as agent envelopes via
-	// emitClusterWarning so machine consumers see them on stderr without
-	// being interleaved with prose log lines.
+	// Cluster-pipeline progress logs are silenced to keep NDJSON stable;
+	// only structured ClusterSkip warnings are emitted on stderr via
+	// emitClusterWarning. The discard is intentional — do not wire stderr
+	// here, prose log lines would interleave with the agent envelopes.
 	opts.Logger = io.Discard
 	if embedderHookForTest != nil {
 		opts.Cluster.SetEmbedderForTest(embedderHookForTest)
