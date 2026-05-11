@@ -65,6 +65,11 @@ type ClusterOptions struct {
 	// field; production callers usually pass LabelerEndpoint instead.
 	Labeler cluster.Labeler
 
+	// CentralityBackend is forwarded to cluster.PipelineOptions. "" or
+	// "directory" → directory-centrality proxy. "mdg" → Module Dependency
+	// Graph. See `--full-mdg` on `spn forks list`.
+	CentralityBackend string
+
 	// embedderForTest is the test seam for cluster integration tests. Tests
 	// inject a stub embed.Embedder via SetEmbedderForTest; the field is
 	// unexported so production callers cannot bypass SelectEmbedder.
@@ -383,9 +388,10 @@ func runForksClusterPipeline(
 		MinClusterSize:  opts.MinClusterSize,
 		AutoPull:        opts.AutoPull,
 		NoPrompt:        opts.NoPrompt,
-		NonInteractive:  opts.NonInteractive,
-		Refresh:         opts.Refresh,
-		Labeler:         labeler,
+		NonInteractive:    opts.NonInteractive,
+		Refresh:           opts.Refresh,
+		Labeler:           labeler,
+		CentralityBackend: opts.CentralityBackend,
 	}
 	if opts.embedderForTest != nil {
 		pipelineOpts.EmbedderForTest = opts.embedderForTest

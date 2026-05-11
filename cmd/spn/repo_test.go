@@ -109,3 +109,22 @@ func TestSpnRepo_unknownVerb_badInput(t *testing.T) {
 		t.Errorf("code=%v", env["error"]["code"])
 	}
 }
+
+func TestRepoCentrality_FullMDGFlag(t *testing.T) {
+	var sawMDG bool
+	prevMDG := repoMDGCentralityFn
+	defer func() { repoMDGCentralityFn = prevMDG }()
+	repoMDGCentralityFn = func(ctx context.Context, p, o, r string) (repo.Centrality, error) {
+		sawMDG = true
+		return repo.DirectoryCentrality{Provider: p, Owner: o, Repo: r}, nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	exit := runRepoWith([]string{"centrality", "owner/repo", "--full-mdg"}, &stdout, &stderr)
+	if exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+	}
+	if !sawMDG {
+		t.Fatalf("expected MDG backend to be invoked when --full-mdg is set")
+	}
+}
