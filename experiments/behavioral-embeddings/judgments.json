@@ -48,12 +48,6 @@
     "rationale": "3658: \"Partial PR for #2216\" 3713: \"Closes #2216"
   },
   {
-    "a": "pr-4499",
-    "b": "pr-3689",
-    "label": 0,
-    "rationale": "both affect the gateway service, one focuses on reachability\u001b[1;5D\u001b[1;5D"
-  },
-  {
     "a": "pr-4679",
     "b": "pr-4491",
     "label": 0,
@@ -232,5 +226,95 @@
     "b": "pr-3153",
     "label": 0,
     "rationale": "not same intent; only both are security-flavored in the broadest, least useful sense.#4699 is defensive validation in one deprecated service path; #3153 is platform/runtime capability architecture."
+  },
+  {
+    "a": "pr-4654",
+    "b": "pr-4669",
+    "label": 1,
+    "rationale": "Both centralize the Layer-1 visibility filter \u2014 pr-4654 at the REST endpoint layer, pr-4669 in streamablehttp_transport.py."
+  },
+  {
+    "a": "pr-3177",
+    "b": "pr-4595",
+    "label": 1,
+    "rationale": "Both add service-level caching for get_user_by_email in email_auth_service.py to remove a hot-path DB query."
+  },
+  {
+    "a": "pr-4594",
+    "b": "pr-4214",
+    "label": 1,
+    "rationale": "Both fix OAuth scope-claim parsing to accept either a space-delimited string or an array."
+  },
+  {
+    "a": "pr-4539",
+    "b": "pr-4459",
+    "label": 1,
+    "rationale": "Both establish email-over-sub precedence when extracting user identity from an OAuth/JWT token."
+  },
+  {
+    "a": "pr-4636",
+    "b": "pr-4480",
+    "label": 1,
+    "rationale": "Both fix the RBAC role/user_role race on concurrent bootstrap by adding a unique constraint / dedupe migration."
+  },
+  {
+    "a": "pr-4571",
+    "b": "pr-4690",
+    "label": 1,
+    "rationale": "Both move DB bootstrap fully under Alembic instead of SQLAlchemy create_all \u2014 one is the targeted fix, the other the broader sweep."
+  },
+  {
+    "a": "pr-4427",
+    "b": "pr-4368",
+    "label": 1,
+    "rationale": "Both sanitize API error responses to stop internal exception/validation details from leaking out."
+  },
+  {
+    "a": "pr-4137",
+    "b": "pr-4356",
+    "label": 1,
+    "rationale": "Both correct the JSON-RPC error envelope \u2014 pr-4137 fixes plugin-exception shape, pr-4356 the -32601 code for unknown methods."
+  },
+  {
+    "a": "pr-4499",
+    "b": "pr-3689",
+    "label": 1,
+    "rationale": "Both repair gateway tool/cache state on refresh/update (cache invalidation + reachability restore in gateway_service.py). (Label revised from 0 \u2192 1.)"
+  },
+  {
+    "a": "pr-4637",
+    "b": "pr-4699",
+    "label": 1,
+    "rationale": "Both patch the same list_agents_for_user A2A code path \u2014 pr-4637 fixes the user-dict-to-SQL crash, pr-4699 the email-extraction type bug."
+  },
+  {
+    "a": "pr-4505",
+    "b": "pr-4468",
+    "label": 1,
+    "rationale": "Both throttle DB-heavy background work \u2014 metrics-table DELETE batching and aggregate_all_components under a pg advisory lock."
+  },
+  {
+    "a": "pr-4088",
+    "b": "pr-4031",
+    "label": 1,
+    "rationale": "Both introduce experimental Rust microservices sitting alongside the Python gateway (auth service; validation middleware)."
+  },
+  {
+    "a": "pr-4424",
+    "b": "pr-4673",
+    "label": 1,
+    "rationale": "Both eliminate inline JavaScript to satisfy strict CSP \u2014 nonce-based CSP rollout vs. removing the inline event handlers themselves."
+  },
+  {
+    "a": "pr-3215",
+    "b": "pr-3211",
+    "label": 1,
+    "rationale": "Both repair external-plugin loading \u2014 plugin_dirs resolution and the matching Containerfile/test-config updates."
+  },
+  {
+    "a": "pr-4308",
+    "b": "pr-4481",
+    "label": 1,
+    "rationale": "Both finish migrating plugins out of the in-tree framework into the external cpex-* packages (content-moderation move; cleanup for already-migrated rate-limiter/encoded-exfil)."
   }
 ]
