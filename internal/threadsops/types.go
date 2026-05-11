@@ -13,10 +13,13 @@ import (
 // ReviewThreadWithPolicy embeds github.ReviewThread plus a derived requiresBody
 // field for agent-facing JSON output. Suggestions, when present, holds the
 // parsed `suggestion` blocks from this thread's comments (document order).
+// DryRun is set on output from a Resolve/UnresolveAll call invoked with
+// DryRun=true to let consumers distinguish a previewed mutation from a real one.
 type ReviewThreadWithPolicy struct {
 	github.ReviewThread
 	RequiresBody bool         `json:"requiresBody"`
 	Suggestions  []Suggestion `json:"suggestions,omitempty"`
+	DryRun       bool         `json:"dryRun,omitempty"`
 }
 
 // FilterMode selects which review threads to surface in list/JSON output.
@@ -154,10 +157,13 @@ func AnnotateOneWithPolicy(t *github.ReviewThread) *ReviewThreadWithPolicy {
 }
 
 // BulkResult is the spn-facing outcome of resolve-all / unresolve-all.
+// DryRun, when true, means the listed Succeeded IDs were NOT actually mutated;
+// the operation only previewed what would have happened.
 type BulkResult struct {
 	Succeeded []string      `json:"succeeded"`
 	Failed    []BulkFailure `json:"failed"`
 	Skipped   []BulkSkip    `json:"skipped"`
+	DryRun    bool          `json:"dryRun,omitempty"`
 }
 
 // BulkFailure captures one failure inside a bulk operation.

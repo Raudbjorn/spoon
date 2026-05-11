@@ -750,6 +750,149 @@ func TestSpnThreadsReply_SuggestAndBodyMutuallyExclusive(t *testing.T) {
 	}
 }
 
+// --- G4: --dry-run E2E tests -----------------------------------------------
+
+// dryRunStub counts mutation calls for dry-run assertions and lets each test
+// configure the threads slice. CurrentUserLogin and ReplyToThread are stubbed
+// to known no-mutation behavior; ResolveThread / UnresolveThread bump counters.
+type dryRunStub struct {
+	stubAPI
+	mu             sync.Mutex
+	resolveCalls   int
+	unresolveCalls int
+}
+
+func (d *dryRunStub) ResolveThread(_ context.Context, _ string) error {
+	d.mu.Lock()
+	d.resolveCalls++
+	d.mu.Unlock()
+	return nil
+}
+func (d *dryRunStub) UnresolveThread(_ context.Context, _ string) error {
+	d.mu.Lock()
+	d.unresolveCalls++
+	d.mu.Unlock()
+	return nil
+}
+func (d *dryRunStub) ReplyToThread(_ context.Context, _, _ string) (github.ThreadComment, error) {
+	d.mu.Lock()
+	// reply IS a mutation we want to verify is suppressed under --dry-run; lump
+	// it into resolveCalls so the assertion catches either.
+	d.resolveCalls++
+	d.mu.Unlock()
+	return github.ThreadComment{}, nil
+}
+
+func TestSpnThreadsResolve_DryRun_E2E(t *testing.T) {
+	d := &dryRunStub{stubAPI: stubAPI{threads: []github.ReviewThread{{
+		ID:       "PRRT_1",
+		Comments: []github.ThreadComment{{AuthorType: "Bot"}},
+	}}}}
+	prev := apiFactory
+	defer func() { apiFactory = prev }()
+	apiFactory = func() (threadsops.API, *agentio.Error) { return d, nil }
+	var stdout, stderr bytes.Buffer
+	exit := runThreadsWith([]string{"resolve", "owner/repo#1", "PRRT_1", "--dry-run"}, &stdout, &stderr)
+	if exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("stdout not JSON: %v\n%s", err, stdout.String())
+	}
+	if got["dryRun"] != true {
+		t.Errorf("expected dryRun=true in stdout, got %+v", got)
+	}
+	if d.resolveCalls != 0 {
+		t.Errorf("expected 0 mutation calls on dry-run, got %d", d.resolveCalls)
+	}
+}
+
+func TestSpnThreadsResolveAll_DryRun_E2E(t *testing.T) {
+	d := &dryRunStub{stubAPI: stubAPI{threads: []github.ReviewThread{
+		{ID: "PRRT_a", Comments: []github.ThreadComment{{AuthorType: "Bot"}}},
+		{ID: "PRRT_b", Comments: []github.ThreadComment{{AuthorType: "Bot"}}},
+	}}}
+	prev := apiFactory
+	defer func() { apiFactory = prev }()
+	apiFactory = func() (threadsops.API, *agentio.Error) { return d, nil }
+	var stdout, stderr bytes.Buffer
+	exit := runThreadsWith([]string{"resolve-all", "owner/repo#1", "--dry-run"}, &stdout, &stderr)
+	if exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("stdout not JSON: %v\n%s", err, stdout.String())
+	}
+	if got["dryRun"] != true {
+		t.Errorf("expected dryRun=true on BulkResult, got %+v", got)
+	}
+	succeeded, _ := got["succeeded"].([]any)
+	if len(succeeded) != 2 {
+		t.Errorf("succeeded=%+v want 2", succeeded)
+	}
+	if d.resolveCalls != 0 {
+		t.Errorf("expected 0 mutation calls on dry-run, got %d", d.resolveCalls)
+	}
+}
+
+func TestSpnThreadsUnresolveAll_DryRun_E2E(t *testing.T) {
+	d := &dryRunStub{stubAPI: stubAPI{threads: []github.ReviewThread{
+		{ID: "PRRT_x", IsResolved: true, Comments: []github.ThreadComment{{AuthorType: "Bot"}}},
+		{ID: "PRRT_y", IsResolved: true, Comments: []github.ThreadComment{{AuthorType: "Bot"}}},
+	}}}
+	prev := apiFactory
+	defer func() { apiFactory = prev }()
+	apiFactory = func() (threadsops.API, *agentio.Error) { return d, nil }
+	var stdout, stderr bytes.Buffer
+	exit := runThreadsWith([]string{"unresolve-all", "owner/repo#1", "--dry-run"}, &stdout, &stderr)
+	if exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("stdout not JSON: %v\n%s", err, stdout.String())
+	}
+	if got["dryRun"] != true {
+		t.Errorf("expected dryRun=true on BulkResult, got %+v", got)
+	}
+	succeeded, _ := got["succeeded"].([]any)
+	if len(succeeded) != 2 {
+		t.Errorf("succeeded=%+v want 2", succeeded)
+	}
+	if d.unresolveCalls != 0 {
+		t.Errorf("expected 0 mutation calls on dry-run, got %d", d.unresolveCalls)
+	}
+}
+
+func TestSpnThreadsResolve_DryRun_StillRejectsPolicyViolation(t *testing.T) {
+	// Human thread, --dry-run, no --body: the policy gate still trips. exit=2
+	// (bad_input / policy_violation), no mutation calls.
+	d := &dryRunStub{stubAPI: stubAPI{threads: []github.ReviewThread{{
+		ID:       "PRRT_1",
+		Comments: []github.ThreadComment{{AuthorType: "User", Author: "alice"}},
+	}}}}
+	prev := apiFactory
+	defer func() { apiFactory = prev }()
+	apiFactory = func() (threadsops.API, *agentio.Error) { return d, nil }
+	var stdout, stderr bytes.Buffer
+	exit := runThreadsWith([]string{"resolve", "owner/repo#1", "PRRT_1", "--dry-run"}, &stdout, &stderr)
+	if exit != 2 {
+		t.Fatalf("exit=%d (want 2 for policy_violation); stderr=%s", exit, stderr.String())
+	}
+	var env map[string]map[string]any
+	if err := json.Unmarshal(stderr.Bytes(), &env); err != nil {
+		t.Fatalf("stderr not JSON: %v\n%s", err, stderr.String())
+	}
+	if env["error"]["code"] != "policy_violation" {
+		t.Errorf("code=%v want policy_violation", env["error"]["code"])
+	}
+	if d.resolveCalls != 0 {
+		t.Errorf("expected 0 mutation calls; got %d", d.resolveCalls)
+	}
+}
+
 func TestSpnThreadsReply_SuggestFile(t *testing.T) {
 	tmp := t.TempDir()
 	path := tmp + "/sug.txt"

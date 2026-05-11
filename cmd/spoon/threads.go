@@ -392,7 +392,7 @@ func runThreads(args []string) int {
 			return 1
 		}
 		emitStatus(os.Stdout, status, number, flags.noStatus)
-		_, wasAlreadyResolved, opErr := threadsops.ResolveWithThreads(ctx, client, all, flags.targetID, flags.body)
+		_, wasAlreadyResolved, opErr := threadsops.ResolveWithThreadsAndOptions(ctx, client, all, flags.targetID, flags.body, threadsops.ResolveOptions{DryRun: flags.dryRun})
 		if opErr != nil {
 			switch opErr.Code {
 			case threadsops.OpCodeNotFound:
@@ -408,6 +408,8 @@ func runThreads(args []string) int {
 		}
 		if wasAlreadyResolved {
 			fmt.Fprintln(os.Stderr, "⚠️  Warning: thread already resolved; nothing to do")
+		} else if flags.dryRun {
+			fmt.Fprintln(os.Stderr, "ℹ️  Dry run: would resolve thread", flags.targetID)
 		}
 		return 0
 
@@ -421,12 +423,17 @@ func runThreads(args []string) int {
 		res, opErr := threadsops.ResolveAllWithOptions(ctx, client, owner, repo, number, threadsops.ResolveAllOptions{
 			SkipHumanThreads: false, // legacy spoon mode
 			OutdatedOnly:     flags.outdatedOnly,
+			DryRun:           flags.dryRun,
 		})
 		if opErr != nil {
 			fmt.Fprintln(os.Stderr, "❌ Error:", opErr.Message)
 			return 1
 		}
-		fmt.Printf("✅ resolved %d threads\n", len(res.Succeeded))
+		verb := "resolved"
+		if flags.dryRun {
+			verb = "would resolve"
+		}
+		fmt.Printf("✅ %s %d threads\n", verb, len(res.Succeeded))
 		if flags.outdatedOnly {
 			notOutdated := 0
 			for _, s := range res.Skipped {
@@ -453,12 +460,16 @@ func runThreads(args []string) int {
 			return 1
 		}
 		emitStatus(os.Stdout, status, number, flags.noStatus)
-		res, opErr := threadsops.UnresolveAll(ctx, client, owner, repo, number)
+		res, opErr := threadsops.UnresolveAllWithOptions(ctx, client, owner, repo, number, threadsops.UnresolveAllOptions{DryRun: flags.dryRun})
 		if opErr != nil {
 			fmt.Fprintln(os.Stderr, "❌ Error:", opErr.Message)
 			return 1
 		}
-		fmt.Printf("✅ unresolved %d threads\n", len(res.Succeeded))
+		verb := "unresolved"
+		if flags.dryRun {
+			verb = "would unresolve"
+		}
+		fmt.Printf("✅ %s %d threads\n", verb, len(res.Succeeded))
 		if len(res.Failed) > 0 {
 			for _, f := range res.Failed {
 				fmt.Fprintf(os.Stderr, "❌ failed %s: %s\n", f.ID, f.Error)
@@ -567,6 +578,10 @@ Flags:
                         anchored code is outdated; non-outdated threads
                         are skipped with reason "not_outdated"
   --unresolve-all       Mark every resolved thread as unresolved
+  --dry-run             Preview what --resolve / --resolve-all / --unresolve-all
+                        would do: the fetch + policy gates run, but no
+                        GraphQL mutation is issued. (Also used by
+                        --apply-suggestion to skip the local file write.)
   --apply-suggestion <id> [--suggestion-index N] [--dry-run] [--force] [--repo-root PATH]
                         Rewrite the local file at the thread's line range
                         with the parsed suggestion block. --dry-run skips

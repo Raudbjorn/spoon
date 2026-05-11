@@ -268,6 +268,7 @@ func doThreadsReply(args []string, stdout, stderr io.Writer) int {
 
 func doThreadsResolve(args []string, stdout, stderr io.Writer) int {
 	var prRef, threadID, body, bodyFile string
+	dryRun := false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--body":
@@ -282,6 +283,8 @@ func doThreadsResolve(args []string, stdout, stderr io.Writer) int {
 			}
 			i++
 			bodyFile = args[i]
+		case "--dry-run":
+			dryRun = true
 		default:
 			if strings.HasPrefix(args[i], "--") {
 				return agentio.NewError(agentio.CodeBadInput, "unknown flag: "+args[i], agentio.RemediationBadInput("threads", "resolve")).Emit(stderr)
@@ -296,7 +299,7 @@ func doThreadsResolve(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	if prRef == "" || threadID == "" {
-		return agentio.NewError(agentio.CodeBadInput, "usage: spn threads resolve <pr-ref> <thread-id> [--body T]", agentio.RemediationBadInput("threads", "resolve")).Emit(stderr)
+		return agentio.NewError(agentio.CodeBadInput, "usage: spn threads resolve <pr-ref> <thread-id> [--body T] [--dry-run]", agentio.RemediationBadInput("threads", "resolve")).Emit(stderr)
 	}
 	if bodyFile != "" && body == "" {
 		b, err := threadsops.ReadBody(bodyFile)
@@ -313,7 +316,7 @@ func doThreadsResolve(args []string, stdout, stderr io.Writer) int {
 	if authErr != nil {
 		return authErr.Emit(stderr)
 	}
-	t, _, opErr := threadsops.Resolve(context.Background(), api, owner, repo, number, threadID, body)
+	t, _, opErr := threadsops.ResolveWithOptions(context.Background(), api, owner, repo, number, threadID, body, threadsops.ResolveOptions{DryRun: dryRun})
 	if opErr != nil {
 		return translateResolveErr(opErr, prRef, threadID, stderr)
 	}
@@ -326,11 +329,14 @@ func doThreadsResolve(args []string, stdout, stderr io.Writer) int {
 func doThreadsResolveAll(args []string, stdout, stderr io.Writer) int {
 	var prRef string
 	outdatedOnly := false
+	dryRun := false
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
 		case a == "--outdated":
 			outdatedOnly = true
+		case a == "--dry-run":
+			dryRun = true
 		case strings.HasPrefix(a, "--"):
 			return agentio.NewError(agentio.CodeBadInput, "unknown flag: "+a, agentio.RemediationBadInput("threads", "resolve-all")).Emit(stderr)
 		default:
@@ -341,7 +347,7 @@ func doThreadsResolveAll(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	if prRef == "" {
-		return agentio.NewError(agentio.CodeBadInput, "usage: spn threads resolve-all <pr-ref> [--outdated]", agentio.RemediationBadInput("threads", "resolve-all")).Emit(stderr)
+		return agentio.NewError(agentio.CodeBadInput, "usage: spn threads resolve-all <pr-ref> [--outdated] [--dry-run]", agentio.RemediationBadInput("threads", "resolve-all")).Emit(stderr)
 	}
 	owner, repo, number, ec, ok := resolvePRRef(prRef, "threads", "resolve-all", stderr)
 	if !ok {
@@ -354,6 +360,7 @@ func doThreadsResolveAll(args []string, stdout, stderr io.Writer) int {
 	res, opErr := threadsops.ResolveAllWithOptions(context.Background(), api, owner, repo, number, threadsops.ResolveAllOptions{
 		SkipHumanThreads: true,
 		OutdatedOnly:     outdatedOnly,
+		DryRun:           dryRun,
 	})
 	if opErr != nil {
 		return translateOpErr(opErr, stderr)
@@ -365,10 +372,26 @@ func doThreadsResolveAll(args []string, stdout, stderr io.Writer) int {
 }
 
 func doThreadsUnresolveAll(args []string, stdout, stderr io.Writer) int {
-	if len(args) != 1 {
-		return agentio.NewError(agentio.CodeBadInput, "usage: spn threads unresolve-all <pr-ref>", agentio.RemediationBadInput("threads", "unresolve-all")).Emit(stderr)
+	var prRef string
+	dryRun := false
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--dry-run":
+			dryRun = true
+		case strings.HasPrefix(a, "--"):
+			return agentio.NewError(agentio.CodeBadInput, "unknown flag: "+a, agentio.RemediationBadInput("threads", "unresolve-all")).Emit(stderr)
+		default:
+			if prRef != "" {
+				return agentio.NewError(agentio.CodeBadInput, "unexpected positional: "+a, agentio.RemediationBadInput("threads", "unresolve-all")).Emit(stderr)
+			}
+			prRef = a
+		}
 	}
-	owner, repo, number, ec, ok := resolvePRRef(args[0], "threads", "unresolve-all", stderr)
+	if prRef == "" {
+		return agentio.NewError(agentio.CodeBadInput, "usage: spn threads unresolve-all <pr-ref> [--dry-run]", agentio.RemediationBadInput("threads", "unresolve-all")).Emit(stderr)
+	}
+	owner, repo, number, ec, ok := resolvePRRef(prRef, "threads", "unresolve-all", stderr)
 	if !ok {
 		return ec
 	}
@@ -376,7 +399,7 @@ func doThreadsUnresolveAll(args []string, stdout, stderr io.Writer) int {
 	if authErr != nil {
 		return authErr.Emit(stderr)
 	}
-	res, opErr := threadsops.UnresolveAll(context.Background(), api, owner, repo, number)
+	res, opErr := threadsops.UnresolveAllWithOptions(context.Background(), api, owner, repo, number, threadsops.UnresolveAllOptions{DryRun: dryRun})
 	if opErr != nil {
 		return translateOpErr(opErr, stderr)
 	}

@@ -9,6 +9,16 @@ import (
 
 const bodySatisfiedRecencyWindow = 60 * time.Second
 
+// ResolveOptions tunes a Resolve / ResolveWithThreads call. The zero value
+// matches the historical behavior. When DryRun is true, the resolver performs
+// the full fetch + policy + idempotency checks but skips the ReplyToThread
+// and ResolveThread GraphQL mutations; the returned ReviewThreadWithPolicy
+// is marked DryRun=true so JSON consumers can distinguish a preview from a
+// real resolution.
+type ResolveOptions struct {
+	DryRun bool
+}
+
 // Resolve fetches the PR and resolves the named thread. See the package docs
 // for the full state machine: not-found, idempotent, body-required gate,
 // body-satisfied dedup, partial-failure handling.
@@ -21,6 +31,13 @@ const bodySatisfiedRecencyWindow = 60 * time.Second
 //	  surface an idempotency warning.
 //	opErr: error envelope or nil
 func Resolve(ctx context.Context, api API, owner, repo string, number int, threadID, body string) (*ReviewThreadWithPolicy, bool, *OpError) {
+	return ResolveWithOptions(ctx, api, owner, repo, number, threadID, body, ResolveOptions{})
+}
+
+// ResolveWithOptions is the options-bearing form of Resolve. Pass DryRun=true
+// to preview the mutation without issuing the GraphQL resolveReviewThread
+// (or any prerequisite reply).
+func ResolveWithOptions(ctx context.Context, api API, owner, repo string, number int, threadID, body string, opts ResolveOptions) (*ReviewThreadWithPolicy, bool, *OpError) {
 	_, all, err := api.FetchPR(ctx, owner, repo, number, github.ThreadStateAll)
 	if err != nil {
 		if op := rateLimitedOpError(err); op != nil {
@@ -28,7 +45,7 @@ func Resolve(ctx context.Context, api API, owner, repo string, number int, threa
 		}
 		return nil, false, &OpError{Code: OpCodeUpstream, Message: err.Error(), Retryable: true}
 	}
-	return ResolveWithThreads(ctx, api, all, threadID, body)
+	return ResolveWithThreadsAndOptions(ctx, api, all, threadID, body, opts)
 }
 
 // ResolveWithThreads is like Resolve but accepts a pre-fetched thread slice,
@@ -36,6 +53,12 @@ func Resolve(ctx context.Context, api API, owner, repo string, number int, threa
 // fetched the threads for another reason (e.g., spoon fetches them for the
 // status header).
 func ResolveWithThreads(ctx context.Context, api API, threads []github.ReviewThread, threadID, body string) (*ReviewThreadWithPolicy, bool, *OpError) {
+	return ResolveWithThreadsAndOptions(ctx, api, threads, threadID, body, ResolveOptions{})
+}
+
+// ResolveWithThreadsAndOptions is the options-bearing variant of
+// ResolveWithThreads. Honors ResolveOptions.DryRun.
+func ResolveWithThreadsAndOptions(ctx context.Context, api API, threads []github.ReviewThread, threadID, body string, opts ResolveOptions) (*ReviewThreadWithPolicy, bool, *OpError) {
 	var target *github.ReviewThread
 	for i := range threads {
 		if threads[i].ID == threadID {
@@ -46,15 +69,17 @@ func ResolveWithThreads(ctx context.Context, api API, threads []github.ReviewThr
 	if target == nil {
 		return nil, false, &OpError{Code: OpCodeNotFound, Message: "thread " + threadID + " not found on PR", Details: map[string]any{"thread_id": threadID}}
 	}
-	return resolveTarget(ctx, api, target, threadID, body)
+	return resolveTarget(ctx, api, target, threadID, body, opts)
 }
 
 // resolveTarget runs the post-fetch state machine. Shared by Resolve and
 // ResolveWithThreads.
-func resolveTarget(ctx context.Context, api API, target *github.ReviewThread, threadID, body string) (*ReviewThreadWithPolicy, bool, *OpError) {
+func resolveTarget(ctx context.Context, api API, target *github.ReviewThread, threadID, body string, opts ResolveOptions) (*ReviewThreadWithPolicy, bool, *OpError) {
 	annotated := AnnotateOneWithPolicy(target)
 	PopulateOneSuggestions(annotated)
 	if target.IsResolved {
+		// Idempotent: nothing to mutate, no dryRun marker needed — already-resolved
+		// is the same outcome regardless of opts.DryRun.
 		return annotated, true, nil
 	}
 	if annotated.RequiresBody && body == "" {
@@ -65,6 +90,15 @@ func resolveTarget(ctx context.Context, api API, target *github.ReviewThread, th
 				Details: map[string]any{"thread_id": threadID},
 			}
 		}
+	}
+	if opts.DryRun {
+		// Skip the reply and resolveReviewThread mutations entirely. Report what
+		// would have happened by marking the annotated thread as resolved-in-spirit
+		// and setting DryRun=true so JSON consumers can distinguish a preview.
+		annotated.IsResolved = true
+		annotated.DryRun = true
+		PopulateOneSuggestions(annotated)
+		return annotated, false, nil
 	}
 	commentID := ""
 	if body != "" {

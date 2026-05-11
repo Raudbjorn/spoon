@@ -301,6 +301,34 @@ func TestParseThreadsFlags_OutdatedWithoutResolveAll(t *testing.T) {
 	}
 }
 
+// --- G4: --dry-run parser tests --------------------------------------------
+
+func TestParseThreadsFlags_DryRun(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want threadsMode
+	}{
+		{"--dry-run with --resolve", []string{"owner/repo#1", "--resolve", "PRRT_1", "--dry-run"}, modeResolve},
+		{"--dry-run with --resolve-all", []string{"owner/repo#1", "--resolve-all", "--dry-run"}, modeResolveAll},
+		{"--dry-run with --unresolve-all", []string{"owner/repo#1", "--unresolve-all", "--dry-run"}, modeUnresolveAll},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f, err := parseThreadsFlags(tc.args)
+			if err != nil {
+				t.Fatalf("err: %v", err)
+			}
+			if f.mode != tc.want {
+				t.Errorf("mode=%v want %v", f.mode, tc.want)
+			}
+			if !f.dryRun {
+				t.Errorf("dryRun should be true")
+			}
+		})
+	}
+}
+
 // silence the unused-import linter if no usage needs threadsops
 var _ = threadsops.FilterAll
 

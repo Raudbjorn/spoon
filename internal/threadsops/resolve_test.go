@@ -233,6 +233,79 @@ func TestResolve_freshResolve_reportsFalse(t *testing.T) {
 	}
 }
 
+// --- G4: --dry-run resolve tests -------------------------------------------
+
+func TestResolve_DryRun_NoMutation(t *testing.T) {
+	// Bot thread + DryRun=true: policy is satisfied, but no GraphQL mutation
+	// should be issued. The returned thread is marked DryRun=true.
+	f := &resolveFake{fakeAPI: fakeAPI{threads: []github.ReviewThread{{
+		ID:       "PRRT_a",
+		Comments: []github.ThreadComment{{AuthorType: "Bot"}},
+	}}}}
+	got, wasAlreadyResolved, opErr := ResolveWithOptions(context.Background(), f, "o", "r", 1, "PRRT_a", "", ResolveOptions{DryRun: true})
+	if opErr != nil {
+		t.Fatalf("opErr: %+v", opErr)
+	}
+	if got == nil {
+		t.Fatal("expected thread, got nil")
+	}
+	if !got.DryRun {
+		t.Errorf("returned thread should have DryRun=true, got %+v", got)
+	}
+	if wasAlreadyResolved {
+		t.Errorf("expected wasAlreadyResolved=false (the thread wasn't already resolved)")
+	}
+	if f.resolveCalls != 0 {
+		t.Errorf("ResolveThread must NOT be called on dry-run, got %d calls", f.resolveCalls)
+	}
+	if f.replyCalls != 0 {
+		t.Errorf("ReplyToThread must NOT be called on dry-run, got %d calls", f.replyCalls)
+	}
+}
+
+func TestResolve_DryRun_StillEnforcesPolicy(t *testing.T) {
+	// Human thread without --body, DryRun=true. Even though we're not going
+	// to mutate, the policy gate must still trip: dry-run is for previewing
+	// real mutations, not for bypassing the body-required check.
+	f := &resolveFake{fakeAPI: fakeAPI{threads: []github.ReviewThread{{
+		ID:       "PRRT_a",
+		Comments: []github.ThreadComment{{AuthorType: "User", Author: "alice"}},
+	}}}}
+	_, _, opErr := ResolveWithOptions(context.Background(), f, "o", "r", 1, "PRRT_a", "", ResolveOptions{DryRun: true})
+	if opErr == nil {
+		t.Fatal("expected policy_violation, got success")
+	}
+	if opErr.Code != OpCodePolicy {
+		t.Errorf("code=%q want %q", opErr.Code, OpCodePolicy)
+	}
+	if f.resolveCalls != 0 || f.replyCalls != 0 {
+		t.Errorf("must not mutate on policy failure, resolveCalls=%d replyCalls=%d", f.resolveCalls, f.replyCalls)
+	}
+}
+
+func TestResolve_DryRun_Idempotent(t *testing.T) {
+	// Already-resolved thread + DryRun=true returns the thread unchanged
+	// (idempotent) with no error. wasAlreadyResolved=true is reported.
+	f := &resolveFake{fakeAPI: fakeAPI{threads: []github.ReviewThread{{
+		ID:         "PRRT_a",
+		IsResolved: true,
+		Comments:   []github.ThreadComment{{AuthorType: "Bot"}},
+	}}}}
+	got, wasAlreadyResolved, opErr := ResolveWithOptions(context.Background(), f, "o", "r", 1, "PRRT_a", "", ResolveOptions{DryRun: true})
+	if opErr != nil {
+		t.Fatalf("opErr: %+v", opErr)
+	}
+	if got == nil || got.ID != "PRRT_a" {
+		t.Errorf("expected thread PRRT_a, got %+v", got)
+	}
+	if !wasAlreadyResolved {
+		t.Errorf("expected wasAlreadyResolved=true on idempotent dry-run")
+	}
+	if f.resolveCalls != 0 {
+		t.Errorf("must not call ResolveThread on idempotent dry-run, got %d", f.resolveCalls)
+	}
+}
+
 func TestResolveWithThreads_skipsFetch(t *testing.T) {
 	// Pre-built thread list — verify ResolveWithThreads doesn't call FetchPR.
 	f := &resolveFake{}
