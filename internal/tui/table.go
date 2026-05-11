@@ -173,10 +173,7 @@ func (m Model) viewTable() string {
 func renderBadges(sf ScoredFork) string {
 	var badges []string
 
-	// Lone wolf badge
-	if sf.Heat.LoneWolf != nil && sf.Heat.LoneWolf.Detected {
-		badges = append(badges, lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Render("🐺"))
-	}
+	// Lone wolf badge (v2)
 	if sf.Heat.LoneWolfV2 != nil && sf.Heat.LoneWolfV2.Detected {
 		badges = append(badges, lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Render("🐺"))
 	}
@@ -209,8 +206,7 @@ func renderBadges(sf ScoredFork) string {
 func (m Model) badgeLegend() string {
 	var hasWolf, hasPR, hasSubFork, hasBranch, hasRelease bool
 	for _, sf := range m.forks {
-		if (sf.Heat.LoneWolf != nil && sf.Heat.LoneWolf.Detected) ||
-			(sf.Heat.LoneWolfV2 != nil && sf.Heat.LoneWolfV2.Detected) {
+		if sf.Heat.LoneWolfV2 != nil && sf.Heat.LoneWolfV2.Detected {
 			hasWolf = true
 		}
 		if sf.Fork.OpenPRCount > 0 {

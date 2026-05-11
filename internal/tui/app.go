@@ -59,6 +59,7 @@ type Model struct {
 	// Data
 	parent  *forge.ParentData
 	forks   []ScoredFork
+	scorer  *heat.Scorer // v2 scorer, created in scoreForks and reused for T2 rescoring
 	loading bool
 	loadMsg string
 	errMsg  string
@@ -381,61 +382,34 @@ func (m *Model) processPendingUpdates() (tea.Model, tea.Cmd) {
 // recomputeT2Score recalculates the heat score for a fork after T2 data arrives.
 func (m *Model) recomputeT2Score(i int) {
 	t2 := m.forks[i].T2
-	if t2 == nil || m.parent == nil {
+	if t2 == nil || m.parent == nil || m.scorer == nil {
 		return
 	}
 
 	f := m.forks[i].Fork
+	now := time.Now()
 
-	files := make([]heat.FileChange, len(t2.Diffs))
-	for j, d := range t2.Diffs {
-		files[j] = heat.FileChange{
-			Filename:  d.Path,
-			Additions: d.Additions,
-			Deletions: d.Deletions,
+	input := buildTUIScoreInput(f, *m.parent, now)
+	input.T2 = &heat.Tier2ParamsV2{
+		MNA:                t2.MNA,
+		AheadBy:            t2.AheadCount,
+		BehindBy:           t2.BehindCount,
+		FeatureCommitRatio: t2.FeatureCommitRatio,
+	}
+
+	// Wire v2 lone wolf when we have commits to analyze.
+	if len(t2.Commits) > 0 {
+		lw := buildTUILoneWolfInput(f, now, t2)
+		input.T3 = &heat.Tier3ParamsV2{
+			LoneWolf: heat.DetectLoneWolfV2(lw),
 		}
 	}
-	weightedAdds, _ := heat.WeightedAdditions(files)
-	weightedDels, _ := heat.WeightedDeletions(files)
 
-	p := heat.Tier2Params{
-		Tier1Params: heat.Tier1Params{
-			Stars:          f.Stars,
-			Forks:          f.SubForkCount,
-			OpenIssues:     f.OpenIssues,
-			ForkSize:       f.Size,
-			ParentSize:     m.parent.Size,
-			ForkDesc:       f.Description,
-			ParentDesc:     m.parent.Description,
-			Archived:       f.IsArchived,
-			PushedAt:       f.PushedAt,
-			ParentPushedAt: m.parent.PushedAt,
-			Now:            time.Now(),
-		},
-		AheadBy:       t2.AheadCount,
-		BehindBy:      t2.BehindCount,
-		FilesChanged:  len(t2.Diffs),
-		TotalAdds:     int(weightedAdds),
-		TotalDels:     int(weightedDels),
-		UniqueAuthors: len(forge.UniqueAuthors(t2.Commits)),
-		Diverged:      t2.AheadCount > 0 && t2.BehindCount > 0,
+	result := m.scorer.ScoreRaw(input)
+	if input.T3 != nil && input.T3.LoneWolf != nil {
+		result.LoneWolfV2 = input.T3.LoneWolf
 	}
-	m.forks[i].Heat = heat.ComputeTier2(p)
-
-	// Run lone wolf detection
-	commitMsgs := make([]string, 0, len(t2.Commits))
-	for _, c := range t2.Commits {
-		commitMsgs = append(commitMsgs, c.Message)
-	}
-	lw := heat.DetectLoneWolf(
-		t2.AheadCount,
-		len(forge.UniqueAuthors(t2.Commits)),
-		files,
-		commitMsgs,
-	)
-	if lw != nil && lw.Detected {
-		m.forks[i].Heat.LoneWolf = lw
-	}
+	m.forks[i].Heat = result
 }
 
 // batchTick returns a command that fires after 150ms for batched UI updates.
@@ -767,31 +741,86 @@ func (m *Model) scoreForks(forks []forge.T1Data) {
 	}
 	now := time.Now()
 
-	m.forks = make([]ScoredFork, 0, len(forks))
+	// Build per-fork stats for percentile ranking, filtering ghosts first.
+	var live []forge.T1Data
 	for _, f := range forks {
-		if heat.IsGhostFork(f.PushedAt, m.parent.PushedAt, f.IsArchived) {
-			continue
+		if !heat.IsGhostFork(f.PushedAt, m.parent.PushedAt, f.IsArchived) {
+			live = append(live, f)
 		}
+	}
 
-		params := heat.Tier1Params{
-			Stars:          f.Stars,
-			Forks:          f.SubForkCount,
-			OpenIssues:     f.OpenIssues,
-			ForkSize:       f.Size,
-			ParentSize:     m.parent.Size,
-			ForkDesc:       f.Description,
-			ParentDesc:     m.parent.Description,
-			Archived:       f.IsArchived,
-			PushedAt:       f.PushedAt,
-			ParentPushedAt: m.parent.PushedAt,
-			Now:            now,
-		}
-		result := heat.ComputeTier1(params)
+	stats := makeTUIStats(live)
+	m.scorer = heat.NewScorer(stats)
 
+	m.forks = make([]ScoredFork, 0, len(live))
+	for _, f := range live {
+		input := buildTUIScoreInput(f, *m.parent, now)
+		result := m.scorer.ScoreRaw(input)
 		sf := ScoredFork{Fork: f, Heat: result}
 		m.forks = append(m.forks, sf)
 	}
 	m.sortForks()
+}
+
+// makeTUIStats builds ForkStats for heat.NewScorer from a slice of T1 forks.
+func makeTUIStats(forks []forge.T1Data) []heat.ForkStats {
+	stats := make([]heat.ForkStats, len(forks))
+	for i, f := range forks {
+		stats[i] = heat.ForkStats{
+			ForkID:   int64(i),
+			Stars:    f.Stars,
+			SubForks: f.SubForkCount,
+		}
+	}
+	return stats
+}
+
+// buildTUIScoreInput maps T1 fork data to a heat.ScoreInput.
+func buildTUIScoreInput(f forge.T1Data, parent forge.ParentData, now time.Time) heat.ScoreInput {
+	return heat.ScoreInput{
+		T1: heat.Tier1ParamsV2{
+			Stars:             f.Stars,
+			SubForks:          f.SubForkCount,
+			ReleaseCount:      f.ReleaseCount,
+			DaysSincePush:     now.Sub(f.PushedAt).Hours() / 24,
+			DaysSinceUpstream: now.Sub(parent.PushedAt).Hours() / 24,
+			Archived:          f.IsArchived,
+			Now:               now,
+		},
+	}
+}
+
+// buildTUILoneWolfInput adapts T2Data into the heat.LoneWolfInput shape.
+func buildTUILoneWolfInput(f forge.T1Data, now time.Time, t2 *forge.T2Data) heat.LoneWolfInput {
+	commits := make([]heat.LWCommitInfo, 0, len(t2.Commits))
+	authors := make([]string, 0, len(t2.Commits))
+	for _, c := range t2.Commits {
+		login := c.AuthorLogin
+		if login == "" {
+			login = c.AuthorEmail
+		}
+		commits = append(commits, heat.LWCommitInfo{
+			AuthorLogin: login,
+			Message:     c.Message,
+			Date:        c.Timestamp,
+		})
+		authors = append(authors, login)
+	}
+	files := make([]heat.FileChange, 0, len(t2.Diffs))
+	for _, d := range t2.Diffs {
+		files = append(files, heat.FileChange{
+			Filename:  d.Path,
+			Additions: d.Additions,
+			Deletions: d.Deletions,
+		})
+	}
+	return heat.LoneWolfInput{
+		Commits:       commits,
+		Files:         files,
+		AuthorLogins:  authors,
+		AheadBy:       t2.AheadCount,
+		DaysSincePush: now.Sub(f.PushedAt).Hours() / 24,
+	}
 }
 
 // --- Enrichment ---
