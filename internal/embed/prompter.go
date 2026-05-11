@@ -2,6 +2,7 @@ package embed
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -46,8 +47,11 @@ func (s *StdinPrompter) stdin() io.Reader {
 }
 
 // AskPull writes a yes/no prompt to Stderr and reads a line from Stdin.
-// Empty input is treated as yes; an answer beginning with 'n' or 'N' is no;
-// any other input is yes.
+// An empty line (user pressed Enter) is treated as yes; an answer beginning
+// with 'n' or 'N' is no; any other input is yes. If stdin reaches EOF before
+// any input is read (e.g. closed pipe, /dev/null, CI environment), AskPull
+// returns (false, nil) so a non-interactive caller cannot silently consent
+// to a pull.
 func (s *StdinPrompter) AskPull(model string, sizeMB int) (bool, error) {
 	s.mu.Lock()
 	s.model = model
@@ -58,8 +62,13 @@ func (s *StdinPrompter) AskPull(model string, sizeMB int) (bool, error) {
 	}
 	reader := bufio.NewReader(s.stdin())
 	line, err := reader.ReadString('\n')
-	if err != nil && err != io.EOF {
+	if err != nil && !errors.Is(err, io.EOF) {
 		return false, err
+	}
+	// EOF with no bytes read: nothing on stdin at all. Decline rather than
+	// silently consenting to a ~hundreds-of-MB pull.
+	if line == "" && errors.Is(err, io.EOF) {
+		return false, nil
 	}
 	answer := strings.TrimSpace(line)
 	if answer == "" {
