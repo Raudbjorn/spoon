@@ -1,6 +1,9 @@
 package mdg
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 func TestGraph_AddNodeAndEdge(t *testing.T) {
 	g := NewGraph()
@@ -39,5 +42,78 @@ func TestGraph_AddEdgeDeduplicates(t *testing.T) {
 	g.AddEdge(a, b)
 	if got := g.Edges["a"]; len(got) != 1 {
 		t.Fatalf("Edges[a]: want 1 entry after duplicate add, got %d (%v)", len(got), got)
+	}
+}
+
+func TestPageRank_Ordering(t *testing.T) {
+	g := NewGraph()
+	a := g.AddNode(Module{Path: "a"})
+	b := g.AddNode(Module{Path: "b"})
+	c := g.AddNode(Module{Path: "c"})
+	d := g.AddNode(Module{Path: "d"})
+	g.AddEdge(a, b)
+	g.AddEdge(a, c)
+	g.AddEdge(b, c)
+	g.AddEdge(c, a)
+	g.AddEdge(d, c)
+
+	scores := g.PageRank(nil, 0.85, 50)
+
+	if len(scores) != 4 {
+		t.Fatalf("scores: want 4, got %d", len(scores))
+	}
+	// c is sink with most incoming edges → highest score.
+	if !(scores["c"] > scores["a"] && scores["a"] > scores["b"] && scores["c"] > scores["d"]) {
+		t.Fatalf("unexpected ordering: %+v", scores)
+	}
+	// Probability mass must be conserved (within float tolerance).
+	var sum float64
+	for _, v := range scores {
+		sum += v
+	}
+	if math.Abs(sum-1.0) > 1e-6 {
+		t.Fatalf("sum of scores: want ~1.0, got %v (%+v)", sum, scores)
+	}
+}
+
+func TestPageRank_EmptyGraph(t *testing.T) {
+	g := NewGraph()
+	scores := g.PageRank(nil, 0.85, 50)
+	if len(scores) != 0 {
+		t.Fatalf("empty graph: want 0 scores, got %d", len(scores))
+	}
+}
+
+func TestPageRank_DanglingNode(t *testing.T) {
+	// "dangling" = a node with no outgoing edges. Its rank should not be lost;
+	// it should redistribute uniformly each iteration.
+	g := NewGraph()
+	g.AddNode(Module{Path: "x"})
+	g.AddNode(Module{Path: "y"})
+	scores := g.PageRank(nil, 0.85, 50)
+	if math.Abs(scores["x"]-0.5) > 1e-6 || math.Abs(scores["y"]-0.5) > 1e-6 {
+		t.Fatalf("isolated nodes: want each 0.5, got %+v", scores)
+	}
+}
+
+func TestPageRank_DeterministicOrder(t *testing.T) {
+	// Independent of node insertion order, equivalent graphs produce equivalent
+	// score maps (within tolerance).
+	g1 := NewGraph()
+	g1.AddNode(Module{Path: "a"})
+	g1.AddNode(Module{Path: "b"})
+	g1.AddEdge(0, 1)
+
+	g2 := NewGraph()
+	g2.AddNode(Module{Path: "b"})
+	g2.AddNode(Module{Path: "a"})
+	g2.AddEdge(1, 0)
+
+	s1 := g1.PageRank(nil, 0.85, 50)
+	s2 := g2.PageRank(nil, 0.85, 50)
+	for k, v1 := range s1 {
+		if math.Abs(v1-s2[k]) > 1e-9 {
+			t.Fatalf("score divergence for %q: %v vs %v", k, v1, s2[k])
+		}
 	}
 }
