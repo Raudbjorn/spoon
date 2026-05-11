@@ -97,13 +97,16 @@ func doEmbedPull(args []string, stdout, stderr io.Writer) int {
 		return agentio.NewError(agentio.CodeBadInput, "missing model argument", agentio.RemediationBadInput("embed", "pull")).Emit(stderr)
 	}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	err := pullFn(ctx, endpoint, model, func(phase string, pct float64) {
-		_ = agentio.WriteNDJSON(stdout, map[string]any{
+		if werr := agentio.WriteNDJSON(stdout, map[string]any{
 			"model": model,
 			"phase": phase,
 			"pct":   pct,
-		})
+		}); werr != nil {
+			cancel()
+		}
 	})
 	if err != nil {
 		return agentio.NewError(agentio.CodeUpstream, "embed pull: "+err.Error(), agentio.RemediationUpstream()).Emit(stderr)
