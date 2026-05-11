@@ -1438,3 +1438,77 @@ func TestSpnThreadsList_ShowCode_Negative(t *testing.T) {
 		t.Errorf("code=%v want bad_input", env["error"]["code"])
 	}
 }
+
+func TestSpnThreadsListPRs_emitsJSONArray(t *testing.T) {
+	prev := listPRsFn
+	defer func() { listPRsFn = prev }()
+	listPRsFn = func(_ context.Context, _ *github.Client, _, _ string, _ int) ([]github.PullRequest, error) {
+		return []github.PullRequest{
+			{Number: 42, Title: "Add X", Author: "alice", HeadBranch: "feat/x", State: "open", URL: "https://github.com/o/r/pull/42"},
+			{Number: 43, Title: "Fix Y", Author: "bob", HeadBranch: "fix/y", State: "open", URL: "https://github.com/o/r/pull/43"},
+		}, nil
+	}
+	prevAPI := apiFactory
+	defer func() { apiFactory = prevAPI }()
+	apiFactory = func() (threadsops.API, *agentio.Error) {
+		return &github.Client{}, nil
+	}
+	var stdout, stderr bytes.Buffer
+	exit := runThreadsWith([]string{"list-prs", "owner/repo"}, &stdout, &stderr)
+	if exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+	}
+	var got []map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("stdout not JSON array: %v\n%s", err, stdout.String())
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 PRs, got %d", len(got))
+	}
+	if got[0]["number"].(float64) != 42 {
+		t.Errorf("first number=%v", got[0]["number"])
+	}
+	if got[0]["author"] != "alice" {
+		t.Errorf("first author=%v", got[0]["author"])
+	}
+}
+
+func TestSpnThreadsListPRs_missingArg(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	exit := runThreadsWith([]string{"list-prs"}, &stdout, &stderr)
+	if exit != 2 {
+		t.Fatalf("exit=%d", exit)
+	}
+	var env map[string]map[string]any
+	_ = json.Unmarshal(stderr.Bytes(), &env)
+	if env["error"]["code"] != "bad_input" {
+		t.Errorf("code=%v", env["error"]["code"])
+	}
+}
+
+func TestSpnThreadsListPRs_limitTruncates(t *testing.T) {
+	prev := listPRsFn
+	defer func() { listPRsFn = prev }()
+	var capturedLimit int
+	listPRsFn = func(_ context.Context, _ *github.Client, _, _ string, limit int) ([]github.PullRequest, error) {
+		capturedLimit = limit
+		out := make([]github.PullRequest, 0, limit)
+		for i := 0; i < limit; i++ {
+			out = append(out, github.PullRequest{Number: i, Title: "PR", State: "open"})
+		}
+		return out, nil
+	}
+	prevAPI := apiFactory
+	defer func() { apiFactory = prevAPI }()
+	apiFactory = func() (threadsops.API, *agentio.Error) {
+		return &github.Client{}, nil
+	}
+	var stdout, stderr bytes.Buffer
+	exit := runThreadsWith([]string{"list-prs", "o/r", "--limit", "3"}, &stdout, &stderr)
+	if exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+	}
+	if capturedLimit != 3 {
+		t.Errorf("limit forwarded as %d, want 3", capturedLimit)
+	}
+}

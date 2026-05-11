@@ -54,6 +54,7 @@ Nouns and verbs:
   threads unresolve-all <pr-ref> [--dry-run]
   threads apply-suggestion <pr-ref> <thread-id>
         [--suggestion-index N] [--dry-run] [--force] [--repo-root PATH]
+  threads list-prs <owner/repo> [--limit N] [--state open]
 
   --dry-run on resolve / resolve-all / unresolve-all previews the mutation:
             the fetch + policy gates run, but no GraphQL resolveReviewThread
