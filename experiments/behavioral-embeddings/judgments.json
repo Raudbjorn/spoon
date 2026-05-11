@@ -9,30 +9,228 @@
     "a": "pr-4608",
     "b": "pr-4596",
     "label": 1,
-    "rationale": "Same author bumping cpex-rate-limiter — 0.0.5→0.0.6 then 0.0.6→0.0.7; same files (pyproject.toml, plugins/config.yaml, uv.lock)."
+    "rationale": "Same author bumping cpex-rate-limiter \u2014 0.0.5\u21920.0.6 then 0.0.6\u21920.0.7; same files (pyproject.toml, plugins/config.yaml, uv.lock)."
   },
   {
     "a": "pr-4658",
     "b": "pr-4657",
     "label": 1,
-    "rationale": "Same author, identical title (expand gRPC integration test depth for PR #3202); 4658 is the cleaned-up resubmission of 4657 — same intent, very different file footprint."
+    "rationale": "Same author, identical title (expand gRPC integration test depth for PR #3202); 4658 is the cleaned-up resubmission of 4657 \u2014 same intent, very different file footprint."
   },
   {
     "a": "pr-4538",
     "b": "pr-4551",
     "label": 1,
-    "rationale": "Both 'Release 1.0.0' — pr-4538 is an earlier helm/workflow-only attempt, pr-4551 is the canonical release with CHANGELOG/Cargo.lock/secrets.baseline. Same intent, wildly different scope."
+    "rationale": "Both 'Release 1.0.0' \u2014 pr-4538 is an earlier helm/workflow-only attempt, pr-4551 is the canonical release with CHANGELOG/Cargo.lock/secrets.baseline. Same intent, wildly different scope."
   },
   {
     "a": "pr-4633",
     "b": "pr-4491",
     "label": 1,
-    "rationale": "Both fix SSO code max_length 512→4096 for Entra ID; pr-4633 explicitly supersedes pr-4491. Same one-line sso.py fix; pr-4633 also adds a security test."
+    "rationale": "Both fix SSO code max_length 512\u21924096 for Entra ID; pr-4633 explicitly supersedes pr-4491. Same one-line sso.py fix; pr-4633 also adds a security test."
   },
   {
     "a": "pr-4550",
     "b": "pr-3158",
     "label": 1,
     "rationale": "Both cache full team objects in AuthCache. pr-3158 is the re-created original (#3013); pr-4550 is the perf-framed resubmission. Overlapping but distinct file scope."
+  },
+  {
+    "a": "pr-4663",
+    "b": "pr-4620",
+    "label": 1,
+    "rationale": "4620: 'The \"Add LLM Provider\" and \"Add LLM Model\" modals at /admin/#llm-settings silently fail when clicking the Save button: the modal closes, no entity is created, no error toast, no log line.' 4663: 'The LLM provider and model modals in the Admin UI silently did nothing when clicking Save.'"
+  },
+  {
+    "a": "pr-3658",
+    "b": "pr-3713",
+    "label": 1,
+    "rationale": "3658: \"Partial PR for #2216\" 3713: \"Closes #2216"
+  },
+  {
+    "a": "pr-4499",
+    "b": "pr-3689",
+    "label": 0,
+    "rationale": "both affect the gateway service, one focuses on reachability\u001b[1;5D\u001b[1;5D"
+  },
+  {
+    "a": "pr-4679",
+    "b": "pr-4491",
+    "label": 0,
+    "rationale": "4679 adds support for idp chiclet flow 4491 does exactly  one thing: increase SSO authorization code max_length from 512 to 4096"
+  },
+  {
+    "a": "pr-4136",
+    "b": "pr-3659",
+    "label": 0,
+    "rationale": "3659  is about processing/computing HTTP headers, 4136 covers tool errors,"
+  },
+  {
+    "a": "pr-4136",
+    "b": "pr-4575",
+    "label": 0,
+    "rationale": "(see PRs)"
+  },
+  {
+    "a": "pr-4575",
+    "b": "pr-3659",
+    "label": 0,
+    "rationale": "No, their intent and results are different because PR #4575 ensures that pre-request plugin hooks run prior to authentication on the /mcp route, whereas PR #3659 fixes a bug where authorization header renames were silently dropped in direct proxy paths."
+  },
+  {
+    "a": "pr-4583",
+    "b": "pr-4238",
+    "label": 0,
+    "rationale": "No, their intent and results are entirely different because PR #4583 focuses on fixing missing REST passthrough field assignments in the tool updating process, whereas PR #4238 addresses observability issues by resolving silent-success traps in A2A and plugin post-invoke operations."
+  },
+  {
+    "a": "pr-4677",
+    "b": "pr-4568",
+    "label": 0,
+    "rationale": "No, their intent and results are different because PR #4677 updates an extra dependency or configuration related to PII filtering, whereas PR #4568 specifically locks the cpex secrets detection tool to version 0.2.1 to ensure version stability."
+  },
+  {
+    "a": "pr-4678",
+    "b": "pr-4646",
+    "label": 0,
+    "rationale": "No, their intent and results are entirely different because PR #4678 addresses feedback from issue #4464 by adding new components like a search bar, version number, and profile dropdown to the main top navbar, whereas PR #4646 relates to issue #4642 and focuses on updating the Tools page to display MCP server tools as cards."
+  },
+  {
+    "a": "pr-4641",
+    "b": "pr-4554",
+    "label": 1,
+    "rationale": "Yes, their intent and results are fundamentally the same because both pull requests focus on fixing the system's ability to detect regular expression timeout capabilities, likely to secure the application against ReDoS vulnerabilities."
+  },
+  {
+    "a": "pr-4646",
+    "b": "pr-4573",
+    "label": 0,
+    "rationale": "No, their intent and results are different because PR #4646 focuses on a frontend UI update by adding visual cards to the Tools page, whereas PR #4573 involves backend infrastructure by setting up a FastAPI router to serve or integrate that React client."
+  },
+  {
+    "a": "pr-4646",
+    "b": "pr-4472",
+    "label": 0,
+    "rationale": "No, their intent and results are different because PR #4646 implements the specific visual display of tool cards on the Tools page, whereas PR #4472 focuses on the design and implementation of the application's initial loading screen during the UI rewrite."
+  },
+  {
+    "a": "pr-4699",
+    "b": "pr-4513",
+    "label": 0,
+    "rationale": "4513 closes #4437 and is about changes to A2A agent serivce. 4699 Closes #4670 and is about  type validation for email extraction ."
+  },
+  {
+    "a": "pr-4678",
+    "b": "pr-4573",
+    "label": 0,
+    "rationale": "No \u2014 PR #4678 is a targeted UI enhancement focused on navbar usability and navigation components, while PR #4573 appears to be architectural/backend integration work introducing a React client routing layer for FastAPI."
+  },
+  {
+    "a": "pr-4387",
+    "b": "pr-4472",
+    "label": 0,
+    "rationale": "fundamentally supporting the same broader initiative \u2014 the React/UI rewrite effort \u2014 just at different layers of the stack"
+  },
+  {
+    "a": "pr-4444",
+    "b": "pr-4480",
+    "label": 1,
+    "rationale": "Yes \u2014 these are similar in intent, with #4480 looking like a direct hardening follow-up to #4444 rather than an unrelated RBAC fix."
+  },
+  {
+    "a": "pr-4572",
+    "b": "pr-3890",
+    "label": 0,
+    "rationale": "The taxonomy I\u2019d use: same component, adjacent operational theme, different intent."
+  },
+  {
+    "a": "pr-4527",
+    "b": "pr-4595",
+    "label": 1,
+    "rationale": "I\u2019d bucket them as: same initiative / same performance strategy / different auth entities and invalidation risks."
+  },
+  {
+    "a": "pr-4489",
+    "b": "pr-4329",
+    "label": 1,
+    "rationale": "by any practical definition, these are same intent / same endpoint / same security control class, with #4489 looking like a stricter or expanded implementation of the same SSRF/open-proxy mitigation that #4329 introduced"
+  },
+  {
+    "a": "pr-4446",
+    "b": "pr-4553",
+    "label": 0,
+    "rationale": "same subsystem / same middleware layer / adjacent protocol-compatibility fixes / different observable failures."
+  },
+  {
+    "a": "pr-4564",
+    "b": "pr-4538",
+    "label": 0,
+    "rationale": "same release train / different operational purpose.#4538 ships or validates the release; #4564 cleans up public references around it."
+  },
+  {
+    "a": "pr-4446",
+    "b": "pr-4137",
+    "label": 0,
+    "rationale": "same broad MCP/protocol reliability universe, different layer and failure mode. #4446 is route normalization / HTTP status behavior; #4137 is internal endpoint error contract / access-control correctness."
+  },
+  {
+    "a": "pr-4117",
+    "b": "pr-3542",
+    "label": 0,
+    "rationale": "same OAuth feature family / different grant type / different user journey. #4117 serves browser/user authorization flows; #3542 serves service-to-service M2M setup and token testing."
+  },
+  {
+    "a": "pr-4594",
+    "b": "pr-4407",
+    "label": 0,
+    "rationale": ": same interoperability theme / different OAuth seam."
+  },
+  {
+    "a": "pr-4678",
+    "b": "pr-4472",
+    "label": 0,
+    "rationale": "The clean classification is: shared parent initiative, different child objective."
+  },
+  {
+    "a": "pr-4600",
+    "b": "pr-4521",
+    "label": 0,
+    "rationale": "same document family / same release process context / different checkpoint.They share \u201cmake release instructions executable,\u201d but not the specific operational intent."
+  },
+  {
+    "a": "pr-4646",
+    "b": "pr-4387",
+    "label": 0,
+    "rationale": "same parent initiative, different layer and user outcome.#4646 is product surface; #4387 is authentication plumbing."
+  },
+  {
+    "a": "pr-4678",
+    "b": "pr-4387",
+    "label": 0,
+    "rationale": "same parent initiative + complementary user-flow layer.#4678 is the chrome/user entry point; #4387 is the auth/session backend it needs."
+  },
+  {
+    "a": "pr-4568",
+    "b": "pr-4596",
+    "label": 0,
+    "rationale": "same maintenance genre, different plugin and different outcome."
+  },
+  {
+    "a": "pr-4568",
+    "b": "pr-4608",
+    "label": 0,
+    "rationale": "One-sentence rationale: PR #4568 pins cpex-secrets-detection to 0.2.1 for dependency resolution determinism, while PR #4608 bumps cpex-rate-limiter to 0.0.7 for a production-hardening release with TLS Redis verification, so both are CPEX plugin dependency chores but they do not share the same concrete intent or affected capability: same ecosystem / different plugin / different operational reason."
+  },
+  {
+    "a": "pr-4699",
+    "b": "pr-3937",
+    "label": 0,
+    "rationale": "No \u2014 only superficially similar as defensive hardening."
+  },
+  {
+    "a": "pr-4699",
+    "b": "pr-3153",
+    "label": 0,
+    "rationale": "not same intent; only both are security-flavored in the broadest, least useful sense.#4699 is defensive validation in one deprecated service path; #3153 is platform/runtime capability architecture."
   }
 ]
