@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/svnbjrn/spoon/internal/forge"
+	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/heat"
 	"github.com/svnbjrn/spoon/internal/tui"
 )
@@ -25,6 +26,18 @@ type Options struct {
 	Tier         int             // max enrichment tier (0 = all)
 	TopN         int             // only enrich top N forks (0 = all)
 	BotAllowlist map[string]bool // logins to treat as human
+
+	// Cluster pipeline configuration; Cluster.Enabled == false means skip.
+	Cluster ClusterOptions
+}
+
+// scoredFork pairs a fork with its T1+T2 enrichment and current heat result.
+// Promoted from a locally-scoped type so the cluster pipeline helper can take
+// a pointer-slice over it.
+type scoredFork struct {
+	Fork forge.T1Data
+	Heat heat.HeatResult
+	T2   *forge.T2Data
 }
 
 // Run fetches, scores, enriches, and writes output to w.
@@ -62,13 +75,7 @@ func Run(provider forge.Forge, auth forge.AuthInfo, owner, repo string, opts Opt
 	// Score Tier 1
 	now := time.Now()
 
-	type scored struct {
-		Fork forge.T1Data
-		Heat heat.HeatResult
-		T2   *forge.T2Data
-	}
-
-	var scoredForks []scored
+	var scoredForks []scoredFork
 	for _, f := range forks {
 		if heat.IsGhostFork(f.PushedAt, parent.PushedAt, f.IsArchived) {
 			continue
@@ -86,7 +93,7 @@ func Run(provider forge.Forge, auth forge.AuthInfo, owner, repo string, opts Opt
 			ParentPushedAt: parent.PushedAt,
 			Now:            now,
 		}
-		scoredForks = append(scoredForks, scored{
+		scoredForks = append(scoredForks, scoredFork{
 			Fork: f,
 			Heat: heat.ComputeTier1(params),
 		})
@@ -211,6 +218,12 @@ func Run(provider forge.Forge, auth forge.AuthInfo, owner, repo string, opts Opt
 		}
 	}
 
+	// Cluster pipeline (optional). Runs after T2 enrichment, before the
+	// output sort so cluster IDs are stable across runs of the same dataset.
+	if opts.Cluster.Enabled {
+		runDumpClustering(ctx, provider, &parent, owner, repo, scoredForks, opts, progress)
+	}
+
 	// Sort by heat descending
 	sort.Slice(scoredForks, func(i, j int) bool {
 		return scoredForks[i].Heat.Score > scoredForks[j].Heat.Score
@@ -279,6 +292,13 @@ func writeJSON(w io.Writer, auth forge.AuthInfo, parent *forge.ParentData, forks
 				Deletions:    totalDels,
 			}
 		}
+
+		// Cluster fields (T9). All are omitempty in the JSON tag so they
+		// disappear entirely when clustering didn't run.
+		ef.ClusterID = sf.Heat.ClusterID
+		ef.ClusterLabel = sf.Heat.ClusterLabel
+		ef.NoveltyScore = sf.Heat.NoveltyScore
+		ef.ClusterMemberCount = sf.Heat.ClusterMemberCount
 
 		if sf.Heat.LoneWolf != nil && sf.Heat.LoneWolf.Detected {
 			lw := sf.Heat.LoneWolf
@@ -352,4 +372,57 @@ func writeCSV(w io.Writer, auth forge.AuthInfo, parent *forge.ParentData, forks 
 		}
 	}
 	return nil
+}
+
+// runDumpClustering wires the cluster pipeline into the dump path. It builds
+// EnrichedFork pointers over the live scoredForks slice so the pipeline's
+// in-place HeatResult mutations land back in the dump output.
+//
+// When the provider is anything other than *gh.GHProvider, the README,
+// tree, and commit sources are nil. The pipeline tolerates nil sources
+// (README skipped, ChangeImpact = 0).
+func runDumpClustering(
+	ctx context.Context,
+	provider forge.Forge,
+	parent *forge.ParentData,
+	owner, repoName string,
+	scoredForks []scoredFork,
+	opts Options,
+	logger io.Writer,
+) {
+	enriched := make([]EnrichedFork, len(scoredForks))
+	for i := range scoredForks {
+		enriched[i] = EnrichedFork{
+			T1:   scoredForks[i].Fork,
+			T2:   scoredForks[i].T2,
+			Heat: &scoredForks[i].Heat,
+		}
+	}
+
+	inputs := ClusterInputs{
+		Provider:      "github",
+		UpstreamOwner: owner,
+		UpstreamRepo:  repoName,
+		Upstream:      *parent,
+		Forks:         enriched,
+	}
+
+	if ghp, ok := provider.(*gh.GHProvider); ok {
+		client := ghp.Client()
+		if client != nil {
+			defaultBranch := parent.DefaultBranch
+			inputs.TreeSource = &gh.TreeSourceForRepo{Client: client, Ref: defaultBranch}
+			inputs.CommitSource = &gh.CommitSourceForRepo{Client: client}
+			inputs.ReadmeFetcher = client
+		}
+	} else {
+		// Non-GitHub provider (e.g., GitLab). Cluster pipeline still runs
+		// — README and centrality just won't be available. Future work
+		// can plug in GitLab analogues.
+		inputs.Provider = "other"
+	}
+
+	if _, err := runClusterPipeline(ctx, opts.Cluster, inputs, logger); err != nil {
+		fmt.Fprintf(logger, "[cluster] pipeline error: %v (continuing)\n", err)
+	}
 }

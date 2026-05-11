@@ -38,6 +38,21 @@ func main() {
 	forgeHost := ""
 	outputPath := ""
 
+	// Cluster pipeline flags (T9). Default: clustering is OFF unless --no-cluster
+	// is absent AND another cluster flag is explicitly set. To keep the existing
+	// dump behaviour stable while still allowing opt-in, clustering is enabled
+	// when the user does NOT pass --no-cluster — i.e. defaulting to ON only when
+	// embedder is reachable. The pipeline degrades silently otherwise.
+	noCluster := false
+	clusterTop := 50
+	embedderURL := ""
+	embedderModel := ""
+	labelerURL := ""
+	clusterEpsilon := 0.35
+	clusterMinSize := 3
+	autoPull := os.Getenv("SPOON_AUTO_PULL") == "1"
+	noPrompt := false
+
 	args := os.Args[1:]
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -117,6 +132,57 @@ func main() {
 					os.Exit(1)
 				}
 			}
+		case "--no-cluster":
+			noCluster = true
+		case "--cluster-top":
+			if i+1 < len(args) {
+				i++
+				n, err := strconv.Atoi(args[i])
+				if err != nil || n < 1 {
+					fmt.Fprintln(os.Stderr, "Error: --cluster-top requires a positive integer")
+					os.Exit(1)
+				}
+				clusterTop = n
+			}
+		case "--embedder":
+			if i+1 < len(args) {
+				i++
+				embedderURL = args[i]
+			}
+		case "--embedder-model":
+			if i+1 < len(args) {
+				i++
+				embedderModel = args[i]
+			}
+		case "--labeler":
+			if i+1 < len(args) {
+				i++
+				labelerURL = args[i]
+			}
+		case "--cluster-epsilon":
+			if i+1 < len(args) {
+				i++
+				f, err := strconv.ParseFloat(args[i], 64)
+				if err != nil || f < 0 {
+					fmt.Fprintln(os.Stderr, "Error: --cluster-epsilon requires a non-negative number")
+					os.Exit(1)
+				}
+				clusterEpsilon = f
+			}
+		case "--cluster-min-size":
+			if i+1 < len(args) {
+				i++
+				n, err := strconv.Atoi(args[i])
+				if err != nil || n < 1 {
+					fmt.Fprintln(os.Stderr, "Error: --cluster-min-size requires a positive integer")
+					os.Exit(1)
+				}
+				clusterMinSize = n
+			}
+		case "--auto-pull":
+			autoPull = true
+		case "--no-prompt":
+			noPrompt = true
 		default:
 			if !strings.HasPrefix(args[i], "-") && strings.Contains(args[i], "/") {
 				repo = args[i]
@@ -191,6 +257,18 @@ func main() {
 			Tier:         tier,
 			TopN:         topN,
 			BotAllowlist: bots,
+			Cluster: dump.ClusterOptions{
+				Enabled:         !noCluster,
+				TopN:            clusterTop,
+				Endpoint:        embedderURL,
+				ModelOverride:   embedderModel,
+				LabelerEndpoint: labelerURL,
+				Epsilon:         clusterEpsilon,
+				MinClusterSize:  clusterMinSize,
+				AutoPull:        autoPull,
+				NoPrompt:        noPrompt,
+				NonInteractive:  true, // --json / --csv runs are always non-interactive
+			},
 		}, w)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -340,6 +418,15 @@ Flags:
   --top N                  Only enrich top N forks by T1 score
   --bot-allowlist a,b,c    Treat these logins as human contributors
   --heat-weights path      Path to JSON weight override file
+  --no-cluster             Disable the embedding + clustering pass
+  --cluster-top N          Max forks fed to the embedder (default 50)
+  --embedder URL           Embedding endpoint (default $SPOON_EMBEDDER_URL)
+  --embedder-model NAME    Explicit embedding model (default: auto-pick)
+  --labeler URL            Optional LLM polish endpoint (default: heuristic)
+  --cluster-epsilon F      Cosine distance cutoff (default 0.35)
+  --cluster-min-size N     Minimum cluster size (default 3)
+  --auto-pull              Pull missing embedding model without prompting
+  --no-prompt              Skip pull prompt when no embedding model is installed
   --no-color               Disable colors
   -h, --help               Show help
   -v, --version            Show version

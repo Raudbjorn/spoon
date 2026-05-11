@@ -43,6 +43,13 @@ type ExportFork struct {
 	Divergence  *ExportDiv      `json:"divergence,omitempty"`
 	LoneWolf    *ExportLoneWolf `json:"lone_wolf,omitempty"`
 	WhyDistinct []string        `json:"why_distinct"`
+
+	// Cluster + novelty fields (T9). omitempty so consumers can distinguish
+	// "not computed" from "computed and zero".
+	ClusterID          string  `json:"clusterId,omitempty"`
+	ClusterLabel       string  `json:"clusterLabel,omitempty"`
+	NoveltyScore       float64 `json:"noveltyScore,omitempty"`
+	ClusterMemberCount int     `json:"clusterMemberCount,omitempty"`
 }
 
 // ExportLoneWolf is the lone wolf signal export.
