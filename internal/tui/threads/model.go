@@ -42,6 +42,10 @@ type Model struct {
 	// the exported field; zero (default) disables the fetch entirely.
 	ShowCodeLines int
 
+	// Verbose, when true, surfaces per-comment timestamps in the detail pane
+	// (matching gh-pr-display --verbose). Default off keeps the compact view.
+	Verbose bool
+
 	// codeContexts caches per-thread CodeContext blocks indexed by thread ID.
 	// Populated by codeContextLoadedMsg events; consumed by view rendering.
 	codeContexts map[string]*threadsops.CodeContext

@@ -28,12 +28,19 @@ type ReviewThread struct {
 }
 
 // ThreadComment is one comment on a review thread.
+//
+// Verbose-only fields (CreatedAt, UpdatedAt, AuthorURL) carry the JSON
+// `omitempty` tag so the compact JSON output stays unchanged when callers clear
+// them via threadsops.StripVerboseFields. The fields are always populated
+// server-side; clearing them at the CLI layer is what gates verbose output.
 type ThreadComment struct {
 	ID         string `json:"id"`
 	Author     string `json:"author"`
 	AuthorType string `json:"authorType"`
 	Body       string `json:"body"`
-	CreatedAt  string `json:"createdAt"`
+	CreatedAt  string `json:"createdAt,omitempty"`
+	UpdatedAt  string `json:"updatedAt,omitempty"`
+	AuthorURL  string `json:"authorUrl,omitempty"`
 }
 
 // PullRequestStatus carries the top-of-output mergeability summary.
@@ -99,9 +106,11 @@ type rawComment struct {
 	ID        string `json:"id"`
 	Body      string `json:"body"`
 	CreatedAt string `json:"createdAt"`
+	UpdatedAt string `json:"updatedAt"`
 	Author    struct {
 		Typename string `json:"__typename"`
 		Login    string `json:"login"`
+		URL      string `json:"url"`
 	} `json:"author"`
 }
 
@@ -125,6 +134,8 @@ func parseListThreadsResponse(data listThreadsData) []ReviewThread {
 				AuthorType: c.Author.Typename,
 				Body:       c.Body,
 				CreatedAt:  c.CreatedAt,
+				UpdatedAt:  c.UpdatedAt,
+				AuthorURL:  c.Author.URL,
 			})
 		}
 		if len(t.Comments) > 0 {
@@ -192,7 +203,8 @@ mutation($threadId: ID!, $body: String!) {
       id
       body
       createdAt
-      author { __typename login }
+      updatedAt
+      author { __typename login url }
     }
   }
 }`
@@ -205,9 +217,11 @@ mutation($threadId: ID!, $body: String!) {
 				ID        string `json:"id"`
 				Body      string `json:"body"`
 				CreatedAt string `json:"createdAt"`
+				UpdatedAt string `json:"updatedAt"`
 				Author    struct {
 					Typename string `json:"__typename"`
 					Login    string `json:"login"`
+					URL      string `json:"url"`
 				} `json:"author"`
 			} `json:"comment"`
 		} `json:"addPullRequestReviewThreadReply"`
@@ -221,8 +235,10 @@ mutation($threadId: ID!, $body: String!) {
 		ID:         c2.ID,
 		Body:       c2.Body,
 		CreatedAt:  c2.CreatedAt,
+		UpdatedAt:  c2.UpdatedAt,
 		Author:     c2.Author.Login,
 		AuthorType: c2.Author.Typename,
+		AuthorURL:  c2.Author.URL,
 	}, nil
 }
 
@@ -381,7 +397,8 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
               id
               body
               createdAt
-              author { __typename login }
+              updatedAt
+              author { __typename login url }
             }
           }
         }

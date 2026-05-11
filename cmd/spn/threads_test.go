@@ -1163,6 +1163,263 @@ func TestSpnThreadsNext_ShowCode_E2E(t *testing.T) {
 	}
 }
 
+// --- G6: --verbose E2E tests -----------------------------------------------
+
+// verboseFixture returns two threads with fully populated verbose fields. The
+// values are distinct so we can verify each field round-trips end-to-end.
+func verboseFixture() []github.ReviewThread {
+	return []github.ReviewThread{
+		{ID: "PRRT_v1", IsResolved: false, Comments: []github.ThreadComment{
+			{
+				ID:         "PRRC_v1",
+				Author:     "alice",
+				AuthorType: "User",
+				Body:       "first comment",
+				CreatedAt:  "2026-05-10T09:01:23Z",
+				UpdatedAt:  "2026-05-10T09:05:00Z",
+				AuthorURL:  "https://github.com/alice",
+			},
+			{
+				ID:         "PRRC_v2",
+				Author:     "bob",
+				AuthorType: "User",
+				Body:       "follow up",
+				CreatedAt:  "2026-05-10T09:10:00Z",
+				UpdatedAt:  "2026-05-10T09:10:00Z",
+				AuthorURL:  "https://github.com/bob",
+			},
+		}},
+		{ID: "PRRT_v2", IsResolved: false, Comments: []github.ThreadComment{
+			{
+				ID:         "PRRC_v3",
+				Author:     "dependabot",
+				AuthorType: "Bot",
+				Body:       "auto note",
+				CreatedAt:  "2026-05-10T10:00:00Z",
+				UpdatedAt:  "2026-05-10T10:00:00Z",
+				AuthorURL:  "https://github.com/apps/dependabot",
+			},
+		}},
+	}
+}
+
+func TestSpnThreadsList_Verbose_E2E(t *testing.T) {
+	prev := apiFactory
+	defer func() { apiFactory = prev }()
+	apiFactory = func() (threadsops.API, *agentio.Error) {
+		return &stubAPI{threads: verboseFixture()}, nil
+	}
+	var stdout, stderr bytes.Buffer
+	exit := runThreadsWith([]string{"list", "owner/repo#1", "--verbose"}, &stdout, &stderr)
+	if exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+	}
+	var got []map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("stdout not JSON array: %v\n%s", err, stdout.String())
+	}
+	if len(got) != 2 {
+		t.Fatalf("want 2 threads, got %d", len(got))
+	}
+	for ti, th := range got {
+		comments, _ := th["comments"].([]any)
+		if len(comments) == 0 {
+			t.Fatalf("thread[%d] has no comments", ti)
+		}
+		for ci, raw := range comments {
+			c, ok := raw.(map[string]any)
+			if !ok {
+				t.Fatalf("thread[%d].comments[%d] not a map: %T", ti, ci, raw)
+			}
+			if _, hasCreated := c["createdAt"]; !hasCreated {
+				t.Errorf("thread[%d].comments[%d] missing createdAt: %+v", ti, ci, c)
+			}
+			if _, hasUpdated := c["updatedAt"]; !hasUpdated {
+				t.Errorf("thread[%d].comments[%d] missing updatedAt: %+v", ti, ci, c)
+			}
+			if _, hasURL := c["authorUrl"]; !hasURL {
+				t.Errorf("thread[%d].comments[%d] missing authorUrl: %+v", ti, ci, c)
+			}
+		}
+	}
+}
+
+func TestSpnThreadsList_NotVerbose_OmitsTimestamps(t *testing.T) {
+	prev := apiFactory
+	defer func() { apiFactory = prev }()
+	apiFactory = func() (threadsops.API, *agentio.Error) {
+		return &stubAPI{threads: verboseFixture()}, nil
+	}
+	var stdout, stderr bytes.Buffer
+	exit := runThreadsWith([]string{"list", "owner/repo#1"}, &stdout, &stderr)
+	if exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+	}
+	// Without --verbose the verbose keys must not appear anywhere in the
+	// output. A simple string check is sufficient because the values in the
+	// fixture do not contain these literal strings.
+	out := stdout.String()
+	if strings.Contains(out, `"createdAt"`) {
+		t.Errorf("expected no createdAt key without --verbose; got:\n%s", out)
+	}
+	if strings.Contains(out, `"updatedAt"`) {
+		t.Errorf("expected no updatedAt key without --verbose; got:\n%s", out)
+	}
+	if strings.Contains(out, `"authorUrl"`) {
+		t.Errorf("expected no authorUrl key without --verbose; got:\n%s", out)
+	}
+}
+
+func TestSpnThreadsList_VerboseShortFlag(t *testing.T) {
+	prev := apiFactory
+	defer func() { apiFactory = prev }()
+	apiFactory = func() (threadsops.API, *agentio.Error) {
+		return &stubAPI{threads: verboseFixture()}, nil
+	}
+	var stdout, stderr bytes.Buffer
+	exit := runThreadsWith([]string{"list", "owner/repo#1", "-v"}, &stdout, &stderr)
+	if exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+	}
+	// -v should behave identical to --verbose: timestamp keys present.
+	if !strings.Contains(stdout.String(), `"createdAt"`) {
+		t.Errorf("expected createdAt with -v; got:\n%s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), `"updatedAt"`) {
+		t.Errorf("expected updatedAt with -v; got:\n%s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), `"authorUrl"`) {
+		t.Errorf("expected authorUrl with -v; got:\n%s", stdout.String())
+	}
+}
+
+func TestSpnThreadsNext_Verbose_E2E(t *testing.T) {
+	prev := apiFactory
+	defer func() { apiFactory = prev }()
+	apiFactory = func() (threadsops.API, *agentio.Error) {
+		return &stubAPI{threads: verboseFixture()}, nil
+	}
+	var stdout, stderr bytes.Buffer
+	exit := runThreadsWith([]string{"next", "owner/repo#1", "--verbose"}, &stdout, &stderr)
+	if exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("stdout not JSON: %v\n%s", err, stdout.String())
+	}
+	comments, ok := got["comments"].([]any)
+	if !ok || len(comments) == 0 {
+		t.Fatalf("expected comments array; got %+v", got)
+	}
+	c, ok := comments[0].(map[string]any)
+	if !ok {
+		t.Fatalf("comments[0] not a map: %T", comments[0])
+	}
+	if c["createdAt"] == nil || c["createdAt"] == "" {
+		t.Errorf("createdAt missing or empty: %+v", c)
+	}
+	if c["updatedAt"] == nil || c["updatedAt"] == "" {
+		t.Errorf("updatedAt missing or empty: %+v", c)
+	}
+	if c["authorUrl"] == nil || c["authorUrl"] == "" {
+		t.Errorf("authorUrl missing or empty: %+v", c)
+	}
+}
+
+func TestSpnThreadsNext_NotVerbose_OmitsTimestamps(t *testing.T) {
+	prev := apiFactory
+	defer func() { apiFactory = prev }()
+	apiFactory = func() (threadsops.API, *agentio.Error) {
+		return &stubAPI{threads: verboseFixture()}, nil
+	}
+	var stdout, stderr bytes.Buffer
+	exit := runThreadsWith([]string{"next", "owner/repo#1"}, &stdout, &stderr)
+	if exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+	}
+	if strings.Contains(stdout.String(), `"createdAt"`) ||
+		strings.Contains(stdout.String(), `"updatedAt"`) ||
+		strings.Contains(stdout.String(), `"authorUrl"`) {
+		t.Errorf("expected no verbose keys without --verbose, got:\n%s", stdout.String())
+	}
+}
+
+func TestSpnThreadsResolve_Verbose_E2E(t *testing.T) {
+	prev := apiFactory
+	defer func() { apiFactory = prev }()
+	apiFactory = func() (threadsops.API, *agentio.Error) {
+		return &resolveStub{
+			stubAPI: stubAPI{threads: []github.ReviewThread{{
+				ID: "PRRT_x",
+				Comments: []github.ThreadComment{{
+					ID:         "PRRC_x",
+					Author:     "dependabot",
+					AuthorType: "Bot",
+					Body:       "auto",
+					CreatedAt:  "2026-05-10T09:01:23Z",
+					UpdatedAt:  "2026-05-10T09:05:00Z",
+					AuthorURL:  "https://github.com/apps/dependabot",
+				}},
+			}}},
+		}, nil
+	}
+	var stdout, stderr bytes.Buffer
+	exit := runThreadsWith([]string{"resolve", "owner/repo#1", "PRRT_x", "--verbose"}, &stdout, &stderr)
+	if exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("stdout not JSON: %v\n%s", err, stdout.String())
+	}
+	comments, ok := got["comments"].([]any)
+	if !ok || len(comments) == 0 {
+		t.Fatalf("expected comments array; got %+v", got)
+	}
+	c, _ := comments[0].(map[string]any)
+	if c["createdAt"] != "2026-05-10T09:01:23Z" {
+		t.Errorf("createdAt=%v", c["createdAt"])
+	}
+	if c["updatedAt"] != "2026-05-10T09:05:00Z" {
+		t.Errorf("updatedAt=%v", c["updatedAt"])
+	}
+	if c["authorUrl"] != "https://github.com/apps/dependabot" {
+		t.Errorf("authorUrl=%v", c["authorUrl"])
+	}
+}
+
+func TestSpnThreadsResolve_NotVerbose_OmitsTimestamps(t *testing.T) {
+	prev := apiFactory
+	defer func() { apiFactory = prev }()
+	apiFactory = func() (threadsops.API, *agentio.Error) {
+		return &resolveStub{
+			stubAPI: stubAPI{threads: []github.ReviewThread{{
+				ID: "PRRT_x",
+				Comments: []github.ThreadComment{{
+					ID:         "PRRC_x",
+					Author:     "dependabot",
+					AuthorType: "Bot",
+					Body:       "auto",
+					CreatedAt:  "2026-05-10T09:01:23Z",
+					UpdatedAt:  "2026-05-10T09:05:00Z",
+					AuthorURL:  "https://github.com/apps/dependabot",
+				}},
+			}}},
+		}, nil
+	}
+	var stdout, stderr bytes.Buffer
+	exit := runThreadsWith([]string{"resolve", "owner/repo#1", "PRRT_x"}, &stdout, &stderr)
+	if exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+	}
+	if strings.Contains(stdout.String(), `"createdAt"`) ||
+		strings.Contains(stdout.String(), `"updatedAt"`) ||
+		strings.Contains(stdout.String(), `"authorUrl"`) {
+		t.Errorf("expected no verbose keys without --verbose, got:\n%s", stdout.String())
+	}
+}
+
 func TestSpnThreadsList_ShowCode_Negative(t *testing.T) {
 	prev := apiFactory
 	defer func() { apiFactory = prev }()

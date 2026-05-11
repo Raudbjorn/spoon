@@ -382,3 +382,30 @@ func TestParseThreadsFlags_ShowCodeMissingValue(t *testing.T) {
 	}
 }
 
+// --- G6: --verbose parser tests --------------------------------------------
+
+func TestParseThreadsFlags_Verbose(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{"no flag", []string{"owner/repo#1"}, false},
+		{"--verbose long", []string{"owner/repo#1", "--verbose"}, true},
+		{"-v short", []string{"owner/repo#1", "-v"}, true},
+		{"--verbose with --json", []string{"owner/repo#1", "--json", "--verbose"}, true},
+		{"-v with --next", []string{"owner/repo#1", "--next", "-v"}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f, err := parseThreadsFlags(tc.args)
+			if err != nil {
+				t.Fatalf("err: %v", err)
+			}
+			if f.verbose != tc.want {
+				t.Errorf("verbose=%v want %v", f.verbose, tc.want)
+			}
+		})
+	}
+}
+
