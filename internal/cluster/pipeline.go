@@ -531,27 +531,13 @@ func sumDeletions(t2 *forge.T2Data) int {
 	return n
 }
 
-// changeImpactFor returns DirectoryCentrality.ScoreFork over the unique
-// directories touched by the given file paths. Returns 0 if DC is unavailable
-// or no paths.
+// changeImpactFor returns DirectoryCentrality.ScoreFork over the file paths
+// touched by the fork. Returns 0 if DC is unavailable or no paths.
 func changeImpactFor(dc repo.DirectoryCentrality, ok bool, paths []string) float32 {
 	if !ok || len(paths) == 0 {
 		return 0
 	}
-	seen := make(map[string]struct{}, len(paths))
-	dirs := make([]string, 0, len(paths))
-	for _, p := range paths {
-		d := dirOf(p)
-		if d == "" {
-			continue
-		}
-		if _, dup := seen[d]; dup {
-			continue
-		}
-		seen[d] = struct{}{}
-		dirs = append(dirs, d)
-	}
-	return float32(dc.ScoreFork(dirs))
+	return float32(dc.ScoreFork(paths))
 }
 
 // dirOf returns the immediate parent directory of p (e.g., "a/b/c.go" → "a/b").
