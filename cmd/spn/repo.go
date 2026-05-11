@@ -30,7 +30,7 @@ var repoCheckAuthFn = func() (*gh.Client, gh.AuthStatus, error) {
 var repoMDGCentralityFn = func(ctx context.Context, provider, owner, repoName string) (repo.Centrality, error) {
 	tmp, err := os.MkdirTemp("", "spn-mdg-")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("mkdtemp: %w", err)
 	}
 	defer os.RemoveAll(tmp)
 	if err := mdg.ShallowClone(ctx, provider, owner, repoName, tmp); err != nil {
@@ -38,7 +38,7 @@ var repoMDGCentralityFn = func(ctx context.Context, provider, owner, repoName st
 	}
 	c, err := mdg.BuildCentrality(ctx, tmp, provider, owner, repoName, "", mdg.BuildOptions{})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("build centrality: %w", err)
 	}
 	return c, nil
 }

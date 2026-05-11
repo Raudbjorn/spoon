@@ -77,6 +77,9 @@ func TestShallowClone_FallsBackToGitForGitLab(t *testing.T) {
 	if err := shallowCloneWith(context.Background(), "gitlab", "group", "project", dest, opts); err != nil {
 		t.Fatalf("clone: %v", err)
 	}
+	if len(fr.cmds) == 0 || len(fr.cmds[0]) == 0 {
+		t.Fatalf("no commands recorded: %v", fr.cmds)
+	}
 	if fr.cmds[0][0] != "git" {
 		t.Fatalf("expected git for gitlab; got %v", fr.cmds[0])
 	}
@@ -95,6 +98,9 @@ func TestShallowClone_GitFallbackWhenGhMissing(t *testing.T) {
 	dir := t.TempDir()
 	if err := shallowCloneWith(context.Background(), "github", "owner", "repo", filepath.Join(dir, "r"), opts); err != nil {
 		t.Fatalf("clone: %v", err)
+	}
+	if len(fr.cmds) == 0 || len(fr.cmds[0]) == 0 {
+		t.Fatalf("no commands recorded: %v", fr.cmds)
 	}
 	if fr.cmds[0][0] != "git" {
 		t.Fatalf("expected git fallback; got %v", fr.cmds[0])
