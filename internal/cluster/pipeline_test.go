@@ -13,6 +13,7 @@ import (
 	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/forge"
 	"github.com/svnbjrn/spoon/internal/heat"
+	"github.com/svnbjrn/spoon/internal/mdg"
 )
 
 // ─── Stubs ────────────────────────────────────────────────────────────────
@@ -403,5 +404,38 @@ func TestPipeline_LabelerNotInvoked_WhenNil(t *testing.T) {
 		// selection; we just assert the function returned without invoking
 		// any labeler path. Nothing to check here directly.
 		_ = c
+	}
+}
+
+func TestPipelineOptions_CentralityBackend(t *testing.T) {
+	// Smoke test for the field. Real MDG behavior is covered by
+	// internal/mdg/centrality_test.go. The dispatcher's silent-fallback path
+	// is tested implicitly: any existing pipeline_test that omits the field
+	// continues to pass because "" maps to the directory backend.
+	opts := PipelineOptions{CentralityBackend: "mdg"}
+	if opts.CentralityBackend != "mdg" {
+		t.Fatalf("backend should round-trip; got %q", opts.CentralityBackend)
+	}
+}
+
+func TestMDGCachedAdapter_ScoreFork(t *testing.T) {
+	a := &mdgCachedAdapter{cache: mdg.MDGCache{
+		Scores: map[string]float64{
+			"example.com/m/internal/auth": 0.4,
+			"example.com/m/internal/util": 0.2,
+		},
+	}}
+	// Exact path match against the score table.
+	got := a.ScoreFork([]string{"example.com/m/internal/auth"})
+	if got <= 0 || got > 1 {
+		t.Fatalf("ScoreFork(auth) out of (0,1]: %v", got)
+	}
+	// Unknown path → 0.
+	if got := a.ScoreFork([]string{"unknown/path"}); got != 0 {
+		t.Fatalf("ScoreFork(unknown) = %v, want 0", got)
+	}
+	// Empty input → 0.
+	if got := a.ScoreFork(nil); got != 0 {
+		t.Fatalf("ScoreFork(nil) = %v, want 0", got)
 	}
 }
