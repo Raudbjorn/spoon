@@ -24,6 +24,7 @@ type goPkgInfo struct {
 	ImportPath string   // canonical, e.g., "example.com/m/internal/auth"
 	IsMain     bool     // package main
 	Imports    []string // in-module + external; stdlib filtered out
+	Files      []string // relative paths of .go files in this package; sorted
 }
 
 // excludedDirs is true when the named segment must not be descended into.
@@ -61,6 +62,7 @@ func parseGoPackages(rootDir string) ([]goPkgInfo, error) {
 		importPath         string
 		isMain             bool
 		imports            map[string]struct{}
+		files              []string
 		seenAtLeastOneFile bool
 	}
 	pkgsByDir := map[string]*pkgState{}
@@ -90,13 +92,16 @@ func parseGoPackages(rootDir string) ([]goPkgInfo, error) {
 		}
 
 		dir := filepath.Dir(path)
+		rel, _ := filepath.Rel(rootDir, path)
+		rel = filepath.ToSlash(rel)
+
 		st, ok := pkgsByDir[dir]
 		if !ok {
-			rel, _ := filepath.Rel(rootDir, dir)
-			rel = filepath.ToSlash(rel)
+			pkgRel, _ := filepath.Rel(rootDir, dir)
+			pkgRel = filepath.ToSlash(pkgRel)
 			importPath := modulePath
-			if rel != "." && rel != "" {
-				importPath = modulePath + "/" + rel
+			if pkgRel != "." && pkgRel != "" {
+				importPath = modulePath + "/" + pkgRel
 			}
 			st = &pkgState{
 				importPath: importPath,
@@ -108,6 +113,7 @@ func parseGoPackages(rootDir string) ([]goPkgInfo, error) {
 			st.isMain = true
 		}
 		st.seenAtLeastOneFile = true
+		st.files = append(st.files, rel)
 		for _, imp := range f.Imports {
 			if imp.Path == nil {
 				continue
@@ -134,10 +140,13 @@ func parseGoPackages(rootDir string) ([]goPkgInfo, error) {
 			imports = append(imports, k)
 		}
 		sort.Strings(imports)
+		files := append([]string(nil), st.files...)
+		sort.Strings(files)
 		out = append(out, goPkgInfo{
 			ImportPath: st.importPath,
 			IsMain:     st.isMain,
 			Imports:    imports,
+			Files:      files,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
