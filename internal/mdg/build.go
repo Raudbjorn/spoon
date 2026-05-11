@@ -15,11 +15,12 @@ type BuildOptions struct {
 	Languages []string
 }
 
-// Build parses repoPath and returns the MDG. Phase A supports Go only.
+// Build parses repoPath and returns the MDG. Phase A supports Go only;
+// a missing go.mod yields an empty graph rather than an error (prerequisite
+// for the polyglot orchestrator in Phase B).
 //
 // Errors:
 //   - repoPath cannot be read
-//   - no go.mod (Phase A's only supported entry condition)
 //   - context cancellation (checked before stat and after parsing; the parse
 //     phase itself is not interruptible in Phase A)
 //
