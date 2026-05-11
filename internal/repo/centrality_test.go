@@ -154,10 +154,10 @@ func TestCompute_TopK(t *testing.T) {
 func TestScoreFork_Empty(t *testing.T) {
 	dc := DirectoryCentrality{DirScore: map[string]float64{"a/": 0.5}}
 	if got := dc.ScoreFork(nil); got != 0.0 {
-		t.Errorf("nil touchedDirs: expected 0.0, got %v", got)
+		t.Errorf("nil touchedFiles: expected 0.0, got %v", got)
 	}
 	if got := dc.ScoreFork([]string{}); got != 0.0 {
-		t.Errorf("empty touchedDirs: expected 0.0, got %v", got)
+		t.Errorf("empty touchedFiles: expected 0.0, got %v", got)
 	}
 }
 
