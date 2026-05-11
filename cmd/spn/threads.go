@@ -234,7 +234,7 @@ func doThreadsResolve(args []string, stdout, stderr io.Writer) int {
 	if authErr != nil {
 		return authErr.Emit(stderr)
 	}
-	t, opErr := threadsops.Resolve(context.Background(), api, owner, repo, number, threadID, body)
+	t, _, opErr := threadsops.Resolve(context.Background(), api, owner, repo, number, threadID, body)
 	if opErr != nil {
 		return translateResolveErr(opErr, prRef, threadID, stderr)
 	}

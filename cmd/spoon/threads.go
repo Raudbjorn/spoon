@@ -269,16 +269,7 @@ func runThreads(args []string) int {
 			return 1
 		}
 		emitStatus(os.Stdout, status, number, flags.noStatus)
-		// Pre-check: warn-and-exit for already-resolved threads, matching the
-		// pre-refactor spoon UX. threadsops.Resolve is silently idempotent;
-		// we surface the no-op to humans.
-		for i := range all {
-			if all[i].ID == flags.targetID && all[i].IsResolved {
-				fmt.Fprintln(os.Stderr, "⚠️  Warning: thread already resolved; nothing to do")
-				return 0
-			}
-		}
-		_, opErr := threadsops.Resolve(ctx, client, owner, repo, number, flags.targetID, flags.body)
+		_, wasAlreadyResolved, opErr := threadsops.ResolveWithThreads(ctx, client, all, flags.targetID, flags.body)
 		if opErr != nil {
 			switch opErr.Code {
 			case threadsops.OpCodeNotFound:
@@ -291,6 +282,9 @@ func runThreads(args []string) int {
 				fmt.Fprintln(os.Stderr, "❌ Error:", opErr.Message)
 				return 1
 			}
+		}
+		if wasAlreadyResolved {
+			fmt.Fprintln(os.Stderr, "⚠️  Warning: thread already resolved; nothing to do")
 		}
 		return 0
 

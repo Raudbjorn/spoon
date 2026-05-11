@@ -9,33 +9,53 @@ import (
 
 const bodySatisfiedRecencyWindow = 60 * time.Second
 
-// Resolve resolves a single thread. See spec for the full state machine:
-//   - Thread not found → OpCodeNotFound
-//   - Already resolved → return current state (idempotent)
-//   - RequiresBody && body == "" → OpCodePolicy unless body-satisfied
-//   - Body provided → post comment, then resolve; partial failure flagged
-func Resolve(ctx context.Context, api API, owner, repo string, number int, threadID, body string) (*ReviewThreadWithPolicy, *OpError) {
+// Resolve fetches the PR and resolves the named thread. See the package docs
+// for the full state machine: not-found, idempotent, body-required gate,
+// body-satisfied dedup, partial-failure handling.
+//
+// Returns:
+//
+//	thread: the (now-)resolved thread, or nil on error
+//	wasAlreadyResolved: true if the thread was already resolved on entry
+//	  (no API mutations performed) — useful for callers that want to
+//	  surface an idempotency warning.
+//	opErr: error envelope or nil
+func Resolve(ctx context.Context, api API, owner, repo string, number int, threadID, body string) (*ReviewThreadWithPolicy, bool, *OpError) {
 	_, all, err := api.FetchPR(ctx, owner, repo, number, github.ThreadStateAll)
 	if err != nil {
-		return nil, &OpError{Code: OpCodeUpstream, Message: err.Error(), Retryable: true}
+		return nil, false, &OpError{Code: OpCodeUpstream, Message: err.Error(), Retryable: true}
 	}
+	return ResolveWithThreads(ctx, api, all, threadID, body)
+}
+
+// ResolveWithThreads is like Resolve but accepts a pre-fetched thread slice,
+// skipping the internal FetchPR call. Use this when the caller has already
+// fetched the threads for another reason (e.g., spoon fetches them for the
+// status header).
+func ResolveWithThreads(ctx context.Context, api API, threads []github.ReviewThread, threadID, body string) (*ReviewThreadWithPolicy, bool, *OpError) {
 	var target *github.ReviewThread
-	for i := range all {
-		if all[i].ID == threadID {
-			target = &all[i]
+	for i := range threads {
+		if threads[i].ID == threadID {
+			target = &threads[i]
 			break
 		}
 	}
 	if target == nil {
-		return nil, &OpError{Code: OpCodeNotFound, Message: "thread " + threadID + " not found on PR", Details: map[string]any{"thread_id": threadID}}
+		return nil, false, &OpError{Code: OpCodeNotFound, Message: "thread " + threadID + " not found on PR", Details: map[string]any{"thread_id": threadID}}
 	}
+	return resolveTarget(ctx, api, target, threadID, body)
+}
+
+// resolveTarget runs the post-fetch state machine. Shared by Resolve and
+// ResolveWithThreads.
+func resolveTarget(ctx context.Context, api API, target *github.ReviewThread, threadID, body string) (*ReviewThreadWithPolicy, bool, *OpError) {
 	annotated := AnnotateOneWithPolicy(target)
 	if target.IsResolved {
-		return annotated, nil
+		return annotated, true, nil
 	}
 	if annotated.RequiresBody && body == "" {
 		if !bodySatisfied(ctx, api, target) {
-			return nil, &OpError{
+			return nil, false, &OpError{
 				Code:    OpCodePolicy,
 				Message: "thread has a human commenter; --body is required",
 				Details: map[string]any{"thread_id": threadID},
@@ -46,7 +66,7 @@ func Resolve(ctx context.Context, api API, owner, repo string, number int, threa
 	if body != "" {
 		c, rerr := api.ReplyToThread(ctx, threadID, body)
 		if rerr != nil {
-			return nil, &OpError{Code: OpCodeUpstream, Message: "reply failed: " + rerr.Error(), Retryable: true}
+			return nil, false, &OpError{Code: OpCodeUpstream, Message: "reply failed: " + rerr.Error(), Retryable: true}
 		}
 		commentID = c.ID
 	}
@@ -56,7 +76,7 @@ func Resolve(ctx context.Context, api API, owner, repo string, number int, threa
 			details["comment_posted"] = true
 			details["comment_id"] = commentID
 		}
-		return nil, &OpError{
+		return nil, false, &OpError{
 			Code:      OpCodeUpstream,
 			Message:   "comment posted but resolve failed: " + rerr.Error(),
 			Retryable: true,
@@ -64,7 +84,7 @@ func Resolve(ctx context.Context, api API, owner, repo string, number int, threa
 		}
 	}
 	annotated.IsResolved = true
-	return annotated, nil
+	return annotated, false, nil
 }
 
 // bodySatisfied returns true when the body-required gate should be skipped
@@ -78,11 +98,9 @@ func bodySatisfied(ctx context.Context, api API, t *github.ReviewThread) bool {
 		return false
 	}
 	last := t.Comments[len(t.Comments)-1]
-
 	if login, err := api.CurrentUserLogin(ctx); err == nil && login != "" {
 		return last.Author == login
 	}
-
 	createdAt, err := time.Parse(time.RFC3339, last.CreatedAt)
 	if err != nil {
 		return false
