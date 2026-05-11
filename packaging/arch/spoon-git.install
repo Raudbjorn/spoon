@@ -1,0 +1,21 @@
+_post() {
+    cat <<'EOF'
+
+==> spoon and spn installed to /usr/bin
+
+==> Authenticate before use:
+      gh auth login        (GitHub)
+      glab auth login      (GitLab, optional)
+
+==> The using-spn agent skill ships at:
+      /usr/share/spoon/skills/using-spn/SKILL.md
+
+    To enable for Claude Code (per user), symlink it into your skills dir:
+      mkdir -p ~/.claude/skills
+      ln -s /usr/share/spoon/skills/using-spn ~/.claude/skills/using-spn
+
+EOF
+}
+
+post_install() { _post; }
+post_upgrade() { _post; }
