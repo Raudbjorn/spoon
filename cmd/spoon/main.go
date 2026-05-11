@@ -48,6 +48,7 @@ func main() {
 	embedderURL := ""
 	embedderModel := ""
 	labelerURL := ""
+	labelerModel := ""
 	clusterEpsilon := 0.35
 	clusterMinSize := 3
 	autoPull := os.Getenv("SPOON_AUTO_PULL") == "1"
@@ -159,6 +160,11 @@ func main() {
 				i++
 				labelerURL = args[i]
 			}
+		case "--labeler-model":
+			if i+1 < len(args) {
+				i++
+				labelerModel = args[i]
+			}
 		case "--cluster-epsilon":
 			if i+1 < len(args) {
 				i++
@@ -263,6 +269,7 @@ func main() {
 				Endpoint:        embedderURL,
 				ModelOverride:   embedderModel,
 				LabelerEndpoint: labelerURL,
+				LabelerModel:    labelerModel,
 				Epsilon:         clusterEpsilon,
 				MinClusterSize:  clusterMinSize,
 				AutoPull:        autoPull,
@@ -424,6 +431,7 @@ Flags:
   --embedder URL           Embedding endpoint (default $SPOON_EMBEDDER_URL)
   --embedder-model NAME    Explicit embedding model (default: auto-pick)
   --labeler URL            Optional LLM polish endpoint (default: heuristic)
+  --labeler-model NAME     LLM polish model (default: llama3.2:3b)
   --cluster-epsilon F      Cosine distance cutoff (default 0.35)
   --cluster-min-size N     Minimum cluster size (default 3)
   --auto-pull              Pull missing embedding model without prompting

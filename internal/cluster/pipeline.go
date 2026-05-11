@@ -24,13 +24,19 @@ type PipelineOptions struct {
 	TopN            int    // max forks to embed
 	Endpoint        string // embedder URL; "" → default resolution
 	ModelOverride   string // explicit model
-	LabelerEndpoint string // optional LLM labeler endpoint (not used yet)
+	LabelerEndpoint string // optional LLM labeler endpoint (informational; CLI uses Labeler directly)
 	Epsilon         float64
 	MinClusterSize  int
 	AutoPull        bool
 	NoPrompt        bool
 	NonInteractive  bool // true for --json / --csv / spn runs; false for TUI calls
 	Refresh         bool // true → skip LoadCache, force a fresh clustering pass
+
+	// Labeler, when non-nil, is invoked after heuristic labeling to polish
+	// each non-noise cluster's label. Errors fall back silently to the
+	// heuristic. Construction is the CLI's responsibility; the pipeline only
+	// consumes the interface.
+	Labeler Labeler
 
 	// EmbedderForTest, when non-nil, skips the SelectEmbedder bootstrap and
 	// uses the provided Embedder directly. Reserved for tests of the
@@ -70,6 +76,15 @@ type PipelineInputs struct {
 	TreeSource    repo.TreeSource
 	CommitSource  repo.CommitSource
 	ReadmeFetcher ReadmeFetcher
+
+	// Optional upstream-side context for the LLM labeler. UpstreamDesc and
+	// UpstreamReadme are typically pre-populated by the caller; the pipeline
+	// will additionally fetch the README via ReadmeFetcher (if available) when
+	// Labeler is set and UpstreamReadme is empty. UpstreamCoreDirs is sourced
+	// from the centrality pass below when not pre-set.
+	UpstreamDesc     string
+	UpstreamReadme   string
+	UpstreamCoreDirs []string
 }
 
 // SkipReason is returned by RunPipeline when clustering was skipped for a
@@ -157,6 +172,29 @@ func RunPipeline(ctx context.Context, opts PipelineOptions, inputs PipelineInput
 	// 2. Compute (or load) directory centrality.
 	dc, dcOK := loadOrComputeCentrality(ctx, inputs, logger)
 
+	// 2a. Fetch upstream README for the labeler when one is configured and
+	// the caller did not pre-populate it. Failures are non-fatal — the labeler
+	// just gets an empty README in that case.
+	if opts.Labeler != nil && inputs.UpstreamReadme == "" && inputs.ReadmeFetcher != nil &&
+		inputs.UpstreamOwner != "" && inputs.UpstreamRepo != "" {
+		if r, err := inputs.ReadmeFetcher.FetchReadme(ctx, inputs.UpstreamOwner, inputs.UpstreamRepo); err == nil {
+			if len(r) > readmeMaxBytes {
+				r = r[:readmeMaxBytes]
+			}
+			inputs.UpstreamReadme = r
+		} else {
+			fmt.Fprintf(logger, "[cluster] upstream README fetch failed: %v (continuing)\n", err)
+		}
+	}
+	// Fall back to ParentData.Description and centrality CoreDirs when the
+	// caller hasn't set them.
+	if inputs.UpstreamDesc == "" {
+		inputs.UpstreamDesc = inputs.Upstream.Description
+	}
+	if len(inputs.UpstreamCoreDirs) == 0 && dcOK {
+		inputs.UpstreamCoreDirs = dc.CoreDirs
+	}
+
 	// 3. Gate top-N forks for embedding.
 	candidates := SelectClusterCandidates(inputs.Forks, opts.TopN)
 	if len(candidates) == 0 {
@@ -241,6 +279,35 @@ func RunPipeline(ctx context.Context, opts PipelineOptions, inputs PipelineInput
 			continue
 		}
 		clusters[i].Label = labels[clusters[i].ID]
+	}
+
+	// 8a. Optional LLM polish over each non-noise cluster label. Errors fall
+	//     back silently to the heuristic.
+	if opts.Labeler != nil {
+		upstreamRepo := fmt.Sprintf("%s/%s", inputs.UpstreamOwner, inputs.UpstreamRepo)
+		for i := range clusters {
+			if clusters[i].ID == "noise" {
+				continue
+			}
+			members := membersForCluster(clusters[i], features, idxByForkID, 5)
+			polished, err := opts.Labeler.Polish(ctx, LabelerContext{
+				Heuristic:        clusters[i].Label,
+				Members:          members,
+				UpstreamRepo:     upstreamRepo,
+				UpstreamDesc:     inputs.UpstreamDesc,
+				UpstreamReadme:   inputs.UpstreamReadme,
+				UpstreamCoreDirs: inputs.UpstreamCoreDirs,
+			})
+			if err != nil {
+				fmt.Fprintf(logger, "[cluster] labeler polish failed for %s: %v (keeping heuristic)\n",
+					clusters[i].ID, err)
+				continue
+			}
+			if polished == "" {
+				continue
+			}
+			clusters[i].Label = polished
+		}
 	}
 
 	// 9. Write back cluster metadata into each candidate's HeatResult.
@@ -361,6 +428,27 @@ func SelectClusterCandidates(forks []EnrichedFork, topN int) []EnrichedFork {
 		eligible = eligible[:topN]
 	}
 	return eligible
+}
+
+// membersForCluster returns up to `cap` member ForkFeatures for the given
+// cluster, looked up by ForkID via idxByForkID. Order follows the cluster's
+// Members list (which itself is deterministic — see cluster.Run).
+func membersForCluster(c Cluster, features []embed.ForkFeatures, idxByForkID map[string]int, cap int) []embed.ForkFeatures {
+	if cap <= 0 || len(c.Members) == 0 {
+		return nil
+	}
+	out := make([]embed.ForkFeatures, 0, cap)
+	for _, id := range c.Members {
+		if len(out) >= cap {
+			break
+		}
+		idx, ok := idxByForkID[id]
+		if !ok || idx < 0 || idx >= len(features) {
+			continue
+		}
+		out = append(out, features[idx])
+	}
+	return out
 }
 
 // labelClusters runs HeuristicLabel for each non-noise cluster.

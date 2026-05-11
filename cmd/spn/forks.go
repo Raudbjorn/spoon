@@ -159,6 +159,12 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 			}
 			i++
 			opts.Cluster.LabelerEndpoint = args[i]
+		case "--labeler-model":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--labeler-model requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			opts.Cluster.LabelerModel = args[i]
 		case "--cluster-epsilon":
 			if i+1 >= len(args) {
 				return agentio.NewError(agentio.CodeBadInput, "--cluster-epsilon requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)

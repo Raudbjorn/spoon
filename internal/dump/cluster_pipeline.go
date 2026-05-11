@@ -20,6 +20,7 @@ type ClusterOptions struct {
 	Endpoint        string
 	ModelOverride   string
 	LabelerEndpoint string
+	LabelerModel    string
 	Epsilon         float64
 	MinClusterSize  int
 	AutoPull        bool
@@ -27,13 +28,31 @@ type ClusterOptions struct {
 	NonInteractive  bool
 	Refresh         bool
 
+	// Labeler is the (optional) cluster Labeler to use. When set, it overrides
+	// construction-from-LabelerEndpoint. Tests inject a stub directly via this
+	// field.
+	Labeler cluster.Labeler
+
 	// embedderForTest is the test seam from the cluster pipeline tests.
 	// Not exposed to CLI callers.
 	embedderForTest embed.Embedder
 }
 
 // toPipeline converts ClusterOptions into the underlying cluster.PipelineOptions.
+// If Labeler is unset and LabelerEndpoint is non-empty, a fresh
+// OllamaChatLabeler is constructed using the (optionally-overridden) model.
 func (o ClusterOptions) toPipeline() cluster.PipelineOptions {
+	labeler := o.Labeler
+	if labeler == nil && o.LabelerEndpoint != "" {
+		model := o.LabelerModel
+		if model == "" {
+			model = defaultLabelerModel
+		}
+		labeler = &cluster.OllamaChatLabeler{
+			Endpoint: o.LabelerEndpoint,
+			Model:    model,
+		}
+	}
 	return cluster.PipelineOptions{
 		Enabled:         o.Enabled,
 		TopN:            o.TopN,
@@ -46,9 +65,13 @@ func (o ClusterOptions) toPipeline() cluster.PipelineOptions {
 		NoPrompt:        o.NoPrompt,
 		NonInteractive:  o.NonInteractive,
 		Refresh:         o.Refresh,
+		Labeler:         labeler,
 		EmbedderForTest: o.embedderForTest,
 	}
 }
+
+// defaultLabelerModel is used when --labeler is set but --labeler-model is not.
+const defaultLabelerModel = "llama3.2:3b"
 
 // EnrichedFork is a CLI-facing alias of cluster.EnrichedFork.
 type EnrichedFork = cluster.EnrichedFork
