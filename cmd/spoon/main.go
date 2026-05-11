@@ -268,6 +268,7 @@ func main() {
 				AutoPull:        autoPull,
 				NoPrompt:        noPrompt,
 				NonInteractive:  true, // --json / --csv runs are always non-interactive
+				Refresh:         refresh,
 			},
 		}, w)
 		if err != nil {

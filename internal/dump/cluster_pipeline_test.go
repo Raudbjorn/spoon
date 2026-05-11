@@ -5,9 +5,11 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/svnbjrn/spoon/internal/cluster"
 	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/forge"
 	"github.com/svnbjrn/spoon/internal/heat"
@@ -393,5 +395,243 @@ func TestSelectClusterCandidates_TopN(t *testing.T) {
 	out := selectClusterCandidates(forks, 2)
 	if len(out) != 2 {
 		t.Fatalf("expected topN=2 to cap to 2 candidates, got %d", len(out))
+	}
+}
+
+// ─── Cache tests ──────────────────────────────────────────────────────────
+
+// countingEmbedder wraps a stubEmbedder and counts Embed calls. The
+// pipeline's cache fast-path must NOT call Embed at all on a cache hit.
+type countingEmbedder struct {
+	inner stubEmbedder
+	calls int32
+}
+
+func (c *countingEmbedder) Embed(ctx context.Context, texts []string) ([]embed.Vector, error) {
+	atomic.AddInt32(&c.calls, 1)
+	return c.inner.Embed(ctx, texts)
+}
+
+func (c *countingEmbedder) Dim() int { return c.inner.Dim() }
+
+func (c *countingEmbedder) Calls() int32 { return atomic.LoadInt32(&c.calls) }
+
+// happyPathClusterInputs returns the standard 6-fork two-axis fixture used
+// across the cache tests.
+func happyPathClusterInputs() ClusterInputs {
+	forks := []EnrichedFork{
+		makeFork("o/a1", 3, []string{"Alpha/x.go", "Alpha/y.go"}, 90),
+		makeFork("o/a2", 4, []string{"Alpha/z.go", "Alpha/w.go"}, 85),
+		makeFork("o/a3", 5, []string{"Alpha/m.go", "Alpha/n.go"}, 80),
+		makeFork("o/z1", 2, []string{"Zeta/q.go", "Zeta/r.go"}, 70),
+		makeFork("o/z2", 3, []string{"Zeta/s.go", "Zeta/t.go"}, 65),
+		makeFork("o/z3", 4, []string{"Zeta/u.go", "Zeta/v.go"}, 60),
+	}
+	return ClusterInputs{
+		Provider:      "github",
+		UpstreamOwner: "up",
+		UpstreamRepo:  "stream",
+		Upstream:      parentFixture(),
+		Forks:         forks,
+	}
+}
+
+func TestRunClusterPipeline_CacheHit_SkipsEmbedder(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+
+	// Pre-seed the cache with a clusters-and-assignments payload that
+	// references the fixture fork IDs.
+	preset := cluster.ClusterCache{
+		SchemaVersion:    cluster.SchemaVersion,
+		ComputedAt:       time.Now().UTC(),
+		EmbedderModel:    "test-model",
+		EmbedderEndpoint: "http://stub",
+		Provider:         "github",
+		Owner:            "up",
+		Repo:             "stream",
+		Epsilon:          0.6,
+		MinClusterSize:   3,
+		TopM:             10,
+		Clusters: []cluster.Cluster{
+			{ID: "c0", Members: []string{"o/a1", "o/a2", "o/a3"}, Label: "alpha"},
+			{ID: "c1", Members: []string{"o/z1", "o/z2", "o/z3"}, Label: "zeta"},
+		},
+		Assignments: []cluster.Assignment{
+			{ForkID: "o/a1", Cluster: "c0", Novelty: 0.1},
+			{ForkID: "o/a2", Cluster: "c0", Novelty: 0.2},
+			{ForkID: "o/a3", Cluster: "c0", Novelty: 0.3},
+			{ForkID: "o/z1", Cluster: "c1", Novelty: 0.4},
+			{ForkID: "o/z2", Cluster: "c1", Novelty: 0.5},
+			{ForkID: "o/z3", Cluster: "c1", Novelty: 0.6},
+		},
+	}
+	if err := cluster.SaveCache(preset); err != nil {
+		t.Fatalf("SaveCache: %v", err)
+	}
+
+	inputs := happyPathClusterInputs()
+	counter := &countingEmbedder{inner: stubEmbedder{dim: 8}}
+	opts := ClusterOptions{
+		Enabled:         true,
+		TopN:            10,
+		Epsilon:         0.6,
+		MinClusterSize:  3,
+		NonInteractive:  true,
+		Endpoint:        "http://stub",
+		ModelOverride:   "test-model",
+		embedderForTest: counter,
+	}
+
+	var buf bytes.Buffer
+	reason, err := runClusterPipeline(context.Background(), opts, inputs, &buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if reason != "" {
+		t.Errorf("expected empty skip reason on cache hit, got %q\nlog: %s", reason, buf.String())
+	}
+	if got := counter.Calls(); got != 0 {
+		t.Errorf("expected 0 Embed calls on cache hit, got %d", got)
+	}
+	if !strings.Contains(buf.String(), "cache hit") {
+		t.Errorf("expected 'cache hit' log line, got: %s", buf.String())
+	}
+
+	// All six fixture forks should have populated cluster fields.
+	for _, ef := range inputs.Forks {
+		if ef.Heat.ClusterID == "" {
+			t.Errorf("fork %s: ClusterID not populated from cache", ef.T1.ID)
+		}
+		if ef.Heat.ClusterLabel == "" {
+			t.Errorf("fork %s: ClusterLabel not populated from cache", ef.T1.ID)
+		}
+		if ef.Heat.ClusterMemberCount != 3 {
+			t.Errorf("fork %s: ClusterMemberCount = %d, want 3", ef.T1.ID, ef.Heat.ClusterMemberCount)
+		}
+	}
+}
+
+func TestRunClusterPipeline_RefreshBypassesCache(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+
+	// Seed cache with a deliberately wrong payload so we can tell whether
+	// the pipeline trusted it. If Refresh works, it should be ignored and
+	// the embedder should be called.
+	preset := cluster.ClusterCache{
+		SchemaVersion:    cluster.SchemaVersion,
+		ComputedAt:       time.Now().UTC(),
+		EmbedderModel:    "test-model",
+		EmbedderEndpoint: "http://stub",
+		Provider:         "github",
+		Owner:            "up",
+		Repo:             "stream",
+		Clusters: []cluster.Cluster{
+			{ID: "cBAD", Members: []string{"o/a1", "o/a2", "o/a3", "o/z1", "o/z2", "o/z3"}, Label: "stale"},
+		},
+		Assignments: []cluster.Assignment{
+			{ForkID: "o/a1", Cluster: "cBAD", Novelty: 0.99},
+			{ForkID: "o/a2", Cluster: "cBAD", Novelty: 0.99},
+			{ForkID: "o/a3", Cluster: "cBAD", Novelty: 0.99},
+			{ForkID: "o/z1", Cluster: "cBAD", Novelty: 0.99},
+			{ForkID: "o/z2", Cluster: "cBAD", Novelty: 0.99},
+			{ForkID: "o/z3", Cluster: "cBAD", Novelty: 0.99},
+		},
+	}
+	if err := cluster.SaveCache(preset); err != nil {
+		t.Fatalf("SaveCache: %v", err)
+	}
+
+	inputs := happyPathClusterInputs()
+	counter := &countingEmbedder{inner: stubEmbedder{dim: 8}}
+	opts := ClusterOptions{
+		Enabled:         true,
+		TopN:            10,
+		Epsilon:         0.6,
+		MinClusterSize:  3,
+		NonInteractive:  true,
+		Endpoint:        "http://stub",
+		ModelOverride:   "test-model",
+		Refresh:         true,
+		embedderForTest: counter,
+	}
+
+	var buf bytes.Buffer
+	reason, err := runClusterPipeline(context.Background(), opts, inputs, &buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if reason != "" {
+		t.Errorf("expected empty skip reason with --refresh, got %q\nlog: %s", reason, buf.String())
+	}
+	if got := counter.Calls(); got == 0 {
+		t.Errorf("expected Embed to be called with Refresh=true, got %d calls", got)
+	}
+	// The stale label must not have leaked through.
+	for _, ef := range inputs.Forks {
+		if ef.Heat.ClusterID == "cBAD" {
+			t.Errorf("fork %s: stale ClusterID 'cBAD' from cache leaked despite Refresh=true", ef.T1.ID)
+		}
+	}
+}
+
+func TestRunClusterPipeline_SaveThenLoad_RoundTrip(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+
+	makeOpts := func(emb embed.Embedder) ClusterOptions {
+		return ClusterOptions{
+			Enabled:         true,
+			TopN:            10,
+			Epsilon:         0.6,
+			MinClusterSize:  3,
+			NonInteractive:  true,
+			Endpoint:        "http://stub",
+			ModelOverride:   "test-model",
+			embedderForTest: emb,
+		}
+	}
+
+	// First run: cache is cold, embedder should be called.
+	inputs1 := happyPathClusterInputs()
+	counter1 := &countingEmbedder{inner: stubEmbedder{dim: 8}}
+	var buf1 bytes.Buffer
+	if _, err := runClusterPipeline(context.Background(), makeOpts(counter1), inputs1, &buf1); err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	if counter1.Calls() == 0 {
+		t.Fatalf("first run: expected Embed to be called on cold cache, got 0\nlog: %s", buf1.String())
+	}
+
+	// Second run on identical inputs: cache should hit, embedder skipped.
+	inputs2 := happyPathClusterInputs()
+	counter2 := &countingEmbedder{inner: stubEmbedder{dim: 8}}
+	var buf2 bytes.Buffer
+	reason, err := runClusterPipeline(context.Background(), makeOpts(counter2), inputs2, &buf2)
+	if err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	if reason != "" {
+		t.Errorf("second run: expected empty skip reason, got %q\nlog: %s", reason, buf2.String())
+	}
+	if got := counter2.Calls(); got != 0 {
+		t.Errorf("second run: expected 0 Embed calls (cache should hit), got %d\nlog: %s", got, buf2.String())
+	}
+	if !strings.Contains(buf2.String(), "cache hit") {
+		t.Errorf("second run: expected 'cache hit' log line, got: %s", buf2.String())
+	}
+
+	// Cluster-field write-back from the cache should match the first run's
+	// non-empty fields.
+	for i := range inputs1.Forks {
+		got := inputs2.Forks[i].Heat
+		want := inputs1.Forks[i].Heat
+		if got.ClusterID != want.ClusterID {
+			t.Errorf("fork %s: ClusterID got=%q want=%q", inputs1.Forks[i].T1.ID, got.ClusterID, want.ClusterID)
+		}
+		if got.ClusterLabel != want.ClusterLabel {
+			t.Errorf("fork %s: ClusterLabel got=%q want=%q", inputs1.Forks[i].T1.ID, got.ClusterLabel, want.ClusterLabel)
+		}
+		if got.ClusterMemberCount != want.ClusterMemberCount {
+			t.Errorf("fork %s: ClusterMemberCount got=%d want=%d", inputs1.Forks[i].T1.ID, got.ClusterMemberCount, want.ClusterMemberCount)
+		}
 	}
 }

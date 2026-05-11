@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/svnbjrn/spoon/internal/cluster"
 	"github.com/svnbjrn/spoon/internal/embed"
@@ -27,6 +28,7 @@ type ClusterOptions struct {
 	AutoPull        bool
 	NoPrompt        bool
 	NonInteractive  bool // true for --json / --csv runs; false for TUI calls
+	Refresh         bool // true → skip LoadCache, force a fresh clustering pass
 
 	// embedderForTest, when non-nil, skips the SelectEmbedder bootstrap and
 	// uses the provided Embedder directly. Reserved for internal tests of the
@@ -89,6 +91,26 @@ func runClusterPipeline(ctx context.Context, opts ClusterOptions, inputs Cluster
 	}
 	if err := ctx.Err(); err != nil {
 		return "", err
+	}
+
+	provider := inputs.Provider
+	if provider == "" {
+		provider = "github"
+	}
+
+	// 0. Cache fast-path. Try to satisfy this pipeline from a previous run's
+	//    saved clusters before doing any expensive work (no embedder probe,
+	//    no BuildFeatures, no clustering). The cached entry must match
+	//    (provider, owner, repo) plus the embedder model and endpoint;
+	//    otherwise it's ignored. Refresh forces re-compute.
+	if !opts.Refresh {
+		if cached, ok := cluster.LoadCache(provider, inputs.UpstreamOwner, inputs.UpstreamRepo,
+			opts.Endpoint, opts.ModelOverride); ok {
+			applyAssignmentsToForks(cached.Clusters, cached.Assignments, inputs.Forks)
+			fmt.Fprintf(logger, "[cluster] cache hit: %d clusters, %d assignments (skipping embed)\n",
+				len(cached.Clusters), len(cached.Assignments))
+			return "", nil
+		}
 	}
 
 	// 1. Bootstrap embedder.
@@ -187,19 +209,67 @@ func runClusterPipeline(ctx context.Context, opts ClusterOptions, inputs Cluster
 		MinClusterSize: opts.MinClusterSize,
 	})
 
-	// 8. Label each non-noise cluster.
+	// 8. Label each non-noise cluster, then stamp the labels onto the
+	//    clusters slice so the cached copy carries them too.
 	idxByForkID := make(map[string]int, len(candidates))
 	for i, ef := range candidates {
 		idxByForkID[ef.T1.ID] = i
 	}
 	labels := labelClusters(clusters, features, idxByForkID)
+	for i := range clusters {
+		if clusters[i].ID == "noise" {
+			continue
+		}
+		clusters[i].Label = labels[clusters[i].ID]
+	}
 
 	// 9. Write back cluster metadata into each candidate's HeatResult.
+	applyAssignmentsToForks(clusters, assignments, candidates)
+
+	// 10. Persist a cache entry so subsequent runs within 24h can skip the
+	//     embedding + clustering pass entirely. Cache save failures are
+	//     logged but never block the run.
+	if err := cluster.SaveCache(cluster.ClusterCache{
+		SchemaVersion:    cluster.SchemaVersion,
+		ComputedAt:       time.Now().UTC(),
+		EmbedderModel:    modelName,
+		EmbedderEndpoint: opts.Endpoint,
+		Provider:         provider,
+		Owner:            inputs.UpstreamOwner,
+		Repo:             inputs.UpstreamRepo,
+		Epsilon:          opts.Epsilon,
+		MinClusterSize:   opts.MinClusterSize,
+		TopM:             opts.TopN,
+		Clusters:         clusters,
+		Assignments:      assignments,
+	}); err != nil {
+		fmt.Fprintf(logger, "[cluster] cache save failed: %v (non-fatal)\n", err)
+	}
+
+	fmt.Fprintf(logger, "[cluster] embedded %d forks → %d clusters (incl. noise)\n",
+		len(candidates), len(clusters))
+	return "", nil
+}
+
+// applyAssignmentsToForks writes ClusterID / ClusterLabel / NoveltyScore /
+// ClusterMemberCount onto each fork's HeatResult, sourced from a cluster +
+// assignment list. Used both on a fresh clustering pass and on a cache hit
+// so the write-back logic stays in one place.
+//
+// Score semantics: this helper does NOT modify HeatResult.Score. See the
+// runClusterPipeline godoc for the rationale.
+func applyAssignmentsToForks(clusters []cluster.Cluster, assignments []cluster.Assignment, forks []EnrichedFork) {
+	idxByForkID := make(map[string]int, len(forks))
+	for i, ef := range forks {
+		idxByForkID[ef.T1.ID] = i
+	}
+	labels := make(map[string]string, len(clusters))
 	memberCounts := make(map[string]int, len(clusters))
 	for _, c := range clusters {
 		if c.ID == "noise" {
 			continue
 		}
+		labels[c.ID] = c.Label
 		memberCounts[c.ID] = len(c.Members)
 	}
 	for _, a := range assignments {
@@ -207,7 +277,7 @@ func runClusterPipeline(ctx context.Context, opts ClusterOptions, inputs Cluster
 		if !ok {
 			continue
 		}
-		hr := candidates[i].Heat
+		hr := forks[i].Heat
 		if hr == nil {
 			continue
 		}
@@ -221,14 +291,7 @@ func runClusterPipeline(ctx context.Context, opts ClusterOptions, inputs Cluster
 		hr.ClusterID = a.Cluster
 		hr.ClusterLabel = labels[a.Cluster]
 		hr.ClusterMemberCount = memberCounts[a.Cluster]
-		// TODO(T9 follow-up): re-score Heat.Score with the novelty bonus
-		// applied through the existing trust multiplier. Today we leave
-		// Score unchanged — only the metadata fields are populated.
 	}
-
-	fmt.Fprintf(logger, "[cluster] embedded %d forks → %d clusters (incl. noise)\n",
-		len(candidates), len(clusters))
-	return "", nil
 }
 
 // loadOrComputeCentrality returns the upstream DirectoryCentrality. Tries the
