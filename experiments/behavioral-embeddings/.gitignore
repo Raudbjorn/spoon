@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+nomic_vectors.json
+codeexecutor_vectors.json
+hf_cache/
