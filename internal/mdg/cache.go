@@ -8,8 +8,8 @@ import (
 )
 
 const (
-	mdgTTL             = 24 * time.Hour
-	cacheSchemaVersion = 1
+	mdgTTL              = 24 * time.Hour
+	CacheSchemaVersion  = 1
 )
 
 // MDGCache is the on-disk MDG entry.
@@ -60,7 +60,7 @@ func LoadMDGCache(provider, owner, repo, headSHA string) (MDGCache, bool) {
 	if err := json.Unmarshal(data, &c); err != nil {
 		return MDGCache{}, false
 	}
-	if c.SchemaVersion != cacheSchemaVersion {
+	if c.SchemaVersion != CacheSchemaVersion {
 		return MDGCache{}, false
 	}
 	if c.ComputedAt.IsZero() || time.Since(c.ComputedAt) > mdgTTL {

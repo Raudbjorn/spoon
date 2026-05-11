@@ -513,7 +513,7 @@ func loadOrComputeMDG(
 	// without it, the next load() can never match.
 	if opts.CentralityHeadSHA != "" {
 		if err := mdg.SaveMDGCache(mdg.MDGCache{
-			SchemaVersion: 1,
+			SchemaVersion: mdg.CacheSchemaVersion,
 			Provider:      provider,
 			Owner:         inputs.UpstreamOwner,
 			Repo:          inputs.UpstreamRepo,
