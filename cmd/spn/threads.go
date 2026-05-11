@@ -324,10 +324,26 @@ func doThreadsResolve(args []string, stdout, stderr io.Writer) int {
 }
 
 func doThreadsResolveAll(args []string, stdout, stderr io.Writer) int {
-	if len(args) != 1 {
-		return agentio.NewError(agentio.CodeBadInput, "usage: spn threads resolve-all <pr-ref>", agentio.RemediationBadInput("threads", "resolve-all")).Emit(stderr)
+	var prRef string
+	outdatedOnly := false
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--outdated":
+			outdatedOnly = true
+		case strings.HasPrefix(a, "--"):
+			return agentio.NewError(agentio.CodeBadInput, "unknown flag: "+a, agentio.RemediationBadInput("threads", "resolve-all")).Emit(stderr)
+		default:
+			if prRef != "" {
+				return agentio.NewError(agentio.CodeBadInput, "unexpected positional: "+a, agentio.RemediationBadInput("threads", "resolve-all")).Emit(stderr)
+			}
+			prRef = a
+		}
 	}
-	owner, repo, number, ec, ok := resolvePRRef(args[0], "threads", "resolve-all", stderr)
+	if prRef == "" {
+		return agentio.NewError(agentio.CodeBadInput, "usage: spn threads resolve-all <pr-ref> [--outdated]", agentio.RemediationBadInput("threads", "resolve-all")).Emit(stderr)
+	}
+	owner, repo, number, ec, ok := resolvePRRef(prRef, "threads", "resolve-all", stderr)
 	if !ok {
 		return ec
 	}
@@ -335,7 +351,10 @@ func doThreadsResolveAll(args []string, stdout, stderr io.Writer) int {
 	if authErr != nil {
 		return authErr.Emit(stderr)
 	}
-	res, opErr := threadsops.ResolveAll(context.Background(), api, owner, repo, number, true)
+	res, opErr := threadsops.ResolveAllWithOptions(context.Background(), api, owner, repo, number, threadsops.ResolveAllOptions{
+		SkipHumanThreads: true,
+		OutdatedOnly:     outdatedOnly,
+	})
 	if opErr != nil {
 		return translateOpErr(opErr, stderr)
 	}

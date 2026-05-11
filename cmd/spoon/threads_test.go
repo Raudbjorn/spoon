@@ -279,6 +279,28 @@ func TestParseThreadsFlags_CustomIntro(t *testing.T) {
 	}
 }
 
+// --- G3: --outdated parser tests -------------------------------------------
+
+func TestParseThreadsFlags_OutdatedFlag(t *testing.T) {
+	f, err := parseThreadsFlags([]string{"owner/repo#1", "--resolve-all", "--outdated"})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if f.mode != modeResolveAll {
+		t.Errorf("mode=%v want resolve-all", f.mode)
+	}
+	if !f.outdatedOnly {
+		t.Errorf("outdatedOnly should be true")
+	}
+}
+
+func TestParseThreadsFlags_OutdatedWithoutResolveAll(t *testing.T) {
+	_, err := parseThreadsFlags([]string{"owner/repo#1", "--outdated"})
+	if err == nil {
+		t.Fatal("expected error: --outdated requires --resolve-all")
+	}
+}
+
 // silence the unused-import linter if no usage needs threadsops
 var _ = threadsops.FilterAll
 

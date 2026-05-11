@@ -46,7 +46,7 @@ Nouns and verbs:
                                     | --suggest BODY [--intro TEXT]
                                     | --suggest-file PATH [--intro TEXT]
   threads resolve <pr-ref> <thread-id> [--body T | --body-file PATH]
-  threads resolve-all <pr-ref>
+  threads resolve-all <pr-ref> [--outdated]
   threads unresolve-all <pr-ref>
   threads apply-suggestion <pr-ref> <thread-id>
         [--suggestion-index N] [--dry-run] [--force] [--repo-root PATH]
