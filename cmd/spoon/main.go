@@ -288,7 +288,20 @@ func main() {
 		return
 	}
 
-	m := tui.NewModel(provider, auth, repoArg, refresh)
+	tuiClusterOpts := tui.ClusterOptions{
+		Enabled:         !noCluster,
+		TopN:            clusterTop,
+		Endpoint:        embedderURL,
+		ModelOverride:   embedderModel,
+		LabelerEndpoint: labelerURL,
+		LabelerModel:    labelerModel,
+		Epsilon:         clusterEpsilon,
+		MinClusterSize:  clusterMinSize,
+		AutoPull:        autoPull,
+		NoPrompt:        noPrompt,
+		Refresh:         refresh,
+	}
+	m := tui.NewModelWithCluster(provider, auth, repoArg, refresh, tuiClusterOpts)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 
 	if _, err := p.Run(); err != nil {

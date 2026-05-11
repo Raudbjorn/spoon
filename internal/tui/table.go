@@ -133,6 +133,8 @@ func (m Model) viewTable() string {
 		b.WriteString(" " + subtitleStyle.Render(m.clipMsg) + "\n")
 	} else if m.errMsg != "" && time.Since(m.errMsgTime) < 5*time.Second {
 		b.WriteString(" " + subtitleStyle.Render(m.errMsg) + "\n")
+	} else if cs := m.clusterFooter(); cs != "" {
+		b.WriteString(" " + subtitleStyle.Render(cs) + "\n")
 	} else {
 		b.WriteString("\n")
 	}
