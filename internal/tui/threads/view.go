@@ -69,10 +69,7 @@ func renderModel(m Model) string {
 			b.WriteString("\n")
 		}
 	}
-	footer := "\n[r/Enter] reply  [R] resolve  [A] unresolve-all  [o] open  [?] help  [q] quit\n"
-	if hasSuggestion {
-		footer = "\n[r/Enter] reply  [R] resolve  [a] apply-suggestion  [A] unresolve-all  [o] open  [?] help  [q] quit\n"
-	}
+	footer := "\n[r/Enter] reply  [R] resolve  [a] apply-suggestion  [A] unresolve-all  [o] open  [?] help  [q] quit\n"
 	b.WriteString(footer)
 	if m.status != "" {
 		fmt.Fprintf(&b, "\n%s\n", m.status)
@@ -206,7 +203,7 @@ func renderHelp() string {
   ↑/↓, j/k     Navigate threads
   Enter, r     Reply (opens textarea)
   R            Resolve current thread
-  a            Apply suggestion (if thread has one) or Resolve all
+  a            Apply suggestion on current thread (no-op if thread has none)
   Ctrl+A       Resolve all (with confirm)
   A            Unresolve all (with confirm)
   o            Open PR in browser

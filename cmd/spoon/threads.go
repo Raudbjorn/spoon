@@ -567,7 +567,9 @@ func runThreads(args []string) int {
 		}
 		// Render code context for the resolved thread, if requested.
 		if flags.showCodeLines > 0 && resolved != nil && status.HeadSHA != "" {
-			if cc, _ := threadsops.FetchCodeContext(ctx, client, status.HeadSHA, owner, repo, *resolved, flags.showCodeLines); cc != nil {
+			if cc, ccErr := threadsops.FetchCodeContext(ctx, client, status.HeadSHA, owner, repo, *resolved, flags.showCodeLines); ccErr != nil {
+				fmt.Fprintln(os.Stderr, "⚠️  Warning: code context fetch failed:", ccErr)
+			} else if cc != nil {
 				fmt.Fprintln(os.Stdout, renderCodeContextBlock(*resolved, *cc))
 			}
 		}
@@ -579,7 +581,7 @@ func runThreads(args []string) int {
 			fmt.Fprintln(os.Stderr, "❌ Error:", ferr)
 			return 1
 		}
-		emitStatus(os.Stdout, status, number, flags.noStatus)
+		emitStatus(os.Stderr, status, number, flags.noStatus)
 		res, opErr := threadsops.ResolveAllWithOptions(ctx, client, owner, repo, number, threadsops.ResolveAllOptions{
 			SkipHumanThreads: false, // legacy spoon mode
 			OutdatedOnly:     flags.outdatedOnly,
@@ -619,7 +621,7 @@ func runThreads(args []string) int {
 			fmt.Fprintln(os.Stderr, "❌ Error:", ferr)
 			return 1
 		}
-		emitStatus(os.Stdout, status, number, flags.noStatus)
+		emitStatus(os.Stderr, status, number, flags.noStatus)
 		res, opErr := threadsops.UnresolveAllWithOptions(ctx, client, owner, repo, number, threadsops.UnresolveAllOptions{DryRun: flags.dryRun})
 		if opErr != nil {
 			fmt.Fprintln(os.Stderr, "❌ Error:", opErr.Message)
