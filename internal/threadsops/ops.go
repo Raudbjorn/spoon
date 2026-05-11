@@ -57,13 +57,60 @@ func ListWithOptions(ctx context.Context, api API, owner, repo string, number in
 // attachCodeContext populates the CodeContext field on every thread that has
 // a path/line anchor. Failures are silently dropped — code context is
 // informational and shouldn't break list output.
+//
+// Threads commonly cluster on the same file (e.g. a review that left 5
+// comments on one function): caching by (owner, repo, path, ref) collapses N
+// threads pointing at one file into a single FetchFileContent round-trip.
+// The cache is request-local — created fresh per call — so we don't leak
+// stale content across invocations.
 func attachCodeContext(ctx context.Context, threads []ReviewThreadWithPolicy, fetcher ContentFetcher, headSHA, owner, repo string, contextLines int) {
+	cached := newCachingFetcher(fetcher, owner, repo, headSHA)
 	for i := range threads {
-		cc, _ := FetchCodeContext(ctx, fetcher, headSHA, owner, repo, threads[i], contextLines)
+		cc, _ := FetchCodeContext(ctx, cached, headSHA, owner, repo, threads[i], contextLines)
 		if cc != nil {
 			threads[i].CodeContext = cc
 		}
 	}
+}
+
+// cachingContentFetcher wraps a ContentFetcher and memoizes results by
+// (owner, repo, path, ref). Errors are NOT cached so a transient failure
+// doesn't poison the rest of the batch. Empty content IS cached because the
+// underlying client returns "" + nil for 404/403 — a stable result we
+// shouldn't refetch.
+type cachingContentFetcher struct {
+	inner ContentFetcher
+	// Pre-bound owner/repo/ref scope the cache to one List call. The
+	// FetchFileContent signature accepts arbitrary owner/repo/ref so we still
+	// include them in the key to be defensive against future callers that
+	// reuse the wrapper across scopes.
+	owner string
+	repo  string
+	ref   string
+	cache map[string]string
+}
+
+func newCachingFetcher(inner ContentFetcher, owner, repo, ref string) *cachingContentFetcher {
+	return &cachingContentFetcher{
+		inner: inner,
+		owner: owner,
+		repo:  repo,
+		ref:   ref,
+		cache: map[string]string{},
+	}
+}
+
+func (c *cachingContentFetcher) FetchFileContent(ctx context.Context, owner, repo, path, ref string) (string, error) {
+	key := owner + "/" + repo + "@" + ref + ":" + path
+	if v, ok := c.cache[key]; ok {
+		return v, nil
+	}
+	content, err := c.inner.FetchFileContent(ctx, owner, repo, path, ref)
+	if err != nil {
+		return "", err
+	}
+	c.cache[key] = content
+	return content, nil
 }
 
 // NextOptions tunes a Next call. The zero value matches the historical

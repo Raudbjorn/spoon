@@ -72,7 +72,7 @@ func TestApplySuggestion_MultiLineReplace(t *testing.T) {
 	writeFile(t, dir, "a.go", "L1\nL2\nL3\nL4\nL5\n")
 	start := 3
 	thr := threadAt("a.go", 5, &start)
-	sug := Suggestion{Body: "X\nY"}
+	sug := Suggestion{CommentID: "C", Body: "X\nY"}
 	res, opErr := ApplySuggestion(context.Background(), thr, sug, ApplyOptions{RepoRoot: dir})
 	if opErr != nil {
 		t.Fatalf("opErr: %+v", opErr)
@@ -92,7 +92,7 @@ func TestApplySuggestion_DryRun(t *testing.T) {
 	original := "L1\nL2\nL3\n"
 	writeFile(t, dir, "a.go", original)
 	thr := threadAt("a.go", 2, nil)
-	sug := Suggestion{Body: "NEW"}
+	sug := Suggestion{CommentID: "C", Body: "NEW"}
 	res, opErr := ApplySuggestion(context.Background(), thr, sug, ApplyOptions{RepoRoot: dir, DryRun: true})
 	if opErr != nil {
 		t.Fatalf("opErr: %+v", opErr)
@@ -117,7 +117,7 @@ func TestApplySuggestion_DryRun(t *testing.T) {
 func TestApplySuggestion_FileMissing(t *testing.T) {
 	dir := t.TempDir()
 	thr := threadAt("missing.go", 1, nil)
-	sug := Suggestion{Body: "x"}
+	sug := Suggestion{CommentID: "C", Body: "x"}
 	_, opErr := ApplySuggestion(context.Background(), thr, sug, ApplyOptions{RepoRoot: dir})
 	if opErr == nil {
 		t.Fatal("expected error")
@@ -135,7 +135,7 @@ func TestApplySuggestion_Outdated(t *testing.T) {
 			ID: "T", Path: "a.go", Line: 1, IsOutdated: true,
 		},
 	}
-	sug := Suggestion{Body: "X"}
+	sug := Suggestion{CommentID: "C", Body: "X"}
 	_, opErr := ApplySuggestion(context.Background(), thr, sug, ApplyOptions{RepoRoot: dir})
 	if opErr == nil {
 		t.Fatal("expected outdated error")
@@ -156,7 +156,7 @@ func TestApplySuggestion_OutdatedWithForce(t *testing.T) {
 			ID: "T", Path: "a.go", Line: 1, IsOutdated: true,
 		},
 	}
-	sug := Suggestion{Body: "FORCED"}
+	sug := Suggestion{CommentID: "C", Body: "FORCED"}
 	res, opErr := ApplySuggestion(context.Background(), thr, sug, ApplyOptions{RepoRoot: dir, Force: true})
 	if opErr != nil {
 		t.Fatalf("opErr: %+v", opErr)
@@ -172,10 +172,56 @@ func TestApplySuggestion_OutdatedWithForce(t *testing.T) {
 func TestApplySuggestion_NoPath(t *testing.T) {
 	dir := t.TempDir()
 	thr := ReviewThreadWithPolicy{ReviewThread: github.ReviewThread{ID: "T", Path: "", Line: 0}}
-	sug := Suggestion{Body: "x"}
+	sug := Suggestion{CommentID: "C", Body: "x"}
 	_, opErr := ApplySuggestion(context.Background(), thr, sug, ApplyOptions{RepoRoot: dir})
 	if opErr == nil || opErr.Code != OpCodeBadInput {
 		t.Errorf("expected bad_input, got %+v", opErr)
+	}
+}
+
+func TestApplySuggestion_PreservesFilePermissions(t *testing.T) {
+	// Files that ship with an executable bit (scripts, hooks) must keep that
+	// bit after a suggestion is applied. A naive 0o644 write would silently
+	// reset the mode and break the executable.
+	dir := t.TempDir()
+	p := filepath.Join(dir, "run.sh")
+	if err := os.WriteFile(p, []byte("L1\nL2\nL3\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(p, 0o755); err != nil {
+		// Chmod may be a no-op under restrictive umasks; the initial WriteFile
+		// already requested 0o755 so this is belt-and-braces.
+		t.Fatal(err)
+	}
+	thr := threadAt("run.sh", 2, nil)
+	sug := Suggestion{CommentID: "C", Body: "NEW"}
+	res, opErr := ApplySuggestion(context.Background(), thr, sug, ApplyOptions{RepoRoot: dir})
+	if opErr != nil {
+		t.Fatalf("opErr: %+v", opErr)
+	}
+	if !res.Applied {
+		t.Fatalf("not applied: %+v", res)
+	}
+	info, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o755 {
+		t.Errorf("mode after write = %o, want 0755 (executable bit lost)", got)
+	}
+}
+
+func TestApplySuggestion_EmptyCommentID(t *testing.T) {
+	// A Suggestion with no CommentID isn't tied to a real review comment, so
+	// applying it would silently lose attribution and skip the "did this come
+	// from a reviewer?" sanity check. Reject up front as bad_input.
+	dir := t.TempDir()
+	writeFile(t, dir, "a.go", "L1\nL2\nL3\n")
+	thr := threadAt("a.go", 2, nil)
+	sug := Suggestion{CommentID: "", Body: "X"}
+	_, opErr := ApplySuggestion(context.Background(), thr, sug, ApplyOptions{RepoRoot: dir})
+	if opErr == nil || opErr.Code != OpCodeBadInput {
+		t.Fatalf("expected bad_input for empty CommentID, got %+v", opErr)
 	}
 }
 
@@ -183,7 +229,7 @@ func TestApplySuggestion_LineOutOfRange(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "a.go", "L1\n")
 	thr := threadAt("a.go", 99, nil)
-	sug := Suggestion{Body: "x"}
+	sug := Suggestion{CommentID: "C", Body: "x"}
 	_, opErr := ApplySuggestion(context.Background(), thr, sug, ApplyOptions{RepoRoot: dir})
 	if opErr == nil || opErr.Code != OpCodeBadInput {
 		t.Errorf("expected bad_input, got %+v", opErr)
@@ -194,7 +240,7 @@ func TestApplySuggestion_NestedPath(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "sub/a.go", "L1\nL2\nL3\n")
 	thr := threadAt("sub/a.go", 2, nil)
-	sug := Suggestion{Body: "X"}
+	sug := Suggestion{CommentID: "C", Body: "X"}
 	res, opErr := ApplySuggestion(context.Background(), thr, sug, ApplyOptions{RepoRoot: dir})
 	if opErr != nil {
 		t.Fatalf("opErr: %+v", opErr)
@@ -212,7 +258,7 @@ func TestApplySuggestion_NoTrailingNewline(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "a.go", "L1\nL2")
 	thr := threadAt("a.go", 1, nil)
-	sug := Suggestion{Body: "X"}
+	sug := Suggestion{CommentID: "C", Body: "X"}
 	res, opErr := ApplySuggestion(context.Background(), thr, sug, ApplyOptions{RepoRoot: dir})
 	if opErr != nil {
 		t.Fatalf("opErr: %+v", opErr)
@@ -231,7 +277,7 @@ func TestApplySuggestion_NoTrailingNewline(t *testing.T) {
 func TestApplySuggestion_PathTraversal_ParentEscape(t *testing.T) {
 	dir := t.TempDir()
 	thr := threadAt("../escape.txt", 1, nil)
-	sug := Suggestion{Body: "x"}
+	sug := Suggestion{CommentID: "C", Body: "x"}
 	_, opErr := ApplySuggestion(context.Background(), thr, sug, ApplyOptions{RepoRoot: dir})
 	if opErr == nil || opErr.Code != OpCodeBadInput {
 		t.Fatalf("expected bad_input for parent escape, got %+v", opErr)
@@ -244,7 +290,7 @@ func TestApplySuggestion_PathTraversal_ParentEscape(t *testing.T) {
 func TestApplySuggestion_PathTraversal_DeepEscape(t *testing.T) {
 	dir := t.TempDir()
 	thr := threadAt("../../../etc/passwd", 1, nil)
-	sug := Suggestion{Body: "x"}
+	sug := Suggestion{CommentID: "C", Body: "x"}
 	_, opErr := ApplySuggestion(context.Background(), thr, sug, ApplyOptions{RepoRoot: dir})
 	if opErr == nil || opErr.Code != OpCodeBadInput {
 		t.Fatalf("expected bad_input for deep escape, got %+v", opErr)
@@ -254,7 +300,7 @@ func TestApplySuggestion_PathTraversal_DeepEscape(t *testing.T) {
 func TestApplySuggestion_PathTraversal_Absolute(t *testing.T) {
 	dir := t.TempDir()
 	thr := threadAt("/etc/foo", 1, nil)
-	sug := Suggestion{Body: "x"}
+	sug := Suggestion{CommentID: "C", Body: "x"}
 	_, opErr := ApplySuggestion(context.Background(), thr, sug, ApplyOptions{RepoRoot: dir})
 	if opErr == nil || opErr.Code != OpCodeBadInput {
 		t.Fatalf("expected bad_input for absolute path, got %+v", opErr)
@@ -276,7 +322,7 @@ func TestApplySuggestion_PathTraversal_SymlinkInRepo(t *testing.T) {
 		t.Skipf("symlink creation not supported: %v", err)
 	}
 	thr := threadAt("link.go", 1, nil)
-	sug := Suggestion{Body: "PWNED"}
+	sug := Suggestion{CommentID: "C", Body: "PWNED"}
 	_, opErr := ApplySuggestion(context.Background(), thr, sug, ApplyOptions{RepoRoot: dir})
 	if opErr == nil || opErr.Code != OpCodeBadInput {
 		t.Fatalf("expected bad_input for symlink, got %+v", opErr)
@@ -300,7 +346,7 @@ func TestApplySuggestion_NormalSubdir(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "src/foo.go", "L1\nL2\nL3\n")
 	thr := threadAt("src/foo.go", 2, nil)
-	sug := Suggestion{Body: "X"}
+	sug := Suggestion{CommentID: "C", Body: "X"}
 	res, opErr := ApplySuggestion(context.Background(), thr, sug, ApplyOptions{RepoRoot: dir})
 	if opErr != nil {
 		t.Fatalf("opErr: %+v", opErr)
@@ -335,7 +381,7 @@ func TestApplySuggestion_DirtyFile_Rejected(t *testing.T) {
 	writeFile(t, dir, "a.go", "LOCAL\nL2\n")
 	fetch := &applyTestFetcher{content: "REMOTE\nL2\n"}
 	thr := threadAt("a.go", 1, nil)
-	sug := Suggestion{Body: "X"}
+	sug := Suggestion{CommentID: "C", Body: "X"}
 	_, opErr := ApplySuggestion(context.Background(), thr, sug, ApplyOptions{
 		RepoRoot:  dir,
 		Fetcher:   fetch,
@@ -356,7 +402,7 @@ func TestApplySuggestion_DirtyFile_ForceBypasses(t *testing.T) {
 	writeFile(t, dir, "a.go", "LOCAL\nL2\n")
 	fetch := &applyTestFetcher{content: "REMOTE\nL2\n"}
 	thr := threadAt("a.go", 1, nil)
-	sug := Suggestion{Body: "X"}
+	sug := Suggestion{CommentID: "C", Body: "X"}
 	res, opErr := ApplySuggestion(context.Background(), thr, sug, ApplyOptions{
 		RepoRoot:  dir,
 		Fetcher:   fetch,
@@ -380,7 +426,7 @@ func TestApplySuggestion_FetcherFails_GracefulProceed(t *testing.T) {
 	writeFile(t, dir, "a.go", "L1\nL2\n")
 	fetch := &applyTestFetcher{err: errFetchBoom}
 	thr := threadAt("a.go", 1, nil)
-	sug := Suggestion{Body: "X"}
+	sug := Suggestion{CommentID: "C", Body: "X"}
 	res, opErr := ApplySuggestion(context.Background(), thr, sug, ApplyOptions{
 		RepoRoot:  dir,
 		Fetcher:   fetch,
@@ -401,7 +447,7 @@ func TestApplySuggestion_NilFetcher_NoCheck(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "a.go", "L1\nL2\n")
 	thr := threadAt("a.go", 1, nil)
-	sug := Suggestion{Body: "X"}
+	sug := Suggestion{CommentID: "C", Body: "X"}
 	res, opErr := ApplySuggestion(context.Background(), thr, sug, ApplyOptions{
 		RepoRoot: dir,
 		// Fetcher: nil, PRHeadRef: ""
@@ -427,7 +473,7 @@ func TestApplySuggestion_EmptyBody_DeletesRange(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "a.go", "L1\nL2\nL3\nL4\nL5\n")
 	thr := threadAt("a.go", 3, nil)
-	sug := Suggestion{Body: ""}
+	sug := Suggestion{CommentID: "C", Body: ""}
 	res, opErr := ApplySuggestion(context.Background(), thr, sug, ApplyOptions{RepoRoot: dir})
 	if opErr != nil {
 		t.Fatalf("opErr: %+v", opErr)
@@ -447,7 +493,7 @@ func TestApplySuggestion_EmptyBody_MultiLineRange(t *testing.T) {
 	writeFile(t, dir, "a.go", "L1\nL2\nL3\nL4\nL5\n")
 	start := 2
 	thr := threadAt("a.go", 4, &start)
-	sug := Suggestion{Body: ""}
+	sug := Suggestion{CommentID: "C", Body: ""}
 	res, opErr := ApplySuggestion(context.Background(), thr, sug, ApplyOptions{RepoRoot: dir})
 	if opErr != nil {
 		t.Fatalf("opErr: %+v", opErr)
@@ -468,7 +514,7 @@ func TestApplySuggestion_SingleEmptyLine_NotDeletion(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "a.go", "L1\nL2\nL3\n")
 	thr := threadAt("a.go", 2, nil)
-	sug := Suggestion{Body: "\n"}
+	sug := Suggestion{CommentID: "C", Body: "\n"}
 	res, opErr := ApplySuggestion(context.Background(), thr, sug, ApplyOptions{RepoRoot: dir})
 	if opErr != nil {
 		t.Fatalf("opErr: %+v", opErr)

@@ -234,6 +234,8 @@ type ApplyResult struct {
 
 // ApplySuggestion writes the suggestion's body into the file at the thread's
 // path:line range. Safety checks (unless opts.Force):
+//   - sug.CommentID must be non-empty (suggestion must originate from a real
+//     comment); empty bodies are legitimate (deletion — see below).
 //   - thread.Path is resolved against opts.RepoRoot; paths that escape the
 //     repo root (e.g. "../foo") or are absolute are rejected as bad_input.
 //   - Symlinks at the resolved path are refused (writes never follow links).
@@ -249,14 +251,22 @@ type ApplyResult struct {
 //     line). A single-newline body still replaces with one blank line.
 //
 // Error code semantics (mapped to agentio.Code):
-//   - bad_input: thread has no Path/Line, path escapes the repo root, path
-//     is a symlink, or the line range is out of bounds
+//   - bad_input: sug.CommentID is empty, thread has no Path/Line, path
+//     escapes the repo root, path is a symlink, or the line range is out
+//     of bounds
 //   - not_found: file does not exist on disk
 //   - policy_violation: thread is outdated and Force is false, OR the
 //     working-tree file differs from the PR head and Force is false
 //   - internal: read/write failure
 func ApplySuggestion(ctx context.Context, thread ReviewThreadWithPolicy, sug Suggestion, opts ApplyOptions) (ApplyResult, *OpError) {
 	res := ApplyResult{DryRun: opts.DryRun}
+	if sug.CommentID == "" {
+		return res, &OpError{
+			Code:    OpCodeBadInput,
+			Message: "suggestion has empty CommentID",
+			Details: map[string]any{"thread_id": thread.ID},
+		}
+	}
 	if thread.Path == "" || thread.Line <= 0 {
 		return res, &OpError{
 			Code:    OpCodeBadInput,
@@ -410,7 +420,17 @@ func ApplySuggestion(ctx context.Context, thread ReviewThreadWithPolicy, sug Sug
 	if hadTrailingNewline {
 		joined += "\n"
 	}
-	if err := os.WriteFile(full, []byte(joined), 0o644); err != nil {
+	// Preserve the file's existing permission bits. WriteFile with a fresh
+	// mode would otherwise reset an executable file (0o755) back to 0o644 and
+	// strip non-standard modes silently. The Stat call is best-effort: if it
+	// fails (race, unusual filesystem) we fall back to 0o644 — matching the
+	// historical behavior and erring on the side of writing rather than
+	// surfacing an unrelated error.
+	var mode os.FileMode = 0o644
+	if info, statErr := os.Stat(full); statErr == nil {
+		mode = info.Mode().Perm()
+	}
+	if err := os.WriteFile(full, []byte(joined), mode); err != nil {
 		return res, &OpError{Code: OpCodeInternal, Message: "write file: " + err.Error()}
 	}
 	res.Applied = true
