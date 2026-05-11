@@ -8,13 +8,11 @@ import (
 	"fmt"
 	"os"
 	"strings"
-
-	gh "github.com/svnbjrn/spoon/internal/github"
 )
 
 func main() {
 	repo := flag.String("repo", "", "owner/name of upstream repository")
-	topN := flag.Int("n", 200, "max forks to dump (heat order from ListForks)")
+	topN := flag.Int("n", 200, "max PRs to scan (updated-at desc order)")
 	outPath := flag.String("out", "", "output JSON path (default: stdout)")
 	flag.Parse()
 
@@ -28,14 +26,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	client, status, cerr := gh.CheckAuth()
-	if cerr != nil {
-		fmt.Fprintln(os.Stderr, "github auth:", cerr)
-		os.Exit(1)
-	}
-	provider := gh.NewGHProvider(client, status)
-
-	records, err := dumpFeatures(context.Background(), provider, owner, name, *topN)
+	records, err := dumpFeatures(context.Background(), owner, name, *topN)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "dump:", err)
 		os.Exit(1)
