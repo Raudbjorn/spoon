@@ -3,6 +3,9 @@ package threads
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/cli/browser"
@@ -49,6 +52,15 @@ type Model struct {
 	// codeContexts caches per-thread CodeContext blocks indexed by thread ID.
 	// Populated by codeContextLoadedMsg events; consumed by view rendering.
 	codeContexts map[string]*threadsops.CodeContext
+
+	// launchEditor is overridable for tests. Production default is
+	// defaultEditorLauncher, which opens $EDITOR (or $VISUAL or vi) with a
+	// temp file and returns the edited content.
+	launchEditor func(ctx context.Context, threadID, prRef string) (string, error)
+
+	// replyFunc is overridable for tests. Production default calls
+	// m.client.ReplyToThread. Replaced in unit tests so no real HTTP is made.
+	replyFunc func(ctx context.Context, threadID, body string) (gh.ThreadComment, error)
 }
 
 // New constructs an empty Model. The includeResolved flag is mapped to a
@@ -66,14 +78,19 @@ func New(client *gh.Client, owner, repo string, number int, includeResolved bool
 // model fetches the broadest required state from GitHub and applies the
 // FilterMode locally so the visible thread list always matches `mode`.
 func NewWithFilter(client *gh.Client, owner, repo string, number int, mode threadsops.FilterMode) Model {
-	return Model{
+	m := Model{
 		client:          client,
 		owner:           owner,
 		repo:            repo,
 		number:          number,
 		includeResolved: mode.NeedsResolvedFetch(),
 		filter:          mode,
+		launchEditor:    defaultEditorLauncher,
 	}
+	m.replyFunc = func(ctx context.Context, threadID, body string) (gh.ThreadComment, error) {
+		return m.client.ReplyToThread(ctx, threadID, body)
+	}
+	return m
 }
 
 // loadedMsg is delivered when FetchPR completes.
@@ -149,6 +166,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.cc != nil {
 			m.codeContexts[msg.threadID] = msg.cc
+		}
+		return m, nil
+	case counterProposeResultMsg:
+		switch {
+		case msg.cancelled:
+			m.status = "counter-propose cancelled"
+		case msg.err != nil:
+			m.status = "counter-propose failed: " + msg.err.Error()
+		default:
+			m.status = "counter-propose posted (comment " + msg.commentID + ")"
 		}
 		return m, nil
 	case mutationDoneMsg:
@@ -276,6 +303,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.confirm = "apply-suggestion"
 			m.pendingSuggestion = *sug
+		case actCounterPropose:
+			if m.mutating || m.confirm != "" {
+				return m, nil
+			}
+			if len(m.threads) == 0 {
+				return m, nil
+			}
+			threadID := m.threads[m.cursor].ID
+			prRef := fmt.Sprintf("%s/%s#%d", m.owner, m.repo, m.number)
+			launch := m.launchEditor
+			reply := m.replyFunc
+			return m, func() tea.Msg {
+				body, err := launch(context.Background(), threadID, prRef)
+				if err != nil {
+					return counterProposeResultMsg{err: err, threadID: threadID}
+				}
+				if body == "" {
+					return counterProposeResultMsg{cancelled: true, threadID: threadID}
+				}
+				wrapped := threadsops.WrapSuggestionBody("", body)
+				comment, replyErr := reply(context.Background(), threadID, wrapped)
+				if replyErr != nil {
+					return counterProposeResultMsg{err: replyErr, threadID: threadID}
+				}
+				return counterProposeResultMsg{commentID: comment.ID, threadID: threadID}
+			}
 		case actResolveAll:
 			if m.mutating || m.confirm != "" {
 				return m, nil
@@ -302,6 +355,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 type mutationDoneMsg struct {
 	what string // "reply", "resolve", "bulk-resolve", "bulk-unresolve"
 	err  error
+}
+
+// counterProposeResultMsg is delivered after the editor-based counter-propose
+// flow completes (successfully, cancelled, or with error).
+type counterProposeResultMsg struct {
+	threadID  string
+	commentID string
+	cancelled bool
+	err       error
 }
 
 // codeContextLoadedMsg delivers a single per-thread code-context fetch result.
@@ -381,4 +443,57 @@ func (m Model) openCmd() tea.Cmd {
 
 func (m Model) View() string {
 	return renderModel(m)
+}
+
+// defaultEditorLauncher writes a temp file with a 3-line comment header,
+// launches $EDITOR (or $VISUAL or vi) and waits. Returns the body with
+// '#'-prefixed lines and trailing whitespace stripped. An empty string means
+// the user cancelled.
+func defaultEditorLauncher(ctx context.Context, threadID, prRef string) (string, error) {
+	f, err := os.CreateTemp("", "spoon-counter-propose-*.md")
+	if err != nil {
+		return "", fmt.Errorf("create temp file: %w", err)
+	}
+	tmpPath := f.Name()
+	header := fmt.Sprintf("# Counter-propose for thread %s on %s\n# Lines beginning with # are stripped.\n# Empty content cancels.\n", threadID, prRef)
+	if _, err := f.WriteString(header); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return "", fmt.Errorf("write header: %w", err)
+	}
+	f.Close()
+
+	editor := os.Getenv("EDITOR")
+	if editor == "" {
+		editor = os.Getenv("VISUAL")
+	}
+	if editor == "" {
+		editor = "vi"
+	}
+
+	cmd := exec.CommandContext(ctx, editor, tmpPath)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		os.Remove(tmpPath)
+		return "", fmt.Errorf("editor: %w", err)
+	}
+
+	raw, err := os.ReadFile(tmpPath)
+	if err != nil {
+		os.Remove(tmpPath)
+		return "", fmt.Errorf("read temp file: %w", err)
+	}
+	lines := strings.Split(string(raw), "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if strings.HasPrefix(strings.TrimLeft(line, " \t"), "#") {
+			continue
+		}
+		out = append(out, line)
+	}
+	stripped := strings.TrimRight(strings.Join(out, "\n"), " \t\n")
+	os.Remove(tmpPath)
+	return stripped, nil
 }

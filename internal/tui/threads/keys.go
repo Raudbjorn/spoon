@@ -17,6 +17,7 @@ const (
 	actOpen
 	actHelp
 	actApplySuggestion
+	actCounterPropose
 )
 
 func dispatchKey(k tea.KeyMsg) keyAction {
@@ -45,6 +46,8 @@ func dispatchKey(k tea.KeyMsg) keyAction {
 		return actOpen
 	case "?":
 		return actHelp
+	case "c":
+		return actCounterPropose
 	}
 	return actNone
 }
