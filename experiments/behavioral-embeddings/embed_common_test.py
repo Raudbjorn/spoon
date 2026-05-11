@@ -21,6 +21,22 @@ def test_build_text_empty_blocks_emit_open_close_tags():
     assert got == "<paths></paths><commits></commits><readme></readme><diff></diff>"
 
 
+def test_build_text_truncates_oversize_modalities():
+    from embed_common import PATHS_MAX_CHARS, DIFF_MAX_CHARS
+
+    feats = {
+        "Paths": "p" * (PATHS_MAX_CHARS * 2),
+        "Commits": "",
+        "ReadmeDoc": "",
+        "DiffChunk": "d" * (DIFF_MAX_CHARS * 2),
+    }
+    got = build_text(feats)
+    paths_block = got.split("</paths>", 1)[0].removeprefix("<paths>")
+    diff_block = got.split("<diff>", 1)[1].removesuffix("</diff>")
+    assert len(paths_block) == PATHS_MAX_CHARS
+    assert len(diff_block) == DIFF_MAX_CHARS
+
+
 def test_load_features_returns_dict_by_id(tmp_path):
     p = tmp_path / "features.json"
     p.write_text(
