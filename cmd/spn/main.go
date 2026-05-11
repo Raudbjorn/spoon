@@ -49,11 +49,15 @@ Nouns and verbs:
   threads reply <pr-ref> <thread-id> --body T | --body-file PATH
                                     | --suggest BODY [--intro TEXT]
                                     | --suggest-file PATH [--intro TEXT]
-  threads resolve <pr-ref> <thread-id> [--body T | --body-file PATH]
-  threads resolve-all <pr-ref> [--outdated]
-  threads unresolve-all <pr-ref>
+  threads resolve <pr-ref> <thread-id> [--body T | --body-file PATH] [--dry-run]
+  threads resolve-all <pr-ref> [--outdated] [--dry-run]
+  threads unresolve-all <pr-ref> [--dry-run]
   threads apply-suggestion <pr-ref> <thread-id>
         [--suggestion-index N] [--dry-run] [--force] [--repo-root PATH]
+
+  --dry-run on resolve / resolve-all / unresolve-all previews the mutation:
+            the fetch + policy gates run, but no GraphQL resolveReviewThread
+            (or unresolveReviewThread) is issued. Output is marked dryRun=true.
   pr status <pr-ref>
   forks list <repo> [--tier 1|2|3] [--top N] [--bot-allowlist L] [--refresh] [--csv] [--forge github|gitlab] [--forge-host H]
                     [--no-cluster] [--cluster-top N] [--embedder URL] [--embedder-model NAME]

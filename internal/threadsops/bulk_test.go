@@ -263,6 +263,135 @@ func TestResolveAll_OutdatedOnly_AllOutdatedSucceed(t *testing.T) {
 	}
 }
 
+// --- G4: --dry-run bulk tests ---------------------------------------------
+
+// bulkMutationCounter tracks total mutation calls (resolve + unresolve) for
+// dry-run assertions. Embeds bulkFake to inherit FetchPR / threads behavior.
+type bulkMutationCounter struct {
+	bulkFake
+	resolveCalls   int
+	unresolveCalls int
+}
+
+func (b *bulkMutationCounter) ResolveThread(ctx context.Context, id string) error {
+	b.mu.Lock()
+	b.resolveCalls++
+	b.mu.Unlock()
+	return b.bulkFake.ResolveThread(ctx, id)
+}
+
+func (b *bulkMutationCounter) UnresolveThread(ctx context.Context, id string) error {
+	b.mu.Lock()
+	b.unresolveCalls++
+	b.mu.Unlock()
+	return b.bulkFake.UnresolveThread(ctx, id)
+}
+
+func newBulkMutationCounter(threads []github.ReviewThread) *bulkMutationCounter {
+	return &bulkMutationCounter{bulkFake: *newBulkFake(threads)}
+}
+
+func TestResolveAll_DryRun_NoMutations(t *testing.T) {
+	// 3 bot threads + 1 human thread; SkipHumanThreads=true, DryRun=true.
+	// Expect: succeeded=3 (bot IDs, all marked dryRun=true), skipped=1
+	// (human → requires_body), failed=0, and zero mutation calls.
+	threads := []github.ReviewThread{
+		{ID: "PRRT_bot1", Comments: []github.ThreadComment{{AuthorType: "Bot"}}},
+		{ID: "PRRT_bot2", Comments: []github.ThreadComment{{AuthorType: "Bot"}}},
+		{ID: "PRRT_bot3", Comments: []github.ThreadComment{{AuthorType: "Bot"}}},
+		{ID: "PRRT_user", Comments: []github.ThreadComment{{AuthorType: "User", Author: "alice"}}},
+	}
+	b := newBulkMutationCounter(threads)
+	res, opErr := ResolveAllWithOptions(context.Background(), b, "o", "r", 1, ResolveAllOptions{
+		SkipHumanThreads: true,
+		DryRun:           true,
+	})
+	if opErr != nil {
+		t.Fatalf("opErr: %+v", opErr)
+	}
+	if !res.DryRun {
+		t.Errorf("BulkResult.DryRun should be true, got %+v", res)
+	}
+	if !equalUnordered(res.Succeeded, []string{"PRRT_bot1", "PRRT_bot2", "PRRT_bot3"}) {
+		t.Errorf("succeeded=%+v want all 3 bot IDs", res.Succeeded)
+	}
+	if len(res.Skipped) != 1 || res.Skipped[0].ID != "PRRT_user" || res.Skipped[0].Reason != "requires_body" {
+		t.Errorf("skipped=%+v want [{PRRT_user requires_body}]", res.Skipped)
+	}
+	if len(res.Failed) != 0 {
+		t.Errorf("failed=%+v want 0", res.Failed)
+	}
+	if b.resolveCalls != 0 {
+		t.Errorf("ResolveThread must NOT be called on dry-run; got %d", b.resolveCalls)
+	}
+}
+
+func TestResolveAll_DryRun_WithOutdated(t *testing.T) {
+	// Mix of outdated and current threads, OutdatedOnly=true + DryRun=true.
+	// Expect: succeeded contains the outdated bot threads (dryRun=true on
+	// BulkResult), skipped contains the non-outdated ones, no mutations.
+	threads := []github.ReviewThread{
+		{ID: "PRRT_o1", IsOutdated: true, Comments: []github.ThreadComment{{AuthorType: "Bot"}}},
+		{ID: "PRRT_c1", IsOutdated: false, Comments: []github.ThreadComment{{AuthorType: "Bot"}}},
+		{ID: "PRRT_o2", IsOutdated: true, Comments: []github.ThreadComment{{AuthorType: "Bot"}}},
+		{ID: "PRRT_c2", IsOutdated: false, Comments: []github.ThreadComment{{AuthorType: "Bot"}}},
+	}
+	b := newBulkMutationCounter(threads)
+	res, opErr := ResolveAllWithOptions(context.Background(), b, "o", "r", 1, ResolveAllOptions{
+		SkipHumanThreads: true,
+		OutdatedOnly:     true,
+		DryRun:           true,
+	})
+	if opErr != nil {
+		t.Fatalf("opErr: %+v", opErr)
+	}
+	if !res.DryRun {
+		t.Errorf("BulkResult.DryRun should be true")
+	}
+	if !equalUnordered(res.Succeeded, []string{"PRRT_o1", "PRRT_o2"}) {
+		t.Errorf("succeeded=%+v want outdated bot IDs", res.Succeeded)
+	}
+	if len(res.Skipped) != 2 {
+		t.Fatalf("skipped=%+v want 2", res.Skipped)
+	}
+	for _, sk := range res.Skipped {
+		if sk.Reason != "not_outdated" {
+			t.Errorf("skip %s reason=%q want not_outdated", sk.ID, sk.Reason)
+		}
+	}
+	if b.resolveCalls != 0 {
+		t.Errorf("ResolveThread must NOT be called on dry-run; got %d", b.resolveCalls)
+	}
+}
+
+func TestUnresolveAll_DryRun_NoMutations(t *testing.T) {
+	// 3 resolved threads + DryRun=true. The fixture is what FetchPR returns
+	// for ThreadStateResolved (the fake passes through threads regardless of
+	// the state filter). Expect succeeded=3, no mutation calls, dryRun=true.
+	threads := []github.ReviewThread{
+		{ID: "PRRT_r1", IsResolved: true, Comments: []github.ThreadComment{{AuthorType: "Bot"}}},
+		{ID: "PRRT_r2", IsResolved: true, Comments: []github.ThreadComment{{AuthorType: "Bot"}}},
+		{ID: "PRRT_r3", IsResolved: true, Comments: []github.ThreadComment{{AuthorType: "Bot"}}},
+	}
+	b := newBulkMutationCounter(threads)
+	res, opErr := UnresolveAllWithOptions(context.Background(), b, "o", "r", 1, UnresolveAllOptions{DryRun: true})
+	if opErr != nil {
+		t.Fatalf("opErr: %+v", opErr)
+	}
+	if !res.DryRun {
+		t.Errorf("BulkResult.DryRun should be true")
+	}
+	if !equalUnordered(res.Succeeded, []string{"PRRT_r1", "PRRT_r2", "PRRT_r3"}) {
+		t.Errorf("succeeded=%+v want all 3", res.Succeeded)
+	}
+	if len(res.Failed) != 0 {
+		t.Errorf("failed=%+v want 0", res.Failed)
+	}
+	if b.unresolveCalls != 0 {
+		t.Errorf("UnresolveThread must NOT be called on dry-run; got %d", b.unresolveCalls)
+	}
+}
+
 func equalUnordered(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
