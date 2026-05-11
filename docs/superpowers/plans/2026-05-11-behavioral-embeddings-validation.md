@@ -1,5 +1,7 @@
 # Behavioral Embeddings — Validation Experiment Implementation Plan
 
+> **HISTORICAL — completed 2026-05-11.** Deliverables moved to `experiments/started/behavioral-embeddings/`. Gate FAILED (Δ = −0.0826); see `experiments/started/behavioral-embeddings/RESULTS.md`. Path references below remain at their original `experiments/behavioral-embeddings/` locations for accuracy as a record of how the plan was followed.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Run the gate experiment from `docs/superpowers/specs/future/future-work-behavioral-embeddings.md` to decide whether the CodeExecutor sidecar feature is worth building. Produce a reproducible harness + a committed `RESULTS.md` with go/no-go conclusion.

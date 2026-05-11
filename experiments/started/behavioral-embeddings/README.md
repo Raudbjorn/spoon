@@ -37,7 +37,7 @@ The feature is greenlit iff `tau(codeexecutor) - tau(nomic) >= 0.05`.
 ## Reproduce
 
 ```sh
-cd experiments/behavioral-embeddings
+cd experiments/started/behavioral-embeddings
 ./run.sh
 ```
 

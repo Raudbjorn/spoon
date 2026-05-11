@@ -22,7 +22,7 @@ The gate **fails** by 0.13 (delta is −0.08 vs. required +0.05). The full featu
 ## Reproduce
 
 ```sh
-cd experiments/behavioral-embeddings
+cd experiments/started/behavioral-embeddings
 ./run.sh
 ```
 

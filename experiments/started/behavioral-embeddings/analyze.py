@@ -151,7 +151,7 @@ def write_results_md(path: str, r: dict[str, Any]) -> None:
 ## Reproduce
 
 ```sh
-cd experiments/behavioral-embeddings
+cd experiments/started/behavioral-embeddings
 ./run.sh
 ```
 """
