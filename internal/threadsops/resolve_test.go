@@ -126,6 +126,28 @@ func TestResolve_partialFailure_commentPosted(t *testing.T) {
 	}
 }
 
+func TestResolve_partialFailure_rateLimitedCarriesCommentDetails(t *testing.T) {
+	reset := time.Now().Add(60 * time.Second)
+	f := &resolveFake{
+		fakeAPI:      fakeAPI{threads: []github.ReviewThread{{ID: "PRRT_a", Comments: []github.ThreadComment{{AuthorType: "User", Author: "alice"}}}}},
+		replyComment: github.ThreadComment{ID: "PRC_new"},
+		resolveErr:   &github.RateLimitError{ResetAt: reset},
+	}
+	_, _, opErr := Resolve(context.Background(), f, "o", "r", 1, "PRRT_a", "fixed it")
+	if opErr == nil || opErr.Code != OpCodeRateLimited {
+		t.Fatalf("expected OpCodeRateLimited, got %+v", opErr)
+	}
+	if opErr.Details["comment_posted"] != true {
+		t.Errorf("expected details.comment_posted=true, got %+v", opErr.Details)
+	}
+	if opErr.Details["comment_id"] != "PRC_new" {
+		t.Errorf("expected details.comment_id=PRC_new, got %+v", opErr.Details)
+	}
+	if opErr.Details["thread_id"] != "PRRT_a" {
+		t.Errorf("expected details.thread_id=PRRT_a, got %+v", opErr.Details)
+	}
+}
+
 func TestResolve_bodySatisfied_byCurrentUser(t *testing.T) {
 	// requiresBody=true, no --body, but most recent comment is by the agent.
 	f := &resolveFake{

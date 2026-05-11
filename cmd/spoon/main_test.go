@@ -70,7 +70,10 @@ func TestSpoonRejectsRemovedJSONFlag(t *testing.T) {
 	cmd := exec.Command("go", "run", ".")
 	cmd.Args = append(cmd.Args, "--help")
 	cmd.Dir = "."
-	out, _ := cmd.CombinedOutput()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("go run failed: %v\noutput:\n%s", err, out)
+	}
 	if strings.Contains(string(out), "--json") {
 		t.Errorf("--help still advertises --json; expected to be removed:\n%s", out)
 	}
