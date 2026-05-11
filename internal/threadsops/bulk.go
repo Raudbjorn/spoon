@@ -54,25 +54,39 @@ func runBulk(ctx context.Context, api API, ids []string, resolve bool, res *Bulk
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for id := range jobs {
-				var err error
-				if resolve {
-					err = api.ResolveThread(ctx, id)
-				} else {
-					err = api.UnresolveThread(ctx, id)
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case id, ok := <-jobs:
+					if !ok {
+						return
+					}
+					var err error
+					if resolve {
+						err = api.ResolveThread(ctx, id)
+					} else {
+						err = api.UnresolveThread(ctx, id)
+					}
+					mu.Lock()
+					if err != nil {
+						res.Failed = append(res.Failed, BulkFailure{ID: id, Error: err.Error()})
+					} else {
+						res.Succeeded = append(res.Succeeded, id)
+					}
+					mu.Unlock()
 				}
-				mu.Lock()
-				if err != nil {
-					res.Failed = append(res.Failed, BulkFailure{ID: id, Error: err.Error()})
-				} else {
-					res.Succeeded = append(res.Succeeded, id)
-				}
-				mu.Unlock()
 			}
 		}()
 	}
 	for _, id := range ids {
-		jobs <- id
+		select {
+		case jobs <- id:
+		case <-ctx.Done():
+			close(jobs)
+			wg.Wait()
+			return
+		}
 	}
 	close(jobs)
 	wg.Wait()

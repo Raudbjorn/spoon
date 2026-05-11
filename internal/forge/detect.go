@@ -67,12 +67,5 @@ func ParseRepoURL(raw, defaultHost string, forceProvider Provider) (provider Pro
 		)
 	}
 
-	slog.Info("parsed repo URL",
-		"raw", raw,
-		"provider", provider.String(),
-		"host", host,
-		"owner", owner,
-		"repo", repo,
-	)
 	return provider, host, owner, repo, nil
 }

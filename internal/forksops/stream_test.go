@@ -3,6 +3,7 @@ package forksops
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -98,5 +99,59 @@ func TestStream_parentErr_isFatal(t *testing.T) {
 	_, err := Stream(context.Background(), ff, "o", "r", Options{})
 	if err == nil {
 		t.Error("expected fatal error when Parent fails")
+	}
+}
+
+func TestStream_ghostForksFiltered(t *testing.T) {
+	pushedAt := time.Now().Add(-1 * time.Hour)
+	ff := &fakeForge{
+		parent: forge.ParentData{DefaultBranch: "main", PushedAt: pushedAt},
+		forks: []forge.T1Data{
+			{ID: "o/live", Owner: "o", Name: "live", PushedAt: time.Now()},
+			{ID: "o/ghost", Owner: "o", Name: "ghost", PushedAt: pushedAt},
+		},
+	}
+	ch, _ := Stream(context.Background(), ff, "o", "r", Options{Tier: 1})
+	var ids []string
+	for r := range ch {
+		ids = append(ids, r.Fork.ID)
+	}
+	if len(ids) != 1 || ids[0] != "o/live" {
+		t.Errorf("ghost fork not filtered: got %v", ids)
+	}
+}
+
+func TestStream_heatRecomputedWithT2(t *testing.T) {
+	pushedAt := time.Now()
+	// Need >=10 forks so the scorer uses the full percentile path (not TinySetScore).
+	// Only "o/a" gets T2 data; the others are padding.
+	forks := make([]forge.T1Data, 10)
+	for i := range forks {
+		forks[i] = forge.T1Data{ID: fmt.Sprintf("o/pad%d", i), Owner: "o", Name: fmt.Sprintf("pad%d", i), PushedAt: pushedAt, DefaultBranch: "main"}
+	}
+	forks[0] = forge.T1Data{ID: "o/a", Owner: "o", Name: "a", PushedAt: pushedAt, DefaultBranch: "main"}
+	ff := &fakeForge{
+		parent: forge.ParentData{DefaultBranch: "main", PushedAt: pushedAt.Add(-1 * time.Hour)},
+		forks:  forks,
+		t2:     map[string]forge.T2Data{"o/a": {AheadCount: 50, BehindCount: 0, MNA: 1000}},
+	}
+	ch, _ := Stream(context.Background(), ff, "o", "r", Options{Tier: 2, TopN: 1})
+	var got []Result
+	for r := range ch {
+		got = append(got, r)
+	}
+	// Find the enriched fork
+	var enriched *Result
+	for i := range got {
+		if got[i].Fork.ID == "o/a" {
+			enriched = &got[i]
+			break
+		}
+	}
+	if enriched == nil {
+		t.Fatal("o/a not found in results")
+	}
+	if enriched.Heat.Tier != 2 {
+		t.Errorf("expected tier 2 after T2 enrichment, got tier %d (score=%v)", enriched.Heat.Tier, enriched.Heat.Score)
 	}
 }
