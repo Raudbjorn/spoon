@@ -51,9 +51,12 @@ func TestFetchTree_NotFound(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	_, err := c.FetchTree(context.Background(), "foo", "bar", "main")
-	if err == nil {
-		t.Fatal("want error on 404")
+	paths, err := c.FetchTree(context.Background(), "foo", "bar", "main")
+	if err != nil {
+		t.Fatalf("FetchTree: want (nil, nil) on 404, got error: %v", err)
+	}
+	if paths != nil {
+		t.Errorf("FetchTree: want nil paths on 404, got %v", paths)
 	}
 }
 

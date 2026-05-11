@@ -38,11 +38,9 @@ func main() {
 	forgeHost := ""
 	outputPath := ""
 
-	// Cluster pipeline flags (T9). Default: clustering is OFF unless --no-cluster
-	// is absent AND another cluster flag is explicitly set. To keep the existing
-	// dump behaviour stable while still allowing opt-in, clustering is enabled
-	// when the user does NOT pass --no-cluster — i.e. defaulting to ON only when
-	// embedder is reachable. The pipeline degrades silently otherwise.
+	// Cluster pipeline flags (T9). Clustering is ON by default; --no-cluster
+	// turns it off. When enabled, the pipeline still degrades silently if the
+	// embedder is unreachable or no embedding model is installed.
 	noCluster := false
 	clusterTop := 50
 	embedderURL := ""
@@ -72,119 +70,149 @@ func main() {
 		case "--refresh", "--no-cache":
 			refresh = true
 		case "--forge":
-			if i+1 < len(args) {
-				i++
-				forgeFlag = strings.ToLower(args[i])
-				if forgeFlag != "github" && forgeFlag != "gitlab" {
-					fmt.Fprintln(os.Stderr, "Error: --forge must be 'github' or 'gitlab'")
-					os.Exit(1)
-				}
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "Error: --forge requires a value")
+				os.Exit(1)
+			}
+			i++
+			forgeFlag = strings.ToLower(args[i])
+			if forgeFlag != "github" && forgeFlag != "gitlab" {
+				fmt.Fprintln(os.Stderr, "Error: --forge must be 'github' or 'gitlab'")
+				os.Exit(1)
 			}
 		case "--forge-host":
-			if i+1 < len(args) {
-				i++
-				forgeHost = args[i]
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "Error: --forge-host requires a value")
+				os.Exit(1)
 			}
+			i++
+			forgeHost = args[i]
 		case "-o", "--output":
-			if i+1 < len(args) {
-				i++
-				outputPath = args[i]
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "Error: --output requires a value")
+				os.Exit(1)
 			}
+			i++
+			outputPath = args[i]
 		case "--concurrency":
-			if i+1 < len(args) {
-				i++
-				n, err := strconv.Atoi(args[i])
-				if err != nil || n < 1 {
-					fmt.Fprintln(os.Stderr, "Error: --concurrency requires a positive integer")
-					os.Exit(1)
-				}
-				concurrency = n
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "Error: --concurrency requires a value")
+				os.Exit(1)
 			}
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n < 1 {
+				fmt.Fprintln(os.Stderr, "Error: --concurrency requires a positive integer")
+				os.Exit(1)
+			}
+			concurrency = n
 		case "--tier":
-			if i+1 < len(args) {
-				i++
-				n, err := strconv.Atoi(args[i])
-				if err != nil || n < 1 || n > 3 {
-					fmt.Fprintln(os.Stderr, "Error: --tier must be 1, 2, or 3")
-					os.Exit(1)
-				}
-				tier = n
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "Error: --tier requires a value")
+				os.Exit(1)
 			}
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n < 1 || n > 3 {
+				fmt.Fprintln(os.Stderr, "Error: --tier must be 1, 2, or 3")
+				os.Exit(1)
+			}
+			tier = n
 		case "--top":
-			if i+1 < len(args) {
-				i++
-				n, err := strconv.Atoi(args[i])
-				if err != nil || n < 1 {
-					fmt.Fprintln(os.Stderr, "Error: --top requires a positive integer")
-					os.Exit(1)
-				}
-				topN = n
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "Error: --top requires a value")
+				os.Exit(1)
 			}
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n < 1 {
+				fmt.Fprintln(os.Stderr, "Error: --top requires a positive integer")
+				os.Exit(1)
+			}
+			topN = n
 		case "--bot-allowlist":
-			if i+1 < len(args) {
-				i++
-				botAllowlist = args[i]
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "Error: --bot-allowlist requires a value")
+				os.Exit(1)
 			}
+			i++
+			botAllowlist = args[i]
 		case "--heat-weights":
-			if i+1 < len(args) {
-				i++
-				if err := validateHeatWeights(args[i]); err != nil {
-					fmt.Fprintf(os.Stderr, "Error: --heat-weights: %v\n", err)
-					os.Exit(1)
-				}
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "Error: --heat-weights requires a value")
+				os.Exit(1)
+			}
+			i++
+			if err := validateHeatWeights(args[i]); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: --heat-weights: %v\n", err)
+				os.Exit(1)
 			}
 		case "--no-cluster":
 			noCluster = true
 		case "--cluster-top":
-			if i+1 < len(args) {
-				i++
-				n, err := strconv.Atoi(args[i])
-				if err != nil || n < 1 {
-					fmt.Fprintln(os.Stderr, "Error: --cluster-top requires a positive integer")
-					os.Exit(1)
-				}
-				clusterTop = n
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "Error: --cluster-top requires a value")
+				os.Exit(1)
 			}
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n < 1 {
+				fmt.Fprintln(os.Stderr, "Error: --cluster-top requires a positive integer")
+				os.Exit(1)
+			}
+			clusterTop = n
 		case "--embedder":
-			if i+1 < len(args) {
-				i++
-				embedderURL = args[i]
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "Error: --embedder requires a value")
+				os.Exit(1)
 			}
+			i++
+			embedderURL = args[i]
 		case "--embedder-model":
-			if i+1 < len(args) {
-				i++
-				embedderModel = args[i]
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "Error: --embedder-model requires a value")
+				os.Exit(1)
 			}
+			i++
+			embedderModel = args[i]
 		case "--labeler":
-			if i+1 < len(args) {
-				i++
-				labelerURL = args[i]
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "Error: --labeler requires a value")
+				os.Exit(1)
 			}
+			i++
+			labelerURL = args[i]
 		case "--labeler-model":
-			if i+1 < len(args) {
-				i++
-				labelerModel = args[i]
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "Error: --labeler-model requires a value")
+				os.Exit(1)
 			}
+			i++
+			labelerModel = args[i]
 		case "--cluster-epsilon":
-			if i+1 < len(args) {
-				i++
-				f, err := strconv.ParseFloat(args[i], 64)
-				if err != nil || f < 0 {
-					fmt.Fprintln(os.Stderr, "Error: --cluster-epsilon requires a non-negative number")
-					os.Exit(1)
-				}
-				clusterEpsilon = f
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "Error: --cluster-epsilon requires a value")
+				os.Exit(1)
 			}
+			i++
+			f, err := strconv.ParseFloat(args[i], 64)
+			if err != nil || f < 0 {
+				fmt.Fprintln(os.Stderr, "Error: --cluster-epsilon requires a non-negative number")
+				os.Exit(1)
+			}
+			clusterEpsilon = f
 		case "--cluster-min-size":
-			if i+1 < len(args) {
-				i++
-				n, err := strconv.Atoi(args[i])
-				if err != nil || n < 1 {
-					fmt.Fprintln(os.Stderr, "Error: --cluster-min-size requires a positive integer")
-					os.Exit(1)
-				}
-				clusterMinSize = n
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "Error: --cluster-min-size requires a value")
+				os.Exit(1)
 			}
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n < 1 {
+				fmt.Fprintln(os.Stderr, "Error: --cluster-min-size requires a positive integer")
+				os.Exit(1)
+			}
+			clusterMinSize = n
 		case "--auto-pull":
 			autoPull = true
 		case "--no-prompt":

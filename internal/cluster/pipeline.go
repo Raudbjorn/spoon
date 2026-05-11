@@ -353,6 +353,11 @@ func RunPipeline(ctx context.Context, opts PipelineOptions, inputs PipelineInput
 // HeatResult.Score via heat.ApplyNoveltyToScore (up to +5, capped at 100).
 // Score is therefore mutated. Idempotency is the caller's responsibility:
 // this helper must be invoked exactly once per HeatResult per run.
+//
+// Noise points (a.Cluster == "noise" or "") receive NoveltyScore = 1.0 from
+// the assignment and the +5 heat bonus — they are "outliers, most novel" by
+// definition. Only real clusters get ClusterID/ClusterLabel/ClusterMemberCount
+// populated; noise points have those left at their assigned/zero values.
 func applyAssignmentsToForks(clusters []Cluster, assignments []Assignment, forks []EnrichedFork) {
 	idxByForkID := make(map[string]int, len(forks))
 	for i, ef := range forks {
@@ -377,6 +382,10 @@ func applyAssignmentsToForks(clusters []Cluster, assignments []Assignment, forks
 			continue
 		}
 		hr.NoveltyScore = a.Novelty
+		// Apply the novelty bonus to every assigned fork — including noise
+		// points, which carry Novelty=1.0 by definition. The +5 max matches
+		// the v2 NoveltyComponent's Max so the score stays comparable.
+		heat.ApplyNoveltyToScore(hr)
 		if a.Cluster == "noise" || a.Cluster == "" {
 			hr.ClusterID = a.Cluster
 			hr.ClusterLabel = ""
@@ -386,9 +395,6 @@ func applyAssignmentsToForks(clusters []Cluster, assignments []Assignment, forks
 		hr.ClusterID = a.Cluster
 		hr.ClusterLabel = labels[a.Cluster]
 		hr.ClusterMemberCount = memberCounts[a.Cluster]
-		// Fold the novelty bonus into the heat score now that NoveltyScore
-		// is populated. See heat.ApplyNoveltyToScore for the rationale.
-		heat.ApplyNoveltyToScore(hr)
 	}
 }
 

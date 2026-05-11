@@ -2,7 +2,9 @@ package tui
 
 import (
 	"fmt"
+	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -381,31 +383,50 @@ func (m Model) clusterLabelAndCount(clusterID string) (string, int) {
 }
 
 // clusterGroupRank returns a sort key for a cluster ID such that:
-//   - real clusters (e.g. "c0", "c1", "c2") sort by ID string asc,
+//   - real clusters (e.g. "c0", "c1", "c2") sort by their numeric suffix asc,
 //   - the empty-cluster bucket ("") sorts just before "noise",
 //   - the "noise" bucket sorts last.
 //
-// The returned pair (rank, id) is compared lexicographically by callers.
-func clusterGroupRank(id string) (int, string) {
+// The returned pair (rank, numeric-or-id) is compared by callers: equal
+// ranks fall through to a stable numeric comparator for real clusters
+// (so "c10" sorts after "c2"), or a string comparator otherwise.
+func clusterGroupRank(id string) (int, int, string) {
 	switch id {
 	case "noise":
-		return 2, ""
+		return 2, 0, ""
 	case "":
-		return 1, ""
+		return 1, 0, ""
 	default:
-		return 0, id
+		return 0, clusterNumericKey(id), id
 	}
+}
+
+// clusterNumericKey parses the numeric suffix of a "c<N>" cluster ID.
+// Returns math.MaxInt for IDs that don't match the canonical form, so
+// they sort after all numbered clusters but in a stable order driven by
+// the string fallback.
+func clusterNumericKey(id string) int {
+	if len(id) > 1 && id[0] == 'c' {
+		if n, err := strconv.Atoi(id[1:]); err == nil {
+			return n
+		}
+	}
+	return math.MaxInt
 }
 
 // sortForksByCluster orders forks by cluster, then by heat descending
 // within each group. Cluster order: real clusters first (sorted by
-// ClusterID asc), then the ungrouped bucket, then "noise" last.
+// numeric suffix asc so "c10" follows "c2"), then the ungrouped bucket,
+// then "noise" last.
 func (m *Model) sortForksByCluster() {
 	sort.SliceStable(m.forks, func(i, j int) bool {
-		ri, ki := clusterGroupRank(m.forks[i].Heat.ClusterID)
-		rj, kj := clusterGroupRank(m.forks[j].Heat.ClusterID)
+		ri, ni, ki := clusterGroupRank(m.forks[i].Heat.ClusterID)
+		rj, nj, kj := clusterGroupRank(m.forks[j].Heat.ClusterID)
 		if ri != rj {
 			return ri < rj
+		}
+		if ni != nj {
+			return ni < nj
 		}
 		if ki != kj {
 			return ki < kj
