@@ -71,7 +71,9 @@ func (o ClusterOptions) toPipeline() cluster.PipelineOptions {
 }
 
 // defaultLabelerModel is used when --labeler is set but --labeler-model is not.
-const defaultLabelerModel = "llama3.2:3b"
+// Aliases cluster.DefaultLabelerModel so the literal lives in exactly one
+// place — see n4 in the round-3 review.
+const defaultLabelerModel = cluster.DefaultLabelerModel
 
 // EnrichedFork is a CLI-facing alias of cluster.EnrichedFork.
 type EnrichedFork = cluster.EnrichedFork

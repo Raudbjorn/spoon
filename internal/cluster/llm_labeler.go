@@ -9,7 +9,9 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // readmeMaxBytes caps the README excerpt passed to the labeler at 2 KB. This
@@ -33,6 +35,18 @@ const defaultChatPath = "/api/chat"
 // request per cluster, so this is the per-cluster budget.
 const defaultLabelerTimeout = 60 * time.Second
 
+// maxLabelChars is the spec'd maximum label length passed to the model in
+// the system prompt. The same cap is enforced post-response so a
+// misbehaving model can't blow past the budget downstream (CLI table cells,
+// JSON columns, etc.).
+const maxLabelChars = 60
+
+// DefaultLabelerModel is the default chat model used when --labeler is set
+// but --labeler-model is not. Exported so callers (dump, forksops, tui,
+// help text) reference one source of truth instead of redeclaring the
+// literal in multiple files.
+const DefaultLabelerModel = "llama3.2:3b"
+
 // systemPrompt is the fixed system-role message. The body is identical for
 // every cluster — only the user-role payload varies.
 const systemPrompt = `You produce concise, factual labels for groups of GitHub repository forks.
@@ -47,11 +61,21 @@ context. Output only the label, no quotes, no preamble.`
 //
 // Compatible with Ollama's /api/chat endpoint and any OpenAI-style
 // /v1/chat/completions endpoint (set ChatPath accordingly).
+//
+// Safe for concurrent use: Polish is invoked once per cluster from the
+// pipeline. The internal default HTTP client is cached via sync.Once so
+// repeated calls reuse the same connection pool.
 type OllamaChatLabeler struct {
 	Endpoint string       // base URL, e.g., "http://localhost:11434"
 	Model    string       // chat model, e.g., "llama3.2:3b" or "qwen2.5-coder:7b"
 	HTTP     *http.Client // nil → default with 60s timeout (single API call)
 	ChatPath string       // "" → "/api/chat" (Ollama default)
+
+	// cachedHTTPOnce / cachedHTTP memoize the default *http.Client so we
+	// don't allocate one (and a fresh connection pool) per Polish call.
+	// HTTP, if set by the caller, takes precedence and bypasses this cache.
+	cachedHTTPOnce sync.Once
+	cachedHTTP     *http.Client
 }
 
 // chatMessage is the {role, content} pair shared by Ollama and OpenAI shapes.
@@ -95,10 +119,7 @@ func (l *OllamaChatLabeler) Polish(ctx context.Context, lc LabelerContext) (stri
 		return lc.Heuristic, errors.New("OllamaChatLabeler: empty Model")
 	}
 
-	httpClient := l.HTTP
-	if httpClient == nil {
-		httpClient = &http.Client{Timeout: defaultLabelerTimeout}
-	}
+	httpClient := l.httpClient()
 
 	path := l.ChatPath
 	if path == "" {
@@ -167,7 +188,46 @@ func (l *OllamaChatLabeler) Polish(ctx context.Context, lc LabelerContext) (stri
 	if polished == "" {
 		return lc.Heuristic, errors.New("OllamaChatLabeler: label empty after trim")
 	}
-	return polished, nil
+	return capLabel(polished, maxLabelChars), nil
+}
+
+// httpClient returns the *http.Client to use for the next request. If the
+// caller-provided HTTP field is set it is returned as-is; otherwise the
+// lazily-constructed cached default client is returned. The cached client
+// is initialized exactly once per OllamaChatLabeler (sync.Once), so
+// concurrent calls to Polish share connection pool and TLS state.
+func (l *OllamaChatLabeler) httpClient() *http.Client {
+	if l.HTTP != nil {
+		return l.HTTP
+	}
+	l.cachedHTTPOnce.Do(func() {
+		l.cachedHTTP = &http.Client{Timeout: defaultLabelerTimeout}
+	})
+	return l.cachedHTTP
+}
+
+// capLabel caps a label to maxChars runes. If truncation is needed an
+// ellipsis ("...") is appended, so the maximum returned length is
+// maxChars + 3 runes. Rune-aware so multi-byte UTF-8 isn't split.
+func capLabel(s string, maxChars int) string {
+	if maxChars <= 0 {
+		return s
+	}
+	if utf8.RuneCountInString(s) <= maxChars {
+		return s
+	}
+	// Walk runes, keeping the first maxChars then append "...".
+	var b strings.Builder
+	count := 0
+	for _, r := range s {
+		if count >= maxChars {
+			break
+		}
+		b.WriteRune(r)
+		count++
+	}
+	b.WriteString("...")
+	return b.String()
 }
 
 // trimLabel strips whitespace and surrounding quotes from an LLM response.

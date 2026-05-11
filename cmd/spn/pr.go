@@ -16,7 +16,15 @@ import (
 var fetchPRStatus = func(ctx context.Context, api threadsops.API, owner, repo string, number int) (github.PullRequestStatus, *agentio.Error) {
 	status, _, opErr := threadsops.List(ctx, api, owner, repo, number, false)
 	if opErr != nil {
-		return github.PullRequestStatus{}, agentio.NewError(agentio.Code(opErr.Code), opErr.Message, agentio.RemediationUpstream())
+		e := agentio.NewError(agentio.Code(opErr.Code), opErr.Message, agentio.RemediationUpstream())
+		// Propagate the OpError's Retryable verdict so non-retryable
+		// upstream errors don't falsely advertise retryability via the
+		// agentio default (which is true for upstream_error).
+		e.Retryable = opErr.Retryable
+		if opErr.Details != nil {
+			e = e.WithDetails(opErr.Details)
+		}
+		return github.PullRequestStatus{}, e
 	}
 	return status, nil
 }

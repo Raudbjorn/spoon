@@ -27,6 +27,18 @@ func NoveltyComponent(novelty float64) Component {
 // The function is intentionally NOT idempotent: each call adds up to +5
 // points. Call it exactly once per HeatResult, immediately after the cluster
 // pipeline populates NoveltyScore.
+//
+// Design choice — clustered vs unclustered asymmetry:
+//
+// Novelty is layered on top of percentile-based heat as a separate axis, NOT
+// rescaled as a percentile-adjusted signal. Forks without cluster data
+// (NoveltyScore == 0) receive no bump; clustered forks gain up to +5 above
+// the rest of the population's distribution. Within a single run this is
+// fine — agents can compare clustered and unclustered scores meaningfully,
+// and the bonus is bounded (+5 of a 100-point budget). Across runs where
+// clustering was on for one and off for the other, the same fork's score may
+// differ by up to +5; that delta is the visible cost of the design choice.
+// If you need cross-run comparability, hold the clustering toggle constant.
 func ApplyNoveltyToScore(hr *HeatResult) {
 	if hr == nil || hr.NoveltyScore <= 0 {
 		return

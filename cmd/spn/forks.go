@@ -324,15 +324,41 @@ func forkToJSON(r forksops.Result) map[string]any {
 	return out
 }
 
-// preferredEmbeddingModels lists the embedding models the cluster pipeline
-// will try in order. Mirrors embed.PreferredEmbeddingModels but only the
-// names — kept in this file so the warning shape is stable even if the
-// embed package's list grows.
-var preferredEmbeddingModels = []string{
-	"nomic-embed-text",
-	"mxbai-embed-large",
-	"bge-m3",
-	"snowflake-arctic-embed",
+// preferredOllamaEmbeddingModels returns the ranked list of Ollama-native
+// preferred embedding model names — sourced dynamically from the embed
+// package's PreferredEmbeddingModelsCopy() so that the remediation hint stays
+// in lockstep when the embed package's list changes.
+func preferredOllamaEmbeddingModels() []string {
+	all := embed.PreferredEmbeddingModelsCopy()
+	out := make([]string, 0, len(all))
+	for _, m := range all {
+		if !m.OnOllama {
+			continue
+		}
+		out = append(out, m.Name)
+	}
+	return out
+}
+
+// preferredEmbeddingModels is retained for backwards compatibility with the
+// existing structured-warning envelope's details.preferred field. Mirrors
+// embed.PreferredEmbeddingModels' Ollama-native subset.
+var preferredEmbeddingModels = preferredOllamaEmbeddingModels()
+
+// remediationForMissingModel returns the user-facing remediation string for
+// a missing-embedding-model warning. The first preferred model is named in
+// the `ollama pull` example; the rest are listed as also-supported so users
+// know they have choices.
+func remediationForMissingModel() string {
+	models := preferredOllamaEmbeddingModels()
+	if len(models) == 0 {
+		return "Install an embedding model on the configured Ollama endpoint"
+	}
+	if len(models) == 1 {
+		return "Install an embedding model: e.g. 'ollama pull " + models[0] + "'"
+	}
+	return "Install an embedding model: e.g. 'ollama pull " + models[0] +
+		"' (also supported: " + strings.Join(models[1:], ", ") + ")"
 }
 
 // emitClusterWarning writes a structured warning to stderr (one JSON object
@@ -342,7 +368,7 @@ var preferredEmbeddingModels = []string{
 func emitClusterWarning(stderr io.Writer, skip *forksops.ClusterSkip) {
 	code := skip.Code
 	message := skip.Message
-	remediation := "ollama pull nomic-embed-text"
+	remediation := remediationForMissingModel()
 	switch code {
 	case "ollama_unreachable":
 		// Embedder host unreachable — same remediation: start Ollama.

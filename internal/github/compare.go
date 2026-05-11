@@ -58,6 +58,22 @@ func isNotFound(err error) bool {
 	return strings.Contains(err.Error(), "404")
 }
 
+// isForbidden reports whether err represents a 403 from the GitHub API. A
+// 403 typically means the resource exists but the caller cannot reach it —
+// the most common causes are private forks and per-resource rate limiting.
+// Both are "expected unavailability" rather than "broken", so callers that
+// handle 404 as a graceful empty result should also handle 403 the same way.
+func isForbidden(err error) bool {
+	if err == nil {
+		return false
+	}
+	var httpErr *ghAPI.HTTPError
+	if ok := asHTTPError(err, &httpErr); ok {
+		return httpErr.StatusCode == http.StatusForbidden
+	}
+	return strings.Contains(err.Error(), "403")
+}
+
 // asHTTPError attempts to extract an HTTPError from the error chain.
 func asHTTPError(err error, target **ghAPI.HTTPError) bool {
 	type httpErrorer interface {

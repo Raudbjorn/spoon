@@ -42,6 +42,14 @@ type ClusterOptions struct {
 	NoPrompt        bool
 	Refresh         bool
 
+	// NonInteractive mirrors the field of the same name on
+	// dump.ClusterOptions / forksops.ClusterOptions. The TUI is always
+	// interactive (and consequently passes false to the pipeline regardless
+	// of this value); the field exists for shape-parity so callers that
+	// translate between Options structs don't accidentally lose state, and
+	// future refactors can collapse the four ClusterOptions copies into one.
+	NonInteractive bool
+
 	// Labeler, when non-nil, overrides construction from LabelerEndpoint.
 	Labeler cluster.Labeler
 
@@ -49,24 +57,43 @@ type ClusterOptions struct {
 	EmbedderForTest embed.Embedder
 }
 
-// defaultLabelerModel matches the dump package's default to keep behaviour
-// consistent across CLI surfaces.
-const tuiDefaultLabelerModel = "llama3.2:3b"
+// tuiDefaultLabelerModel aliases cluster.DefaultLabelerModel for readability
+// at the call site below. Keeping it as a const aliasing the package-level
+// constant means a single source of truth without churning the existing
+// readability of this file.
+const tuiDefaultLabelerModel = cluster.DefaultLabelerModel
 
 // waitForClusterMsg returns a tea.Cmd that blocks on the model's cluster
 // message channel and re-arms itself on each receive. This is how the
 // cluster goroutines feed messages into Bubble Tea's Update loop without
 // holding a *tea.Program reference.
-func waitForClusterMsg(ch <-chan tea.Msg) tea.Cmd {
+//
+// The ctx parameter is the model's lifecycle context: when the TUI quits
+// it is cancelled, which causes this Cmd's blocking receive to return nil
+// (a valid no-op for tea.Cmd) so the spawned goroutine exits cleanly
+// rather than leaking past program shutdown. Returning nil from a tea.Cmd
+// produces no message, so the pump simply stops re-arming.
+func waitForClusterMsg(ch <-chan tea.Msg, ctx context.Context) tea.Cmd {
 	if ch == nil {
 		return nil
 	}
 	return func() tea.Msg {
-		msg, ok := <-ch
-		if !ok {
+		if ctx == nil {
+			msg, ok := <-ch
+			if !ok {
+				return nil
+			}
+			return msg
+		}
+		select {
+		case msg, ok := <-ch:
+			if !ok {
+				return nil
+			}
+			return msg
+		case <-ctx.Done():
 			return nil
 		}
-		return msg
 	}
 }
 
@@ -330,7 +357,7 @@ func (m *Model) handleClusterResult(msg clusterResultMsg) (tea.Model, tea.Cmd) {
 	m.sortForks()
 	// Re-arm the message pump so we continue to receive any later
 	// cluster-related messages.
-	return m, waitForClusterMsg(m.clusterMsgs)
+	return m, waitForClusterMsg(m.clusterMsgs, m.lifecycleCtx)
 }
 
 // handleClusterPrompt transitions the model into viewEmbedderBootstrap so
@@ -340,7 +367,7 @@ func (m *Model) handleClusterPrompt(msg clusterPromptMsg) (tea.Model, tea.Cmd) {
 	cp := msg
 	m.clusterPendingPrompt = &cp
 	m.view = viewEmbedderBootstrap
-	return m, waitForClusterMsg(m.clusterMsgs)
+	return m, waitForClusterMsg(m.clusterMsgs, m.lifecycleCtx)
 }
 
 // handleEmbedderBootstrapKey consumes Y/N from the user, replies on the

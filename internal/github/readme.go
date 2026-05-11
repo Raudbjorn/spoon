@@ -27,8 +27,9 @@ type readmeResponse struct {
 // branch. Tries the GitHub readme API endpoint (which auto-resolves common
 // names like README, README.md, README.rst) and returns the decoded content.
 //
-// Returns ("", nil) on 404 (no README) — callers should treat this as
-// "no README available" rather than an error.
+// Returns ("", nil) on 404 (no README) or 403 (private repo / per-resource
+// rate limit) — callers should treat both as "no README available" rather
+// than an error.
 //
 // Returns ("", err) on any other API failure (auth, rate limit, network).
 //
@@ -42,7 +43,10 @@ func (c *Client) FetchReadme(ctx context.Context, owner, repo string) (string, e
 	path := fmt.Sprintf("repos/%s/%s/readme", owner, repo)
 	resp, err := c.GetRaw(ctx, path)
 	if err != nil {
-		if isNotFound(err) {
+		// 404 (no README) and 403 (private repo / per-resource rate limit)
+		// are both "unavailable, not broken". Return the empty shape rather
+		// than propagating an error the caller would have to special-case.
+		if isNotFound(err) || isForbidden(err) {
 			return "", nil
 		}
 		return "", err

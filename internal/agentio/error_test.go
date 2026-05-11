@@ -131,6 +131,32 @@ func TestRemediation_badInput_nounVerb(t *testing.T) {
 	}
 }
 
+// TestExitCode_Contract pins the public contract that maps each Code to the
+// spn process exit code. This mapping is part of the agent contract: any
+// change here is a breaking change for callers that branch on the exit code.
+// Add new codes in both the map below and the design doc's "Error vocabulary"
+// table.
+func TestExitCode_Contract(t *testing.T) {
+	cases := []struct {
+		code     Code
+		wantExit int
+	}{
+		{CodeBadInput, 2},
+		{CodeAuthRequired, 2},
+		{CodeAuthScope, 2},
+		{CodePolicy, 2},
+		{CodeNotFound, 1},
+		{CodeUpstream, 1},
+		{CodeRateLimited, 1},
+		{CodeInternal, 1},
+	}
+	for _, c := range cases {
+		if got := ExitCode(c.code); got != c.wantExit {
+			t.Errorf("ExitCode(%s) = %d, want %d", c.code, got, c.wantExit)
+		}
+	}
+}
+
 func TestRemediation_rateLimited(t *testing.T) {
 	r := RemediationRateLimited("2026-05-10T12:00:00Z", 30)
 	if !strings.Contains(r, "2026-05-10T12:00:00Z") || !strings.Contains(r, "30s") {
