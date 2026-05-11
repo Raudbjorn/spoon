@@ -133,12 +133,14 @@ func (g *Graph) PageRank(teleport []float64, damping float64, iterations int) ma
 				next[i] += add
 			}
 		}
-		// Step 3: propagate via edges.
-		for srcPath, dsts := range g.Edges {
-			si, ok := g.Index[srcPath]
-			if !ok || outDeg[si] == 0 {
+		// Step 3: propagate via edges. Iterate by node index (not by ranging
+		// g.Edges) so the floating-point accumulation order is deterministic
+		// across runs — required for byte-identical MDG cache files.
+		for si := 0; si < n; si++ {
+			if outDeg[si] == 0 {
 				continue
 			}
+			dsts := g.Edges[g.Nodes[si].Path]
 			share := damping * rank[si] / float64(outDeg[si])
 			for _, dstPath := range dsts {
 				if di, ok := g.Index[dstPath]; ok {
