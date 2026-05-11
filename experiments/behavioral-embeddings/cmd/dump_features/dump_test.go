@@ -2,103 +2,209 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
-
-	"github.com/svnbjrn/spoon/internal/forge"
 )
 
-type stubForge struct {
-	parent  forge.ParentData
-	forks   []forge.T1Data
-	compare map[string]forge.T2Data
+// fakeREST is an in-memory restClient. routes maps URL paths to JSON-encoded
+// response bodies. A missing path returns an error.
+type fakeREST struct {
+	routes map[string]string
+	calls  []string
 }
 
-func (s *stubForge) Auth(_ context.Context) (forge.AuthInfo, error) {
-	return forge.AuthInfo{}, nil
-}
-
-func (s *stubForge) Parent(_ context.Context, _, _ string) (forge.ParentData, error) {
-	return s.parent, nil
-}
-
-func (s *stubForge) ListForks(_ context.Context, _, _ string) (<-chan forge.ForkMsg, error) {
-	ch := make(chan forge.ForkMsg, len(s.forks))
-	for _, f := range s.forks {
-		ch <- forge.ForkMsg{Fork: f}
+func (f *fakeREST) Get(path string, response any) error {
+	f.calls = append(f.calls, path)
+	body, ok := f.routes[path]
+	if !ok {
+		return fmt.Errorf("fakeREST: no route for %q", path)
 	}
-	close(ch)
-	return ch, nil
+	return json.Unmarshal([]byte(body), response)
 }
 
-func (s *stubForge) Branches(_ context.Context, _ forge.T1Data, _ int) ([]forge.BranchRef, error) {
-	return nil, nil
-}
-
-func (s *stubForge) Compare(_ context.Context, fork forge.T1Data, _ string) (forge.T2Data, error) {
-	return s.compare[fork.ID], nil
-}
-
-func (s *stubForge) Contributors(_ context.Context, _ forge.T1Data) (forge.T3Data, error) {
-	return forge.T3Data{}, nil
-}
-
-func (s *stubForge) Headroom() float64 {
-	return 1.0
-}
-
-func TestDumpFeatures_TopN(t *testing.T) {
-	sf := &stubForge{
-		forks: []forge.T1Data{
-			{ID: "a", Owner: "x", Name: "r1"},
-			{ID: "b", Owner: "y", Name: "r2"},
-			{ID: "c", Owner: "z", Name: "r3"},
-		},
-		compare: map[string]forge.T2Data{
-			"a": {Diffs: []forge.FileDiff{{Path: "main.go", Additions: 1, Deletions: 0}}},
-			"b": {Diffs: []forge.FileDiff{{Path: "README.md", Additions: 2, Deletions: 0}}},
-			"c": {Diffs: []forge.FileDiff{{Path: "go.mod", Additions: 3, Deletions: 0}}},
-		},
+// staticRoutes constructs a fakeREST seeded with a PR listing plus per-PR
+// files/commits routes.
+func staticRoutes(owner, repo string, prs []prInfo, files map[int][]prFile, commits map[int][]prCommit) *fakeREST {
+	routes := map[string]string{}
+	prJSON, _ := json.Marshal(prs)
+	routes[fmt.Sprintf("repos/%s/%s/pulls?state=all&sort=updated&direction=desc&per_page=100&page=1", owner, repo)] = string(prJSON)
+	routes[fmt.Sprintf("repos/%s/%s/pulls?state=all&sort=updated&direction=desc&per_page=100&page=2", owner, repo)] = "[]"
+	for n, fs := range files {
+		fb, _ := json.Marshal(fs)
+		routes[fmt.Sprintf("repos/%s/%s/pulls/%d/files?per_page=100&page=1", owner, repo, n)] = string(fb)
+		routes[fmt.Sprintf("repos/%s/%s/pulls/%d/files?per_page=100&page=2", owner, repo, n)] = "[]"
 	}
-	got, err := dumpFeatures(context.Background(), sf, "owner", "repo", 2)
+	for n, cs := range commits {
+		cb, _ := json.Marshal(cs)
+		routes[fmt.Sprintf("repos/%s/%s/pulls/%d/commits?per_page=100&page=1", owner, repo, n)] = string(cb)
+		routes[fmt.Sprintf("repos/%s/%s/pulls/%d/commits?per_page=100&page=2", owner, repo, n)] = "[]"
+	}
+	return &fakeREST{routes: routes}
+}
+
+func TestListPRs_TopNCap(t *testing.T) {
+	prs := []prInfo{
+		{Number: 1, Title: "first", State: "open"},
+		{Number: 2, Title: "second", State: "open"},
+		{Number: 3, Title: "third", State: "open"},
+	}
+	fr := staticRoutes("o", "r", prs, nil, nil)
+	got, err := listPRs(fr, "o", "r", 2)
 	if err != nil {
-		t.Fatalf("dumpFeatures: %v", err)
+		t.Fatalf("listPRs: %v", err)
 	}
 	if len(got) != 2 {
-		t.Fatalf("want 2 records, got %d", len(got))
+		t.Errorf("want 2 PRs, got %d", len(got))
 	}
-	if got[0].ID != "a" || got[1].ID != "b" {
+	if got[0].Number != 1 || got[1].Number != 2 {
 		t.Errorf("unexpected order: %v", got)
-	}
-	if got[0].Features.Paths != "main.go" {
-		t.Errorf("Paths not populated: %q", got[0].Features.Paths)
 	}
 }
 
-func TestDumpFeatures_SkipsCompareErrors(t *testing.T) {
-	sf := &stubForgeWithErr{
-		stubForge: stubForge{
-			forks:   []forge.T1Data{{ID: "ok", Owner: "x", Name: "r"}, {ID: "bad", Owner: "y", Name: "r"}},
-			compare: map[string]forge.T2Data{"ok": {Diffs: []forge.FileDiff{{Path: "f", Additions: 1}}}},
-		},
-		failIDs: map[string]bool{"bad": true},
+func TestPRToT2Data_BuildsExpectedShape(t *testing.T) {
+	pr := prInfo{Number: 42, Title: "Add OAuth provider"}
+	files := []prFile{
+		{Filename: "auth/oauth.py", Additions: 80, Deletions: 0},
+		{Filename: "tests/test_oauth.py", Additions: 40, Deletions: 0},
 	}
-	got, err := dumpFeatures(context.Background(), sf, "owner", "repo", 0)
+	commits := []prCommit{
+		{Commit: struct {
+			Message string `json:"message"`
+		}{Message: "implement OAuth provider"}},
+		{Commit: struct {
+			Message string `json:"message"`
+		}{Message: "tests for OAuth"}},
+	}
+	t2 := prToT2Data(pr, files, commits)
+	if len(t2.Diffs) != 2 {
+		t.Fatalf("want 2 diffs, got %d", len(t2.Diffs))
+	}
+	if t2.Diffs[0].Path != "auth/oauth.py" || t2.Diffs[0].Additions != 80 {
+		t.Errorf("Diffs[0] wrong: %+v", t2.Diffs[0])
+	}
+	// PR title prepended to commits.
+	if len(t2.Commits) != 3 {
+		t.Fatalf("want 3 commits (title + 2 originals), got %d", len(t2.Commits))
+	}
+	if t2.Commits[0].Message != "Add OAuth provider" {
+		t.Errorf("title not prepended: %q", t2.Commits[0].Message)
+	}
+}
+
+func TestPRToT2Data_EmptyTitleIsSkipped(t *testing.T) {
+	pr := prInfo{Number: 1, Title: "   "}
+	t2 := prToT2Data(pr, nil, []prCommit{
+		{Commit: struct {
+			Message string `json:"message"`
+		}{Message: "fix"}},
+	})
+	if len(t2.Commits) != 1 || t2.Commits[0].Message != "fix" {
+		t.Errorf("blank title should be omitted; got %v", t2.Commits)
+	}
+}
+
+func TestDumpFeatures_BuildsRecordsAndDropsEmpty(t *testing.T) {
+	// PR #1 has files (will produce non-empty DiffChunk).
+	// PR #2 has no files (will produce empty DiffChunk → dropped).
+	prs := []prInfo{
+		{Number: 1, Title: "Add metrics", HTMLURL: "https://example/1"},
+		{Number: 2, Title: "Empty PR", HTMLURL: "https://example/2"},
+	}
+	prs[0].Head.Repo = &struct {
+		FullName string `json:"full_name"`
+		Owner    struct {
+			Login string `json:"login"`
+		} `json:"owner"`
+		Name string `json:"name"`
+	}{FullName: "alice/r", Owner: struct {
+		Login string `json:"login"`
+	}{Login: "alice"}, Name: "r"}
+	files := map[int][]prFile{
+		1: {{Filename: "metrics.go", Additions: 30, Deletions: 0}},
+		2: {},
+	}
+	commits := map[int][]prCommit{
+		1: {{Commit: struct {
+			Message string `json:"message"`
+		}{Message: "add /metrics endpoint"}}},
+		2: {{Commit: struct {
+			Message string `json:"message"`
+		}{Message: "nothing"}}},
+	}
+	fr := staticRoutes("base", "repo", prs, files, commits)
+
+	prev := defaultClient
+	defaultClient = func() (restClient, error) { return fr, nil }
+	t.Cleanup(func() { defaultClient = prev })
+
+	got, err := dumpFeatures(context.Background(), "base", "repo", 0)
 	if err != nil {
 		t.Fatalf("dumpFeatures: %v", err)
 	}
-	if len(got) != 1 || got[0].ID != "ok" {
-		t.Errorf("want 1 record with id=ok, got %v", got)
+	if len(got) != 1 {
+		t.Fatalf("want 1 record (the empty PR should be dropped), got %d: %+v", len(got), got)
+	}
+	if got[0].ID != "pr-1" {
+		t.Errorf("ID = %q, want pr-1", got[0].ID)
+	}
+	if got[0].Owner != "alice" || got[0].Name != "r" {
+		t.Errorf("Owner/Name = %q/%q, want alice/r", got[0].Owner, got[0].Name)
+	}
+	if !strings.Contains(got[0].Features.Paths, "metrics.go") {
+		t.Errorf("Paths missing metrics.go: %q", got[0].Features.Paths)
 	}
 }
 
-type stubForgeWithErr struct {
-	stubForge
-	failIDs map[string]bool
+func TestDumpFeatures_FallsBackToBaseRepoWhenHeadDeleted(t *testing.T) {
+	// head.repo == nil happens when the source fork was deleted; we fall
+	// back to the base repo identity so the record still carries some signal.
+	prs := []prInfo{
+		{Number: 5, Title: "Patch from deleted fork"},
+	}
+	files := map[int][]prFile{
+		5: {{Filename: "x.go", Additions: 3}},
+	}
+	commits := map[int][]prCommit{
+		5: {},
+	}
+	fr := staticRoutes("base", "repo", prs, files, commits)
+	prev := defaultClient
+	defaultClient = func() (restClient, error) { return fr, nil }
+	t.Cleanup(func() { defaultClient = prev })
+
+	got, err := dumpFeatures(context.Background(), "base", "repo", 0)
+	if err != nil {
+		t.Fatalf("dumpFeatures: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want 1 record, got %d", len(got))
+	}
+	if got[0].Owner != "base" || got[0].Name != "repo" {
+		t.Errorf("Owner/Name = %q/%q, want base/repo", got[0].Owner, got[0].Name)
+	}
 }
 
-func (s *stubForgeWithErr) Compare(ctx context.Context, fork forge.T1Data, branch string) (forge.T2Data, error) {
-	if s.failIDs[fork.ID] {
-		return forge.T2Data{}, context.Canceled
+func TestSplitRepo(t *testing.T) {
+	cases := []struct {
+		in, wantO, wantR string
+		wantErr          bool
+	}{
+		{"foo/bar", "foo", "bar", false},
+		{"foo", "", "", true},
+		{"/bar", "", "", true},
+		{"foo/", "", "", true},
+		{"foo/bar/baz", "foo", "bar/baz", false}, // SplitN(_, 2) keeps the rest in part[1]
 	}
-	return s.stubForge.Compare(ctx, fork, branch)
+	for _, c := range cases {
+		o, r, err := splitRepo(c.in)
+		if (err != nil) != c.wantErr {
+			t.Errorf("splitRepo(%q) err=%v, wantErr=%v", c.in, err, c.wantErr)
+			continue
+		}
+		if o != c.wantO || r != c.wantR {
+			t.Errorf("splitRepo(%q) = (%q, %q), want (%q, %q)", c.in, o, r, c.wantO, c.wantR)
+		}
+	}
 }
