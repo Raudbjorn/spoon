@@ -53,6 +53,12 @@ func renderModel(m Model) string {
 				fmt.Fprintf(&b, "\n💡 Suggestion available (a to apply)\n")
 			}
 		}
+		// Code context block (populated only when --show-code N is set).
+		if cc, ok := m.codeContexts[t.ID]; ok && cc != nil {
+			b.WriteString("\n")
+			b.WriteString(renderCodeContext(t, *cc))
+			b.WriteString("\n")
+		}
 	}
 	footer := "\n[r/Enter] reply  [R] resolve  [A] unresolve-all  [o] open  [?] help  [q] quit\n"
 	if hasSuggestion {
@@ -146,6 +152,42 @@ func threadStateLabel(t gh.ReviewThread) string {
 		suffix = "outdated — code changed"
 	}
 	return fmt.Sprintf("%s %s (%s)", glyph, label, suffix)
+}
+
+// renderCodeContext formats a CodeContext into a plain-text framed block for
+// the TUI detail pane. The arrow marker points to the thread's anchored line
+// range. Outdated threads get a small warning suffix.
+func renderCodeContext(t gh.ReviewThread, cc threadsops.CodeContext) string {
+	var b strings.Builder
+	refShort := cc.Ref
+	if len(refShort) > 7 {
+		refShort = refShort[:7]
+	}
+	outdatedTag := ""
+	if cc.Outdated {
+		outdatedTag = " (outdated)"
+	}
+	fmt.Fprintf(&b, "┌── code at %s:%d-%d [ref %s]%s ──\n", cc.Path, cc.StartLine, cc.EndLine, refShort, outdatedTag)
+	hlStart, hlEnd := t.Line, t.Line
+	if t.StartLine != nil && *t.StartLine > 0 {
+		hlStart = *t.StartLine
+	}
+	if hlEnd < hlStart {
+		hlEnd = hlStart
+	}
+	for i, ln := range cc.Lines {
+		n := cc.StartLine + i
+		marker := " "
+		if n >= hlStart && n <= hlEnd {
+			marker = "←"
+		}
+		fmt.Fprintf(&b, "│ %4d │ %s %s\n", n, marker, ln)
+	}
+	b.WriteString("└─────")
+	if cc.Outdated {
+		b.WriteString("\n  (heads up: this thread is marked outdated — snippet shows current code at these lines)")
+	}
+	return b.String()
 }
 
 func renderHelp() string {

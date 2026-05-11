@@ -20,6 +20,7 @@ type ReviewThreadWithPolicy struct {
 	RequiresBody bool         `json:"requiresBody"`
 	Suggestions  []Suggestion `json:"suggestions,omitempty"`
 	DryRun       bool         `json:"dryRun,omitempty"`
+	CodeContext  *CodeContext `json:"codeContext,omitempty"`
 }
 
 // FilterMode selects which review threads to surface in list/JSON output.

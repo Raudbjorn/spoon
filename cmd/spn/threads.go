@@ -60,6 +60,7 @@ func doThreadsList(args []string, stdout, stderr io.Writer) int {
 	var prRef string
 	var filterRaw string
 	allFlag := false
+	showCode := 0
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
@@ -73,6 +74,22 @@ func doThreadsList(args []string, stdout, stderr io.Writer) int {
 			filterRaw = args[i]
 		case strings.HasPrefix(a, "--filter="):
 			filterRaw = strings.TrimPrefix(a, "--filter=")
+		case a == "--show-code":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--show-code requires a value", agentio.RemediationBadInput("threads", "list")).Emit(stderr)
+			}
+			i++
+			n, err := parseShowCode(args[i])
+			if err != nil {
+				return agentio.NewError(agentio.CodeBadInput, err.Error(), agentio.RemediationBadInput("threads", "list")).Emit(stderr)
+			}
+			showCode = n
+		case strings.HasPrefix(a, "--show-code="):
+			n, err := parseShowCode(strings.TrimPrefix(a, "--show-code="))
+			if err != nil {
+				return agentio.NewError(agentio.CodeBadInput, err.Error(), agentio.RemediationBadInput("threads", "list")).Emit(stderr)
+			}
+			showCode = n
 		case strings.HasPrefix(a, "--"):
 			return agentio.NewError(agentio.CodeBadInput, "unknown flag: "+a, agentio.RemediationBadInput("threads", "list")).Emit(stderr)
 		default:
@@ -102,7 +119,14 @@ func doThreadsList(args []string, stdout, stderr io.Writer) int {
 	if authErr != nil {
 		return authErr.Emit(stderr)
 	}
-	_, threads, opErr := threadsops.List(context.Background(), api, owner, repo, number, mode.NeedsResolvedFetch())
+	listOpts := threadsops.ListOptions{
+		IncludeResolved: mode.NeedsResolvedFetch(),
+		ShowCodeLines:   showCode,
+	}
+	if showCode > 0 {
+		listOpts.Fetcher = contentFetcherFor(api)
+	}
+	_, threads, opErr := threadsops.ListWithOptions(context.Background(), api, owner, repo, number, listOpts)
 	if opErr != nil {
 		return translateOpErr(opErr, stderr)
 	}
@@ -114,6 +138,43 @@ func doThreadsList(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// parseShowCode validates and parses a --show-code argument. Returns the
+// integer value (0 means disabled), or an error suitable for bad_input.
+func parseShowCode(raw string) (int, error) {
+	if raw == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, errBadShowCode(raw)
+	}
+	if n < 0 {
+		return 0, errBadShowCode(raw)
+	}
+	return n, nil
+}
+
+func errBadShowCode(raw string) error {
+	return showCodeError{raw: raw}
+}
+
+type showCodeError struct{ raw string }
+
+func (e showCodeError) Error() string {
+	return "--show-code must be a non-negative integer (got \"" + e.raw + "\")"
+}
+
+// contentFetcherFor returns a ContentFetcher from a threadsops.API value when
+// the underlying API also implements ContentFetcher (i.e. *github.Client).
+// Returns nil if the API doesn't satisfy the interface, allowing tests with
+// pure stub APIs to opt out of code-context fetching cleanly.
+func contentFetcherFor(api threadsops.API) threadsops.ContentFetcher {
+	if f, ok := api.(threadsops.ContentFetcher); ok {
+		return f
+	}
+	return nil
+}
+
 // remediationFilterBadInput returns the remediation text shown when --filter
 // receives an unknown mode. It lists the valid modes explicitly so agents can
 // retry without re-reading --help.
@@ -122,10 +183,40 @@ func remediationFilterBadInput() string {
 }
 
 func doThreadsNext(args []string, stdout, stderr io.Writer) int {
-	if len(args) != 1 {
+	var prRef string
+	showCode := 0
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--show-code":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--show-code requires a value", agentio.RemediationBadInput("threads", "next")).Emit(stderr)
+			}
+			i++
+			n, err := parseShowCode(args[i])
+			if err != nil {
+				return agentio.NewError(agentio.CodeBadInput, err.Error(), agentio.RemediationBadInput("threads", "next")).Emit(stderr)
+			}
+			showCode = n
+		case strings.HasPrefix(a, "--show-code="):
+			n, err := parseShowCode(strings.TrimPrefix(a, "--show-code="))
+			if err != nil {
+				return agentio.NewError(agentio.CodeBadInput, err.Error(), agentio.RemediationBadInput("threads", "next")).Emit(stderr)
+			}
+			showCode = n
+		case strings.HasPrefix(a, "--"):
+			return agentio.NewError(agentio.CodeBadInput, "unknown flag: "+a, agentio.RemediationBadInput("threads", "next")).Emit(stderr)
+		default:
+			if prRef != "" {
+				return agentio.NewError(agentio.CodeBadInput, "unexpected positional: "+a, agentio.RemediationBadInput("threads", "next")).Emit(stderr)
+			}
+			prRef = a
+		}
+	}
+	if prRef == "" {
 		return agentio.NewError(agentio.CodeBadInput, "usage: spn threads next <pr-ref>", agentio.RemediationBadInput("threads", "next")).Emit(stderr)
 	}
-	owner, repo, number, ec, ok := resolvePRRef(args[0], "threads", "next", stderr)
+	owner, repo, number, ec, ok := resolvePRRef(prRef, "threads", "next", stderr)
 	if !ok {
 		return ec
 	}
@@ -133,7 +224,11 @@ func doThreadsNext(args []string, stdout, stderr io.Writer) int {
 	if authErr != nil {
 		return authErr.Emit(stderr)
 	}
-	_, t, opErr := threadsops.Next(context.Background(), api, owner, repo, number)
+	nextOpts := threadsops.NextOptions{ShowCodeLines: showCode}
+	if showCode > 0 {
+		nextOpts.Fetcher = contentFetcherFor(api)
+	}
+	_, t, opErr := threadsops.NextWithOptions(context.Background(), api, owner, repo, number, nextOpts)
 	if opErr != nil {
 		return translateOpErr(opErr, stderr)
 	}
@@ -269,37 +364,55 @@ func doThreadsReply(args []string, stdout, stderr io.Writer) int {
 func doThreadsResolve(args []string, stdout, stderr io.Writer) int {
 	var prRef, threadID, body, bodyFile string
 	dryRun := false
+	showCode := 0
 	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--body":
+		a := args[i]
+		switch {
+		case a == "--body":
 			if i+1 >= len(args) {
 				return agentio.NewError(agentio.CodeBadInput, "--body requires a value", agentio.RemediationBadInput("threads", "resolve")).Emit(stderr)
 			}
 			i++
 			body = args[i]
-		case "--body-file":
+		case a == "--body-file":
 			if i+1 >= len(args) {
 				return agentio.NewError(agentio.CodeBadInput, "--body-file requires a path", agentio.RemediationBadInput("threads", "resolve")).Emit(stderr)
 			}
 			i++
 			bodyFile = args[i]
-		case "--dry-run":
+		case a == "--dry-run":
 			dryRun = true
+		case a == "--show-code":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--show-code requires a value", agentio.RemediationBadInput("threads", "resolve")).Emit(stderr)
+			}
+			i++
+			n, err := parseShowCode(args[i])
+			if err != nil {
+				return agentio.NewError(agentio.CodeBadInput, err.Error(), agentio.RemediationBadInput("threads", "resolve")).Emit(stderr)
+			}
+			showCode = n
+		case strings.HasPrefix(a, "--show-code="):
+			n, err := parseShowCode(strings.TrimPrefix(a, "--show-code="))
+			if err != nil {
+				return agentio.NewError(agentio.CodeBadInput, err.Error(), agentio.RemediationBadInput("threads", "resolve")).Emit(stderr)
+			}
+			showCode = n
 		default:
-			if strings.HasPrefix(args[i], "--") {
-				return agentio.NewError(agentio.CodeBadInput, "unknown flag: "+args[i], agentio.RemediationBadInput("threads", "resolve")).Emit(stderr)
+			if strings.HasPrefix(a, "--") {
+				return agentio.NewError(agentio.CodeBadInput, "unknown flag: "+a, agentio.RemediationBadInput("threads", "resolve")).Emit(stderr)
 			}
 			if prRef == "" {
-				prRef = args[i]
+				prRef = a
 			} else if threadID == "" {
-				threadID = args[i]
+				threadID = a
 			} else {
-				return agentio.NewError(agentio.CodeBadInput, "unexpected positional: "+args[i], agentio.RemediationBadInput("threads", "resolve")).Emit(stderr)
+				return agentio.NewError(agentio.CodeBadInput, "unexpected positional: "+a, agentio.RemediationBadInput("threads", "resolve")).Emit(stderr)
 			}
 		}
 	}
 	if prRef == "" || threadID == "" {
-		return agentio.NewError(agentio.CodeBadInput, "usage: spn threads resolve <pr-ref> <thread-id> [--body T] [--dry-run]", agentio.RemediationBadInput("threads", "resolve")).Emit(stderr)
+		return agentio.NewError(agentio.CodeBadInput, "usage: spn threads resolve <pr-ref> <thread-id> [--body T] [--dry-run] [--show-code N]", agentio.RemediationBadInput("threads", "resolve")).Emit(stderr)
 	}
 	if bodyFile != "" && body == "" {
 		b, err := threadsops.ReadBody(bodyFile)
@@ -319,6 +432,20 @@ func doThreadsResolve(args []string, stdout, stderr io.Writer) int {
 	t, _, opErr := threadsops.ResolveWithOptions(context.Background(), api, owner, repo, number, threadID, body, threadsops.ResolveOptions{DryRun: dryRun})
 	if opErr != nil {
 		return translateResolveErr(opErr, prRef, threadID, stderr)
+	}
+	// Attach code context to the printed thread if requested. Best-effort:
+	// failures are silently dropped, matching list/next.
+	if showCode > 0 && t != nil {
+		if fetcher := contentFetcherFor(api); fetcher != nil {
+			// We need the PR head SHA — refetch the status. Cheap relative to
+			// the resolve mutation that just ran.
+			status, _, ferr := api.FetchPR(context.Background(), owner, repo, number, "")
+			if ferr == nil {
+				if cc, _ := threadsops.FetchCodeContext(context.Background(), fetcher, status.HeadSHA, owner, repo, *t, showCode); cc != nil {
+					t.CodeContext = cc
+				}
+			}
+		}
 	}
 	if err := agentio.WriteJSON(stdout, t); err != nil {
 		return agentio.NewError(agentio.CodeInternal, "encode output: "+err.Error(), agentio.RemediationInternal()).Emit(stderr)

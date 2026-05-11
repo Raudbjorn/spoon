@@ -20,10 +20,15 @@ import (
 // stubAPI is a minimal threadsops.API implementation for cmd/spn tests.
 type stubAPI struct {
 	threads []github.ReviewThread
+	headSHA string
 }
 
 func (s *stubAPI) FetchPR(_ context.Context, _, _ string, _ int, _ string) (github.PullRequestStatus, []github.ReviewThread, error) {
-	return github.PullRequestStatus{Title: "test"}, s.threads, nil
+	sha := s.headSHA
+	if sha == "" {
+		sha = "deadbeefcafe"
+	}
+	return github.PullRequestStatus{Title: "test", HeadSHA: sha}, s.threads, nil
 }
 func (s *stubAPI) ReplyToThread(_ context.Context, _, _ string) (github.ThreadComment, error) {
 	return github.ThreadComment{}, nil
@@ -914,5 +919,265 @@ func TestSpnThreadsReply_SuggestFile(t *testing.T) {
 	want := "How about this?\n\n```suggestion\nfrom file\n```"
 	if cap.lastBody != want {
 		t.Errorf("body=%q\nwant %q", cap.lastBody, want)
+	}
+}
+
+// --- G5: --show-code E2E tests ---------------------------------------------
+
+// codeStub combines stubAPI's FetchPR with a ContentFetcher implementation so
+// the api value passed to the spn handler satisfies both threadsops.API and
+// threadsops.ContentFetcher (the latter is sniffed via contentFetcherFor).
+type codeStub struct {
+	stubAPI
+	fileContent map[string]string // path → content; empty content means "fetch returns ''" (graceful skip)
+	fetchedRef  string
+}
+
+func (c *codeStub) FetchFileContent(_ context.Context, _, _, path, ref string) (string, error) {
+	c.fetchedRef = ref
+	if content, ok := c.fileContent[path]; ok {
+		return content, nil
+	}
+	return "", nil
+}
+
+// tenLineFileSpn builds a 10-line file used by spn tests.
+func tenLineFileSpn() string {
+	return "L1\nL2\nL3\nL4\nL5\nL6\nL7\nL8\nL9\nL10\n"
+}
+
+func TestSpnThreadsList_ShowCode_E2E(t *testing.T) {
+	st := &codeStub{
+		stubAPI: stubAPI{
+			threads: []github.ReviewThread{{
+				ID:       "PRRT_1",
+				Path:     "a.go",
+				Line:     5,
+				Comments: []github.ThreadComment{{AuthorType: "Bot"}},
+			}},
+			headSHA: "abc1234567890",
+		},
+		fileContent: map[string]string{"a.go": tenLineFileSpn()},
+	}
+	prev := apiFactory
+	defer func() { apiFactory = prev }()
+	apiFactory = func() (threadsops.API, *agentio.Error) { return st, nil }
+
+	var stdout, stderr bytes.Buffer
+	exit := runThreadsWith([]string{"list", "owner/repo#1", "--show-code", "2"}, &stdout, &stderr)
+	if exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+	}
+	var got []map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("stdout not JSON array: %v\n%s", err, stdout.String())
+	}
+	if len(got) != 1 {
+		t.Fatalf("len=%d want 1", len(got))
+	}
+	cc, ok := got[0]["codeContext"].(map[string]any)
+	if !ok {
+		t.Fatalf("codeContext missing or wrong type: %+v", got[0])
+	}
+	if cc["ref"] != "abc1234567890" {
+		t.Errorf("ref=%v want abc1234567890", cc["ref"])
+	}
+	lines, _ := cc["lines"].([]any)
+	if len(lines) != 5 {
+		t.Fatalf("lines=%d want 5", len(lines))
+	}
+	want := []string{"L3", "L4", "L5", "L6", "L7"}
+	for i := range want {
+		if lines[i] != want[i] {
+			t.Errorf("lines[%d]=%v want %s", i, lines[i], want[i])
+		}
+	}
+}
+
+func TestSpnThreadsList_ShowCode_NoAnchor(t *testing.T) {
+	st := &codeStub{
+		stubAPI: stubAPI{
+			threads: []github.ReviewThread{{
+				ID: "PRRT_1", Path: "", Line: 0,
+				Comments: []github.ThreadComment{{AuthorType: "Bot"}},
+			}},
+		},
+		fileContent: map[string]string{"a.go": tenLineFileSpn()},
+	}
+	prev := apiFactory
+	defer func() { apiFactory = prev }()
+	apiFactory = func() (threadsops.API, *agentio.Error) { return st, nil }
+
+	var stdout, stderr bytes.Buffer
+	exit := runThreadsWith([]string{"list", "owner/repo#1", "--show-code", "2"}, &stdout, &stderr)
+	if exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+	}
+	// codeContext must be absent (omitempty).
+	if strings.Contains(stdout.String(), "codeContext") {
+		t.Errorf("expected no codeContext for unanchored thread, got: %s", stdout.String())
+	}
+}
+
+func TestSpnThreadsList_ShowCode_FileDeleted(t *testing.T) {
+	st := &codeStub{
+		stubAPI: stubAPI{
+			threads: []github.ReviewThread{{
+				ID: "PRRT_1", Path: "gone.go", Line: 3,
+				Comments: []github.ThreadComment{{AuthorType: "Bot"}},
+			}},
+		},
+		// Empty fileContent map → fetcher returns "" for any path → graceful skip.
+		fileContent: map[string]string{},
+	}
+	prev := apiFactory
+	defer func() { apiFactory = prev }()
+	apiFactory = func() (threadsops.API, *agentio.Error) { return st, nil }
+
+	var stdout, stderr bytes.Buffer
+	exit := runThreadsWith([]string{"list", "owner/repo#1", "--show-code", "2"}, &stdout, &stderr)
+	if exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+	}
+	if strings.Contains(stdout.String(), "codeContext") {
+		t.Errorf("expected no codeContext when file fetch returns empty: %s", stdout.String())
+	}
+}
+
+func TestSpnThreadsList_ShowCode_Outdated(t *testing.T) {
+	st := &codeStub{
+		stubAPI: stubAPI{
+			threads: []github.ReviewThread{{
+				ID: "PRRT_1", Path: "a.go", Line: 5, IsOutdated: true,
+				Comments: []github.ThreadComment{{AuthorType: "Bot"}},
+			}},
+		},
+		fileContent: map[string]string{"a.go": tenLineFileSpn()},
+	}
+	prev := apiFactory
+	defer func() { apiFactory = prev }()
+	apiFactory = func() (threadsops.API, *agentio.Error) { return st, nil }
+
+	var stdout, stderr bytes.Buffer
+	exit := runThreadsWith([]string{"list", "owner/repo#1", "--show-code", "2"}, &stdout, &stderr)
+	if exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+	}
+	var got []map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("stdout not JSON: %v\n%s", err, stdout.String())
+	}
+	cc, ok := got[0]["codeContext"].(map[string]any)
+	if !ok {
+		t.Fatalf("codeContext missing: %+v", got[0])
+	}
+	if cc["outdated"] != true {
+		t.Errorf("outdated=%v want true", cc["outdated"])
+	}
+}
+
+func TestSpnThreadsList_ShowCode_BadValue(t *testing.T) {
+	prev := apiFactory
+	defer func() { apiFactory = prev }()
+	apiFactory = func() (threadsops.API, *agentio.Error) { return &stubAPI{}, nil }
+
+	var stdout, stderr bytes.Buffer
+	exit := runThreadsWith([]string{"list", "owner/repo#1", "--show-code", "abc"}, &stdout, &stderr)
+	if exit != 2 {
+		t.Fatalf("exit=%d (want 2 for bad_input); stderr=%s", exit, stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("stdout should be empty on bad_input, got %q", stdout.String())
+	}
+	var env map[string]map[string]any
+	if err := json.Unmarshal(stderr.Bytes(), &env); err != nil {
+		t.Fatalf("stderr not JSON: %v\n%s", err, stderr.String())
+	}
+	if env["error"]["code"] != "bad_input" {
+		t.Errorf("code=%v", env["error"]["code"])
+	}
+}
+
+func TestSpnThreadsList_ShowCode_Zero(t *testing.T) {
+	st := &codeStub{
+		stubAPI: stubAPI{
+			threads: []github.ReviewThread{{
+				ID: "PRRT_1", Path: "a.go", Line: 5,
+				Comments: []github.ThreadComment{{AuthorType: "Bot"}},
+			}},
+		},
+		fileContent: map[string]string{"a.go": tenLineFileSpn()},
+	}
+	prev := apiFactory
+	defer func() { apiFactory = prev }()
+	apiFactory = func() (threadsops.API, *agentio.Error) { return st, nil }
+
+	var stdout, stderr bytes.Buffer
+	exit := runThreadsWith([]string{"list", "owner/repo#1", "--show-code", "0"}, &stdout, &stderr)
+	if exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+	}
+	// --show-code 0 must behave as if the flag weren't set: no codeContext key.
+	if strings.Contains(stdout.String(), "codeContext") {
+		t.Errorf("expected no codeContext with --show-code 0: %s", stdout.String())
+	}
+}
+
+func TestSpnThreadsNext_ShowCode_E2E(t *testing.T) {
+	st := &codeStub{
+		stubAPI: stubAPI{
+			threads: []github.ReviewThread{{
+				ID:       "PRRT_1",
+				Path:     "a.go",
+				Line:     5,
+				Comments: []github.ThreadComment{{AuthorType: "Bot", CreatedAt: "2026-01-01T00:00:00Z"}},
+			}},
+			headSHA: "feedface",
+		},
+		fileContent: map[string]string{"a.go": tenLineFileSpn()},
+	}
+	prev := apiFactory
+	defer func() { apiFactory = prev }()
+	apiFactory = func() (threadsops.API, *agentio.Error) { return st, nil }
+
+	var stdout, stderr bytes.Buffer
+	exit := runThreadsWith([]string{"next", "owner/repo#1", "--show-code", "3"}, &stdout, &stderr)
+	if exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("stdout not JSON: %v\n%s", err, stdout.String())
+	}
+	cc, ok := got["codeContext"].(map[string]any)
+	if !ok {
+		t.Fatalf("codeContext missing: %+v", got)
+	}
+	if cc["ref"] != "feedface" {
+		t.Errorf("ref=%v want feedface", cc["ref"])
+	}
+	lines, _ := cc["lines"].([]any)
+	// Single-line=5, context=3 → [2,8] → 7 lines.
+	if len(lines) != 7 {
+		t.Fatalf("lines=%d want 7: %+v", len(lines), lines)
+	}
+}
+
+func TestSpnThreadsList_ShowCode_Negative(t *testing.T) {
+	prev := apiFactory
+	defer func() { apiFactory = prev }()
+	apiFactory = func() (threadsops.API, *agentio.Error) { return &stubAPI{}, nil }
+
+	var stdout, stderr bytes.Buffer
+	exit := runThreadsWith([]string{"list", "owner/repo#1", "--show-code", "-3"}, &stdout, &stderr)
+	if exit != 2 {
+		t.Fatalf("exit=%d (want 2 for bad_input); stderr=%s", exit, stderr.String())
+	}
+	var env map[string]map[string]any
+	if err := json.Unmarshal(stderr.Bytes(), &env); err != nil {
+		t.Fatalf("stderr not JSON: %v\n%s", err, stderr.String())
+	}
+	if env["error"]["code"] != "bad_input" {
+		t.Errorf("code=%v want bad_input", env["error"]["code"])
 	}
 }

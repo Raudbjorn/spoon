@@ -36,6 +36,15 @@ type Model struct {
 	showHelp        bool
 
 	pendingSuggestion threadsops.Suggestion // set while m.confirm == "apply-suggestion"
+
+	// ShowCodeLines, when > 0, triggers a code-context fetch per thread on
+	// load and renders the result in the detail pane. Set by the caller via
+	// the exported field; zero (default) disables the fetch entirely.
+	ShowCodeLines int
+
+	// codeContexts caches per-thread CodeContext blocks indexed by thread ID.
+	// Populated by codeContextLoadedMsg events; consumed by view rendering.
+	codeContexts map[string]*threadsops.CodeContext
 }
 
 // New constructs an empty Model. The includeResolved flag is mapped to a
@@ -114,6 +123,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = msg.err
 		if m.cursor >= len(m.threads) {
 			m.cursor = max(0, len(m.threads)-1)
+		}
+		// When --show-code is in play, schedule per-thread fetches. Fire
+		// them off as a batch of commands so the TUI stays responsive.
+		if m.ShowCodeLines > 0 && m.client != nil && len(filtered) > 0 {
+			m.codeContexts = map[string]*threadsops.CodeContext{}
+			cmds := make([]tea.Cmd, 0, len(filtered))
+			for _, t := range filtered {
+				cmds = append(cmds, m.codeContextCmd(t, msg.status.HeadSHA))
+			}
+			return m, tea.Batch(cmds...)
+		}
+		return m, nil
+	case codeContextLoadedMsg:
+		if m.codeContexts == nil {
+			m.codeContexts = map[string]*threadsops.CodeContext{}
+		}
+		if msg.cc != nil {
+			m.codeContexts[msg.threadID] = msg.cc
 		}
 		return m, nil
 	case mutationDoneMsg:
@@ -267,6 +294,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 type mutationDoneMsg struct {
 	what string // "reply", "resolve", "bulk-resolve", "bulk-unresolve"
 	err  error
+}
+
+// codeContextLoadedMsg delivers a single per-thread code-context fetch result.
+type codeContextLoadedMsg struct {
+	threadID string
+	cc       *threadsops.CodeContext
+}
+
+// codeContextCmd issues a single code-context fetch for one thread.
+func (m Model) codeContextCmd(t threadsops.ReviewThreadWithPolicy, headSHA string) tea.Cmd {
+	return func() tea.Msg {
+		cc, _ := threadsops.FetchCodeContext(context.Background(), m.client, headSHA, m.owner, m.repo, t, m.ShowCodeLines)
+		return codeContextLoadedMsg{threadID: t.ID, cc: cc}
+	}
 }
 
 func (m Model) replyCmd(threadID, body string) tea.Cmd {

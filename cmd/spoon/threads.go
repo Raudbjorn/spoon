@@ -68,6 +68,9 @@ type threadsFlags struct {
 	dryRun          bool
 	force           bool
 	repoRoot        string
+	// showCodeLines is the value of --show-code N. 0 (default) disables the
+	// code-context fetch entirely. Negative values are rejected at parse time.
+	showCodeLines int
 }
 
 // parseThreadsFlags parses the args after "spoon threads".
@@ -168,6 +171,22 @@ func parseThreadsFlags(args []string) (threadsFlags, error) {
 			}
 			i++
 			f.repoRoot = args[i]
+		case a == "--show-code":
+			if i+1 >= len(args) {
+				return f, fmt.Errorf("--show-code requires a value")
+			}
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n < 0 {
+				return f, fmt.Errorf("--show-code must be a non-negative integer")
+			}
+			f.showCodeLines = n
+		case strings.HasPrefix(a, "--show-code="):
+			n, err := strconv.Atoi(strings.TrimPrefix(a, "--show-code="))
+			if err != nil || n < 0 {
+				return f, fmt.Errorf("--show-code must be a non-negative integer")
+			}
+			f.showCodeLines = n
 		case a == "--suggest":
 			if i+1 >= len(args) {
 				return f, fmt.Errorf("--suggest requires a value")
@@ -292,6 +311,52 @@ func emitJSON(w io.Writer, threads []gh.ReviewThread) error {
 	return enc.Encode(threads)
 }
 
+// emitJSONAnnotated prints the policy-annotated threads (which include the
+// codeContext field) as a JSON array. Used when --show-code is in effect.
+func emitJSONAnnotated(w io.Writer, threads []threadsops.ReviewThreadWithPolicy) error {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(threads)
+}
+
+// renderCodeContextBlock formats a CodeContext into a plain-text framed block
+// for terminal display. Used by spoon (TUI and direct resolve printing). The
+// arrow marker points to the thread's anchor line(s).
+func renderCodeContextBlock(t threadsops.ReviewThreadWithPolicy, cc threadsops.CodeContext) string {
+	var b strings.Builder
+	refShort := cc.Ref
+	if len(refShort) > 7 {
+		refShort = refShort[:7]
+	}
+	outdatedTag := ""
+	if cc.Outdated {
+		outdatedTag = " (outdated)"
+	}
+	fmt.Fprintf(&b, "┌── code at %s:%d-%d [ref %s]%s ──\n", cc.Path, cc.StartLine, cc.EndLine, refShort, outdatedTag)
+	// Determine the highlight range. For multi-line threads, every line from
+	// startLine..line is marked; for single-line threads, only `line`.
+	hlStart, hlEnd := t.Line, t.Line
+	if t.StartLine != nil && *t.StartLine > 0 {
+		hlStart = *t.StartLine
+	}
+	if hlEnd < hlStart {
+		hlEnd = hlStart
+	}
+	for i, ln := range cc.Lines {
+		n := cc.StartLine + i
+		marker := " "
+		if n >= hlStart && n <= hlEnd {
+			marker = "←"
+		}
+		fmt.Fprintf(&b, "│ %4d │ %s %s\n", n, marker, ln)
+	}
+	b.WriteString("└─────")
+	if cc.Outdated {
+		b.WriteString("\n  (heads up: this thread is marked outdated — the snippet above is the current code at these line numbers, which may differ from what the comment referenced)")
+	}
+	return b.String()
+}
+
 // runThreads is the entry point for the "threads" subcommand. It returns
 // an exit code (0/1/2) and writes any error messages to stderr.
 func runThreads(args []string) int {
@@ -332,7 +397,14 @@ func runThreads(args []string) int {
 
 	switch flags.mode {
 	case modeJSON:
-		status, threads, opErr := threadsops.List(ctx, client, owner, repo, number, flags.filter.NeedsResolvedFetch())
+		listOpts := threadsops.ListOptions{
+			IncludeResolved: flags.filter.NeedsResolvedFetch(),
+			ShowCodeLines:   flags.showCodeLines,
+		}
+		if flags.showCodeLines > 0 {
+			listOpts.Fetcher = client
+		}
+		status, threads, opErr := threadsops.ListWithOptions(ctx, client, owner, repo, number, listOpts)
 		if opErr != nil {
 			fmt.Fprintln(os.Stderr, "❌ Error:", opErr.Message)
 			return 1
@@ -340,6 +412,16 @@ func runThreads(args []string) int {
 		emitStatus(os.Stderr, status, number, flags.noStatus)
 		threads = threadsops.Filter(threads, flags.filter)
 		threadsops.SortThreadsForList(threads)
+		// When --show-code is in play, emit the policy-annotated threads
+		// (which carry codeContext); otherwise preserve the historical raw
+		// ReviewThread JSON shape so existing pipelines aren't disturbed.
+		if flags.showCodeLines > 0 {
+			if err := emitJSONAnnotated(os.Stdout, threads); err != nil {
+				fmt.Fprintln(os.Stderr, "❌ Error:", err)
+				return 1
+			}
+			return 0
+		}
 		raw := make([]gh.ReviewThread, len(threads))
 		for i, t := range threads {
 			raw[i] = t.ReviewThread
@@ -351,7 +433,11 @@ func runThreads(args []string) int {
 		return 0
 
 	case modeNext:
-		status, t, opErr := threadsops.Next(ctx, client, owner, repo, number)
+		nextOpts := threadsops.NextOptions{ShowCodeLines: flags.showCodeLines}
+		if flags.showCodeLines > 0 {
+			nextOpts.Fetcher = client
+		}
+		status, t, opErr := threadsops.NextWithOptions(ctx, client, owner, repo, number, nextOpts)
 		if opErr != nil {
 			fmt.Fprintln(os.Stderr, "❌ Error:", opErr.Message)
 			return 1
@@ -365,6 +451,15 @@ func runThreads(args []string) int {
 		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
+		// When --show-code is set, emit the annotated form so the codeContext
+		// surfaces; otherwise use the raw ReviewThread shape for back-compat.
+		if flags.showCodeLines > 0 {
+			if err := enc.Encode(t); err != nil {
+				fmt.Fprintln(os.Stderr, "❌ Error:", err)
+				return 1
+			}
+			return 0
+		}
 		if err := enc.Encode(t.ReviewThread); err != nil {
 			fmt.Fprintln(os.Stderr, "❌ Error:", err)
 			return 1
@@ -392,7 +487,7 @@ func runThreads(args []string) int {
 			return 1
 		}
 		emitStatus(os.Stdout, status, number, flags.noStatus)
-		_, wasAlreadyResolved, opErr := threadsops.ResolveWithThreadsAndOptions(ctx, client, all, flags.targetID, flags.body, threadsops.ResolveOptions{DryRun: flags.dryRun})
+		resolved, wasAlreadyResolved, opErr := threadsops.ResolveWithThreadsAndOptions(ctx, client, all, flags.targetID, flags.body, threadsops.ResolveOptions{DryRun: flags.dryRun})
 		if opErr != nil {
 			switch opErr.Code {
 			case threadsops.OpCodeNotFound:
@@ -410,6 +505,12 @@ func runThreads(args []string) int {
 			fmt.Fprintln(os.Stderr, "⚠️  Warning: thread already resolved; nothing to do")
 		} else if flags.dryRun {
 			fmt.Fprintln(os.Stderr, "ℹ️  Dry run: would resolve thread", flags.targetID)
+		}
+		// Render code context for the resolved thread, if requested.
+		if flags.showCodeLines > 0 && resolved != nil && status.HeadSHA != "" {
+			if cc, _ := threadsops.FetchCodeContext(ctx, client, status.HeadSHA, owner, repo, *resolved, flags.showCodeLines); cc != nil {
+				fmt.Fprintln(os.Stdout, renderCodeContextBlock(*resolved, *cc))
+			}
 		}
 		return 0
 
@@ -536,7 +637,7 @@ func runThreads(args []string) int {
 		return 0
 
 	case modeTUI:
-		return runThreadsTUI(ctx, client, owner, repo, number, flags.filter)
+		return runThreadsTUI(ctx, client, owner, repo, number, flags.filter, flags.showCodeLines)
 
 	default:
 		fmt.Fprintln(os.Stderr, "❌ Error: unknown mode")
@@ -582,6 +683,9 @@ Flags:
                         would do: the fetch + policy gates run, but no
                         GraphQL mutation is issued. (Also used by
                         --apply-suggestion to skip the local file write.)
+  --show-code N         Show N lines of code context before/after each
+                        thread's comment range. Applied to JSON output,
+                        --next, --resolve, and the TUI detail pane.
   --apply-suggestion <id> [--suggestion-index N] [--dry-run] [--force] [--repo-root PATH]
                         Rewrite the local file at the thread's line range
                         with the parsed suggestion block. --dry-run skips
@@ -603,9 +707,10 @@ Examples:
 `)
 }
 
-func runThreadsTUI(ctx context.Context, client *gh.Client, owner, repo string, number int, mode threadsops.FilterMode) int {
+func runThreadsTUI(ctx context.Context, client *gh.Client, owner, repo string, number int, mode threadsops.FilterMode, showCodeLines int) int {
 	_ = ctx // reserved for future cancellable Init paths
 	m := threadstui.NewWithFilter(client, owner, repo, number, mode)
+	m.ShowCodeLines = showCodeLines
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "❌ Error:", err)
