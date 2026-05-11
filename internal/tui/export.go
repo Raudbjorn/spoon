@@ -209,6 +209,14 @@ func (m *Model) doExport(toExport []ScoredFork, filename string) tea.Cmd {
 
 			ef.Divergence = forgeT2ToExportDiv(sf.T2)
 
+			// Cluster + novelty fields (populated only if the cluster
+			// pipeline produced results for this fork).
+			ef.ClusterID = sf.Heat.ClusterID
+			ef.ClusterLabel = sf.Heat.ClusterLabel
+			ef.NoveltyScore = sf.Heat.NoveltyScore
+			ef.ClusterMemberCount = sf.Heat.ClusterMemberCount
+			ef.ChangeImpact = sf.Heat.ChangeImpact
+
 			// Lone wolf
 			if sf.Heat.LoneWolf != nil && sf.Heat.LoneWolf.Detected {
 				lw := sf.Heat.LoneWolf
