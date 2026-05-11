@@ -35,6 +35,11 @@ func Hello() {}
 	if got := c.ScoreFork([]string{"docs/intro.md"}); got != 0 {
 		t.Fatalf("ScoreFork(unknown file) = %v, want 0", got)
 	}
+	// A top-level file (main.go) should map to the root package via the
+	// empty-string key in dirToModule.
+	if got := c.ScoreFork([]string{"main.go"}); got <= 0 || got > 1 {
+		t.Fatalf("ScoreFork(root file) out of (0,1]: %v", got)
+	}
 	// Empty input.
 	if got := c.ScoreFork(nil); got != 0 {
 		t.Fatalf("ScoreFork(nil) = %v, want 0", got)
