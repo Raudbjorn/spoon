@@ -129,3 +129,49 @@ func TestViewIncludesStatusHeader(t *testing.T) {
 		}
 	}
 }
+
+func TestViewSurfacesOutdated(t *testing.T) {
+	m := New(nil, "owner", "repo", 1, false)
+	m.prStatus = gh.PullRequestStatus{
+		Title:             "Test",
+		UnresolvedThreads: 2,
+		OutdatedThreads:   1,
+	}
+	m.threads = []gh.ReviewThread{
+		{ID: "a", Path: "foo.go", Line: 10, IsOutdated: true, IsResolved: false,
+			Comments: []gh.ThreadComment{{Author: "alice", AuthorType: "User", Body: "hi"}}},
+		{ID: "b", Path: "bar.go", Line: 20, IsOutdated: false, IsResolved: false,
+			Comments: []gh.ThreadComment{{Author: "bob", AuthorType: "User", Body: "yo"}}},
+	}
+	m.loaded = true
+
+	out := m.View()
+	// Header surfaces the aggregate outdated count.
+	if !strings.Contains(out, "1 outdated") {
+		t.Errorf("expected header to mention '1 outdated' — got:\n%s", out)
+	}
+	// First thread (cursor=0) is outdated; list entry and detail state label should reflect it.
+	if !strings.Contains(out, "foo.go:10 (outdated)") {
+		t.Errorf("expected list row to mark foo.go as outdated — got:\n%s", out)
+	}
+	if !strings.Contains(out, "Unresolved (outdated") {
+		t.Errorf("expected state label 'Unresolved (outdated …)' for cursor thread — got:\n%s", out)
+	}
+}
+
+func TestViewSurfacesActiveThread(t *testing.T) {
+	m := New(nil, "owner", "repo", 1, false)
+	m.threads = []gh.ReviewThread{
+		{ID: "a", Path: "foo.go", Line: 1, IsResolved: false, IsOutdated: false,
+			Comments: []gh.ThreadComment{{Author: "alice", AuthorType: "User", Body: "x"}}},
+	}
+	m.loaded = true
+
+	out := m.View()
+	if !strings.Contains(out, "Unresolved (active)") {
+		t.Errorf("expected 'Unresolved (active)' for active thread — got:\n%s", out)
+	}
+	if strings.Contains(out, "(outdated)") {
+		t.Errorf("did not expect outdated marker — got:\n%s", out)
+	}
+}

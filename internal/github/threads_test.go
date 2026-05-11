@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -45,6 +46,12 @@ func TestParseListThreadsResponse(t *testing.T) {
 	}
 	if threads[1].ReviewerType != "Bot" || threads[1].ReviewerLogin != "dependabot" {
 		t.Errorf("thread[1] reviewer mismatch: type=%q login=%q", threads[1].ReviewerType, threads[1].ReviewerLogin)
+	}
+	if !threads[0].IsOutdated {
+		t.Errorf("thread[0] should be outdated")
+	}
+	if threads[1].IsOutdated {
+		t.Errorf("thread[1] should not be outdated")
 	}
 }
 
@@ -118,5 +125,32 @@ func TestParseFetchPRResponse(t *testing.T) {
 	}
 	if len(threads) != 1 || threads[0].ID != "PRRT_1" {
 		t.Errorf("threads: %+v", threads)
+	}
+	if !threads[0].IsOutdated {
+		t.Errorf("thread[0] should be outdated")
+	}
+	if status.OutdatedThreads != 1 {
+		t.Errorf("OutdatedThreads=%d want 1", status.OutdatedThreads)
+	}
+}
+
+// TestReviewThreadJSONRoundTrip verifies that IsOutdated round-trips through
+// JSON serialization (load-bearing for spn/spoon JSON outputs that embed
+// github.ReviewThread).
+func TestReviewThreadJSONRoundTrip(t *testing.T) {
+	in := ReviewThread{ID: "PRRT_X", IsResolved: false, IsOutdated: true, Path: "a.go", Line: 7}
+	b, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(b), `"isOutdated":true`) {
+		t.Errorf("marshaled JSON missing isOutdated:true — %s", b)
+	}
+	var out ReviewThread
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !out.IsOutdated {
+		t.Errorf("round-trip lost IsOutdated")
 	}
 }

@@ -45,7 +45,11 @@ func RenderStatusBlock(w io.Writer, s gh.PullRequestStatus, number int, useGlyph
 	if useGlyphs {
 		threadsIcon = "💬 "
 	}
-	if _, err := fmt.Fprintf(w, "  Threads:   %s %s%d unresolved\n", marker(threadsSig, useGlyphs), threadsIcon, s.UnresolvedThreads); err != nil {
+	outdatedSuffix := ""
+	if s.OutdatedThreads > 0 {
+		outdatedSuffix = fmt.Sprintf(", %d outdated", s.OutdatedThreads)
+	}
+	if _, err := fmt.Fprintf(w, "  Threads:   %s %s%d unresolved%s\n", marker(threadsSig, useGlyphs), threadsIcon, s.UnresolvedThreads, outdatedSuffix); err != nil {
 		return err
 	}
 	_, err := fmt.Fprintln(w)

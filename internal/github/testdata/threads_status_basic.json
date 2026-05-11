@@ -23,6 +23,7 @@
             {
               "id": "PRRT_1",
               "isResolved": false,
+              "isOutdated": true,
               "path": "x.go",
               "line": 1,
               "startLine": null,

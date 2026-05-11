@@ -32,11 +32,16 @@ func renderModel(m Model) string {
 		if len(t.Comments) > 0 {
 			reviewer = fmt.Sprintf("%s (%s)", t.Comments[0].Author, t.Comments[0].AuthorType)
 		}
-		fmt.Fprintf(&b, "%s%-16s  %s:%d\n", marker, reviewer, t.Path, t.Line)
+		outdated := ""
+		if t.IsOutdated {
+			outdated = " (outdated)"
+		}
+		fmt.Fprintf(&b, "%s%-16s  %s:%d%s\n", marker, reviewer, t.Path, t.Line, outdated)
 	}
 	if m.cursor < len(m.threads) {
 		t := m.threads[m.cursor]
 		b.WriteString("\n")
+		fmt.Fprintf(&b, "%s\n", threadStateLabel(t))
 		if len(t.Comments) > 0 {
 			b.WriteString(t.Comments[0].Body)
 			b.WriteString("\n")
@@ -64,7 +69,11 @@ func renderTUIStatus(s gh.PullRequestStatus, number int) string {
 	fmt.Fprintf(&b, "  Mergeable: %s\n", statusOrDash(s.MergeStateStatus))
 	fmt.Fprintf(&b, "  Reviews:   %s\n", statusOrDash(s.ReviewDecision))
 	fmt.Fprintf(&b, "  Checks:    %s\n", statusOrDash(s.ChecksState))
-	fmt.Fprintf(&b, "  Threads:   %d unresolved\n", s.UnresolvedThreads)
+	if s.OutdatedThreads > 0 {
+		fmt.Fprintf(&b, "  Threads:   %d unresolved, %d outdated\n", s.UnresolvedThreads, s.OutdatedThreads)
+	} else {
+		fmt.Fprintf(&b, "  Threads:   %d unresolved\n", s.UnresolvedThreads)
+	}
 	return b.String()
 }
 
@@ -73,6 +82,25 @@ func statusOrDash(v string) string {
 		return "—"
 	}
 	return v
+}
+
+// threadStateLabel renders the resolve/outdated state pair as a single line,
+// matching the gh-pr-display behaviour:
+//
+//	Unresolved + active   -> "⚠️ Unresolved (active)"
+//	Unresolved + outdated -> "⚠️ Unresolved (outdated — code changed)"
+//	Resolved + active     -> "✓ Resolved (active)"
+//	Resolved + outdated   -> "✓ Resolved (outdated — code changed)"
+func threadStateLabel(t gh.ReviewThread) string {
+	glyph, label := "⚠️", "Unresolved"
+	if t.IsResolved {
+		glyph, label = "✓", "Resolved"
+	}
+	suffix := "active"
+	if t.IsOutdated {
+		suffix = "outdated — code changed"
+	}
+	return fmt.Sprintf("%s %s (%s)", glyph, label, suffix)
 }
 
 func renderHelp() string {
