@@ -51,6 +51,7 @@ type ClusterOptions struct {
 	Endpoint        string
 	ModelOverride   string
 	LabelerEndpoint string
+	LabelerModel    string
 	Epsilon         float64
 	MinClusterSize  int
 	AutoPull        bool
@@ -58,11 +59,19 @@ type ClusterOptions struct {
 	NonInteractive  bool
 	Refresh         bool
 
+	// Labeler, when non-nil, overrides automatic construction from
+	// LabelerEndpoint + LabelerModel. Tests inject a stub directly via this
+	// field; production callers usually pass LabelerEndpoint instead.
+	Labeler cluster.Labeler
+
 	// embedderForTest is the test seam for cluster integration tests. Tests
 	// inject a stub embed.Embedder via SetEmbedderForTest; the field is
 	// unexported so production callers cannot bypass SelectEmbedder.
 	embedderForTest embed.Embedder
 }
+
+// defaultLabelerModel is used when --labeler is set but --labeler-model is not.
+const defaultLabelerModel = "llama3.2:3b"
 
 // SetEmbedderForTest installs an embedder stub on ClusterOptions for tests.
 // Production callers must not use this — they should go through SelectEmbedder.
@@ -313,6 +322,18 @@ func runForksClusterPipeline(
 		inputs.Provider = "other"
 	}
 
+	labeler := opts.Labeler
+	if labeler == nil && opts.LabelerEndpoint != "" {
+		model := opts.LabelerModel
+		if model == "" {
+			model = defaultLabelerModel
+		}
+		labeler = &cluster.OllamaChatLabeler{
+			Endpoint: opts.LabelerEndpoint,
+			Model:    model,
+		}
+	}
+
 	pipelineOpts := cluster.PipelineOptions{
 		Enabled:         opts.Enabled,
 		TopN:            opts.TopN,
@@ -325,6 +346,7 @@ func runForksClusterPipeline(
 		NoPrompt:        opts.NoPrompt,
 		NonInteractive:  opts.NonInteractive,
 		Refresh:         opts.Refresh,
+		Labeler:         labeler,
 	}
 	if opts.embedderForTest != nil {
 		pipelineOpts.EmbedderForTest = opts.embedderForTest
