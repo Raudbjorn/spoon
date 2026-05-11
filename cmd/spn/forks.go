@@ -191,6 +191,10 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 			opts.Cluster.MinClusterSize = n
 		case "--auto-pull":
 			opts.Cluster.AutoPull = true
+		case "--full-mdg":
+			opts.Cluster.CentralityBackend = "mdg"
+		case "--no-mdg":
+			opts.Cluster.CentralityBackend = ""
 		case "--csv":
 			csvMode = true
 		default:

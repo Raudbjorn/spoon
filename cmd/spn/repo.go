@@ -3,12 +3,14 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"strings"
 
 	"github.com/svnbjrn/spoon/internal/agentio"
 	gh "github.com/svnbjrn/spoon/internal/github"
+	"github.com/svnbjrn/spoon/internal/mdg"
 	"github.com/svnbjrn/spoon/internal/repo"
 )
 
@@ -20,6 +22,25 @@ var repoCentralityFn = func(ctx context.Context, treeSrc repo.TreeSource, commit
 // repoCheckAuthFn is indirected so tests can stub GitHub auth.
 var repoCheckAuthFn = func() (*gh.Client, gh.AuthStatus, error) {
 	return gh.CheckAuth()
+}
+
+// repoMDGCentralityFn is the test-stubbable MDG centrality entry. Production
+// flow: clone upstream to tempdir → mdg.BuildCentrality → return as
+// repo.Centrality interface.
+var repoMDGCentralityFn = func(ctx context.Context, provider, owner, repoName string) (repo.Centrality, error) {
+	tmp, err := os.MkdirTemp("", "spn-mdg-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(tmp)
+	if err := mdg.ShallowClone(ctx, provider, owner, repoName, tmp); err != nil {
+		return nil, fmt.Errorf("shallow clone: %w", err)
+	}
+	c, err := mdg.BuildCentrality(ctx, tmp, provider, owner, repoName, "", mdg.BuildOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
 }
 
 func runRepo(args []string) int { return runRepoWith(args, os.Stdout, os.Stderr) }
@@ -39,6 +60,7 @@ func runRepoWith(args []string, stdout, stderr io.Writer) int {
 
 func doRepoCentrality(args []string, stdout, stderr io.Writer) int {
 	var repoArg, forgeFlag string
+	var fullMDG bool
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--forge":
@@ -53,6 +75,8 @@ func doRepoCentrality(args []string, stdout, stderr io.Writer) int {
 				return agentio.NewError(agentio.CodeBadInput, "--forge-host requires a value", agentio.RemediationBadInput("repo", "centrality")).Emit(stderr)
 			}
 			i++ // consume the value
+		case "--full-mdg":
+			fullMDG = true
 		default:
 			if strings.HasPrefix(args[i], "--") {
 				return agentio.NewError(agentio.CodeBadInput, "unknown flag: "+args[i], agentio.RemediationBadInput("repo", "centrality")).Emit(stderr)
@@ -75,6 +99,19 @@ func doRepoCentrality(args []string, stdout, stderr io.Writer) int {
 		return agentio.NewError(agentio.CodeBadInput, "invalid repo format: use owner/repo", agentio.RemediationBadInput("repo", "centrality")).Emit(stderr)
 	}
 
+	ctx := context.Background()
+
+	if fullMDG {
+		c, err := repoMDGCentralityFn(ctx, "github", owner, repoName)
+		if err != nil {
+			return agentio.NewError(agentio.CodeUpstream, "mdg centrality: "+err.Error(), agentio.RemediationUpstream()).Emit(stderr)
+		}
+		if err := agentio.WriteJSON(stdout, c); err != nil {
+			return agentio.NewError(agentio.CodeInternal, "encode output: "+err.Error(), agentio.RemediationInternal()).Emit(stderr)
+		}
+		return 0
+	}
+
 	client, _, err := repoCheckAuthFn()
 	if err != nil {
 		return agentio.NewError(agentio.CodeAuthRequired, "GitHub auth: "+err.Error(), agentio.RemediationAuthRequired()).Emit(stderr)
@@ -83,7 +120,6 @@ func doRepoCentrality(args []string, stdout, stderr io.Writer) int {
 	treeSrc := &gh.TreeSourceForRepo{Client: client}
 	commitSrc := &gh.CommitSourceForRepo{Client: client}
 
-	ctx := context.Background()
 	dc, err := repoCentralityFn(ctx, treeSrc, commitSrc, "github", owner, repoName, 0)
 	if err != nil {
 		return agentio.NewError(agentio.CodeUpstream, "repo centrality: "+err.Error(), agentio.RemediationUpstream()).Emit(stderr)
