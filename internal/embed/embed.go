@@ -1,7 +1,7 @@
 // Package embed provides an Embedder abstraction and a default Ollama
 // HTTP client, plus per-fork feature builders and a multi-modal combiner.
 // It is the foundation for embedding-driven fork clustering and novelty
-// scoring; nothing here wires into the heat pipeline yet.
+// scoring.
 package embed
 
 import (
@@ -15,6 +15,10 @@ import (
 type Vector []float32
 
 // Embedder is the abstraction over any embedding provider.
+//
+// Dim() may return 0 until the first successful Embed call. Implementations
+// should populate Dim once a real embedding has been seen. Embed must be safe
+// to call concurrently from multiple goroutines.
 type Embedder interface {
 	Embed(ctx context.Context, texts []string) ([]Vector, error)
 	Dim() int
@@ -31,6 +35,7 @@ type ModelSuggestion struct {
 }
 
 // PreferredEmbeddingModels is the ranked list, best-quality-first per category.
+// Read-only. Do not mutate.
 var PreferredEmbeddingModels = []ModelSuggestion{
 	{Name: "nomic-embed-text", SizeMB: 274, Dim: 768, Default: true, OnOllama: true},
 	{Name: "mxbai-embed-large", SizeMB: 670, Dim: 1024, OnOllama: true},

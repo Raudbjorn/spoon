@@ -25,8 +25,7 @@ func TestDetect_Up(t *testing.T) {
 		})
 	}))
 	defer srv.Close()
-	t.Setenv(envEndpoint, srv.URL)
-	running, endpoint, installed := Detect(context.Background())
+	running, endpoint, installed := Detect(context.Background(), srv.URL)
 	if !running {
 		t.Fatal("want running=true")
 	}
@@ -35,6 +34,21 @@ func TestDetect_Up(t *testing.T) {
 	}
 	if len(installed) != 2 {
 		t.Errorf("want 2 installed, got %v", installed)
+	}
+}
+
+func TestDetect_EnvFallback(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"models": []map[string]any{}})
+	}))
+	defer srv.Close()
+	t.Setenv(envEndpoint, srv.URL)
+	running, endpoint, _ := Detect(context.Background(), "")
+	if !running {
+		t.Fatal("want running=true with env fallback")
+	}
+	if endpoint != srv.URL {
+		t.Errorf("endpoint = %q, want %q", endpoint, srv.URL)
 	}
 }
 
@@ -47,9 +61,8 @@ func TestDetect_Down(t *testing.T) {
 	addr := l.Addr().String()
 	_ = l.Close()
 
-	t.Setenv(envEndpoint, "http://"+addr)
 	start := time.Now()
-	running, endpoint, installed := Detect(context.Background())
+	running, endpoint, installed := Detect(context.Background(), "http://"+addr)
 	elapsed := time.Since(start)
 	if running {
 		t.Error("want running=false")
@@ -191,6 +204,79 @@ func TestPull_ContextCancel(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Pull did not return after cancel")
+	}
+}
+
+func TestPull_StreamEndsWithoutSuccess(t *testing.T) {
+	// Server sends a "pulling manifest" line, then closes the connection
+	// without ever sending "success". Pull should return nil and emit
+	// exactly one progress event with phase="done", pct=1.0 via the
+	// fallback at the end of the stream.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		flusher, _ := w.(http.Flusher)
+		b, _ := json.Marshal(map[string]any{"status": "pulling manifest"})
+		_, _ = w.Write(append(b, '\n'))
+		if flusher != nil {
+			flusher.Flush()
+		}
+		// Handler returns; server closes the body. No "success" was sent.
+	}))
+	defer srv.Close()
+
+	type ev struct {
+		phase string
+		pct   float64
+	}
+	var events []ev
+	err := Pull(context.Background(), srv.URL, "any", func(p string, f float64) {
+		events = append(events, ev{p, f})
+	})
+	if err != nil {
+		t.Fatalf("Pull: %v", err)
+	}
+	// "pulling manifest" maps to downloading(0), then end-of-stream fallback emits done(1.0).
+	var doneCount int
+	var lastEv ev
+	for _, e := range events {
+		if e.phase == "done" {
+			doneCount++
+		}
+		lastEv = e
+	}
+	if doneCount != 1 {
+		t.Errorf("want exactly 1 done event, got %d (events=%v)", doneCount, events)
+	}
+	if lastEv.phase != "done" || lastEv.pct != 1.0 {
+		t.Errorf("last event = %+v, want {done 1.0}", lastEv)
+	}
+}
+
+func TestPull_UnknownStatusSkipsProgress(t *testing.T) {
+	// An unknown status string should NOT emit a progress event. The
+	// end-of-stream fallback still emits done(1.0).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		flusher, _ := w.(http.Flusher)
+		b, _ := json.Marshal(map[string]any{"status": "this is not a recognized phase"})
+		_, _ = w.Write(append(b, '\n'))
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer srv.Close()
+
+	var phases []string
+	err := Pull(context.Background(), srv.URL, "m", func(p string, _ float64) {
+		phases = append(phases, p)
+	})
+	if err != nil {
+		t.Fatalf("Pull: %v", err)
+	}
+	for _, p := range phases {
+		if p != "done" {
+			t.Errorf("unknown status produced phase %q, want only the done fallback", p)
+		}
 	}
 }
 

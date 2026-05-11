@@ -3,6 +3,7 @@ package embed
 import (
 	"context"
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -120,6 +121,33 @@ func TestMultiModalEmbed_AllEmpty(t *testing.T) {
 	}
 }
 
+func TestMultiModalEmbed_AllEmptyAndDimZero(t *testing.T) {
+	// Regression: when the embedder has not yet observed any embeddings
+	// (Dim() == 0) and all four modality blobs are empty, the function must
+	// fall back to dim=1 and return a zero vector of length 4 (= 1 * 4
+	// modalities). It must not panic and must not change shape.
+	st := &stubEmbedder{dim: 0}
+	fs := []ForkFeatures{{}}
+	got, err := MultiModalEmbed(context.Background(), st, "nomic-embed-text", fs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want 1 vector, got %d", len(got))
+	}
+	if len(got[0]) != 4 {
+		t.Fatalf("want len 4 (dim=1 fallback x 4 modalities), got %d", len(got[0]))
+	}
+	for _, x := range got[0] {
+		if x != 0 {
+			t.Fatalf("want zero vector, got %v", got[0])
+		}
+	}
+	if st.calls != 0 {
+		t.Errorf("no prompts means no Embed calls; got %d", st.calls)
+	}
+}
+
 func TestMultiModalEmbed_CodeAwareSingleCall(t *testing.T) {
 	st := &stubEmbedder{dim: 4}
 	fs := []ForkFeatures{
@@ -139,7 +167,7 @@ func TestMultiModalEmbed_CodeAwareSingleCall(t *testing.T) {
 	// Prompts should contain the structural tags.
 	for _, p := range st.seen[0] {
 		for _, tag := range []string{"<paths>", "</paths>", "<commits>", "</commits>", "<readme>", "</readme>", "<diff>", "</diff>"} {
-			if !contains(p, tag) {
+			if !strings.Contains(p, tag) {
 				t.Errorf("prompt missing %q: %s", tag, p)
 			}
 		}
@@ -192,13 +220,3 @@ func TestMultiModalEmbed_EmptyInput(t *testing.T) {
 	}
 }
 
-func contains(s, sub string) bool { return len(s) >= len(sub) && indexOf(s, sub) >= 0 }
-
-func indexOf(s, sub string) int {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return i
-		}
-	}
-	return -1
-}

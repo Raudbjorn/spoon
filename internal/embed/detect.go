@@ -19,11 +19,17 @@ type tagsResp struct {
 	} `json:"models"`
 }
 
-// Detect probes the default Ollama endpoint (or SPOON_EMBEDDER_URL).
-// Returns (true, endpoint, installed) when GET /api/tags responds 200 within
-// 500ms; otherwise (false, endpoint, nil).
-func Detect(ctx context.Context) (bool, string, []string) {
-	endpoint := os.Getenv(envEndpoint)
+// Detect probes the given endpoint (use NewFromEnv-style default resolution
+// in the caller). Returns (running=true, endpoint, installedModels) if
+// GET <endpoint>/api/tags responds 200 within a 500ms timeout.
+//
+// If endpoint is empty, falls back to SPOON_EMBEDDER_URL, then to
+// http://localhost:11434. The returned endpoint is the resolved value that
+// was actually probed.
+func Detect(ctx context.Context, endpoint string) (running bool, normalizedEndpoint string, installed []string) {
+	if endpoint == "" {
+		endpoint = os.Getenv(envEndpoint)
+	}
 	if endpoint == "" {
 		endpoint = defaultEndpoint
 	}
@@ -145,11 +151,29 @@ func Pull(ctx context.Context, endpoint, model string, progress func(phase strin
 		if msg.Error != "" {
 			return fmt.Errorf("ollama pull error: %s", msg.Error)
 		}
-		phase, pct, done := classifyPullPhase(msg)
-		if progress != nil && phase != "" {
+		phase := classifyPullPhase(msg.Status)
+		if phase == "" {
+			continue
+		}
+		var pct float64
+		switch phase {
+		case "done":
+			pct = 1.0
+		case "downloading":
+			if msg.Total > 0 {
+				pct = float64(msg.Completed) / float64(msg.Total)
+				if pct < 0 {
+					pct = 0
+				}
+				if pct > 1 {
+					pct = 1
+				}
+			}
+		}
+		if progress != nil {
 			progress(phase, pct)
 		}
-		if done {
+		if phase == "done" {
 			doneEmitted = true
 			break
 		}
@@ -163,25 +187,20 @@ func Pull(ctx context.Context, endpoint, model string, progress func(phase strin
 	return nil
 }
 
-func classifyPullPhase(msg pullStream) (phase string, pct float64, done bool) {
-	status := strings.ToLower(msg.Status)
+// classifyPullPhase maps an Ollama pull status string to one of a small set
+// of phases ("done", "verifying", "downloading"). Returns "" for unknown
+// statuses; callers should skip progress emission in that case. Uses prefix
+// matching against the documented Ollama status strings.
+func classifyPullPhase(status string) string {
+	s := strings.ToLower(status)
 	switch {
-	case strings.Contains(status, "success"), strings.Contains(status, "done"):
-		return "done", 1.0, true
-	case strings.Contains(status, "verif"):
-		return "verifying", 0, false
-	case strings.Contains(status, "download") || msg.Total > 0:
-		var frac float64
-		if msg.Total > 0 {
-			frac = float64(msg.Completed) / float64(msg.Total)
-			if frac < 0 {
-				frac = 0
-			}
-			if frac > 1 {
-				frac = 1
-			}
-		}
-		return "downloading", frac, false
+	case strings.HasPrefix(s, "success"):
+		return "done"
+	case strings.HasPrefix(s, "verif"):
+		return "verifying"
+	case strings.HasPrefix(s, "downloading"), strings.HasPrefix(s, "pulling"):
+		return "downloading"
+	default:
+		return ""
 	}
-	return "", 0, false
 }
