@@ -10,7 +10,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/svnbjrn/spoon/internal/dump"
 	"github.com/svnbjrn/spoon/internal/forge"
 	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/gitlab"
@@ -27,16 +26,10 @@ func main() {
 
 	var repo string
 	noColor := false
-	jsonMode := false
-	csvMode := false
 	refresh := false
 	concurrency := 0
-	tier := 0
-	topN := 0
-	botAllowlist := ""
 	forgeFlag := ""
 	forgeHost := ""
-	outputPath := ""
 
 	// Cluster pipeline flags (T9). Clustering is ON by default; --no-cluster
 	// turns it off. When enabled, the pipeline still degrades silently if the
@@ -63,10 +56,6 @@ func main() {
 			os.Exit(0)
 		case "--no-color":
 			noColor = true
-		case "--json":
-			jsonMode = true
-		case "--csv":
-			csvMode = true
 		case "--refresh", "--no-cache":
 			refresh = true
 		case "--forge":
@@ -87,13 +76,6 @@ func main() {
 			}
 			i++
 			forgeHost = args[i]
-		case "-o", "--output":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "Error: --output requires a value")
-				os.Exit(1)
-			}
-			i++
-			outputPath = args[i]
 		case "--concurrency":
 			if i+1 >= len(args) {
 				fmt.Fprintln(os.Stderr, "Error: --concurrency requires a value")
@@ -106,37 +88,6 @@ func main() {
 				os.Exit(1)
 			}
 			concurrency = n
-		case "--tier":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "Error: --tier requires a value")
-				os.Exit(1)
-			}
-			i++
-			n, err := strconv.Atoi(args[i])
-			if err != nil || n < 1 || n > 3 {
-				fmt.Fprintln(os.Stderr, "Error: --tier must be 1, 2, or 3")
-				os.Exit(1)
-			}
-			tier = n
-		case "--top":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "Error: --top requires a value")
-				os.Exit(1)
-			}
-			i++
-			n, err := strconv.Atoi(args[i])
-			if err != nil || n < 1 {
-				fmt.Fprintln(os.Stderr, "Error: --top requires a positive integer")
-				os.Exit(1)
-			}
-			topN = n
-		case "--bot-allowlist":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "Error: --bot-allowlist requires a value")
-				os.Exit(1)
-			}
-			i++
-			botAllowlist = args[i]
 		case "--heat-weights":
 			if i+1 >= len(args) {
 				fmt.Fprintln(os.Stderr, "Error: --heat-weights requires a value")
@@ -232,18 +183,6 @@ func main() {
 		os.Setenv("NO_COLOR", "1")
 	}
 
-	// Parse bot allowlist
-	var bots map[string]bool
-	if botAllowlist != "" {
-		bots = make(map[string]bool)
-		for _, b := range strings.Split(botAllowlist, ",") {
-			b = strings.TrimSpace(b)
-			if b != "" {
-				bots[strings.ToLower(b)] = true
-			}
-		}
-	}
-
 	_ = concurrency // TODO: pass to auth overrides
 
 	// Detect provider from repo URL and flags
@@ -252,68 +191,6 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
-	}
-
-	// Dump modes bypass the TUI
-	if jsonMode || csvMode {
-		if repoArg == "" {
-			fmt.Fprintln(os.Stderr, "Error: owner/repo is required for --json and --csv modes")
-			os.Exit(1)
-		}
-
-		// Split into owner/repo for the dump API
-		owner, repoName := splitRepo(repoArg)
-		if owner == "" || repoName == "" {
-			fmt.Fprintln(os.Stderr, "Error: invalid repository format, use owner/repo")
-			os.Exit(1)
-		}
-
-		format := "json"
-		if csvMode {
-			format = "csv"
-		}
-
-		var w *os.File
-		if outputPath != "" {
-			w, err = os.Create(outputPath)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
-				os.Exit(1)
-			}
-			defer w.Close()
-		} else {
-			w = os.Stdout
-		}
-
-		err = dump.Run(provider, auth, owner, repoName, dump.Options{
-			Format:       format,
-			Refresh:      refresh,
-			Tier:         tier,
-			TopN:         topN,
-			BotAllowlist: bots,
-			Cluster: dump.ClusterOptions{
-				Enabled:         !noCluster,
-				TopN:            clusterTop,
-				Endpoint:        embedderURL,
-				ModelOverride:   embedderModel,
-				LabelerEndpoint: labelerURL,
-				LabelerModel:    labelerModel,
-				Epsilon:         clusterEpsilon,
-				MinClusterSize:  clusterMinSize,
-				AutoPull:        autoPull,
-				NoPrompt:        noPrompt,
-				NonInteractive:  true, // --json / --csv runs are always non-interactive
-				Refresh:         refresh,
-			},
-		}, w)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-		if outputPath != "" {
-			fmt.Fprintf(os.Stderr, "Exported to %s\n", outputPath)
-		}
-		return
 	}
 
 	tuiClusterOpts := tui.ClusterOptions{
@@ -412,15 +289,6 @@ func createProvider(ctx context.Context, repo, forgeFlag, forgeHost string) (for
 	}
 }
 
-// splitRepo splits "owner/repo" or "group/subgroup/repo" into owner and repo parts.
-func splitRepo(s string) (owner, repo string) {
-	parts := strings.SplitN(s, "/", 2)
-	if len(parts) != 2 {
-		return "", ""
-	}
-	return parts[0], parts[1]
-}
-
 var validHeatWeightKeys = map[string]bool{
 	"recency": true, "stars": true, "sub_forks": true, "releases": true,
 	"mna": true, "sync_ratio": true, "feature_ratio": true,
@@ -456,16 +324,10 @@ Usage:
   spoon [flags] [owner/repo | https://gitlab.com/group/repo]
 
 Flags:
-  --json                   Output JSON (no TUI; stdout or -o file)
-  --csv                    Output CSV (no TUI; stdout or -o file)
-  -o, --output PATH        Write output to file instead of stdout
   --forge github|gitlab    Override provider detection
   --forge-host HOSTNAME    Self-hosted GitLab/GHES hostname
   --refresh, --no-cache    Bypass cache (re-fetch all data)
   --concurrency N          Override worker pool size (default: 10 authed, 2 unauthed)
-  --tier 1|2|3             Cap enrichment depth
-  --top N                  Only enrich top N forks by T1 score
-  --bot-allowlist a,b,c    Treat these logins as human contributors
   --heat-weights path      Path to JSON weight override file
   --no-cluster             Disable the embedding + clustering pass
   --cluster-top N          Max forks fed to the embedder (default 50)
@@ -487,10 +349,6 @@ Examples:
   spoon gitlab.com/inkscape/inkscape             GitLab (auto-detected)
   spoon --forge gitlab group/repo                Force GitLab provider
   spoon --forge-host gitlab.example.com g/repo   Self-hosted GitLab
-  spoon --json charmbracelet/bubbletea           JSON output
-  spoon --csv charmbracelet/bubbletea            CSV output
-  spoon --tier 1 golang/go                       T1 only (no compare calls)
-  spoon --top 5 golang/go                        Enrich only top 5 forks
 
 Keybindings (TUI mode):
   ↑/↓, j/k     Navigate table

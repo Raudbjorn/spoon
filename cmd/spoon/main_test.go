@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -62,5 +63,21 @@ func TestValidateHeatWeights_RejectsOutOfRange(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "novelty") {
 		t.Errorf("expected error to mention novelty, got: %v", err)
+	}
+}
+
+func TestSpoonRejectsRemovedJSONFlag(t *testing.T) {
+	cmd := exec.Command("go", "run", ".")
+	cmd.Args = append(cmd.Args, "--help")
+	cmd.Dir = "."
+	out, _ := cmd.CombinedOutput()
+	if strings.Contains(string(out), "--json") {
+		t.Errorf("--help still advertises --json; expected to be removed:\n%s", out)
+	}
+	if strings.Contains(string(out), "--csv") {
+		t.Errorf("--help still advertises --csv; expected to be removed:\n%s", out)
+	}
+	if strings.Contains(string(out), "--output") {
+		t.Errorf("--help still advertises --output; expected to be removed:\n%s", out)
 	}
 }
