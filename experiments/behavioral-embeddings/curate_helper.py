@@ -70,7 +70,7 @@ def emit_browser(records: list[dict], out: Path) -> None:
     out.write_text("\n".join(lines) + "\n")
 
 
-def emit_same_candidates(records: list[dict], out: Path, top: int = 40) -> None:
+def emit_same_candidates(records: list[dict], out: Path, top: int = 100) -> None:
     """Rank pairs by a combined title-token + path Jaccard score."""
     scored = []
     for a, b in combinations(records, 2):
@@ -81,7 +81,7 @@ def emit_same_candidates(records: list[dict], out: Path, top: int = 40) -> None:
         if title_j == 0 and path_j == 0:
             continue
         score = 0.6 * title_j + 0.4 * path_j
-        if score < 0.15:
+        if score < 0.10:
             continue
         scored.append((score, title_j, path_j, a, b))
     scored.sort(key=lambda t: (-t[0], -t[1], -t[2], t[3]["id"], t[4]["id"]))
@@ -101,35 +101,51 @@ def emit_same_candidates(records: list[dict], out: Path, top: int = 40) -> None:
     out.write_text("\n".join(lines) + "\n")
 
 
-def emit_different_candidates(records: list[dict], out: Path, top: int = 40) -> None:
+def emit_different_candidates(
+    records: list[dict], out: Path, top: int = 60, max_per_pr: int = 2
+) -> None:
     """Sample pairs with zero file overlap and distinct title themes.
 
-    Picks one pair from each combination of (PR with most-frequent
-    top-token-A) × (PR with most-frequent top-token-B). This biases toward
-    pairs whose first-glance intent words are clearly different.
+    Buckets PRs by their first sorted title token, then walks token pairs,
+    each time picking the LEAST-USED PR from each bucket. Caps per-PR
+    appearances at `max_per_pr` so no single PR dominates the candidate list
+    (previous bug: pr-4699 was the rep for "a2a" and got paired with every
+    other bucket's first rep, accounting for half the diff-candidate rows).
     """
     by_top_token: dict[str, list[dict]] = {}
     for r in records:
-        tok = next(iter(sorted(title_tokens(title_of(r)))), None)
-        if not tok:
+        toks = sorted(title_tokens(title_of(r)))
+        if not toks:
             continue
-        by_top_token.setdefault(tok, []).append(r)
-    # Keep tokens with at least one representative; sort by token-rarity
-    # so we pick from the long tail (more distinct themes).
+        by_top_token.setdefault(toks[0], []).append(r)
     tokens = sorted(by_top_token.keys())
 
     lines = [
         "# Different-Intent Candidates\n",
         "Sampled pairs with no shared title tokens and zero file overlap. ",
+        f"Each PR appears in at most {max_per_pr} rows. "
         "These should be 'obviously different' starting points.\n",
         "| a | b | titles |",
         "| --- | --- | --- |",
     ]
     seen_pairs: set[tuple[str, str]] = set()
-    out_lines: list[tuple[dict, dict]] = []
+    pr_count: dict[str, int] = {}
+    out_pairs: list[tuple[dict, dict]] = []
+
+    def least_used(bucket: list[dict]) -> dict | None:
+        # Return the bucket entry with the lowest pr_count; None if all are
+        # already at the cap.
+        ranked = sorted(bucket, key=lambda r: pr_count.get(r["id"], 0))
+        for r in ranked:
+            if pr_count.get(r["id"], 0) < max_per_pr:
+                return r
+        return None
+
     for ta, tb in combinations(tokens, 2):
-        ra = by_top_token[ta][0]
-        rb = by_top_token[tb][0]
+        ra = least_used(by_top_token[ta])
+        rb = least_used(by_top_token[tb])
+        if ra is None or rb is None:
+            continue
         if ra["id"] == rb["id"]:
             continue
         if jaccard(paths_of(ra), paths_of(rb)) > 0:
@@ -138,10 +154,13 @@ def emit_different_candidates(records: list[dict], out: Path, top: int = 40) -> 
         if key in seen_pairs:
             continue
         seen_pairs.add(key)
-        out_lines.append((ra, rb))
-        if len(out_lines) >= top:
+        pr_count[ra["id"]] = pr_count.get(ra["id"], 0) + 1
+        pr_count[rb["id"]] = pr_count.get(rb["id"], 0) + 1
+        out_pairs.append((ra, rb))
+        if len(out_pairs) >= top:
             break
-    for a, b in out_lines:
+
+    for a, b in out_pairs:
         lines.append(
             f"| `{a['id']}` | `{b['id']}` | "
             f"{title_of(a)[:50]} ⇄ {title_of(b)[:50]} |"
