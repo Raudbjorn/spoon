@@ -114,6 +114,30 @@ func (m Model) viewDetail() string {
 		b.WriteString(fmt.Sprintf("│    [y] Yank clone & checkout command%-14s │\n", ""))
 	}
 
+	// Cluster info (only present after a successful cluster pipeline run).
+	if sf.Heat.ClusterID != "" {
+		b.WriteString("├" + hr + "┤\n")
+		label := sf.Heat.ClusterLabel
+		if label == "" {
+			label = sf.Heat.ClusterID
+		}
+		line := fmt.Sprintf("│ Cluster: %s", label)
+		if sf.Heat.ClusterMemberCount > 0 {
+			line += fmt.Sprintf(" (%d members)", sf.Heat.ClusterMemberCount)
+		}
+		if len(line)-1 < boxWidth+1 {
+			line += pad(boxWidth-len(line)+1, " ") + "│"
+		} else {
+			line = line[:boxWidth+1] + "│"
+		}
+		b.WriteString(line + "\n")
+		if sf.Heat.NoveltyScore > 0 {
+			nl := fmt.Sprintf("│  Novelty: %.2f", sf.Heat.NoveltyScore)
+			nl += pad(boxWidth-len(nl)+1, " ") + "│"
+			b.WriteString(nl + "\n")
+		}
+	}
+
 	// Metadata
 	b.WriteString("├" + hr + "┤\n")
 	b.WriteString(fmt.Sprintf("│ ★ %d stars   ⑂ %d forks   Pushed %s",

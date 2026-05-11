@@ -25,6 +25,7 @@ const (
 	viewDetail
 	viewHelp
 	viewExportPath
+	viewEmbedderBootstrap
 )
 
 // ScoredFork holds a fork with its computed heat score.
@@ -86,22 +87,40 @@ type Model struct {
 	errMsgTime  time.Time
 
 	// Export path prompt
-	exportPath    string       // editable path shown in prompt
-	exportForks   []ScoredFork // forks staged for export (nil = export all)
+	exportPath  string       // editable path shown in prompt
+	exportForks []ScoredFork // forks staged for export (nil = export all)
+
+	// Cluster pipeline
+	clusterOpts          ClusterOptions
+	clusterRan           bool              // true after the pipeline has been kicked off
+	clusterStatus        string            // "pending", "running", "skipped: <reason>", "done"
+	clusterSkipReason    string            // human-readable skip reason when clusters were skipped
+	clusterPendingPrompt *clusterPromptMsg // active prompt waiting for user answer
+	clusterMsgs          chan tea.Msg      // shared message channel cluster goroutines push onto
 }
 
 // --- Constructor ---
 
 func NewModel(provider forge.Forge, auth forge.AuthInfo, repo string, refresh bool) Model {
 	return Model{
-		view:     viewInput,
-		provider: provider,
-		auth:     auth,
-		initRepo: repo,
-		refresh:  refresh,
-		sortCol:  "heat",
-		sortAsc:  false,
+		view:        viewInput,
+		provider:    provider,
+		auth:        auth,
+		initRepo:    repo,
+		refresh:     refresh,
+		sortCol:     "heat",
+		sortAsc:     false,
+		clusterMsgs: make(chan tea.Msg, 16),
 	}
+}
+
+// NewModelWithCluster constructs a Model with cluster pipeline options. When
+// opts.Enabled is false, the TUI runs the existing T1+T2 flow without any
+// embed/cluster work.
+func NewModelWithCluster(provider forge.Forge, auth forge.AuthInfo, repo string, refresh bool, opts ClusterOptions) Model {
+	m := NewModel(provider, auth, repo, refresh)
+	m.clusterOpts = opts
+	return m
 }
 
 func (m Model) Init() tea.Cmd {
@@ -111,12 +130,13 @@ func (m Model) Init() tea.Cmd {
 	} else {
 		m.authMsg = "Not authenticated. Run `gh auth login` for 5,000 req/hr (currently 60/hr)."
 	}
+	pump := waitForClusterMsg(m.clusterMsgs)
 	if m.initRepo != "" {
-		return func() tea.Msg {
+		return tea.Batch(pump, func() tea.Msg {
 			return startFetchMsg{}
-		}
+		})
 	}
-	return nil
+	return pump
 }
 
 // --- Update ---
@@ -153,6 +173,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case enrichmentDoneMsg:
 		m.enriching = false
+		return m, nil
+
+	case clusterResultMsg:
+		return m.handleClusterResult(msg)
+
+	case clusterPromptMsg:
+		return m.handleClusterPrompt(msg)
+
+	case clusterPromptResponseMsg:
+		// User's answer goes back to the SelectEmbedder goroutine.
+		if msg.Reply != nil {
+			select {
+			case msg.Reply <- msg.Yes:
+			default:
+			}
+		}
+		m.clusterPendingPrompt = nil
+		if m.view == viewEmbedderBootstrap {
+			m.view = viewTable
+		}
 		return m, nil
 
 	case clipboardMsg:
@@ -193,6 +233,13 @@ func (m *Model) handleCachedLoad(msg cachedLoadMsg) (tea.Model, tea.Cmd) {
 	}
 
 	cmd := m.startEnrichment()
+	if cmd == nil {
+		// No T2 enrichment scheduled (e.g. rate-limited). Still try
+		// clustering on whatever T1+cached-T2 data we have.
+		if cc := m.maybeStartClusterPipeline(); cc != nil {
+			return m, cc
+		}
+	}
 	return m, cmd
 }
 
@@ -254,6 +301,11 @@ func (m *Model) handleForksFetched(msg forksFetchedMsg) (tea.Model, tea.Cmd) {
 	m.cursor = 0
 
 	cmd := m.startEnrichment()
+	if cmd == nil {
+		if cc := m.maybeStartClusterPipeline(); cc != nil {
+			return m, cc
+		}
+	}
 	return m, cmd
 }
 
@@ -300,6 +352,10 @@ func (m *Model) processPendingUpdates() (tea.Model, tea.Cmd) {
 
 	if m.enrichDone >= m.enrichTotal && m.enriching {
 		m.enriching = false
+		// T2 streaming finished; kick off cluster pipeline if enabled.
+		if cmd := m.maybeStartClusterPipeline(); cmd != nil {
+			return m, cmd
+		}
 		return m, nil
 	}
 
@@ -397,6 +453,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleDetailKey(key)
 	case viewExportPath:
 		return m.handleExportPathKey(key)
+	case viewEmbedderBootstrap:
+		return m.handleEmbedderBootstrapKey(key)
 	case viewHelp:
 		if key == "?" || key == "esc" || key == "q" {
 			m.view = viewTable
@@ -807,6 +865,8 @@ func (m Model) View() string {
 		return m.viewDetail()
 	case viewExportPath:
 		return m.viewExportPath()
+	case viewEmbedderBootstrap:
+		return m.viewEmbedderBootstrap()
 	case viewHelp:
 		return m.viewHelp()
 	}
