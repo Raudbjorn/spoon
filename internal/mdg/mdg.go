@@ -6,10 +6,13 @@
 package mdg
 
 // Module is a single node in the MDG. Path is canonical — for Go it is the
-// import path (e.g., "github.com/owner/repo/internal/auth").
+// import path (e.g., "github.com/owner/repo/internal/auth"). IsMain is true
+// for packages that look like entry points (Go: `package main`; later: JS
+// `src/index.*`, Python `__main__.py`).
 type Module struct {
-	Path string
-	Lang string
+	Path   string
+	Lang   string
+	IsMain bool
 }
 
 // Graph holds the MDG. Edges is keyed by source-module path; values are the
@@ -155,4 +158,34 @@ func (g *Graph) PageRank(teleport []float64, damping float64, iterations int) ma
 		out[m.Path] = rank[i]
 	}
 	return out
+}
+
+// EntryPointTeleport returns a teleport distribution that puts all probability
+// mass on entry-point modules (Module.IsMain). When no module is marked main,
+// returns a uniform distribution. For an empty graph returns nil.
+func (g *Graph) EntryPointTeleport() []float64 {
+	n := len(g.Nodes)
+	if n == 0 {
+		return nil
+	}
+	mainCount := 0
+	for _, m := range g.Nodes {
+		if m.IsMain {
+			mainCount++
+		}
+	}
+	tp := make([]float64, n)
+	if mainCount == 0 {
+		for i := range tp {
+			tp[i] = 1.0 / float64(n)
+		}
+		return tp
+	}
+	share := 1.0 / float64(mainCount)
+	for i, m := range g.Nodes {
+		if m.IsMain {
+			tp[i] = share
+		}
+	}
+	return tp
 }
