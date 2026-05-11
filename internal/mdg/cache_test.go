@@ -32,7 +32,7 @@ func TestCache_RoundTrip(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", dir)
 
 	c := MDGCache{
-		SchemaVersion: cacheSchemaVersion,
+		SchemaVersion: CacheSchemaVersion,
 		Provider:      "github",
 		Owner:         "o",
 		Repo:          "r",
@@ -58,7 +58,7 @@ func TestCache_RoundTrip(t *testing.T) {
 func TestCache_HeadSHAMismatchIsMiss(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	c := MDGCache{
-		SchemaVersion: cacheSchemaVersion,
+		SchemaVersion: CacheSchemaVersion,
 		Provider:      "github",
 		Owner:         "o",
 		Repo:          "r",
@@ -76,7 +76,7 @@ func TestCache_HeadSHAMismatchIsMiss(t *testing.T) {
 func TestCache_TTLExpiry(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	c := MDGCache{
-		SchemaVersion: cacheSchemaVersion,
+		SchemaVersion: CacheSchemaVersion,
 		Provider:      "github",
 		Owner:         "o",
 		Repo:          "r",
@@ -94,7 +94,7 @@ func TestCache_TTLExpiry(t *testing.T) {
 func TestCache_SchemaMismatchIsMiss(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	c := MDGCache{
-		SchemaVersion: cacheSchemaVersion + 100,
+		SchemaVersion: CacheSchemaVersion + 100,
 		Provider:      "github",
 		Owner:         "o",
 		Repo:          "r",

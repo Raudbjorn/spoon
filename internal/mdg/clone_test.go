@@ -23,8 +23,20 @@ func (f *fakeRunner) Run(ctx context.Context, name string, args ...string) error
 		return f.err
 	}
 	if f.sentinelName != "" {
-		// Last arg is the destination directory for both gh and git forms.
-		dest := args[len(args)-1]
+		// DEST sits at a different index for each form:
+		//   gh  repo clone OWNER/REPO DEST -- --depth 1 --filter=blob:none
+		//   git clone --depth 1 --filter=blob:none URL DEST
+		var dest string
+		switch name {
+		case "gh":
+			// args = ["repo", "clone", "owner/repo", DEST, "--", "--depth", "1", "--filter=blob:none"]
+			if len(args) < 4 {
+				return nil
+			}
+			dest = args[3]
+		default:
+			dest = args[len(args)-1]
+		}
 		if err := os.MkdirAll(dest, 0o755); err != nil {
 			return err
 		}
