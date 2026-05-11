@@ -71,9 +71,18 @@ func BuildCentrality(
 	fileToModule := make(map[string]string)
 	dirToModule := make(map[string]string)
 
+	// Honor cancellation between Build and the second-pass parser walk —
+	// the latter touches the filesystem again and would otherwise run to
+	// completion even after the caller's context is canceled.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	goPkgs, err := parseGoPackages(repoPath)
 	if err != nil {
 		return nil, fmt.Errorf("parseGoPackages: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	for _, p := range goPkgs {
 		for _, f := range p.Files {

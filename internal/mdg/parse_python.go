@@ -119,7 +119,12 @@ func parsePythonPackages(rootDir string) ([]pyPkgInfo, error) {
 		knownModules[r.ImportPath] = struct{}{}
 	}
 
-	// Second pass: normalize imports and build final output.
+	// Second pass: normalize imports and build final output. Return nil
+	// (not an empty slice) when no .py files were found, matching the
+	// documented contract.
+	if len(raw) == 0 {
+		return nil, nil
+	}
 	out := make([]pyPkgInfo, 0, len(raw))
 	for _, r := range raw {
 		imports := normalizeAndFilterImports(r.RawImports, knownModules)
@@ -193,78 +198,56 @@ func extractPythonImports(root *sitter.Node, src []byte) []string {
 
 		case "import_from_statement":
 			mod := n.ChildByFieldName("module_name")
+			// Determine the module prefix that goes before each imported name.
+			// Three shapes:
+			//   `from . import x`        → mod is nil; prefix from relative_import sibling
+			//   `from .pkg import x`     → mod.Type == "relative_import"; prefix = mod.Content
+			//   `from a.b import x`      → mod.Type == "dotted_name"; prefix = mod.Content
+			var prefix string
 			if mod == nil {
-				// `from . import x` — no module_name field; handle below.
-				// Named children: [relative_import, name1, name2, …]
+				// Bare relative form. Find the leading relative_import among
+				// named children to recover the dots (".", "..", "...").
 				for i := 0; i < int(n.NamedChildCount()); i++ {
-					ch := n.NamedChild(i)
-					if ch.Type() == "relative_import" {
-						continue // skip the prefix node itself
-					}
-					var name *sitter.Node
-					switch ch.Type() {
-					case "dotted_name":
-						name = ch
-					case "aliased_import":
-						name = ch.ChildByFieldName("name")
-					}
-					if name != nil {
-						out = append(out, "."+name.Content(src))
+					if ch := n.NamedChild(i); ch.Type() == "relative_import" {
+						prefix = ch.Content(src)
+						break
 					}
 				}
-				break
-			}
-
-			if mod.Type() == "relative_import" {
-				// `from ..pkg import x` — the module_name field is a relative_import node.
-				prefix := mod.Content(src)
-				for i := 0; i < int(n.NamedChildCount()); i++ {
-					ch := n.NamedChild(i)
-					if ch.Type() == "relative_import" {
-						continue
-					}
-					var name *sitter.Node
-					switch ch.Type() {
-					case "dotted_name":
-						name = ch
-					case "aliased_import":
-						name = ch.ChildByFieldName("name")
-					}
-					if name != nil {
-						if prefix == "." {
-							out = append(out, "."+name.Content(src))
-						} else {
-							out = append(out, prefix+"."+name.Content(src))
-						}
-					}
-				}
-				break
-			}
-
-			// Absolute import: `from a.b import x` or `from a.b import (x,y,z)`
-			modName := mod.Content(src)
-			parenthesized := importFromIsParenthesized(n, src)
-
-			if parenthesized {
-				// `from pkg.sub import (a, b, c)` → one edge to the module.
-				out = append(out, modName)
 			} else {
-				// `from pkg.sub import helper` → emit "pkg.sub.helper" (raw).
-				// normalizeAndFilterImports collapses to "pkg.sub" when "helper"
-				// is not a known module.
-				for i := 1; i < int(n.NamedChildCount()); i++ {
-					ch := n.NamedChild(i)
-					var name *sitter.Node
-					switch ch.Type() {
-					case "dotted_name":
-						name = ch
-					case "aliased_import":
-						name = ch.ChildByFieldName("name")
-					}
-					if name != nil {
-						out = append(out, modName+"."+name.Content(src))
-					}
+				prefix = mod.Content(src)
+			}
+
+			// Always emit the qualified `prefix.name`; normalizeAndFilterImports
+			// collapses to `prefix` later when `name` is not a known module.
+			// Parenthesized and non-parenthesized forms share this path — the
+			// two-pass design preserves precision for sub-module imports while
+			// still collapsing symbol imports to the parent module.
+			for i := 0; i < int(n.NamedChildCount()); i++ {
+				ch := n.NamedChild(i)
+				if ch.Type() == "relative_import" {
+					continue
 				}
+				if mod != nil && ch == mod {
+					continue
+				}
+				var name *sitter.Node
+				switch ch.Type() {
+				case "dotted_name":
+					name = ch
+				case "aliased_import":
+					name = ch.ChildByFieldName("name")
+				}
+				if name == nil {
+					continue
+				}
+				// Use a separator only when prefix doesn't already end in a
+				// dot. This handles `..` + `x` → `..x` (not `...x`) and
+				// `.pkg` + `x` → `.pkg.x`.
+				sep := "."
+				if strings.HasSuffix(prefix, ".") {
+					sep = ""
+				}
+				out = append(out, prefix+sep+name.Content(src))
 			}
 		}
 		for i := 0; i < int(n.ChildCount()); i++ {
@@ -273,24 +256,6 @@ func extractPythonImports(root *sitter.Node, src []byte) []string {
 	}
 	walk(root)
 	return out
-}
-
-// importFromIsParenthesized reports whether an import_from_statement node
-// uses parentheses around its imported names (e.g. `from x import (a, b)`).
-// It scans children for a `(` token after the `import` keyword.
-func importFromIsParenthesized(n *sitter.Node, src []byte) bool {
-	sawImport := false
-	for i := 0; i < int(n.ChildCount()); i++ {
-		ch := n.Child(i)
-		if !ch.IsNamed() && ch.Content(src) == "import" {
-			sawImport = true
-			continue
-		}
-		if sawImport && !ch.IsNamed() && ch.Content(src) == "(" {
-			return true
-		}
-	}
-	return false
 }
 
 // normalizeAndFilterImports takes raw import strings (which may include
