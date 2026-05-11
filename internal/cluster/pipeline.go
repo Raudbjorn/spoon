@@ -15,6 +15,11 @@ import (
 	"github.com/svnbjrn/spoon/internal/repo"
 )
 
+// NOTE: dump.ClusterOptions, forksops.ClusterOptions, and tui.ClusterOptions
+// each re-declare similar fields and translate to PipelineOptions. A future
+// cleanup should collapse these into one canonical struct used by all three
+// call sites.
+
 // PipelineOptions carries the CLI-derived cluster pipeline configuration.
 // This is the single source of truth shared by both internal/dump (used by
 // the `spoon --json/--csv` and TUI paths) and internal/forksops (used by
@@ -48,8 +53,9 @@ type PipelineOptions struct {
 // can write back ClusterID / ClusterLabel / NoveltyScore / ChangeImpact /
 // ClusterMemberCount.
 //
-// Heat is mutated in-place when clustering runs. The Score field is NOT
-// modified — see RunPipeline docs.
+// Heat is mutated in-place when clustering runs. Score is also mutated when
+// novelty is non-zero: heat.ApplyNoveltyToScore adds up to +5 (capped at 100).
+// See RunPipeline docs.
 type EnrichedFork struct {
 	T1   forge.T1Data
 	T2   *forge.T2Data
@@ -101,12 +107,14 @@ type SkipReason struct {
 // RunPipeline performs the post-T2 cluster orchestration shared by every
 // non-interactive cluster path (spoon --json/--csv, spn forks list, future TUI).
 //
-// IMPORTANT — score semantics: this pipeline populates the cluster fields on
-// each fork's HeatResult (ClusterID, ClusterLabel, NoveltyScore, ChangeImpact,
-// ClusterMemberCount) but does NOT mutate HeatResult.Score. The existing
-// score is computed (and trust/penalty-adjusted) before clustering runs;
-// retroactively folding the novelty bonus through the trust multiplier is
-// brittle. A future task may revisit this trade-off.
+// Score semantics: this pipeline populates the cluster fields on each fork's
+// HeatResult (ClusterID, ClusterLabel, NoveltyScore, ChangeImpact,
+// ClusterMemberCount) AND folds the novelty bonus into HeatResult.Score via
+// heat.ApplyNoveltyToScore (up to +5 points, capped at 100). The original
+// scoring pass's trust multiplier and penalties remain applied; the novelty
+// contribution lands on top. For v2 callers that compute novelty directly via
+// NoveltyComponent in their own ScoreRaw, do not route through this pipeline
+// — the bonus would double-count.
 //
 // Returns (skipReason, error). skipReason is non-nil when the pipeline was
 // intentionally skipped for a non-fatal reason. error is reserved for hard,
@@ -341,7 +349,10 @@ func RunPipeline(ctx context.Context, opts PipelineOptions, inputs PipelineInput
 // assignment list. Used both on a fresh clustering pass and on a cache hit
 // so the write-back logic stays in one place.
 //
-// Score semantics: this helper does NOT modify HeatResult.Score.
+// After populating NoveltyScore, it folds the novelty contribution into
+// HeatResult.Score via heat.ApplyNoveltyToScore (up to +5, capped at 100).
+// Score is therefore mutated. Idempotency is the caller's responsibility:
+// this helper must be invoked exactly once per HeatResult per run.
 func applyAssignmentsToForks(clusters []Cluster, assignments []Assignment, forks []EnrichedFork) {
 	idxByForkID := make(map[string]int, len(forks))
 	for i, ef := range forks {
@@ -375,6 +386,9 @@ func applyAssignmentsToForks(clusters []Cluster, assignments []Assignment, forks
 		hr.ClusterID = a.Cluster
 		hr.ClusterLabel = labels[a.Cluster]
 		hr.ClusterMemberCount = memberCounts[a.Cluster]
+		// Fold the novelty bonus into the heat score now that NoveltyScore
+		// is populated. See heat.ApplyNoveltyToScore for the rationale.
+		heat.ApplyNoveltyToScore(hr)
 	}
 }
 

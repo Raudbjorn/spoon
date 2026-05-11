@@ -286,20 +286,38 @@ func forkToJSON(r forksops.Result) map[string]any {
 			"commit_span_days": r.T3.CommitSpanDays,
 		}
 	}
+	// Cluster fields are emitted as a unit, gated on ClusterID. Per the plan:
+	// omission means "not computed"; a clustered fork with genuine zero
+	// novelty must still serialize "noveltyScore": 0 so agents can
+	// distinguish "not computed" from "computed and zero."
 	if r.Heat.ClusterID != "" {
 		out["clusterId"] = r.Heat.ClusterID
-	}
-	if r.Heat.ClusterLabel != "" {
-		out["clusterLabel"] = r.Heat.ClusterLabel
-	}
-	if r.Heat.NoveltyScore != 0 {
 		out["noveltyScore"] = r.Heat.NoveltyScore
-	}
-	if r.Heat.ClusterMemberCount != 0 {
-		out["clusterMemberCount"] = r.Heat.ClusterMemberCount
+		if r.Heat.ClusterLabel != "" {
+			out["clusterLabel"] = r.Heat.ClusterLabel
+		}
+		if r.Heat.ClusterMemberCount != 0 {
+			out["clusterMemberCount"] = r.Heat.ClusterMemberCount
+		}
 	}
 	if r.Heat.ChangeImpact != 0 {
 		out["changeImpact"] = r.Heat.ChangeImpact
+	}
+	// Components is populated by the v2 scoring path (forksops uses
+	// Scorer.ScoreRaw). Emit when present so downstream agents can inspect
+	// the per-component point budget breakdown (including the novelty
+	// component when clustering ran).
+	if len(r.Heat.Components) > 0 {
+		comps := make([]map[string]any, 0, len(r.Heat.Components))
+		for _, c := range r.Heat.Components {
+			comps = append(comps, map[string]any{
+				"name":   c.Name,
+				"points": c.Points,
+				"max":    c.Max,
+				"raw":    c.Raw,
+			})
+		}
+		out["components"] = comps
 	}
 	return out
 }
