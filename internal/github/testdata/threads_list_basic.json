@@ -9,6 +9,7 @@
             {
               "id": "PRRT_1",
               "isResolved": false,
+              "isOutdated": true,
               "path": "internal/heat/score.go",
               "line": 42,
               "startLine": null,
@@ -27,6 +28,7 @@
             {
               "id": "PRRT_2",
               "isResolved": true,
+              "isOutdated": false,
               "path": "go.mod",
               "line": 1,
               "startLine": null,

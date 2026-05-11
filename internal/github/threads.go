@@ -17,6 +17,7 @@ const (
 type ReviewThread struct {
 	ID            string          `json:"id"`
 	IsResolved    bool            `json:"isResolved"`
+	IsOutdated    bool            `json:"isOutdated"` // true if the line this thread anchors to has shifted since the thread was created
 	Path          string          `json:"path"`
 	Line          int             `json:"line"`
 	StartLine     *int            `json:"startLine"`
@@ -46,6 +47,7 @@ type PullRequestStatus struct {
 	ReviewDecision    string `json:"reviewDecision"`   // APPROVED | REVIEW_REQUIRED | CHANGES_REQUESTED | ""
 	ChecksState       string `json:"checksState"`      // SUCCESS | FAILURE | PENDING | ERROR | EXPECTED | ""
 	UnresolvedThreads int    `json:"unresolvedThreads"`
+	OutdatedThreads   int    `json:"outdatedThreads"` // count of threads whose anchor lines have shifted (across the whole PR)
 }
 
 // listThreadsData mirrors the GraphQL response under data.
@@ -81,6 +83,7 @@ type listThreadsData struct {
 type rawThread struct {
 	ID         string `json:"id"`
 	IsResolved bool   `json:"isResolved"`
+	IsOutdated bool   `json:"isOutdated"`
 	Path       string `json:"path"`
 	Line       int    `json:"line"`
 	StartLine  *int   `json:"startLine"`
@@ -107,6 +110,7 @@ func parseListThreadsResponse(data listThreadsData) []ReviewThread {
 		t := ReviewThread{
 			ID:         n.ID,
 			IsResolved: n.IsResolved,
+			IsOutdated: n.IsOutdated,
 			Path:       n.Path,
 			Line:       n.Line,
 			StartLine:  n.StartLine,
@@ -150,6 +154,9 @@ func parseFetchPRResponse(data listThreadsData) (PullRequestStatus, []ReviewThre
 	for _, t := range threads {
 		if !t.IsResolved {
 			status.UnresolvedThreads++
+		}
+		if t.IsOutdated {
+			status.OutdatedThreads++
 		}
 	}
 	return status, threads
@@ -360,6 +367,7 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
         nodes {
           id
           isResolved
+          isOutdated
           path
           line
           startLine
@@ -396,6 +404,11 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
 		if firstPage {
 			status = pageStatus
 			firstPage = false
+		} else {
+			// Accumulate per-page thread counts across pagination (other status
+			// fields like Title/Mergeable are PR-level and stable across pages).
+			status.UnresolvedThreads += pageStatus.UnresolvedThreads
+			status.OutdatedThreads += pageStatus.OutdatedThreads
 		}
 		all = append(all, pageThreads...)
 		page := resp.Repository.PullRequest.ReviewThreads.PageInfo

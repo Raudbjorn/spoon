@@ -55,6 +55,39 @@ func TestSpnThreadsList_emitsJSONArray(t *testing.T) {
 	}
 }
 
+func TestSpnThreadsList_emitsIsOutdated(t *testing.T) {
+	prev := apiFactory
+	defer func() { apiFactory = prev }()
+	apiFactory = func() (threadsops.API, *agentio.Error) {
+		return &stubAPI{threads: []github.ReviewThread{
+			{ID: "PRRT_outdated", IsOutdated: true, Comments: []github.ThreadComment{{AuthorType: "Bot"}}},
+			{ID: "PRRT_active", IsOutdated: false, Comments: []github.ThreadComment{{AuthorType: "Bot"}}},
+		}}, nil
+	}
+	var stdout, stderr bytes.Buffer
+	exit := runThreadsWith([]string{"list", "owner/repo#1"}, &stdout, &stderr)
+	if exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+	}
+	// String-level assertion: every thread must include "isOutdated".
+	if !strings.Contains(stdout.String(), `"isOutdated"`) {
+		t.Errorf("expected isOutdated key in JSON; got:\n%s", stdout.String())
+	}
+	var got []map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("stdout not JSON array: %v\n%s", err, stdout.String())
+	}
+	if len(got) != 2 {
+		t.Fatalf("want 2 threads, got %d", len(got))
+	}
+	if got[0]["isOutdated"] != true {
+		t.Errorf("thread[0] isOutdated mismatch: %+v", got[0])
+	}
+	if got[1]["isOutdated"] != false {
+		t.Errorf("thread[1] isOutdated mismatch: %+v", got[1])
+	}
+}
+
 type replyStub struct {
 	stubAPI
 	posted github.ThreadComment
