@@ -4,14 +4,14 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"path/filepath"
+	"os"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/forge"
 	"github.com/svnbjrn/spoon/internal/heat"
+	"github.com/svnbjrn/spoon/internal/mdg"
 	"github.com/svnbjrn/spoon/internal/repo"
 )
 
@@ -47,6 +47,21 @@ type PipelineOptions struct {
 	// uses the provided Embedder directly. Reserved for tests of the
 	// orchestration logic; not exposed via CLI flags.
 	EmbedderForTest embed.Embedder
+
+	// CentralityBackend chooses the ChangeImpact computation. "" or
+	// "directory" → the cheap directory-centrality proxy. "mdg" → the full
+	// Module Dependency Graph (requires a local clone; falls back silently to
+	// the directory proxy when unavailable).
+	CentralityBackend string
+
+	// CentralityRepoPath, when non-empty and CentralityBackend == "mdg", is
+	// the on-disk path to a clone of the upstream. When empty, the pipeline
+	// performs a shallow clone to a tempdir.
+	CentralityRepoPath string
+
+	// CentralityHeadSHA, when non-empty, is the upstream default-branch SHA;
+	// used by the MDG cache to invalidate stale entries.
+	CentralityHeadSHA string
 }
 
 // EnrichedFork pairs a fork's T1+T2 data with its HeatResult so the pipeline
@@ -177,8 +192,8 @@ func RunPipeline(ctx context.Context, opts PipelineOptions, inputs PipelineInput
 		modelName = m
 	}
 
-	// 2. Compute (or load) directory centrality.
-	dc, dcOK := loadOrComputeCentrality(ctx, inputs, logger)
+	// 2. Compute (or load) centrality (directory proxy or MDG, per opts).
+	c, cOK := loadOrComputeCentrality(ctx, opts, inputs, logger)
 
 	// 2a. Fetch upstream README for the labeler when one is configured and
 	// the caller did not pre-populate it. Failures are non-fatal — the labeler
@@ -199,8 +214,8 @@ func RunPipeline(ctx context.Context, opts PipelineOptions, inputs PipelineInput
 	if inputs.UpstreamDesc == "" {
 		inputs.UpstreamDesc = inputs.Upstream.Description
 	}
-	if len(inputs.UpstreamCoreDirs) == 0 && dcOK {
-		inputs.UpstreamCoreDirs = dc.CoreDirs
+	if len(inputs.UpstreamCoreDirs) == 0 && cOK {
+		inputs.UpstreamCoreDirs = c.Core()
 	}
 
 	// 3. Gate top-N forks for embedding.
@@ -246,7 +261,7 @@ func RunPipeline(ctx context.Context, opts PipelineOptions, inputs PipelineInput
 	points := make([]Point, 0, len(candidates))
 	for i, ef := range candidates {
 		paths := pathsOf(ef.T2)
-		impact := changeImpactFor(dc, dcOK, paths)
+		impact := changeImpactFor(c, cOK, paths)
 		if ef.Heat != nil {
 			ef.Heat.ChangeImpact = float64(impact)
 		}
@@ -398,12 +413,34 @@ func applyAssignmentsToForks(clusters []Cluster, assignments []Assignment, forks
 	}
 }
 
-// loadOrComputeCentrality returns the upstream DirectoryCentrality. Tries the
-// on-disk cache first; on miss, calls repo.Compute and saves the result.
-// Returns (zero, false) when no tree source is available or the call fails.
-func loadOrComputeCentrality(ctx context.Context, inputs PipelineInputs, logger io.Writer) (repo.DirectoryCentrality, bool) {
+// loadOrComputeCentrality returns the centrality backend. Dispatch is by
+// PipelineOptions.CentralityBackend with silent fallback to the directory
+// proxy when MDG cannot run.
+func loadOrComputeCentrality(
+	ctx context.Context,
+	opts PipelineOptions,
+	inputs PipelineInputs,
+	logger io.Writer,
+) (repo.Centrality, bool) {
+	if opts.CentralityBackend == "mdg" {
+		c, ok := loadOrComputeMDG(ctx, opts, inputs, logger)
+		if ok {
+			return c, true
+		}
+		fmt.Fprintln(logger, "[cluster] MDG centrality unavailable; falling back to directory proxy")
+	}
+	return loadOrComputeDirCentrality(ctx, inputs, logger)
+}
+
+// loadOrComputeDirCentrality is the existing directory-proxy path, extracted
+// as a backend for the dispatcher above.
+func loadOrComputeDirCentrality(
+	ctx context.Context,
+	inputs PipelineInputs,
+	logger io.Writer,
+) (repo.Centrality, bool) {
 	if inputs.TreeSource == nil {
-		return repo.DirectoryCentrality{}, false
+		return nil, false
 	}
 	provider := inputs.Provider
 	if provider == "" {
@@ -416,13 +453,138 @@ func loadOrComputeCentrality(ctx context.Context, inputs PipelineInputs, logger 
 		inputs.UpstreamOwner, inputs.UpstreamRepo, 200)
 	if err != nil {
 		fmt.Fprintf(logger, "[cluster] centrality unavailable (%v); continuing without ChangeImpact\n", err)
-		return repo.DirectoryCentrality{}, false
+		return nil, false
 	}
 	if saveErr := repo.SaveCache(dc); saveErr != nil {
 		fmt.Fprintf(logger, "[cluster] centrality cache save failed: %v (non-fatal)\n", saveErr)
 	}
 	return dc, true
 }
+
+// loadOrComputeMDG attempts to build and cache an MDG-backed centrality.
+// Returns (nil, false) on any failure; the dispatcher treats that as a signal
+// to fall back to the directory proxy.
+func loadOrComputeMDG(
+	ctx context.Context,
+	opts PipelineOptions,
+	inputs PipelineInputs,
+	logger io.Writer,
+) (repo.Centrality, bool) {
+	provider := inputs.Provider
+	if provider == "" {
+		provider = "github"
+	}
+	// Cache fast-path. Requires a non-empty HeadSHA — the cache pinned that
+	// SHA at build time, and an empty SHA can't match.
+	if opts.CentralityHeadSHA != "" {
+		if cached, ok := mdg.LoadMDGCache(provider, inputs.UpstreamOwner, inputs.UpstreamRepo, opts.CentralityHeadSHA); ok {
+			return &mdgCachedAdapter{cache: cached}, true
+		}
+	}
+	// We need a repo on disk.
+	repoPath := opts.CentralityRepoPath
+	cleanup := func() {}
+	if repoPath == "" {
+		tmp, err := os.MkdirTemp("", "spoon-mdg-")
+		if err != nil {
+			fmt.Fprintf(logger, "[cluster] mdg tempdir: %v\n", err)
+			return nil, false
+		}
+		cleanup = func() { _ = os.RemoveAll(tmp) }
+		if err := mdg.ShallowClone(ctx, provider, inputs.UpstreamOwner, inputs.UpstreamRepo, tmp); err != nil {
+			fmt.Fprintf(logger, "[cluster] mdg shallow clone failed: %v\n", err)
+			cleanup()
+			return nil, false
+		}
+		repoPath = tmp
+	}
+	defer cleanup()
+
+	c, err := mdg.BuildCentrality(ctx, repoPath, provider,
+		inputs.UpstreamOwner, inputs.UpstreamRepo, opts.CentralityHeadSHA, mdg.BuildOptions{})
+	if err != nil {
+		fmt.Fprintf(logger, "[cluster] mdg build failed: %v\n", err)
+		return nil, false
+	}
+	// Persist cache for next run. Skip persistence when HeadSHA is empty —
+	// without it, the next load() can never match.
+	if opts.CentralityHeadSHA != "" {
+		if err := mdg.SaveMDGCache(mdg.MDGCache{
+			SchemaVersion: 1,
+			Provider:      provider,
+			Owner:         inputs.UpstreamOwner,
+			Repo:          inputs.UpstreamRepo,
+			HeadSHA:       opts.CentralityHeadSHA,
+			ComputedAt:    c.When(),
+			Scores:        c.Scores,
+		}); err != nil {
+			fmt.Fprintf(logger, "[cluster] mdg cache save failed: %v (non-fatal)\n", err)
+		}
+	}
+	return c, true
+}
+
+// mdgCachedAdapter wraps a cached MDGCache as a repo.Centrality. Cache hits
+// serve only the persisted score table; ScoreFork uses exact module-path
+// matches against touched paths. Cache misses recompute from source.
+type mdgCachedAdapter struct {
+	cache mdg.MDGCache
+}
+
+func (a *mdgCachedAdapter) ScoreFork(touchedFiles []string) float64 {
+	if len(touchedFiles) == 0 || len(a.cache.Scores) == 0 {
+		return 0
+	}
+	var top float64
+	for _, v := range a.cache.Scores {
+		if v > top {
+			top = v
+		}
+	}
+	if top <= 0 {
+		return 0
+	}
+	var sum float64
+	var n int
+	for _, f := range touchedFiles {
+		if v, ok := a.cache.Scores[f]; ok {
+			sum += v
+			n++
+		}
+	}
+	if n == 0 {
+		return 0
+	}
+	mean := (sum / float64(n)) / top
+	if mean > 1 {
+		mean = 1
+	}
+	return mean
+}
+
+func (a *mdgCachedAdapter) Core() []string {
+	type kv struct {
+		k string
+		v float64
+	}
+	pairs := make([]kv, 0, len(a.cache.Scores))
+	for k, v := range a.cache.Scores {
+		pairs = append(pairs, kv{k, v})
+	}
+	sort.Slice(pairs, func(i, j int) bool {
+		if pairs[i].v != pairs[j].v {
+			return pairs[i].v > pairs[j].v
+		}
+		return pairs[i].k < pairs[j].k
+	})
+	out := make([]string, 0, 10)
+	for i := 0; i < len(pairs) && i < 10; i++ {
+		out = append(out, pairs[i].k)
+	}
+	return out
+}
+
+func (a *mdgCachedAdapter) When() time.Time { return a.cache.ComputedAt }
 
 // SelectClusterCandidates orders forks by current heat score desc, filters
 // out archived and no-ahead forks, then caps at topN. Stable sort preserves
@@ -531,21 +693,12 @@ func sumDeletions(t2 *forge.T2Data) int {
 	return n
 }
 
-// changeImpactFor returns DirectoryCentrality.ScoreFork over the file paths
-// touched by the fork. Returns 0 if DC is unavailable or no paths.
-func changeImpactFor(dc repo.DirectoryCentrality, ok bool, paths []string) float32 {
-	if !ok || len(paths) == 0 {
+// changeImpactFor returns Centrality.ScoreFork over the file paths touched by
+// the fork. Returns 0 if centrality is unavailable or no paths.
+func changeImpactFor(c repo.Centrality, ok bool, paths []string) float32 {
+	if !ok || c == nil || len(paths) == 0 {
 		return 0
 	}
-	return float32(dc.ScoreFork(paths))
+	return float32(c.ScoreFork(paths))
 }
 
-// dirOf returns the immediate parent directory of p (e.g., "a/b/c.go" → "a/b").
-func dirOf(p string) string {
-	p = strings.TrimSpace(p)
-	d := filepath.ToSlash(filepath.Dir(p))
-	if d == "." || d == "/" {
-		return ""
-	}
-	return d
-}
