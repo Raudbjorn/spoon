@@ -464,6 +464,9 @@ func loadOrComputeDirCentrality(
 // loadOrComputeMDG attempts to build and cache an MDG-backed centrality.
 // Returns (nil, false) on any failure; the dispatcher treats that as a signal
 // to fall back to the directory proxy.
+//
+// When opts.CentralityHeadSHA is empty, the cache is neither consulted nor
+// populated — the computed result is returned without persistence.
 func loadOrComputeMDG(
 	ctx context.Context,
 	opts PipelineOptions,
@@ -524,12 +527,18 @@ func loadOrComputeMDG(
 	return c, true
 }
 
-// mdgCachedAdapter wraps a cached MDGCache as a repo.Centrality. Cache hits
-// serve only the persisted score table; ScoreFork uses exact module-path
-// matches against touched paths. Cache misses recompute from source.
+// mdgCachedAdapter wraps a cached MDGCache as a repo.Centrality. It serves
+// only the persisted score table keyed by module paths (e.g.,
+// "example.com/m/internal/auth"). ScoreFork therefore requires callers to
+// supply module paths, not file paths; real touched-file inputs (e.g.,
+// "internal/auth/oauth.go") will score 0 — known degraded fidelity accepted
+// by design for the cache-hit path. There is no recompute fallback inside
+// the adapter; cache misses are detected upstream in loadOrComputeMDG.
 type mdgCachedAdapter struct {
 	cache mdg.MDGCache
 }
+
+var _ repo.Centrality = (*mdgCachedAdapter)(nil)
 
 func (a *mdgCachedAdapter) ScoreFork(touchedFiles []string) float64 {
 	if len(touchedFiles) == 0 || len(a.cache.Scores) == 0 {
