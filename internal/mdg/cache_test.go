@@ -1,7 +1,9 @@
 package mdg
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -9,11 +11,19 @@ import (
 func TestCachePath_SanitizesComponents(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	p := MDGCachePath("github", "../../etc", "passwd")
-	if filepath.Base(p) != "passwd__passwd.json" && filepath.Base(p) != "etc__passwd.json" {
-		// The exact behavior is "Base(Clean(x))"; we just want no traversal.
+	// filepath.Base(filepath.Clean("../../etc")) == "etc", so the file ends up
+	// named "etc__passwd.json". The contract: no traversal escapes the cache
+	// root, and the filename stays inside the provider directory.
+	base := filepath.Base(p)
+	if base != "passwd__passwd.json" && base != "etc__passwd.json" {
+		t.Fatalf("traversal not sanitized; base=%q full=%q", base, p)
 	}
-	if filepath.IsAbs(p) == false {
+	if !filepath.IsAbs(p) {
 		t.Fatalf("cache path should be absolute: %q", p)
+	}
+	// The path must live under the configured cache root (no escape).
+	if !strings.HasPrefix(p, os.Getenv("XDG_CACHE_HOME")+string(filepath.Separator)) {
+		t.Fatalf("path escaped XDG_CACHE_HOME: %q", p)
 	}
 }
 
