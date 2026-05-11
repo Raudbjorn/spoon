@@ -14,6 +14,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -124,12 +125,16 @@ func parseGoPackages(rootDir string) ([]goPkgInfo, error) {
 		for k := range st.imports {
 			imports = append(imports, k)
 		}
+		sort.Strings(imports)
 		out = append(out, goPkgInfo{
 			ImportPath: st.importPath,
 			IsMain:     st.isMain,
 			Imports:    imports,
 		})
 	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].ImportPath < out[j].ImportPath
+	})
 	return out, nil
 }
 
