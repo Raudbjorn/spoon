@@ -11,6 +11,7 @@ import (
 
 	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/forge"
+	"github.com/svnbjrn/spoon/internal/github"
 )
 
 type fakeForge struct {
@@ -366,5 +367,40 @@ func TestStream_loneWolfV2Wired(t *testing.T) {
 	}
 	if !r.Heat.LoneWolfV2.Detected {
 		t.Errorf("expected LoneWolfV2.Detected=true for single-author high-MNA fork, got Detected=%v Strength=%v", r.Heat.LoneWolfV2.Detected, r.Heat.LoneWolfV2.Strength)
+	}
+}
+
+func TestStream_perForkRateLimit(t *testing.T) {
+	// Parent must be older than the fork so IsGhostFork does not filter it out.
+	parentPushedAt := time.Now().Add(-1 * time.Hour)
+	forkPushedAt := time.Now()
+	reset := time.Now().Add(60 * time.Second)
+	ff := &fakeForge{
+		parent: forge.ParentData{DefaultBranch: "main", PushedAt: parentPushedAt},
+		forks: []forge.T1Data{
+			{ID: "o/a", Owner: "o", Name: "a", PushedAt: forkPushedAt, DefaultBranch: "main"},
+		},
+		forkErrors: map[string]error{
+			"o/a": &github.RateLimitError{ResetAt: reset},
+		},
+	}
+	ch, _ := Stream(context.Background(), ff, "o", "r", Options{Tier: 2, TopN: 1})
+	r := <-ch
+	if r.Err == nil || r.Err.Code != "rate_limited" {
+		t.Fatalf("expected per-fork rate_limited, got %+v", r.Err)
+	}
+	if _, ok := r.Err.Details["reset_at"].(string); !ok {
+		t.Error("missing details.reset_at")
+	}
+}
+
+func TestStream_fatalRateLimit_parent(t *testing.T) {
+	ff := &fakeForge{parentErr: &github.RateLimitError{ResetAt: time.Now().Add(time.Minute)}}
+	_, err := Stream(context.Background(), ff, "o", "r", Options{})
+	if err == nil {
+		t.Fatal("expected fatal error")
+	}
+	if !strings.Contains(err.Error(), "rate_limited") {
+		t.Errorf("expected error to mention rate_limited; got %v", err)
 	}
 }

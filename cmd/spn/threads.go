@@ -296,6 +296,10 @@ func translateResolveErr(op *threadsops.OpError, prRef, threadID string, stderr 
 	code := agentio.Code(op.Code)
 	var rem string
 	switch code {
+	case agentio.CodeRateLimited:
+		resetAt, _ := op.Details["reset_at"].(string)
+		secs, _ := op.Details["retry_after_seconds"].(int)
+		rem = agentio.RemediationRateLimited(resetAt, secs)
 	case agentio.CodePolicy:
 		rem = agentio.RemediationPolicyBodyRequired(prRef, threadID)
 	case agentio.CodeNotFound:
@@ -314,6 +318,11 @@ func translateResolveErr(op *threadsops.OpError, prRef, threadID string, stderr 
 	if op.Details != nil {
 		e = e.WithDetails(op.Details)
 	}
+	if code == agentio.CodeRateLimited {
+		if secs, ok := op.Details["retry_after_seconds"].(int); ok && secs > 0 {
+			e = e.WithRetryAfter(secs)
+		}
+	}
 	return e.Emit(stderr)
 }
 
@@ -322,6 +331,10 @@ func translateOpErr(op *threadsops.OpError, stderr io.Writer) int {
 	code := agentio.Code(op.Code)
 	rem := ""
 	switch code {
+	case agentio.CodeRateLimited:
+		resetAt, _ := op.Details["reset_at"].(string)
+		secs, _ := op.Details["retry_after_seconds"].(int)
+		rem = agentio.RemediationRateLimited(resetAt, secs)
 	case agentio.CodeNotFound:
 		rem = agentio.RemediationNotFound()
 	case agentio.CodeUpstream:
@@ -336,6 +349,11 @@ func translateOpErr(op *threadsops.OpError, stderr io.Writer) int {
 	e.Retryable = op.Retryable
 	if op.Details != nil {
 		e = e.WithDetails(op.Details)
+	}
+	if code == agentio.CodeRateLimited {
+		if secs, ok := op.Details["retry_after_seconds"].(int); ok && secs > 0 {
+			e = e.WithRetryAfter(secs)
+		}
 	}
 	return e.Emit(stderr)
 }

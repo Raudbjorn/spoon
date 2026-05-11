@@ -114,6 +114,9 @@ func (c *Client) HasBudget() bool {
 func (c *Client) Get(ctx context.Context, path string, result interface{}) error {
 	resp, err := c.rest.RequestWithContext(ctx, http.MethodGet, path, nil)
 	if err != nil {
+		if rl := detectRateLimitFromHTTPError(err); rl != nil {
+			return rl
+		}
 		return err
 	}
 	defer resp.Body.Close()
@@ -131,6 +134,9 @@ func (c *Client) Get(ctx context.Context, path string, result interface{}) error
 func (c *Client) GetRaw(ctx context.Context, path string) (*http.Response, error) {
 	resp, err := c.rest.RequestWithContext(ctx, http.MethodGet, path, nil)
 	if err != nil {
+		if rl := detectRateLimitFromHTTPError(err); rl != nil {
+			return nil, rl
+		}
 		return nil, err
 	}
 	c.updateRateLimit(resp)
@@ -145,6 +151,9 @@ func (c *Client) GetPaginated(ctx context.Context, path string, onPage func(json
 	for url != "" {
 		resp, err := c.rest.RequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
+			if rl := detectRateLimitFromHTTPError(err); rl != nil {
+				return rl
+			}
 			return err
 		}
 		c.updateRateLimit(resp)

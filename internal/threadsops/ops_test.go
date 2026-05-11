@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/svnbjrn/spoon/internal/github"
 )
@@ -93,4 +94,31 @@ type replyFake struct {
 
 func (r *replyFake) ReplyToThread(_ context.Context, _, _ string) (github.ThreadComment, error) {
 	return r.want, nil
+}
+
+type rateLimitFake struct {
+	fakeAPI
+	limitErr error
+}
+
+func (r *rateLimitFake) FetchPR(_ context.Context, _, _ string, _ int, _ string) (github.PullRequestStatus, []github.ReviewThread, error) {
+	return github.PullRequestStatus{}, nil, r.limitErr
+}
+
+func TestList_routesRateLimited(t *testing.T) {
+	reset := time.Now().Add(90 * time.Second)
+	f := &rateLimitFake{limitErr: &github.RateLimitError{ResetAt: reset}}
+	_, _, opErr := List(context.Background(), f, "o", "r", 1, false)
+	if opErr == nil || opErr.Code != OpCodeRateLimited {
+		t.Fatalf("expected OpCodeRateLimited, got %+v", opErr)
+	}
+	if !opErr.Retryable {
+		t.Error("expected Retryable=true")
+	}
+	if _, ok := opErr.Details["reset_at"].(string); !ok {
+		t.Error("missing details.reset_at")
+	}
+	if secs, ok := opErr.Details["retry_after_seconds"].(int); !ok || secs < 80 {
+		t.Errorf("expected retry_after_seconds ~90, got %v", opErr.Details["retry_after_seconds"])
+	}
 }

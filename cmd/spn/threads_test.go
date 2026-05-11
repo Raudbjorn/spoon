@@ -8,6 +8,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/svnbjrn/spoon/internal/agentio"
 	"github.com/svnbjrn/spoon/internal/github"
@@ -177,6 +178,40 @@ func (b *bulkStub) ResolveThread(_ context.Context, id string) error {
 	return nil
 }
 func (b *bulkStub) UnresolveThread(_ context.Context, _ string) error { return nil }
+
+type rateLimitedListStub struct {
+	stubAPI
+}
+
+func (r *rateLimitedListStub) FetchPR(_ context.Context, _, _ string, _ int, _ string) (github.PullRequestStatus, []github.ReviewThread, error) {
+	return github.PullRequestStatus{}, nil, &github.RateLimitError{ResetAt: time.Now().Add(60 * time.Second)}
+}
+
+func TestSpnThreadsList_rateLimited(t *testing.T) {
+	prev := apiFactory
+	defer func() { apiFactory = prev }()
+	apiFactory = func() (threadsops.API, *agentio.Error) {
+		return &rateLimitedListStub{}, nil
+	}
+	var stdout, stderr bytes.Buffer
+	exit := runThreadsWith([]string{"list", "owner/repo#1"}, &stdout, &stderr)
+	if exit != 1 {
+		t.Fatalf("exit=%d", exit)
+	}
+	var env map[string]map[string]any
+	if err := json.Unmarshal(stderr.Bytes(), &env); err != nil {
+		t.Fatalf("stderr not JSON: %v\n%s", err, stderr.String())
+	}
+	if env["error"]["code"] != "rate_limited" {
+		t.Errorf("code=%v", env["error"]["code"])
+	}
+	if env["error"]["retryable"] != true {
+		t.Error("expected retryable=true")
+	}
+	if env["error"]["retry_after_seconds"] == nil {
+		t.Error("expected retry_after_seconds populated")
+	}
+}
 
 func TestSpnThreadsResolveAll_skipsHumanThreads(t *testing.T) {
 	prev := apiFactory

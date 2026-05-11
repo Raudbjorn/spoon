@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"strconv"
@@ -232,9 +233,19 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 	if embedderHookForTest != nil {
 		opts.Cluster.SetEmbedderForTest(embedderHookForTest)
 	}
-	ch, err := forksops.Stream(ctx, provider, owner, name, opts)
-	if err != nil {
-		return agentio.NewError(agentio.CodeUpstream, err.Error(), agentio.RemediationUpstream()).Emit(stderr)
+	ch, streamErr := forksops.Stream(ctx, provider, owner, name, opts)
+	if streamErr != nil {
+		var rl *gh.RateLimitError
+		if errors.As(streamErr, &rl) {
+			resetAt := rl.ResetAt.UTC().Format("2006-01-02T15:04:05Z07:00")
+			secs := rl.RetryAfterSeconds()
+			e := agentio.NewError(agentio.CodeRateLimited, streamErr.Error(), agentio.RemediationRateLimited(resetAt, secs))
+			if secs > 0 {
+				e = e.WithRetryAfter(secs)
+			}
+			return e.Emit(stderr)
+		}
+		return agentio.NewError(agentio.CodeUpstream, streamErr.Error(), agentio.RemediationUpstream()).Emit(stderr)
 	}
 	if csvMode {
 		return emitForksCSV(stdout, stderr, ch)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"testing"
+	"time"
 
 	"github.com/svnbjrn/spoon/internal/github"
 )
@@ -103,6 +104,26 @@ func TestResolveAll_ctxCancellation(t *testing.T) {
 	}
 	// Pre-cancelled — call must return without hanging. We don't assert on
 	// res.Succeeded length because the sender races the cancel.
+}
+
+func TestResolveAll_routesRateLimited(t *testing.T) {
+	reset := time.Now().Add(45 * time.Second)
+	rlErr := &github.RateLimitError{ResetAt: reset}
+	b := newBulkFake(nil)
+	b.fakeAPI.err = rlErr
+	_, opErr := ResolveAll(context.Background(), b, "o", "r", 1, true)
+	if opErr == nil || opErr.Code != OpCodeRateLimited {
+		t.Fatalf("expected OpCodeRateLimited, got %+v", opErr)
+	}
+	if !opErr.Retryable {
+		t.Error("expected Retryable=true")
+	}
+	if _, ok := opErr.Details["reset_at"].(string); !ok {
+		t.Error("missing details.reset_at")
+	}
+	if secs, ok := opErr.Details["retry_after_seconds"].(int); !ok || secs < 30 {
+		t.Errorf("expected retry_after_seconds ~45, got %v", opErr.Details["retry_after_seconds"])
+	}
 }
 
 func equalUnordered(a, b []string) bool {
