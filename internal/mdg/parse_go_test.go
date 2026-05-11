@@ -164,3 +164,33 @@ func containsPathSegment(p, seg string) bool {
 	}
 	return false
 }
+
+func TestParseGoPackages_RecordsFiles(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "go.mod", "module example.com/m\n")
+	writeFile(t, root, "main.go", "package main\nfunc main() {}\n")
+	writeFile(t, root, "internal/auth/oauth.go", "package auth\nfunc Oauth() {}\n")
+	writeFile(t, root, "internal/auth/saml.go", "package auth\nfunc SAML() {}\n")
+
+	pkgs, err := parseGoPackages(root)
+	if err != nil {
+		t.Fatalf("parseGoPackages: %v", err)
+	}
+
+	byPath := map[string]goPkgInfo{}
+	for _, p := range pkgs {
+		byPath[p.ImportPath] = p
+	}
+
+	rootPkg := byPath["example.com/m"]
+	if !equalStrSlices(rootPkg.Files, []string{"main.go"}) {
+		t.Errorf("root pkg Files: want [main.go], got %v", rootPkg.Files)
+	}
+
+	auth := byPath["example.com/m/internal/auth"]
+	// Files within a package should be sorted for determinism.
+	wantAuth := []string{"internal/auth/oauth.go", "internal/auth/saml.go"}
+	if !equalStrSlices(auth.Files, wantAuth) {
+		t.Errorf("auth Files: want %v, got %v", wantAuth, auth.Files)
+	}
+}
