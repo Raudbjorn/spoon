@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -356,10 +357,13 @@ func TestFilter_EqualsForm(t *testing.T) {
 // Append to cmd/spn/threads_test.go
 type bulkStub struct {
 	stubAPI
+	mu           sync.Mutex
 	resolveCalls map[string]bool
 }
 
 func (b *bulkStub) ResolveThread(_ context.Context, id string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if b.resolveCalls == nil {
 		b.resolveCalls = map[string]bool{}
 	}
@@ -434,6 +438,127 @@ func TestSpnThreadsResolveAll_skipsHumanThreads(t *testing.T) {
 	}
 	if sk["id"] != "PRRT_user" || sk["reason"] != "requires_body" {
 		t.Errorf("skipped item: %+v", sk)
+	}
+}
+
+// --- G3: --outdated bulk-resolve tests -------------------------------------
+
+// outdatedFixture builds a four-thread fixture: two outdated bot threads and
+// two current (non-outdated) bot threads. Used by the --outdated E2E tests.
+func outdatedFixture() []github.ReviewThread {
+	return []github.ReviewThread{
+		{ID: "PRRT_o1", IsOutdated: true, Comments: []github.ThreadComment{{AuthorType: "Bot"}}},
+		{ID: "PRRT_o2", IsOutdated: true, Comments: []github.ThreadComment{{AuthorType: "Bot"}}},
+		{ID: "PRRT_c1", IsOutdated: false, Comments: []github.ThreadComment{{AuthorType: "Bot"}}},
+		{ID: "PRRT_c2", IsOutdated: false, Comments: []github.ThreadComment{{AuthorType: "Bot"}}},
+	}
+}
+
+func TestSpnThreadsResolveAll_OutdatedFlag_E2E(t *testing.T) {
+	prev := apiFactory
+	defer func() { apiFactory = prev }()
+	apiFactory = func() (threadsops.API, *agentio.Error) {
+		return &bulkStub{stubAPI: stubAPI{threads: outdatedFixture()}}, nil
+	}
+	var stdout, stderr bytes.Buffer
+	exit := runThreadsWith([]string{"resolve-all", "owner/repo#1", "--outdated"}, &stdout, &stderr)
+	if exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal stdout: %v\n%s", err, stdout.String())
+	}
+	succeeded, _ := got["succeeded"].([]any)
+	skipped, _ := got["skipped"].([]any)
+	if len(succeeded) != 2 {
+		t.Errorf("succeeded=%+v want 2", succeeded)
+	}
+	gotSucceededIDs := map[string]bool{}
+	for _, s := range succeeded {
+		gotSucceededIDs[s.(string)] = true
+	}
+	for _, want := range []string{"PRRT_o1", "PRRT_o2"} {
+		if !gotSucceededIDs[want] {
+			t.Errorf("expected %s in succeeded; got %+v", want, succeeded)
+		}
+	}
+	if len(skipped) != 2 {
+		t.Fatalf("skipped=%+v want 2", skipped)
+	}
+	for _, raw := range skipped {
+		sk, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("skipped item not a map: %T", raw)
+		}
+		if sk["reason"] != "not_outdated" {
+			t.Errorf("skipped %v reason=%q want not_outdated", sk["id"], sk["reason"])
+		}
+	}
+}
+
+func TestSpnThreadsResolveAll_OutdatedAndAllHuman(t *testing.T) {
+	prev := apiFactory
+	defer func() { apiFactory = prev }()
+	apiFactory = func() (threadsops.API, *agentio.Error) {
+		return &bulkStub{stubAPI: stubAPI{threads: []github.ReviewThread{
+			{ID: "PRRT_u1", IsOutdated: true, Comments: []github.ThreadComment{{AuthorType: "User", Author: "alice"}}},
+			{ID: "PRRT_u2", IsOutdated: true, Comments: []github.ThreadComment{{AuthorType: "User", Author: "bob"}}},
+		}}}, nil
+	}
+	var stdout, stderr bytes.Buffer
+	exit := runThreadsWith([]string{"resolve-all", "owner/repo#1", "--outdated"}, &stdout, &stderr)
+	if exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal stdout: %v\n%s", err, stdout.String())
+	}
+	succeeded, _ := got["succeeded"].([]any)
+	skipped, _ := got["skipped"].([]any)
+	if len(succeeded) != 0 {
+		t.Errorf("succeeded=%+v want 0", succeeded)
+	}
+	if len(skipped) != 2 {
+		t.Fatalf("skipped=%+v want 2", skipped)
+	}
+	for _, raw := range skipped {
+		sk, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("skipped item not a map: %T", raw)
+		}
+		if sk["reason"] != "requires_body" {
+			t.Errorf("skipped %v reason=%q want requires_body", sk["id"], sk["reason"])
+		}
+	}
+}
+
+func TestSpnThreadsResolveAll_NoOutdatedFlag_PreservesExisting(t *testing.T) {
+	// Same fixture as the --outdated E2E test, no --outdated. The default spn
+	// resolve-all path applies SkipHumanThreads only — every bot thread (both
+	// outdated and current) should resolve, with no skips.
+	prev := apiFactory
+	defer func() { apiFactory = prev }()
+	apiFactory = func() (threadsops.API, *agentio.Error) {
+		return &bulkStub{stubAPI: stubAPI{threads: outdatedFixture()}}, nil
+	}
+	var stdout, stderr bytes.Buffer
+	exit := runThreadsWith([]string{"resolve-all", "owner/repo#1"}, &stdout, &stderr)
+	if exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal stdout: %v\n%s", err, stdout.String())
+	}
+	succeeded, _ := got["succeeded"].([]any)
+	skipped, _ := got["skipped"].([]any)
+	if len(succeeded) != 4 {
+		t.Errorf("succeeded=%+v want 4 (all bot threads)", succeeded)
+	}
+	if len(skipped) != 0 {
+		t.Errorf("skipped=%+v want 0 (no human threads in fixture)", skipped)
 	}
 }
 

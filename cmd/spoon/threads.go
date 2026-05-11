@@ -56,6 +56,7 @@ type threadsFlags struct {
 	includeResolved bool
 	filter          threadsops.FilterMode
 	noStatus        bool
+	outdatedOnly    bool
 	// suggestion-related flags
 	suggest         string
 	suggestFile     string
@@ -132,6 +133,8 @@ func parseThreadsFlags(args []string) (threadsFlags, error) {
 			if err := setMode(modeResolveAll, "resolve-all"); err != nil {
 				return f, err
 			}
+		case a == "--outdated":
+			f.outdatedOnly = true
 		case a == "--unresolve-all":
 			if err := setMode(modeUnresolveAll, "unresolve-all"); err != nil {
 				return f, err
@@ -267,6 +270,9 @@ func parseThreadsFlags(args []string) (threadsFlags, error) {
 
 	if f.mode == modeReply && f.body == "" {
 		return f, fmt.Errorf("--reply requires --body, --body-file, --suggest, or --suggest-file")
+	}
+	if f.outdatedOnly && f.mode != modeResolveAll {
+		return f, fmt.Errorf("--outdated requires --resolve-all")
 	}
 	return f, nil
 }
@@ -412,12 +418,26 @@ func runThreads(args []string) int {
 			return 1
 		}
 		emitStatus(os.Stdout, status, number, flags.noStatus)
-		res, opErr := threadsops.ResolveAll(ctx, client, owner, repo, number, false) // legacy spoon mode
+		res, opErr := threadsops.ResolveAllWithOptions(ctx, client, owner, repo, number, threadsops.ResolveAllOptions{
+			SkipHumanThreads: false, // legacy spoon mode
+			OutdatedOnly:     flags.outdatedOnly,
+		})
 		if opErr != nil {
 			fmt.Fprintln(os.Stderr, "❌ Error:", opErr.Message)
 			return 1
 		}
 		fmt.Printf("✅ resolved %d threads\n", len(res.Succeeded))
+		if flags.outdatedOnly {
+			notOutdated := 0
+			for _, s := range res.Skipped {
+				if s.Reason == "not_outdated" {
+					notOutdated++
+				}
+			}
+			if notOutdated > 0 {
+				fmt.Printf("ℹ️  skipped %d non-outdated thread(s)\n", notOutdated)
+			}
+		}
 		if len(res.Failed) > 0 {
 			for _, f := range res.Failed {
 				fmt.Fprintf(os.Stderr, "❌ failed %s: %s\n", f.ID, f.Error)
@@ -543,6 +563,9 @@ Flags:
   --resolve <id> [--body T]
                         Resolve one thread; --body required for non-bot threads
   --resolve-all         Mark every unresolved thread as resolved
+  --outdated            (with --resolve-all) only resolve threads whose
+                        anchored code is outdated; non-outdated threads
+                        are skipped with reason "not_outdated"
   --unresolve-all       Mark every resolved thread as unresolved
   --apply-suggestion <id> [--suggestion-index N] [--dry-run] [--force] [--repo-root PATH]
                         Rewrite the local file at the thread's line range

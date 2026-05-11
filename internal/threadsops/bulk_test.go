@@ -5,15 +5,19 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/svnbjrn/spoon/internal/github"
 )
 
-// bulkFake collects per-thread resolve calls.
+// bulkFake collects per-thread resolve calls. Writes are mutex-guarded so the
+// fake is safe under concurrent ResolveThread/UnresolveThread invocations from
+// runBulk's worker pool.
 type bulkFake struct {
 	fakeAPI
+	mu       sync.Mutex
 	resolved map[string]bool
 	failOn   map[string]error
 }
@@ -27,6 +31,8 @@ func newBulkFake(threads []github.ReviewThread) *bulkFake {
 }
 
 func (b *bulkFake) ResolveThread(_ context.Context, id string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if err, ok := b.failOn[id]; ok {
 		return err
 	}
@@ -34,6 +40,8 @@ func (b *bulkFake) ResolveThread(_ context.Context, id string) error {
 	return nil
 }
 func (b *bulkFake) UnresolveThread(_ context.Context, id string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	b.resolved[id] = false
 	return nil
 }
@@ -123,6 +131,135 @@ func TestResolveAll_routesRateLimited(t *testing.T) {
 	}
 	if secs, ok := opErr.Details["retry_after_seconds"].(int); !ok || secs < 30 {
 		t.Errorf("expected retry_after_seconds ~45, got %v", opErr.Details["retry_after_seconds"])
+	}
+}
+
+// --- G3: bulk-resolve outdated-only --------------------------------------
+
+func TestResolveAll_OutdatedOnly_OnlyResolvesOutdated(t *testing.T) {
+	threads := []github.ReviewThread{
+		{ID: "PRRT_o1", IsOutdated: true, Comments: []github.ThreadComment{{AuthorType: "Bot"}}},
+		{ID: "PRRT_a1", IsOutdated: false, Comments: []github.ThreadComment{{AuthorType: "Bot"}}},
+		{ID: "PRRT_o2", IsOutdated: true, Comments: []github.ThreadComment{{AuthorType: "Bot"}}},
+		{ID: "PRRT_a2", IsOutdated: false, Comments: []github.ThreadComment{{AuthorType: "Bot"}}},
+	}
+	b := newBulkFake(threads)
+	res, opErr := ResolveAllWithOptions(context.Background(), b, "o", "r", 1, ResolveAllOptions{
+		SkipHumanThreads: true,
+		OutdatedOnly:     true,
+	})
+	if opErr != nil {
+		t.Fatalf("opErr: %+v", opErr)
+	}
+	if !equalUnordered(res.Succeeded, []string{"PRRT_o1", "PRRT_o2"}) {
+		t.Errorf("succeeded: %+v want both outdated bot threads", res.Succeeded)
+	}
+	if len(res.Skipped) != 2 {
+		t.Fatalf("expected 2 skipped, got %+v", res.Skipped)
+	}
+	skipByID := map[string]string{}
+	for _, s := range res.Skipped {
+		skipByID[s.ID] = s.Reason
+	}
+	for _, want := range []string{"PRRT_a1", "PRRT_a2"} {
+		if got := skipByID[want]; got != "not_outdated" {
+			t.Errorf("skip %s reason=%q want not_outdated", want, got)
+		}
+	}
+	if len(res.Failed) != 0 {
+		t.Errorf("expected no failures, got %+v", res.Failed)
+	}
+	// The non-outdated threads must not have been issued resolve calls.
+	if b.resolved["PRRT_a1"] || b.resolved["PRRT_a2"] {
+		t.Errorf("must not resolve non-outdated threads, resolved=%+v", b.resolved)
+	}
+}
+
+func TestResolveAll_OutdatedOnly_RespectsHumanSkip(t *testing.T) {
+	threads := []github.ReviewThread{
+		{ID: "PRRT_bot1", IsOutdated: true, Comments: []github.ThreadComment{{AuthorType: "Bot"}}},
+		{ID: "PRRT_bot2", IsOutdated: true, Comments: []github.ThreadComment{{AuthorType: "Bot"}}},
+		{ID: "PRRT_user", IsOutdated: true, Comments: []github.ThreadComment{{AuthorType: "User", Author: "alice"}}},
+	}
+	b := newBulkFake(threads)
+	res, opErr := ResolveAllWithOptions(context.Background(), b, "o", "r", 1, ResolveAllOptions{
+		SkipHumanThreads: true,
+		OutdatedOnly:     true,
+	})
+	if opErr != nil {
+		t.Fatalf("opErr: %+v", opErr)
+	}
+	if !equalUnordered(res.Succeeded, []string{"PRRT_bot1", "PRRT_bot2"}) {
+		t.Errorf("succeeded: %+v", res.Succeeded)
+	}
+	if len(res.Skipped) != 1 {
+		t.Fatalf("expected 1 skipped, got %+v", res.Skipped)
+	}
+	if res.Skipped[0].ID != "PRRT_user" || res.Skipped[0].Reason != "requires_body" {
+		t.Errorf("skipped[0]=%+v want id=PRRT_user reason=requires_body", res.Skipped[0])
+	}
+	if b.resolved["PRRT_user"] {
+		t.Errorf("must not resolve human-only thread")
+	}
+}
+
+func TestResolveAll_OutdatedOnly_NoOutdated(t *testing.T) {
+	threads := []github.ReviewThread{
+		{ID: "PRRT_1", IsOutdated: false, Comments: []github.ThreadComment{{AuthorType: "Bot"}}},
+		{ID: "PRRT_2", IsOutdated: false, Comments: []github.ThreadComment{{AuthorType: "Bot"}}},
+		{ID: "PRRT_3", IsOutdated: false, Comments: []github.ThreadComment{{AuthorType: "Bot"}}},
+		{ID: "PRRT_4", IsOutdated: false, Comments: []github.ThreadComment{{AuthorType: "Bot"}}},
+		{ID: "PRRT_5", IsOutdated: false, Comments: []github.ThreadComment{{AuthorType: "Bot"}}},
+	}
+	b := newBulkFake(threads)
+	res, opErr := ResolveAllWithOptions(context.Background(), b, "o", "r", 1, ResolveAllOptions{
+		SkipHumanThreads: true,
+		OutdatedOnly:     true,
+	})
+	if opErr != nil {
+		t.Fatalf("opErr: %+v", opErr)
+	}
+	if len(res.Succeeded) != 0 {
+		t.Errorf("expected no successes, got %+v", res.Succeeded)
+	}
+	if len(res.Failed) != 0 {
+		t.Errorf("expected no failures, got %+v", res.Failed)
+	}
+	if len(res.Skipped) != 5 {
+		t.Fatalf("expected 5 skipped, got %+v", res.Skipped)
+	}
+	for _, s := range res.Skipped {
+		if s.Reason != "not_outdated" {
+			t.Errorf("skip %s reason=%q want not_outdated", s.ID, s.Reason)
+		}
+	}
+	if len(b.resolved) != 0 {
+		t.Errorf("no thread should have been resolved, got %+v", b.resolved)
+	}
+}
+
+func TestResolveAll_OutdatedOnly_AllOutdatedSucceed(t *testing.T) {
+	threads := []github.ReviewThread{
+		{ID: "PRRT_a", IsOutdated: true, Comments: []github.ThreadComment{{AuthorType: "Bot"}}},
+		{ID: "PRRT_b", IsOutdated: true, Comments: []github.ThreadComment{{AuthorType: "Bot"}}},
+		{ID: "PRRT_c", IsOutdated: true, Comments: []github.ThreadComment{{AuthorType: "Bot"}}},
+	}
+	b := newBulkFake(threads)
+	res, opErr := ResolveAllWithOptions(context.Background(), b, "o", "r", 1, ResolveAllOptions{
+		SkipHumanThreads: true,
+		OutdatedOnly:     true,
+	})
+	if opErr != nil {
+		t.Fatalf("opErr: %+v", opErr)
+	}
+	if !equalUnordered(res.Succeeded, []string{"PRRT_a", "PRRT_b", "PRRT_c"}) {
+		t.Errorf("succeeded: %+v", res.Succeeded)
+	}
+	if len(res.Skipped) != 0 {
+		t.Errorf("expected no skips, got %+v", res.Skipped)
+	}
+	if len(res.Failed) != 0 {
+		t.Errorf("expected no failures, got %+v", res.Failed)
 	}
 }
 
