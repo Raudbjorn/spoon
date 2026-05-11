@@ -157,6 +157,35 @@ func AnnotateOneWithPolicy(t *github.ReviewThread) *ReviewThreadWithPolicy {
 	return &ReviewThreadWithPolicy{ReviewThread: *t, RequiresBody: t.RequiresBody()}
 }
 
+// StripVerboseFields zeroes the per-comment timestamp and author-URL fields
+// across every thread. Combined with the `omitempty` JSON tags on
+// github.ThreadComment, this is what gates --verbose output: when verbose is
+// off, callers invoke this just before marshaling and the fields disappear
+// from the JSON; when verbose is on, callers skip the call and the fields
+// (already populated server-side) are emitted as-is.
+func StripVerboseFields(threads []ReviewThreadWithPolicy) {
+	for i := range threads {
+		for j := range threads[i].Comments {
+			threads[i].Comments[j].CreatedAt = ""
+			threads[i].Comments[j].UpdatedAt = ""
+			threads[i].Comments[j].AuthorURL = ""
+		}
+	}
+}
+
+// StripVerboseFieldsOne is the single-thread variant of StripVerboseFields,
+// used by Next / Resolve which return one thread.
+func StripVerboseFieldsOne(t *ReviewThreadWithPolicy) {
+	if t == nil {
+		return
+	}
+	for j := range t.Comments {
+		t.Comments[j].CreatedAt = ""
+		t.Comments[j].UpdatedAt = ""
+		t.Comments[j].AuthorURL = ""
+	}
+}
+
 // BulkResult is the spn-facing outcome of resolve-all / unresolve-all.
 // DryRun, when true, means the listed Succeeded IDs were NOT actually mutated;
 // the operation only previewed what would have happened.

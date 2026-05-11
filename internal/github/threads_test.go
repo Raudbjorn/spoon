@@ -134,6 +134,47 @@ func TestParseFetchPRResponse(t *testing.T) {
 	}
 }
 
+// TestParseListThreadsResponse_VerboseFields verifies that the parser populates
+// the per-comment verbose fields (createdAt, updatedAt, authorUrl) on the
+// ThreadComment struct. These fields are always fetched server-side; gating is
+// at the CLI / output layer via threadsops.StripVerboseFields.
+func TestParseListThreadsResponse_VerboseFields(t *testing.T) {
+	data, err := os.ReadFile("testdata/threads_list_basic.json")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	var raw struct {
+		Data listThreadsData `json:"data"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	threads := parseListThreadsResponse(raw.Data)
+	if len(threads) != 2 {
+		t.Fatalf("want 2 threads, got %d", len(threads))
+	}
+	c0 := threads[0].Comments[0]
+	if c0.CreatedAt != "2026-05-10T09:01:23Z" {
+		t.Errorf("comment[0].CreatedAt=%q want 2026-05-10T09:01:23Z", c0.CreatedAt)
+	}
+	if c0.UpdatedAt != "2026-05-10T09:05:00Z" {
+		t.Errorf("comment[0].UpdatedAt=%q want 2026-05-10T09:05:00Z", c0.UpdatedAt)
+	}
+	if c0.AuthorURL != "https://github.com/alice" {
+		t.Errorf("comment[0].AuthorURL=%q want https://github.com/alice", c0.AuthorURL)
+	}
+	c1 := threads[1].Comments[0]
+	if c1.CreatedAt != "2026-05-10T08:30:00Z" {
+		t.Errorf("comment[1].CreatedAt=%q", c1.CreatedAt)
+	}
+	if c1.UpdatedAt != "2026-05-10T08:30:00Z" {
+		t.Errorf("comment[1].UpdatedAt=%q", c1.UpdatedAt)
+	}
+	if c1.AuthorURL != "https://github.com/apps/dependabot" {
+		t.Errorf("comment[1].AuthorURL=%q", c1.AuthorURL)
+	}
+}
+
 // TestReviewThreadJSONRoundTrip verifies that IsOutdated round-trips through
 // JSON serialization (load-bearing for spn/spoon JSON outputs that embed
 // github.ReviewThread).

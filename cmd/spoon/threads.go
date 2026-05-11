@@ -71,6 +71,10 @@ type threadsFlags struct {
 	// showCodeLines is the value of --show-code N. 0 (default) disables the
 	// code-context fetch entirely. Negative values are rejected at parse time.
 	showCodeLines int
+	// verbose controls whether per-comment timestamp/author-URL fields are
+	// emitted in JSON output and rendered in the TUI detail pane. Default off
+	// preserves the historical compact output.
+	verbose bool
 }
 
 // parseThreadsFlags parses the args after "spoon threads".
@@ -220,6 +224,8 @@ func parseThreadsFlags(args []string) (threadsFlags, error) {
 			}
 			i++
 			f.bodyFile = args[i]
+		case a == "--verbose" || a == "-v":
+			f.verbose = true
 		case a == "-h" || a == "--help":
 			return f, errThreadsHelp
 		default:
@@ -412,6 +418,9 @@ func runThreads(args []string) int {
 		emitStatus(os.Stderr, status, number, flags.noStatus)
 		threads = threadsops.Filter(threads, flags.filter)
 		threadsops.SortThreadsForList(threads)
+		if !flags.verbose {
+			threadsops.StripVerboseFields(threads)
+		}
 		// When --show-code is in play, emit the policy-annotated threads
 		// (which carry codeContext); otherwise preserve the historical raw
 		// ReviewThread JSON shape so existing pipelines aren't disturbed.
@@ -448,6 +457,9 @@ func runThreads(args []string) int {
 				return 1
 			}
 			return 0
+		}
+		if !flags.verbose {
+			threadsops.StripVerboseFieldsOne(t)
 		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -637,7 +649,7 @@ func runThreads(args []string) int {
 		return 0
 
 	case modeTUI:
-		return runThreadsTUI(ctx, client, owner, repo, number, flags.filter, flags.showCodeLines)
+		return runThreadsTUI(ctx, client, owner, repo, number, flags.filter, flags.showCodeLines, flags.verbose)
 
 	default:
 		fmt.Fprintln(os.Stderr, "❌ Error: unknown mode")
@@ -686,6 +698,9 @@ Flags:
   --show-code N         Show N lines of code context before/after each
                         thread's comment range. Applied to JSON output,
                         --next, --resolve, and the TUI detail pane.
+  -v, --verbose         Include createdAt, updatedAt, and authorUrl on each
+                        comment in JSON output. In the TUI, adds a
+                        "Created: TS" line under each comment.
   --apply-suggestion <id> [--suggestion-index N] [--dry-run] [--force] [--repo-root PATH]
                         Rewrite the local file at the thread's line range
                         with the parsed suggestion block. --dry-run skips
@@ -707,10 +722,11 @@ Examples:
 `)
 }
 
-func runThreadsTUI(ctx context.Context, client *gh.Client, owner, repo string, number int, mode threadsops.FilterMode, showCodeLines int) int {
+func runThreadsTUI(ctx context.Context, client *gh.Client, owner, repo string, number int, mode threadsops.FilterMode, showCodeLines int, verbose bool) int {
 	_ = ctx // reserved for future cancellable Init paths
 	m := threadstui.NewWithFilter(client, owner, repo, number, mode)
 	m.ShowCodeLines = showCodeLines
+	m.Verbose = verbose
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "❌ Error:", err)

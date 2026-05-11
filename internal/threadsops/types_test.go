@@ -105,6 +105,68 @@ func TestNeedsResolvedFetch(t *testing.T) {
 	}
 }
 
+// TestStripVerboseFields_ClearsTimestamps verifies the helper zeroes every
+// per-comment verbose field across every thread, so the `omitempty` JSON tags
+// suppress them when the user did not pass --verbose.
+func TestStripVerboseFields_ClearsTimestamps(t *testing.T) {
+	in := AnnotateWithPolicy([]github.ReviewThread{
+		{ID: "T1", Comments: []github.ThreadComment{
+			{ID: "c1", CreatedAt: "2026-05-01T00:00:00Z", UpdatedAt: "2026-05-02T00:00:00Z", AuthorURL: "https://github.com/a"},
+			{ID: "c2", CreatedAt: "2026-05-03T00:00:00Z", UpdatedAt: "2026-05-04T00:00:00Z", AuthorURL: "https://github.com/b"},
+		}},
+		{ID: "T2", Comments: []github.ThreadComment{
+			{ID: "c3", CreatedAt: "2026-05-05T00:00:00Z", UpdatedAt: "2026-05-06T00:00:00Z", AuthorURL: "https://github.com/c"},
+		}},
+	})
+	StripVerboseFields(in)
+	for i, th := range in {
+		for j, c := range th.Comments {
+			if c.CreatedAt != "" || c.UpdatedAt != "" || c.AuthorURL != "" {
+				t.Errorf("thread[%d].Comments[%d] still has verbose fields: %+v", i, j, c)
+			}
+		}
+	}
+}
+
+// TestStripVerboseFields_NoOpOnEmpty verifies that the helper is safe to call
+// when no verbose fields are populated (the input is unchanged).
+func TestStripVerboseFields_NoOpOnEmpty(t *testing.T) {
+	in := AnnotateWithPolicy([]github.ReviewThread{
+		{ID: "T1", Comments: []github.ThreadComment{
+			{ID: "c1", Author: "alice", AuthorType: "User", Body: "hi"},
+		}},
+	})
+	// Snapshot non-verbose fields to ensure they survive.
+	wantID := in[0].Comments[0].ID
+	wantAuthor := in[0].Comments[0].Author
+	wantBody := in[0].Comments[0].Body
+	StripVerboseFields(in)
+	c := in[0].Comments[0]
+	if c.CreatedAt != "" || c.UpdatedAt != "" || c.AuthorURL != "" {
+		t.Errorf("verbose fields should remain empty, got %+v", c)
+	}
+	if c.ID != wantID || c.Author != wantAuthor || c.Body != wantBody {
+		t.Errorf("non-verbose fields changed: got %+v want id=%q author=%q body=%q", c, wantID, wantAuthor, wantBody)
+	}
+}
+
+// TestStripVerboseFieldsOne covers the single-thread helper used by the next /
+// resolve verbs.
+func TestStripVerboseFieldsOne(t *testing.T) {
+	one := &ReviewThreadWithPolicy{
+		ReviewThread: github.ReviewThread{ID: "T1", Comments: []github.ThreadComment{
+			{ID: "c1", CreatedAt: "2026-05-01T00:00:00Z", UpdatedAt: "2026-05-02T00:00:00Z", AuthorURL: "https://github.com/a"},
+		}},
+	}
+	StripVerboseFieldsOne(one)
+	c := one.Comments[0]
+	if c.CreatedAt != "" || c.UpdatedAt != "" || c.AuthorURL != "" {
+		t.Errorf("expected verbose fields cleared, got %+v", c)
+	}
+	// Nil safety.
+	StripVerboseFieldsOne(nil)
+}
+
 func TestSortThreadsForList_StableByTimeThenID(t *testing.T) {
 	in := AnnotateWithPolicy([]github.ReviewThread{
 		{ID: "z", Comments: []github.ThreadComment{{CreatedAt: "2026-05-10T10:00:00Z"}}},

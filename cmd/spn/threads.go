@@ -61,11 +61,14 @@ func doThreadsList(args []string, stdout, stderr io.Writer) int {
 	var filterRaw string
 	allFlag := false
 	showCode := 0
+	verbose := false
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
 		case a == "--all":
 			allFlag = true
+		case a == "--verbose" || a == "-v":
+			verbose = true
 		case a == "--filter":
 			if i+1 >= len(args) {
 				return agentio.NewError(agentio.CodeBadInput, "--filter requires a value", remediationFilterBadInput()).Emit(stderr)
@@ -132,6 +135,9 @@ func doThreadsList(args []string, stdout, stderr io.Writer) int {
 	}
 	threads = threadsops.Filter(threads, mode)
 	threadsops.SortThreadsForList(threads)
+	if !verbose {
+		threadsops.StripVerboseFields(threads)
+	}
 	if err := agentio.WriteJSON(stdout, threads); err != nil {
 		return agentio.NewError(agentio.CodeInternal, "encode output: "+err.Error(), agentio.RemediationInternal()).Emit(stderr)
 	}
@@ -185,9 +191,12 @@ func remediationFilterBadInput() string {
 func doThreadsNext(args []string, stdout, stderr io.Writer) int {
 	var prRef string
 	showCode := 0
+	verbose := false
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
+		case a == "--verbose" || a == "-v":
+			verbose = true
 		case a == "--show-code":
 			if i+1 >= len(args) {
 				return agentio.NewError(agentio.CodeBadInput, "--show-code requires a value", agentio.RemediationBadInput("threads", "next")).Emit(stderr)
@@ -235,6 +244,9 @@ func doThreadsNext(args []string, stdout, stderr io.Writer) int {
 	if t == nil {
 		_ = agentio.WriteNull(stdout)
 		return 0
+	}
+	if !verbose {
+		threadsops.StripVerboseFieldsOne(t)
 	}
 	if err := agentio.WriteJSON(stdout, t); err != nil {
 		return agentio.NewError(agentio.CodeInternal, "encode output: "+err.Error(), agentio.RemediationInternal()).Emit(stderr)
@@ -365,6 +377,7 @@ func doThreadsResolve(args []string, stdout, stderr io.Writer) int {
 	var prRef, threadID, body, bodyFile string
 	dryRun := false
 	showCode := 0
+	verbose := false
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
@@ -382,6 +395,8 @@ func doThreadsResolve(args []string, stdout, stderr io.Writer) int {
 			bodyFile = args[i]
 		case a == "--dry-run":
 			dryRun = true
+		case a == "--verbose" || a == "-v":
+			verbose = true
 		case a == "--show-code":
 			if i+1 >= len(args) {
 				return agentio.NewError(agentio.CodeBadInput, "--show-code requires a value", agentio.RemediationBadInput("threads", "resolve")).Emit(stderr)
@@ -446,6 +461,9 @@ func doThreadsResolve(args []string, stdout, stderr io.Writer) int {
 				}
 			}
 		}
+	}
+	if !verbose {
+		threadsops.StripVerboseFieldsOne(t)
 	}
 	if err := agentio.WriteJSON(stdout, t); err != nil {
 		return agentio.NewError(agentio.CodeInternal, "encode output: "+err.Error(), agentio.RemediationInternal()).Emit(stderr)

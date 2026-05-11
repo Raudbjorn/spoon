@@ -20,7 +20,8 @@
                     "id": "PRRC_1",
                     "body": "this can panic",
                     "createdAt": "2026-05-10T09:01:23Z",
-                    "author": { "__typename": "User", "login": "alice" }
+                    "updatedAt": "2026-05-10T09:05:00Z",
+                    "author": { "__typename": "User", "login": "alice", "url": "https://github.com/alice" }
                   }
                 ]
               }
@@ -39,7 +40,8 @@
                     "id": "PRRC_2",
                     "body": "bump dep",
                     "createdAt": "2026-05-10T08:30:00Z",
-                    "author": { "__typename": "Bot", "login": "dependabot" }
+                    "updatedAt": "2026-05-10T08:30:00Z",
+                    "author": { "__typename": "Bot", "login": "dependabot", "url": "https://github.com/apps/dependabot" }
                   }
                 ]
               }

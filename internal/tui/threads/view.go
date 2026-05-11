@@ -45,6 +45,9 @@ func renderModel(m Model) string {
 		b.WriteString("\n")
 		fmt.Fprintf(&b, "%s\n", threadStateLabel(t))
 		if len(t.Comments) > 0 {
+			if m.Verbose && t.Comments[0].CreatedAt != "" {
+				fmt.Fprintf(&b, "  📅 Created: %s\n", t.Comments[0].CreatedAt)
+			}
 			b.WriteString(renderCommentBody(t.Comments[0].Body))
 			b.WriteString("\n")
 			sugs := threadsops.ParseSuggestions("", t.Comments[0].Body)
