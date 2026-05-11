@@ -12,6 +12,8 @@ import (
 	"github.com/svnbjrn/spoon/internal/agentio"
 	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/forge"
+	"github.com/svnbjrn/spoon/internal/forksops"
+	"github.com/svnbjrn/spoon/internal/heat"
 )
 
 type fakeForge struct {
@@ -241,6 +243,126 @@ func TestSpnForksList_noCluster_omitsClusterFields(t *testing.T) {
 	// No warning either.
 	if strings.Contains(stderr.String(), "embedder_model_missing") {
 		t.Errorf("--no-cluster: expected no embedder warning, got: %s", stderr.String())
+	}
+}
+
+// TestForkToJSON_NoveltyGatedOnClusterID verifies that noveltyScore is
+// emitted only when the fork was clustered (ClusterID != ""), and that a
+// genuine zero novelty for a clustered fork still serializes as
+// "noveltyScore": 0. Omission means "not computed".
+func TestForkToJSON_NoveltyGatedOnClusterID(t *testing.T) {
+	cases := []struct {
+		name           string
+		heat           heat.HeatResult
+		wantNovelty    bool
+		wantNoveltyVal float64
+		wantClusterID  bool
+	}{
+		{
+			name:           "clustered with zero novelty emits noveltyScore: 0",
+			heat:           heat.HeatResult{ClusterID: "c0", NoveltyScore: 0},
+			wantNovelty:    true,
+			wantNoveltyVal: 0,
+			wantClusterID:  true,
+		},
+		{
+			name:           "clustered with positive novelty emits noveltyScore",
+			heat:           heat.HeatResult{ClusterID: "c1", NoveltyScore: 0.42},
+			wantNovelty:    true,
+			wantNoveltyVal: 0.42,
+			wantClusterID:  true,
+		},
+		{
+			name:          "not clustered omits noveltyScore",
+			heat:          heat.HeatResult{ClusterID: "", NoveltyScore: 0},
+			wantNovelty:   false,
+			wantClusterID: false,
+		},
+		{
+			name:          "not clustered ignores stale novelty value",
+			heat:          heat.HeatResult{ClusterID: "", NoveltyScore: 0.99},
+			wantNovelty:   false,
+			wantClusterID: false,
+		},
+		{
+			name:           "noise cluster still emits noveltyScore (ClusterID is non-empty)",
+			heat:           heat.HeatResult{ClusterID: "noise", NoveltyScore: 0.1},
+			wantNovelty:    true,
+			wantNoveltyVal: 0.1,
+			wantClusterID:  true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := forksops.Result{
+				Fork: forge.T1Data{ID: "o/r", Owner: "o", Name: "r"},
+				Heat: tc.heat,
+			}
+			out := forkToJSON(r)
+			b, err := json.Marshal(out)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			s := string(b)
+			_, hasNovelty := out["noveltyScore"]
+			if hasNovelty != tc.wantNovelty {
+				t.Errorf("noveltyScore present = %v, want %v (json=%s)", hasNovelty, tc.wantNovelty, s)
+			}
+			if tc.wantNovelty {
+				got, ok := out["noveltyScore"].(float64)
+				if !ok {
+					t.Fatalf("noveltyScore not float64: %T (json=%s)", out["noveltyScore"], s)
+				}
+				if got != tc.wantNoveltyVal {
+					t.Errorf("noveltyScore = %v, want %v (json=%s)", got, tc.wantNoveltyVal, s)
+				}
+			}
+			_, hasClusterID := out["clusterId"]
+			if hasClusterID != tc.wantClusterID {
+				t.Errorf("clusterId present = %v, want %v (json=%s)", hasClusterID, tc.wantClusterID, s)
+			}
+		})
+	}
+}
+
+// TestForkToJSON_EmitsComponents verifies that the v2 Components slice, when
+// populated by the v2 scoring path, is emitted as a "components" array.
+func TestForkToJSON_EmitsComponents(t *testing.T) {
+	r := forksops.Result{
+		Fork: forge.T1Data{ID: "o/r", Owner: "o", Name: "r"},
+		Heat: heat.HeatResult{
+			Components: []heat.Component{
+				{Name: "novelty", Points: 2.1, Max: 5, Raw: 0.42},
+				{Name: "recency", Points: 4.0, Max: 10, Raw: 30},
+			},
+		},
+	}
+	out := forkToJSON(r)
+	comps, ok := out["components"].([]map[string]any)
+	if !ok {
+		t.Fatalf("components missing or wrong type: %T", out["components"])
+	}
+	if len(comps) != 2 {
+		t.Fatalf("components len = %d, want 2", len(comps))
+	}
+	if comps[0]["name"] != "novelty" {
+		t.Errorf("comps[0].name = %v, want novelty", comps[0]["name"])
+	}
+	if comps[0]["points"] != 2.1 {
+		t.Errorf("comps[0].points = %v, want 2.1", comps[0]["points"])
+	}
+}
+
+// TestForkToJSON_NoComponents verifies that an empty Components slice is
+// omitted from the NDJSON output (v1 scoring path).
+func TestForkToJSON_NoComponents(t *testing.T) {
+	r := forksops.Result{
+		Fork: forge.T1Data{ID: "o/r", Owner: "o", Name: "r"},
+		Heat: heat.HeatResult{},
+	}
+	out := forkToJSON(r)
+	if _, ok := out["components"]; ok {
+		t.Errorf("components should be omitted when empty, got: %+v", out["components"])
 	}
 }
 

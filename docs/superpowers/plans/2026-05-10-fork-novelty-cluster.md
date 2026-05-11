@@ -367,7 +367,9 @@ The spn bifurcation spec already defines NDJSON output for `spn forks list`. The
 }
 ```
 
-If `--no-cluster` is set or the embedder is unreachable, the three fields are omitted (not null) so downstream agents can distinguish "not computed" from "computed and zero."
+If `--no-cluster` is set or the embedder is unreachable, the cluster fields are omitted (not null) so downstream agents can distinguish "not computed" from "computed and zero." `noveltyScore` is gated on `clusterId`: a fork that was successfully clustered and has genuine zero novelty still emits `"noveltyScore": 0`; omission means clustering didn't run for that fork.
+
+The `components` array is populated only when fork scoring runs through the v2 component-based path (`heat.Scorer.ScoreRaw` / `heat.RawScore`). `spn forks list` uses the v2 path via `internal/forksops`, so `components` is emitted there. `spoon --json` uses the v1 scoring path (`heat.ComputeTier1` / `ComputeTier2`) which produces `Signals` rather than `Components`; consumers of the spoon CLI dump should look at the `signals` field instead. Migrating spoon's `--json`/`--csv`/TUI paths to the v2 scorer is a separate workstream.
 
 ### Errors and fallback
 

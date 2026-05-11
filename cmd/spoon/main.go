@@ -396,7 +396,7 @@ func splitRepo(s string) (owner, repo string) {
 var validHeatWeightKeys = map[string]bool{
 	"recency": true, "stars": true, "sub_forks": true, "releases": true,
 	"mna": true, "sync_ratio": true, "feature_ratio": true,
-	"lone_wolf": true, "span": true,
+	"lone_wolf": true, "span": true, "novelty": true,
 }
 
 func validateHeatWeights(path string) error {

@@ -60,3 +60,61 @@ func TestNoveltyComponent_AboveOneClamps(t *testing.T) {
 		t.Errorf("Raw = %v, want 1.5", c.Raw)
 	}
 }
+
+func TestApplyNoveltyToScore_NoNovelty(t *testing.T) {
+	hr := &HeatResult{Score: 42, NoveltyScore: 0}
+	ApplyNoveltyToScore(hr)
+	if hr.Score != 42 {
+		t.Errorf("Score = %v, want 42 (unchanged)", hr.Score)
+	}
+}
+
+func TestApplyNoveltyToScore_FullNovelty(t *testing.T) {
+	hr := &HeatResult{Score: 50, NoveltyScore: 1.0}
+	ApplyNoveltyToScore(hr)
+	if !approxEqual(hr.Score, 55, 0.001) {
+		t.Errorf("Score = %v, want 55", hr.Score)
+	}
+}
+
+func TestApplyNoveltyToScore_HalfNovelty(t *testing.T) {
+	hr := &HeatResult{Score: 50, NoveltyScore: 0.5}
+	ApplyNoveltyToScore(hr)
+	if !approxEqual(hr.Score, 52.5, 0.001) {
+		t.Errorf("Score = %v, want 52.5", hr.Score)
+	}
+}
+
+func TestApplyNoveltyToScore_Caps100(t *testing.T) {
+	hr := &HeatResult{Score: 98, NoveltyScore: 1.0}
+	ApplyNoveltyToScore(hr)
+	if !approxEqual(hr.Score, 100, 0.001) {
+		t.Errorf("Score = %v, want 100 (capped, not 103)", hr.Score)
+	}
+}
+
+func TestApplyNoveltyToScore_NoveltyAboveOneClamps(t *testing.T) {
+	hr := &HeatResult{Score: 50, NoveltyScore: 1.5}
+	ApplyNoveltyToScore(hr)
+	if !approxEqual(hr.Score, 55, 0.001) {
+		t.Errorf("Score = %v, want 55 (novelty clamped to 1)", hr.Score)
+	}
+}
+
+func TestApplyNoveltyToScore_NegativeNoveltyIsNoOp(t *testing.T) {
+	hr := &HeatResult{Score: 42, NoveltyScore: -0.5}
+	ApplyNoveltyToScore(hr)
+	if hr.Score != 42 {
+		t.Errorf("Score = %v, want 42 (no-op when novelty <= 0)", hr.Score)
+	}
+}
+
+func TestApplyNoveltyToScore_Nil(t *testing.T) {
+	// Must not panic.
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("ApplyNoveltyToScore(nil) panicked: %v", r)
+		}
+	}()
+	ApplyNoveltyToScore(nil)
+}
