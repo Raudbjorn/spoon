@@ -10,3 +10,5 @@ candidates_different.md
 dump_stderr.log
 .curate_skipped
 run_log.txt
+codeberta_vectors.json
+codeberta_run.log
