@@ -5,6 +5,7 @@ package forksops
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -125,10 +126,20 @@ type Error struct {
 func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts Options) (<-chan Result, error) {
 	parent, err := provider.Parent(ctx, owner, repo)
 	if err != nil {
+		var rl *gh.RateLimitError
+		if errors.As(err, &rl) {
+			return nil, fmt.Errorf("rate_limited: reset_at=%s retry_after_seconds=%d: %w",
+				rl.ResetAt.UTC().Format(time.RFC3339), rl.RetryAfterSeconds(), err)
+		}
 		return nil, fmt.Errorf("fetch parent: %w", err)
 	}
 	t1ch, err := provider.ListForks(ctx, owner, repo)
 	if err != nil {
+		var rl *gh.RateLimitError
+		if errors.As(err, &rl) {
+			return nil, fmt.Errorf("rate_limited: reset_at=%s retry_after_seconds=%d: %w",
+				rl.ResetAt.UTC().Format(time.RFC3339), rl.RetryAfterSeconds(), err)
+		}
 		return nil, fmt.Errorf("list forks: %w", err)
 	}
 
@@ -226,7 +237,21 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 					if tier >= 2 && i < topN {
 						t2, terr := provider.Compare(ctx, s.fork, s.fork.DefaultBranch)
 						if terr != nil {
-							r.Err = &Error{Code: "upstream_error", Message: terr.Error(), Details: map[string]any{"fork": s.fork.ID, "stage": "compare"}}
+							var rl *gh.RateLimitError
+							if errors.As(terr, &rl) {
+								r.Err = &Error{
+									Code:    "rate_limited",
+									Message: "rate limit exceeded",
+									Details: map[string]any{
+										"fork":                s.fork.ID,
+										"stage":               "compare",
+										"reset_at":            rl.ResetAt.UTC().Format(time.RFC3339),
+										"retry_after_seconds": rl.RetryAfterSeconds(),
+									},
+								}
+							} else {
+								r.Err = &Error{Code: "upstream_error", Message: terr.Error(), Details: map[string]any{"fork": s.fork.ID, "stage": "compare"}}
+							}
 						} else {
 							r.T2 = &t2
 						}
@@ -234,7 +259,21 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 					if tier >= 3 && i < topN && r.Err == nil {
 						t3, terr := provider.Contributors(ctx, s.fork)
 						if terr != nil {
-							r.Err = &Error{Code: "upstream_error", Message: terr.Error(), Details: map[string]any{"fork": s.fork.ID, "stage": "contributors"}}
+							var rl *gh.RateLimitError
+							if errors.As(terr, &rl) {
+								r.Err = &Error{
+									Code:    "rate_limited",
+									Message: "rate limit exceeded",
+									Details: map[string]any{
+										"fork":                s.fork.ID,
+										"stage":               "contributors",
+										"reset_at":            rl.ResetAt.UTC().Format(time.RFC3339),
+										"retry_after_seconds": rl.RetryAfterSeconds(),
+									},
+								}
+							} else {
+								r.Err = &Error{Code: "upstream_error", Message: terr.Error(), Details: map[string]any{"fork": s.fork.ID, "stage": "contributors"}}
+							}
 						} else {
 							r.T3 = &t3
 						}

@@ -23,6 +23,9 @@ const bodySatisfiedRecencyWindow = 60 * time.Second
 func Resolve(ctx context.Context, api API, owner, repo string, number int, threadID, body string) (*ReviewThreadWithPolicy, bool, *OpError) {
 	_, all, err := api.FetchPR(ctx, owner, repo, number, github.ThreadStateAll)
 	if err != nil {
+		if op := rateLimitedOpError(err); op != nil {
+			return nil, false, op
+		}
 		return nil, false, &OpError{Code: OpCodeUpstream, Message: err.Error(), Retryable: true}
 	}
 	return ResolveWithThreads(ctx, api, all, threadID, body)
@@ -66,11 +69,17 @@ func resolveTarget(ctx context.Context, api API, target *github.ReviewThread, th
 	if body != "" {
 		c, rerr := api.ReplyToThread(ctx, threadID, body)
 		if rerr != nil {
+			if op := rateLimitedOpError(rerr); op != nil {
+				return nil, false, op
+			}
 			return nil, false, &OpError{Code: OpCodeUpstream, Message: "reply failed: " + rerr.Error(), Retryable: true}
 		}
 		commentID = c.ID
 	}
 	if rerr := api.ResolveThread(ctx, threadID); rerr != nil {
+		if op := rateLimitedOpError(rerr); op != nil {
+			return nil, false, op
+		}
 		details := map[string]any{"thread_id": threadID}
 		if commentID != "" {
 			details["comment_posted"] = true

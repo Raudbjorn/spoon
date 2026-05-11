@@ -16,6 +16,9 @@ const defaultBulkWorkers = 4
 func ResolveAll(ctx context.Context, api API, owner, repo string, number int, skipHumanThreads bool) (*BulkResult, *OpError) {
 	_, raw, err := api.FetchPR(ctx, owner, repo, number, github.ThreadStateUnresolved)
 	if err != nil {
+		if op := rateLimitedOpError(err); op != nil {
+			return nil, op
+		}
 		return nil, &OpError{Code: OpCodeUpstream, Message: err.Error(), Retryable: true}
 	}
 	res := &BulkResult{Succeeded: []string{}, Failed: []BulkFailure{}, Skipped: []BulkSkip{}}
@@ -35,6 +38,9 @@ func ResolveAll(ctx context.Context, api API, owner, repo string, number int, sk
 func UnresolveAll(ctx context.Context, api API, owner, repo string, number int) (*BulkResult, *OpError) {
 	_, raw, err := api.FetchPR(ctx, owner, repo, number, github.ThreadStateResolved)
 	if err != nil {
+		if op := rateLimitedOpError(err); op != nil {
+			return nil, op
+		}
 		return nil, &OpError{Code: OpCodeUpstream, Message: err.Error(), Retryable: true}
 	}
 	res := &BulkResult{Succeeded: []string{}, Failed: []BulkFailure{}, Skipped: []BulkSkip{}}

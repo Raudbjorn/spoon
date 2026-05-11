@@ -1,6 +1,9 @@
 package threadsops
 
 import (
+	"errors"
+	"time"
+
 	"github.com/svnbjrn/spoon/internal/github"
 )
 
@@ -68,3 +71,22 @@ const (
 	OpCodeRateLimited  = "rate_limited"
 	OpCodeInternal     = "internal"
 )
+
+// rateLimitedOpError converts a *github.RateLimitError into an OpError,
+// or returns nil if the underlying error is not a rate-limit error.
+func rateLimitedOpError(err error) *OpError {
+	var rl *github.RateLimitError
+	if !errors.As(err, &rl) {
+		return nil
+	}
+	return &OpError{
+		Code:      OpCodeRateLimited,
+		Message:   "rate limit exceeded",
+		Retryable: true,
+		Details: map[string]any{
+			"reset_at":            rl.ResetAt.UTC().Format(time.RFC3339),
+			"retry_after_seconds": rl.RetryAfterSeconds(),
+			"remaining":           rl.Remaining,
+		},
+	}
+}

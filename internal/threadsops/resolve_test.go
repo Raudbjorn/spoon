@@ -9,6 +9,22 @@ import (
 	"github.com/svnbjrn/spoon/internal/github"
 )
 
+func TestResolve_routesRateLimited(t *testing.T) {
+	reset := time.Now().Add(60 * time.Second)
+	rlErr := &github.RateLimitError{ResetAt: reset}
+	f := &resolveFake{fakeAPI: fakeAPI{err: rlErr}}
+	_, _, opErr := Resolve(context.Background(), f, "o", "r", 1, "PRRT_a", "")
+	if opErr == nil || opErr.Code != OpCodeRateLimited {
+		t.Fatalf("expected OpCodeRateLimited, got %+v", opErr)
+	}
+	if !opErr.Retryable {
+		t.Error("expected Retryable=true")
+	}
+	if _, ok := opErr.Details["reset_at"].(string); !ok {
+		t.Error("missing details.reset_at")
+	}
+}
+
 // resolveFake extends fakeAPI with call tracking and per-thread ResolveThread control.
 type resolveFake struct {
 	fakeAPI

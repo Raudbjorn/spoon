@@ -16,6 +16,9 @@ func List(ctx context.Context, api API, owner, repo string, number int, includeR
 	}
 	status, raw, err := api.FetchPR(ctx, owner, repo, number, states)
 	if err != nil {
+		if op := rateLimitedOpError(err); op != nil {
+			return github.PullRequestStatus{}, nil, op
+		}
 		return github.PullRequestStatus{}, nil, &OpError{Code: OpCodeUpstream, Message: err.Error(), Retryable: true}
 	}
 	return status, AnnotateWithPolicy(raw), nil
@@ -26,6 +29,9 @@ func List(ctx context.Context, api API, owner, repo string, number int, includeR
 func Next(ctx context.Context, api API, owner, repo string, number int) (github.PullRequestStatus, *ReviewThreadWithPolicy, *OpError) {
 	status, raw, err := api.FetchPR(ctx, owner, repo, number, github.ThreadStateUnresolved)
 	if err != nil {
+		if op := rateLimitedOpError(err); op != nil {
+			return github.PullRequestStatus{}, nil, op
+		}
 		return github.PullRequestStatus{}, nil, &OpError{Code: OpCodeUpstream, Message: err.Error(), Retryable: true}
 	}
 	unresolved := make([]github.ReviewThread, 0, len(raw))
@@ -64,6 +70,9 @@ func Reply(ctx context.Context, api API, threadID, body string) (github.ThreadCo
 	}
 	c, err := api.ReplyToThread(ctx, threadID, body)
 	if err != nil {
+		if op := rateLimitedOpError(err); op != nil {
+			return github.ThreadComment{}, op
+		}
 		return github.ThreadComment{}, &OpError{Code: OpCodeUpstream, Message: err.Error(), Retryable: true}
 	}
 	return c, nil
