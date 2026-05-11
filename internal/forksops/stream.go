@@ -443,5 +443,52 @@ func rescore(scorer *heat.Scorer, f forge.T1Data, parent forge.ParentData, now t
 			CommitSpanDays: float64(t3.CommitSpanDays),
 		}
 	}
-	return scorer.ScoreRaw(input)
+	// Wire v2 lone wolf when we have commits to analyze.
+	if t2 != nil && len(t2.Commits) > 0 {
+		lw := buildLoneWolfInput(f, now, t2)
+		if input.T3 == nil {
+			input.T3 = &heat.Tier3ParamsV2{}
+		}
+		input.T3.LoneWolf = heat.DetectLoneWolfV2(lw)
+	}
+	result := scorer.ScoreRaw(input)
+	// Propagate the lone wolf result to the top-level HeatResult field so
+	// callers (TUI, dump, JSON) can access it without digging into T3 params.
+	if input.T3 != nil && input.T3.LoneWolf != nil {
+		result.LoneWolfV2 = input.T3.LoneWolf
+	}
+	return result
+}
+
+// buildLoneWolfInput adapts forge T2Data into the input shape DetectLoneWolfV2 expects.
+func buildLoneWolfInput(f forge.T1Data, now time.Time, t2 *forge.T2Data) heat.LoneWolfInput {
+	commits := make([]heat.LWCommitInfo, 0, len(t2.Commits))
+	authors := make([]string, 0, len(t2.Commits))
+	for _, c := range t2.Commits {
+		login := c.AuthorLogin
+		if login == "" {
+			login = c.AuthorEmail
+		}
+		commits = append(commits, heat.LWCommitInfo{
+			AuthorLogin: login,
+			Message:     c.Message,
+			Date:        c.Timestamp,
+		})
+		authors = append(authors, login)
+	}
+	files := make([]heat.FileChange, 0, len(t2.Diffs))
+	for _, d := range t2.Diffs {
+		files = append(files, heat.FileChange{
+			Filename:  d.Path,
+			Additions: d.Additions,
+			Deletions: d.Deletions,
+		})
+	}
+	return heat.LoneWolfInput{
+		Commits:       commits,
+		Files:         files,
+		AuthorLogins:  authors,
+		AheadBy:       t2.AheadCount,
+		DaysSincePush: now.Sub(f.PushedAt).Hours() / 24,
+	}
 }
