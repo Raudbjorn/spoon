@@ -52,6 +52,7 @@ type threadsFlags struct {
 	body            string
 	bodyFile        string
 	includeResolved bool
+	filter          threadsops.FilterMode
 	noStatus        bool
 }
 
@@ -59,6 +60,8 @@ type threadsFlags struct {
 // Returns flags or an error suitable for stderr output (exit code 2).
 func parseThreadsFlags(args []string) (threadsFlags, error) {
 	var f threadsFlags
+	var filterRaw string
+	filterSeen := false
 	modeFlags := 0
 	setMode := func(m threadsMode, name string) error {
 		modeFlags++
@@ -71,20 +74,30 @@ func parseThreadsFlags(args []string) (threadsFlags, error) {
 
 	for i := 0; i < len(args); i++ {
 		a := args[i]
-		switch a {
-		case "--json":
+		switch {
+		case a == "--json":
 			if err := setMode(modeJSON, "json"); err != nil {
 				return f, err
 			}
-		case "--next":
+		case a == "--next":
 			if err := setMode(modeNext, "next"); err != nil {
 				return f, err
 			}
-		case "--include-resolved":
+		case a == "--include-resolved":
 			f.includeResolved = true
-		case "--no-status":
+		case a == "--no-status":
 			f.noStatus = true
-		case "--reply":
+		case a == "--filter":
+			if i+1 >= len(args) {
+				return f, fmt.Errorf("--filter requires a value (valid: %s)", threadsops.ValidFilterModesCSV())
+			}
+			i++
+			filterRaw = args[i]
+			filterSeen = true
+		case strings.HasPrefix(a, "--filter="):
+			filterRaw = strings.TrimPrefix(a, "--filter=")
+			filterSeen = true
+		case a == "--reply":
 			if err := setMode(modeReply, "reply"); err != nil {
 				return f, err
 			}
@@ -93,7 +106,7 @@ func parseThreadsFlags(args []string) (threadsFlags, error) {
 			}
 			i++
 			f.targetID = args[i]
-		case "--resolve":
+		case a == "--resolve":
 			if err := setMode(modeResolve, "resolve"); err != nil {
 				return f, err
 			}
@@ -102,27 +115,27 @@ func parseThreadsFlags(args []string) (threadsFlags, error) {
 			}
 			i++
 			f.targetID = args[i]
-		case "--resolve-all":
+		case a == "--resolve-all":
 			if err := setMode(modeResolveAll, "resolve-all"); err != nil {
 				return f, err
 			}
-		case "--unresolve-all":
+		case a == "--unresolve-all":
 			if err := setMode(modeUnresolveAll, "unresolve-all"); err != nil {
 				return f, err
 			}
-		case "--body":
+		case a == "--body":
 			if i+1 >= len(args) {
 				return f, fmt.Errorf("--body requires a value")
 			}
 			i++
 			f.body = args[i]
-		case "--body-file":
+		case a == "--body-file":
 			if i+1 >= len(args) {
 				return f, fmt.Errorf("--body-file requires a path")
 			}
 			i++
 			f.bodyFile = args[i]
-		case "-h", "--help":
+		case a == "-h" || a == "--help":
 			return f, errThreadsHelp
 		default:
 			if strings.HasPrefix(a, "--") {
@@ -137,6 +150,23 @@ func parseThreadsFlags(args []string) (threadsFlags, error) {
 
 	if f.prRef == "" {
 		return f, fmt.Errorf("missing PR reference (e.g. owner/repo#42)")
+	}
+
+	// Resolve --filter / --include-resolved interaction. --include-resolved is
+	// kept for back-compat as a shorthand for --filter all. When both are
+	// passed, --filter wins unless filterSeen is false.
+	if !filterSeen && f.includeResolved {
+		filterRaw = string(threadsops.FilterAll)
+	}
+	mode, ferr := threadsops.ParseFilterMode(filterRaw)
+	if ferr != nil {
+		return f, fmt.Errorf("%w (valid: %s)", ferr, threadsops.ValidFilterModesCSV())
+	}
+	f.filter = mode
+	// Reflect the resolved mode back onto includeResolved so downstream code
+	// (TUI, fetch hints) sees a consistent picture.
+	if mode.NeedsResolvedFetch() {
+		f.includeResolved = true
 	}
 
 	// Resolve --body-file before validating body requirement.
@@ -211,12 +241,14 @@ func runThreads(args []string) int {
 
 	switch flags.mode {
 	case modeJSON:
-		status, threads, opErr := threadsops.List(ctx, client, owner, repo, number, flags.includeResolved)
+		status, threads, opErr := threadsops.List(ctx, client, owner, repo, number, flags.filter.NeedsResolvedFetch())
 		if opErr != nil {
 			fmt.Fprintln(os.Stderr, "❌ Error:", opErr.Message)
 			return 1
 		}
 		emitStatus(os.Stderr, status, number, flags.noStatus)
+		threads = threadsops.Filter(threads, flags.filter)
+		threadsops.SortThreadsForList(threads)
 		raw := make([]gh.ReviewThread, len(threads))
 		for i, t := range threads {
 			raw[i] = t.ReviewThread
@@ -331,7 +363,7 @@ func runThreads(args []string) int {
 		return 0
 
 	case modeTUI:
-		return runThreadsTUI(ctx, client, owner, repo, number, flags.includeResolved)
+		return runThreadsTUI(ctx, client, owner, repo, number, flags.filter)
 
 	default:
 		fmt.Fprintln(os.Stderr, "❌ Error: unknown mode")
@@ -351,9 +383,15 @@ PR reference forms:
   #42                  (uses local repo context)
 
 Flags:
-  (no mode flag)        Open the TUI for unresolved threads (default)
-  --json                Print all unresolved threads as JSON
-  --include-resolved    Include resolved threads in --json output
+  (no mode flag)        Open the TUI for the selected filter (default: unresolved)
+  --json                Print threads as JSON (filtered by --filter)
+  --filter MODE         Which threads to surface. One of:
+                          all                  every thread (resolved + unresolved)
+                          unresolved           unresolved only (default)
+                          resolved-active      resolved, code still active
+                          unresolved-outdated  unresolved, code shifted (safe bulk-resolve)
+                          current-unresolved   unresolved AND not outdated (most urgent)
+  --include-resolved    Shorthand for --filter all (kept for back-compat).
   --no-status           Suppress the PR status header
   --next                Print the oldest unresolved thread as JSON, or null
   --reply <id> --body T   Append a reply to a thread
@@ -368,13 +406,15 @@ Flags:
 Examples:
   spoon threads owner/repo#42
   spoon threads owner/repo#42 --json
+  spoon threads owner/repo#42 --json --filter current-unresolved
   spoon threads owner/repo#42 --resolve PRRT_1 --body "fixed in 1234abc"
   while [ "$(spoon threads owner/repo#42 --next)" != "null" ]; do ... ; done
 `)
 }
 
-func runThreadsTUI(ctx context.Context, client *gh.Client, owner, repo string, number int, includeResolved bool) int {
-	m := threadstui.New(client, owner, repo, number, includeResolved)
+func runThreadsTUI(ctx context.Context, client *gh.Client, owner, repo string, number int, mode threadsops.FilterMode) int {
+	_ = ctx // reserved for future cancellable Init paths
+	m := threadstui.NewWithFilter(client, owner, repo, number, mode)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "❌ Error:", err)
