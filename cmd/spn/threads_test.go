@@ -80,11 +80,17 @@ func TestSpnThreadsList_emitsIsOutdated(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("want 2 threads, got %d", len(got))
 	}
-	if got[0]["isOutdated"] != true {
-		t.Errorf("thread[0] isOutdated mismatch: %+v", got[0])
+	// Output is sorted canonically (first-comment time ASC, then ID ASC).
+	// With identical timestamps, PRRT_active sorts before PRRT_outdated.
+	byID := map[string]map[string]any{}
+	for _, g := range got {
+		byID[g["id"].(string)] = g
 	}
-	if got[1]["isOutdated"] != false {
-		t.Errorf("thread[1] isOutdated mismatch: %+v", got[1])
+	if byID["PRRT_outdated"]["isOutdated"] != true {
+		t.Errorf("PRRT_outdated isOutdated mismatch: %+v", byID["PRRT_outdated"])
+	}
+	if byID["PRRT_active"]["isOutdated"] != false {
+		t.Errorf("PRRT_active isOutdated mismatch: %+v", byID["PRRT_active"])
 	}
 }
 
@@ -194,6 +200,155 @@ func TestSpnThreadsResolve_partialFailure(t *testing.T) {
 	}
 	if d["comment_posted"] != true {
 		t.Errorf("expected comment_posted=true")
+	}
+}
+
+// fourThreadFixture is the canonical 2x2 fixture (resolved × outdated) used by
+// the --filter end-to-end tests. Timestamps are distinct so the canonical sort
+// order is deterministic and easy to assert.
+func fourThreadFixture() []github.ReviewThread {
+	return []github.ReviewThread{
+		{ID: "T_uu", IsResolved: false, IsOutdated: false,
+			Comments: []github.ThreadComment{{CreatedAt: "2026-05-01T00:00:00Z", AuthorType: "User", Author: "a"}}},
+		{ID: "T_uo", IsResolved: false, IsOutdated: true,
+			Comments: []github.ThreadComment{{CreatedAt: "2026-05-02T00:00:00Z", AuthorType: "User", Author: "a"}}},
+		{ID: "T_ra", IsResolved: true, IsOutdated: false,
+			Comments: []github.ThreadComment{{CreatedAt: "2026-05-03T00:00:00Z", AuthorType: "Bot"}}},
+		{ID: "T_ro", IsResolved: true, IsOutdated: true,
+			Comments: []github.ThreadComment{{CreatedAt: "2026-05-04T00:00:00Z", AuthorType: "Bot"}}},
+	}
+}
+
+// runListWithFilter exercises the full `spn threads list` handler against the
+// 2x2 fixture, returning the parsed thread IDs from stdout.
+func runListWithFilter(t *testing.T, filterArgs ...string) (ids []string, exit int, stderrText string) {
+	t.Helper()
+	prev := apiFactory
+	t.Cleanup(func() { apiFactory = prev })
+	apiFactory = func() (threadsops.API, *agentio.Error) {
+		return &stubAPI{threads: fourThreadFixture()}, nil
+	}
+	var stdout, stderr bytes.Buffer
+	args := append([]string{"list", "owner/repo#1"}, filterArgs...)
+	exit = runThreadsWith(args, &stdout, &stderr)
+	stderrText = stderr.String()
+	if exit != 0 {
+		return nil, exit, stderrText
+	}
+	var got []map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("stdout not JSON array (exit=%d): %v\n%s", exit, err, stdout.String())
+	}
+	for _, g := range got {
+		ids = append(ids, g["id"].(string))
+	}
+	return ids, exit, stderrText
+}
+
+func TestSpnThreadsList_FilterModes_E2E(t *testing.T) {
+	cases := []struct {
+		mode    string
+		wantIDs []string // in canonical sort order (time ASC, ID ASC)
+	}{
+		// All four threads have distinct ascending timestamps: T_uu < T_uo < T_ra < T_ro.
+		{"all", []string{"T_uu", "T_uo", "T_ra", "T_ro"}},
+		{"unresolved", []string{"T_uu", "T_uo"}},
+		{"resolved-active", []string{"T_ra"}},
+		{"unresolved-outdated", []string{"T_uo"}},
+		{"current-unresolved", []string{"T_uu"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.mode, func(t *testing.T) {
+			gotIDs, exit, stderrText := runListWithFilter(t, "--filter", tc.mode)
+			if exit != 0 {
+				t.Fatalf("exit=%d stderr=%s", exit, stderrText)
+			}
+			if len(gotIDs) != len(tc.wantIDs) {
+				t.Fatalf("len=%d want %d: got=%v want=%v", len(gotIDs), len(tc.wantIDs), gotIDs, tc.wantIDs)
+			}
+			for i := range tc.wantIDs {
+				if gotIDs[i] != tc.wantIDs[i] {
+					t.Errorf("pos %d: got %q want %q (full: %v)", i, gotIDs[i], tc.wantIDs[i], gotIDs)
+				}
+			}
+		})
+	}
+}
+
+func TestFilter_BadInput_EmitsBadInput(t *testing.T) {
+	prev := apiFactory
+	defer func() { apiFactory = prev }()
+	apiFactory = func() (threadsops.API, *agentio.Error) {
+		return &stubAPI{threads: fourThreadFixture()}, nil
+	}
+	var stdout, stderr bytes.Buffer
+	exit := runThreadsWith([]string{"list", "owner/repo#1", "--filter", "bogus"}, &stdout, &stderr)
+	if exit != 2 {
+		t.Fatalf("exit=%d (want 2 for bad_input); stderr=%s", exit, stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("stdout should be empty on bad_input, got %q", stdout.String())
+	}
+	var env map[string]map[string]any
+	if err := json.Unmarshal(stderr.Bytes(), &env); err != nil {
+		t.Fatalf("stderr not JSON: %v\n%s", err, stderr.String())
+	}
+	if env["error"]["code"] != "bad_input" {
+		t.Errorf("code=%v; full=%+v", env["error"]["code"], env["error"])
+	}
+	rem, _ := env["error"]["remediation"].(string)
+	for _, m := range []string{"all", "unresolved", "resolved-active", "unresolved-outdated", "current-unresolved"} {
+		if !strings.Contains(rem, m) {
+			t.Errorf("remediation missing mode %q: %s", m, rem)
+		}
+	}
+}
+
+func TestFilter_AllPreservesSortOrder(t *testing.T) {
+	gotIDs, exit, stderrText := runListWithFilter(t, "--filter", "all")
+	if exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderrText)
+	}
+	// Canonical sort: by first-comment CreatedAt ASC, then ID ASC. The fixture
+	// timestamps were chosen so the result reads top-to-bottom by ID prefix.
+	want := []string{"T_uu", "T_uo", "T_ra", "T_ro"}
+	if strings.Join(gotIDs, ",") != strings.Join(want, ",") {
+		t.Errorf("got %v want %v", gotIDs, want)
+	}
+}
+
+func TestFilter_DefaultIsUnresolved(t *testing.T) {
+	// No --filter at all → must match --filter unresolved.
+	gotIDs, exit, stderrText := runListWithFilter(t /* no args */)
+	if exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderrText)
+	}
+	want := []string{"T_uu", "T_uo"}
+	if strings.Join(gotIDs, ",") != strings.Join(want, ",") {
+		t.Errorf("default got %v want %v", gotIDs, want)
+	}
+}
+
+func TestFilter_AllFlagIsShorthandForFilterAll(t *testing.T) {
+	gotIDs, exit, stderrText := runListWithFilter(t, "--all")
+	if exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderrText)
+	}
+	want := []string{"T_uu", "T_uo", "T_ra", "T_ro"}
+	if strings.Join(gotIDs, ",") != strings.Join(want, ",") {
+		t.Errorf("--all got %v want %v", gotIDs, want)
+	}
+}
+
+func TestFilter_EqualsForm(t *testing.T) {
+	// --filter=resolved-active should work identically to --filter resolved-active.
+	gotIDs, exit, stderrText := runListWithFilter(t, "--filter=resolved-active")
+	if exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderrText)
+	}
+	want := []string{"T_ra"}
+	if strings.Join(gotIDs, ",") != strings.Join(want, ",") {
+		t.Errorf("got %v want %v", gotIDs, want)
 	}
 }
 

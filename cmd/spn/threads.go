@@ -55,11 +55,21 @@ func runThreadsWith(args []string, stdout, stderr io.Writer) int {
 
 func doThreadsList(args []string, stdout, stderr io.Writer) int {
 	var prRef string
-	includeResolved := false
-	for _, a := range args {
+	var filterRaw string
+	allFlag := false
+	for i := 0; i < len(args); i++ {
+		a := args[i]
 		switch {
 		case a == "--all":
-			includeResolved = true
+			allFlag = true
+		case a == "--filter":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--filter requires a value", remediationFilterBadInput()).Emit(stderr)
+			}
+			i++
+			filterRaw = args[i]
+		case strings.HasPrefix(a, "--filter="):
+			filterRaw = strings.TrimPrefix(a, "--filter=")
 		case strings.HasPrefix(a, "--"):
 			return agentio.NewError(agentio.CodeBadInput, "unknown flag: "+a, agentio.RemediationBadInput("threads", "list")).Emit(stderr)
 		default:
@@ -72,6 +82,15 @@ func doThreadsList(args []string, stdout, stderr io.Writer) int {
 	if prRef == "" {
 		return agentio.NewError(agentio.CodeBadInput, "missing PR reference", agentio.RemediationBadInput("threads", "list")).Emit(stderr)
 	}
+	// --all is shorthand for --filter all. When both are given they must agree
+	// (or --filter must be "all"); otherwise prefer the explicit --filter value.
+	if allFlag && filterRaw == "" {
+		filterRaw = string(threadsops.FilterAll)
+	}
+	mode, ferr := threadsops.ParseFilterMode(filterRaw)
+	if ferr != nil {
+		return agentio.NewError(agentio.CodeBadInput, ferr.Error(), remediationFilterBadInput()).Emit(stderr)
+	}
 	owner, repo, number, ec, ok := resolvePRRef(prRef, "threads", "list", stderr)
 	if !ok {
 		return ec
@@ -80,14 +99,23 @@ func doThreadsList(args []string, stdout, stderr io.Writer) int {
 	if authErr != nil {
 		return authErr.Emit(stderr)
 	}
-	_, threads, opErr := threadsops.List(context.Background(), api, owner, repo, number, includeResolved)
+	_, threads, opErr := threadsops.List(context.Background(), api, owner, repo, number, mode.NeedsResolvedFetch())
 	if opErr != nil {
 		return translateOpErr(opErr, stderr)
 	}
+	threads = threadsops.Filter(threads, mode)
+	threadsops.SortThreadsForList(threads)
 	if err := agentio.WriteJSON(stdout, threads); err != nil {
 		return agentio.NewError(agentio.CodeInternal, "encode output: "+err.Error(), agentio.RemediationInternal()).Emit(stderr)
 	}
 	return 0
+}
+
+// remediationFilterBadInput returns the remediation text shown when --filter
+// receives an unknown mode. It lists the valid modes explicitly so agents can
+// retry without re-reading --help.
+func remediationFilterBadInput() string {
+	return "Valid --filter values: " + threadsops.ValidFilterModesCSV() + ". Default is `unresolved`."
 }
 
 func doThreadsNext(args []string, stdout, stderr io.Writer) int {

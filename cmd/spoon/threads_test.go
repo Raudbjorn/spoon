@@ -2,6 +2,8 @@ package main
 
 import (
 	"testing"
+
+	"github.com/svnbjrn/spoon/internal/threadsops"
 )
 
 func TestParseThreadsFlags(t *testing.T) {
@@ -118,6 +120,70 @@ func TestParseThreadsFlags(t *testing.T) {
 	}
 }
 
+
+func TestParseThreadsFlags_FilterModes(t *testing.T) {
+	cases := []struct {
+		name       string
+		args       []string
+		wantErr    bool
+		wantFilter threadsops.FilterMode
+	}{
+		{
+			name:       "no filter → unresolved default",
+			args:       []string{"owner/repo#42"},
+			wantFilter: threadsops.FilterUnresolved,
+		},
+		{
+			name:       "--filter all",
+			args:       []string{"owner/repo#42", "--filter", "all"},
+			wantFilter: threadsops.FilterAll,
+		},
+		{
+			name:       "--filter=resolved-active",
+			args:       []string{"owner/repo#42", "--filter=resolved-active"},
+			wantFilter: threadsops.FilterResolvedActive,
+		},
+		{
+			name:       "--filter unresolved-outdated",
+			args:       []string{"owner/repo#42", "--filter", "unresolved-outdated"},
+			wantFilter: threadsops.FilterUnresolvedOutdated,
+		},
+		{
+			name:       "--filter current-unresolved",
+			args:       []string{"owner/repo#42", "--filter", "current-unresolved"},
+			wantFilter: threadsops.FilterCurrentUnresolved,
+		},
+		{
+			name:       "--include-resolved is shorthand for --filter all",
+			args:       []string{"owner/repo#42", "--include-resolved"},
+			wantFilter: threadsops.FilterAll,
+		},
+		{
+			name:    "unknown filter mode",
+			args:    []string{"owner/repo#42", "--filter", "bogus"},
+			wantErr: true,
+		},
+		{
+			name:    "--filter without value",
+			args:    []string{"owner/repo#42", "--filter"},
+			wantErr: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f, err := parseThreadsFlags(tc.args)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err=%v wantErr=%v", err, tc.wantErr)
+			}
+			if tc.wantErr {
+				return
+			}
+			if f.filter != tc.wantFilter {
+				t.Errorf("filter=%q want %q", f.filter, tc.wantFilter)
+			}
+		})
+	}
+}
 
 func TestParsePRRef(t *testing.T) {
 	cases := []struct {

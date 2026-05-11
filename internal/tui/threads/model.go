@@ -7,6 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/cli/browser"
 	gh "github.com/svnbjrn/spoon/internal/github"
+	"github.com/svnbjrn/spoon/internal/threadsops"
 )
 
 // Model is the bubbletea model for the threads view.
@@ -31,17 +32,32 @@ type Model struct {
 	status     string // last status line
 
 	includeResolved bool
+	filter          threadsops.FilterMode
 	showHelp        bool
 }
 
-// New constructs an empty Model.
+// New constructs an empty Model. The includeResolved flag is mapped to a
+// FilterMode (`all` when true, `unresolved` when false). For finer-grained
+// filtering use NewWithFilter.
 func New(client *gh.Client, owner, repo string, number int, includeResolved bool) Model {
+	mode := threadsops.FilterUnresolved
+	if includeResolved {
+		mode = threadsops.FilterAll
+	}
+	return NewWithFilter(client, owner, repo, number, mode)
+}
+
+// NewWithFilter constructs an empty Model with an explicit FilterMode. The
+// model fetches the broadest required state from GitHub and applies the
+// FilterMode locally so the visible thread list always matches `mode`.
+func NewWithFilter(client *gh.Client, owner, repo string, number int, mode threadsops.FilterMode) Model {
 	return Model{
 		client:          client,
 		owner:           owner,
 		repo:            repo,
 		number:          number,
-		includeResolved: includeResolved,
+		includeResolved: mode.NeedsResolvedFetch(),
+		filter:          mode,
 	}
 }
 
@@ -76,7 +92,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case loadedMsg:
 		m.loaded = true
 		m.prStatus = msg.status
-		m.threads = msg.threads
+		// Apply the FilterMode so the TUI never displays threads the user
+		// asked to hide. The default (empty FilterMode) is treated as
+		// FilterUnresolved by includeThread, matching legacy behavior.
+		mode := m.filter
+		if mode == "" {
+			mode = threadsops.FilterUnresolved
+			if m.includeResolved {
+				mode = threadsops.FilterAll
+			}
+		}
+		annotated := threadsops.AnnotateWithPolicy(msg.threads)
+		filtered := threadsops.Filter(annotated, mode)
+		threadsops.SortThreadsForList(filtered)
+		m.threads = make([]gh.ReviewThread, len(filtered))
+		for i, t := range filtered {
+			m.threads[i] = t.ReviewThread
+		}
 		m.err = msg.err
 		if m.cursor >= len(m.threads) {
 			m.cursor = max(0, len(m.threads)-1)
