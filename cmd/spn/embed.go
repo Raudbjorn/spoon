@@ -99,15 +99,24 @@ func doEmbedPull(args []string, stdout, stderr io.Writer) int {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	// embed.Pull invokes the progress callback sequentially from its
+	// response-reading goroutine, so writeErr does not need synchronization.
+	var writeErr error
 	err := pullFn(ctx, endpoint, model, func(phase string, pct float64) {
 		if werr := agentio.WriteNDJSON(stdout, map[string]any{
 			"model": model,
 			"phase": phase,
 			"pct":   pct,
 		}); werr != nil {
+			if writeErr == nil {
+				writeErr = werr
+			}
 			cancel()
 		}
 	})
+	if writeErr != nil {
+		return agentio.NewError(agentio.CodeInternal, "encode output: "+writeErr.Error(), agentio.RemediationInternal()).Emit(stderr)
+	}
 	if err != nil {
 		return agentio.NewError(agentio.CodeUpstream, "embed pull: "+err.Error(), agentio.RemediationUpstream()).Emit(stderr)
 	}

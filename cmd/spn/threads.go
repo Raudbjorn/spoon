@@ -114,10 +114,20 @@ func doThreadsList(args []string, stdout, stderr io.Writer) int {
 	if prRef == "" {
 		return agentio.NewError(agentio.CodeBadInput, "missing PR reference", agentio.RemediationBadInput("threads", "list")).Emit(stderr)
 	}
-	// --all is shorthand for --filter all. When both are given they must agree
-	// (or --filter must be "all"); otherwise prefer the explicit --filter value.
-	if allFlag && filterRaw == "" {
-		filterRaw = string(threadsops.FilterAll)
+	// --all is shorthand for --filter all. When both are given they must
+	// agree; otherwise reject with bad_input so silently-conflicting flags
+	// don't surprise the caller.
+	if allFlag {
+		switch filterRaw {
+		case "":
+			filterRaw = string(threadsops.FilterAll)
+		case string(threadsops.FilterAll):
+			// agree — no-op
+		default:
+			return agentio.NewError(agentio.CodeBadInput,
+				"--all conflicts with --filter "+filterRaw+" (drop one)",
+				remediationFilterBadInput()).Emit(stderr)
+		}
 	}
 	mode, ferr := threadsops.ParseFilterMode(filterRaw)
 	if ferr != nil {
