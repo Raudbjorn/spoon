@@ -3,11 +3,13 @@ package main
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"io"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/svnbjrn/spoon/internal/agentio"
 	"github.com/svnbjrn/spoon/internal/embed"
@@ -72,6 +74,7 @@ func runForksWith(args []string, stdout, stderr io.Writer) int {
 
 func doForksList(args []string, stdout, stderr io.Writer) int {
 	var repo, forgeFlag, forgeHost, botList string
+	csvMode := false
 	opts := forksops.Options{
 		// Default: clustering enabled. Spn is always non-interactive, so the
 		// pipeline will silently skip when no embedder is available and surface
@@ -187,6 +190,8 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 			opts.Cluster.MinClusterSize = n
 		case "--auto-pull":
 			opts.Cluster.AutoPull = true
+		case "--csv":
+			csvMode = true
 		default:
 			if strings.HasPrefix(args[i], "--") {
 				return agentio.NewError(agentio.CodeBadInput, "unknown flag: "+args[i], agentio.RemediationBadInput("forks", "list")).Emit(stderr)
@@ -231,6 +236,10 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return agentio.NewError(agentio.CodeUpstream, err.Error(), agentio.RemediationUpstream()).Emit(stderr)
 	}
+	if csvMode {
+		return emitForksCSV(stdout, stderr, ch)
+	}
+	// NDJSON streaming path.
 	for r := range ch {
 		if r.ClusterSkip != nil {
 			emitClusterWarning(stderr, r.ClusterSkip)
@@ -322,6 +331,82 @@ func forkToJSON(r forksops.Result) map[string]any {
 		out["components"] = comps
 	}
 	return out
+}
+
+func emitForksCSV(stdout, stderr io.Writer, ch <-chan forksops.Result) int {
+	w := csv.NewWriter(stdout)
+	header := []string{
+		"id", "owner", "name", "url", "stars", "pushed_at", "is_archived",
+		"sub_forks", "releases", "heat", "tier",
+		"t2_ahead", "t2_behind", "t2_mna",
+		"t3_contributors", "t3_commit_span_days",
+		"cluster_name", "cluster_score",
+	}
+	if err := w.Write(header); err != nil {
+		return agentio.NewError(agentio.CodeInternal, "write csv header: "+err.Error(), agentio.RemediationInternal()).Emit(stderr)
+	}
+	for r := range ch {
+		if r.ClusterSkip != nil {
+			emitClusterWarning(stderr, r.ClusterSkip)
+		}
+		if r.Err != nil {
+			_ = agentio.WriteNDJSON(stderr, map[string]any{
+				"error": map[string]any{
+					"code":    r.Err.Code,
+					"message": r.Err.Message,
+					"details": r.Err.Details,
+				},
+			})
+			continue
+		}
+		if err := w.Write(forkToCSVRow(r)); err != nil {
+			return agentio.NewError(agentio.CodeInternal, "write csv row: "+err.Error(), agentio.RemediationInternal()).Emit(stderr)
+		}
+	}
+	w.Flush()
+	if err := w.Error(); err != nil {
+		return agentio.NewError(agentio.CodeInternal, "flush csv: "+err.Error(), agentio.RemediationInternal()).Emit(stderr)
+	}
+	return 0
+}
+
+func forkToCSVRow(r forksops.Result) []string {
+	t2Ahead, t2Behind, t2MNA := "", "", ""
+	if r.T2 != nil {
+		t2Ahead = strconv.Itoa(r.T2.AheadCount)
+		t2Behind = strconv.Itoa(r.T2.BehindCount)
+		t2MNA = strconv.Itoa(r.T2.MNA)
+	}
+	t3Contribs, t3Span := "", ""
+	if r.T3 != nil {
+		t3Contribs = strconv.Itoa(len(r.T3.Contributors))
+		t3Span = strconv.Itoa(r.T3.CommitSpanDays)
+	}
+	clusterName, clusterScore := "", ""
+	if r.Heat.ClusterID != "" {
+		clusterName = r.Heat.ClusterLabel
+		clusterScore = strconv.FormatFloat(r.Heat.NoveltyScore, 'f', 3, 64)
+	}
+	return []string{
+		r.Fork.ID,
+		r.Fork.Owner,
+		r.Fork.Name,
+		r.Fork.URL,
+		strconv.Itoa(r.Fork.Stars),
+		r.Fork.PushedAt.UTC().Format(time.RFC3339),
+		strconv.FormatBool(r.Fork.IsArchived),
+		strconv.Itoa(r.Fork.SubForkCount),
+		strconv.Itoa(r.Fork.ReleaseCount),
+		strconv.FormatFloat(r.Heat.Score, 'f', 2, 64),
+		strconv.Itoa(r.Heat.Tier),
+		t2Ahead,
+		t2Behind,
+		t2MNA,
+		t3Contribs,
+		t3Span,
+		clusterName,
+		clusterScore,
+	}
 }
 
 // preferredOllamaEmbeddingModels returns the ranked list of Ollama-native
