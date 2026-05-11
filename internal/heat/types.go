@@ -33,6 +33,12 @@ type HeatResult struct {
 	Penalties  []string     // names of penalties applied
 	IsTinySet  bool         // true if forkCount < 10
 	LoneWolfV2 *LoneWolfResult
+
+	// Cluster + novelty metadata (populated by the cluster pipeline, T9).
+	ClusterID          string  // "c0", "c1", ..., "noise", or "" when clustering didn't run
+	ClusterLabel       string  // human-readable label; "" when clustering didn't run
+	NoveltyScore       float64 // 0..1
+	ClusterMemberCount int     // number of forks in this cluster; 0 when ClusterID == ""
 }
 
 // LoneWolfSignal describes whether a fork shows lone wolf characteristics (legacy).
