@@ -26,6 +26,10 @@ func main() {
 		os.Exit(runPR(os.Args[2:]))
 	case "forks":
 		os.Exit(runForks(os.Args[2:]))
+	case "embed":
+		os.Exit(runEmbed(os.Args[2:]))
+	case "repo":
+		os.Exit(runRepo(os.Args[2:]))
 	default:
 		fmt.Fprintf(os.Stderr, "spn: unknown subcommand %q\n", os.Args[1])
 		printHelp()
@@ -50,6 +54,10 @@ Nouns and verbs:
   forks list <repo> [--tier 1|2|3] [--top N] [--bot-allowlist L] [--refresh] [--csv] [--forge github|gitlab] [--forge-host H]
                     [--no-cluster] [--cluster-top N] [--embedder URL] [--embedder-model NAME]
                     [--labeler URL] [--labeler-model NAME] [--cluster-epsilon F] [--cluster-min-size N] [--auto-pull]
+  embed status [--endpoint URL]
+  embed pull <model> [--endpoint URL]
+  embed models
+  repo centrality <owner/repo> [--forge github] [--forge-host H]
 
 PR refs accept:
   owner/repo#42

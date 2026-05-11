@@ -139,6 +139,31 @@ fi
 
 `spn` recognizes when the most recent comment is the agent's own resolution comment and skips the body-required gate on the retry.
 
+## Embedding & Centrality
+
+`spn forks list` enriches forks with cluster labels when an Ollama embedder is reachable. Three sibling verbs let an agent set that up or query the underlying data:
+
+```sh
+spn embed status                   # JSON: running, endpoint, installed[], recommended[]
+spn embed models                   # JSON: known-good models (name, dim, size, codeAware)
+spn embed pull <model>             # NDJSON progress: one {model,phase,pct} per line until phase=="done"
+spn repo centrality owner/repo     # JSON: per-directory centrality + top-K core dirs
+```
+
+Preflight pattern before clustering:
+
+```bash
+status=$(spn embed status)
+running=$(jq -r .running <<<"$status")
+if [ "$running" != "true" ]; then
+  echo "Ollama not reachable; clustering will be skipped" >&2
+fi
+installed=$(jq -r '.installed | join(",")' <<<"$status")
+if ! grep -q nomic <<<"$installed"; then
+  spn embed pull nomic-embed-text | jq -c .   # streaming progress
+fi
+```
+
 ## Mergeability Gate
 
 Resolving threads doesn't merge a PR. Check the gate:
@@ -181,3 +206,5 @@ All commands accept any of:
 | `spn pr status <pr>` | Mergeability snapshot |
 | `spn forks list <repo>` | NDJSON fork enrichment (separate use case, not for PR review) |
 | `spn forks list <repo> --csv` | Batched CSV with fixed header; switches off NDJSON streaming. Use for spreadsheet/tabular consumers. |
+| `spn embed status \| pull \| models` | Ollama probe / model management for the clustering pipeline |
+| `spn repo centrality <repo>` | Per-directory centrality JSON (input to clustering, useful standalone) |

@@ -24,6 +24,11 @@ func main() {
 		os.Exit(runThreads(os.Args[2:]))
 	}
 
+	// Subcommand dispatch: "spoon embed <verb> ..."
+	if len(os.Args) >= 2 && os.Args[1] == "embed" {
+		os.Exit(runSpoonEmbed(os.Args[2:]))
+	}
+
 	var repo string
 	noColor := false
 	refresh := false
@@ -369,6 +374,7 @@ Keybindings (TUI mode):
 
 Subcommands:
   spoon threads <pr-ref>   Operate on PR review threads (see 'spoon threads --help')
+  spoon embed status       Human-readable Ollama embedder status
 
 Tip: Run 'gh auth login' (GitHub) or set GITLAB_TOKEN (GitLab) for higher rate limits.
 `)
