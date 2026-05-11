@@ -1,0 +1,89 @@
+# Maintainer: Sveinbjörn G. <claude@sveinbjorn.dev>
+#
+# Builds both binaries from the same source tree:
+#   spoon — TUI/CSV/JSON fork-finder for human use
+#   spn   — JSON-only agent CLI (PR review threads, fork enrichment NDJSON)
+# Plus the using-spn agent skill into /usr/share/spoon/skills/.
+
+pkgname=spoon-git
+_pkgname=spoon
+pkgver=r0
+pkgrel=1
+pkgdesc="Find useful forks of a Git repo (spoon) + agent-shaped CLI (spn)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/Raudbjorn/spoon"
+license=('custom:unknown')
+depends=('glibc')
+makedepends=('go>=1.26' 'git')
+optdepends=(
+    'github-cli: GitHub authentication for spoon/spn'
+    'glab: GitLab authentication for spoon'
+)
+provides=("spoon=${pkgver}" "spn=${pkgver}")
+conflicts=('spoon' 'spn')
+source=("${_pkgname}::git+${url}.git")
+sha256sums=('SKIP')
+install="${pkgname}.install"
+
+pkgver() {
+    cd "${srcdir}/${_pkgname}"
+    # Prefer a tagged describe; fall back to rN.shortsha for untagged trees.
+    git describe --long --tags 2>/dev/null \
+        | sed 's/\([^-]*-g\)/r\1/;s/-/./g' \
+        || printf 'r%s.%s' \
+            "$(git rev-list --count HEAD)" \
+            "$(git rev-parse --short HEAD)"
+}
+
+prepare() {
+    cd "${srcdir}/${_pkgname}"
+    # Pre-fetch modules so the build phase doesn't need network.
+    export GOPATH="${srcdir}/gopath"
+    export GOFLAGS="-mod=readonly -modcacherw"
+    go mod download
+}
+
+build() {
+    cd "${srcdir}/${_pkgname}"
+    export CGO_CPPFLAGS="${CPPFLAGS}"
+    export CGO_CFLAGS="${CFLAGS}"
+    export CGO_CXXFLAGS="${CXXFLAGS}"
+    export CGO_LDFLAGS="${LDFLAGS}"
+    export GOPATH="${srcdir}/gopath"
+    export GOFLAGS="-mod=readonly -modcacherw -trimpath -buildmode=pie"
+
+    # spoon's `version` is a `var`, so embed the package version.
+    # spn's `version` is a `const`, so we leave it as the in-source default.
+    go build \
+        -ldflags="-X 'main.version=${pkgver}'" \
+        -o spoon ./cmd/spoon
+    go build \
+        -o spn ./cmd/spn
+}
+
+check() {
+    cd "${srcdir}/${_pkgname}"
+    export GOPATH="${srcdir}/gopath"
+    export GOFLAGS="-mod=readonly -modcacherw"
+    go test ./...
+}
+
+package() {
+    cd "${srcdir}/${_pkgname}"
+
+    # Binaries.
+    install -Dm755 spoon "${pkgdir}/usr/bin/spoon"
+    install -Dm755 spn   "${pkgdir}/usr/bin/spn"
+
+    # Skill — installed to /usr/share/spoon/skills/. Claude Code does NOT
+    # auto-discover system locations; the .install hook prints how to
+    # activate it.
+    install -Dm644 docs/superpowers/skills/using-spn/SKILL.md \
+        "${pkgdir}/usr/share/spoon/skills/using-spn/SKILL.md"
+
+    # Design spec + plan as reference docs.
+    install -Dm644 docs/superpowers/specs/2026-05-10-spn-bifurcation-design.md \
+        "${pkgdir}/usr/share/doc/${pkgname}/spn-design.md"
+    install -Dm644 README.md \
+        "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+}
