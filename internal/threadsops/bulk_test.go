@@ -3,6 +3,7 @@ package threadsops
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"testing"
 
@@ -86,6 +87,22 @@ func TestResolveAll_perThreadFailure(t *testing.T) {
 	if len(res.Failed) != 1 || res.Failed[0].ID != "PRRT_b" {
 		t.Errorf("failed: %+v", res.Failed)
 	}
+}
+
+func TestResolveAll_ctxCancellation(t *testing.T) {
+	threads := make([]github.ReviewThread, 50)
+	for i := range threads {
+		threads[i] = github.ReviewThread{ID: fmt.Sprintf("PRRT_%d", i), Comments: []github.ThreadComment{{AuthorType: "Bot"}}}
+	}
+	b := newBulkFake(threads)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, opErr := ResolveAll(ctx, b, "o", "r", 1, true)
+	if opErr != nil {
+		t.Fatalf("opErr: %+v", opErr)
+	}
+	// Pre-cancelled — call must return without hanging. We don't assert on
+	// res.Succeeded length because the sender races the cancel.
 }
 
 func equalUnordered(a, b []string) bool {
