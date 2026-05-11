@@ -34,7 +34,8 @@ type HeatResult struct {
 	IsTinySet  bool         // true if forkCount < 10
 	LoneWolfV2 *LoneWolfResult
 
-	// Cluster + novelty metadata (populated by the cluster pipeline, T9).
+	// Cluster + novelty metadata. Populated by the cluster pipeline (a T3
+	// signal contribution; the pipeline itself is tracked as T9 in the plan).
 	ClusterID          string  // "c0", "c1", ..., "noise", or "" when clustering didn't run
 	ClusterLabel       string  // human-readable label; "" when clustering didn't run
 	NoveltyScore       float64 // 0..1

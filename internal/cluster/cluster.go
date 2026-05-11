@@ -64,21 +64,24 @@ func Run(points []Point, opts Options) ([]Cluster, []Assignment) {
 	}
 
 	eps := opts.Epsilon
-	if eps == 0 {
+	if eps <= 0 {
 		eps = defaultEpsilon
 	}
 	minSize := opts.MinClusterSize
-	if minSize == 0 {
+	if minSize <= 0 {
 		minSize = defaultMinClusterSize
 	}
 
 	// Index permutation that visits points in lex order of ForkID. We work
 	// over this ordering so output is deterministic regardless of input order.
+	// SliceStable preserves insertion order for equal ForkIDs (defensive — the
+	// pipeline guards against duplicate IDs upstream but this keeps Run robust
+	// in isolation).
 	order := make([]int, len(points))
 	for i := range order {
 		order[i] = i
 	}
-	sort.Slice(order, func(i, j int) bool {
+	sort.SliceStable(order, func(i, j int) bool {
 		return points[order[i]].ForkID < points[order[j]].ForkID
 	})
 

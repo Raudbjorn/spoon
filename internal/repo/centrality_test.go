@@ -60,6 +60,9 @@ func TestCompute_HappyPath(t *testing.T) {
 
 	// internal/auth/ should be the highest-scoring dir: 3 of 5 files + the
 	// commit messages mention "auth" twice.
+	if len(dc.CoreDirs) == 0 {
+		t.Fatalf("expected non-empty CoreDirs")
+	}
 	top := dc.CoreDirs[0]
 	if top != "internal/auth/" {
 		t.Errorf("expected top dir to be internal/auth/, got %q (scores=%v)", top, dc.DirScore)
@@ -113,8 +116,8 @@ func TestCompute_CommitSourceErrorTolerated(t *testing.T) {
 }
 
 func TestCompute_Normalization(t *testing.T) {
-	// 4 files all under "core/"; one file under "edge/" — but "edge/x.go" gives
-	// edge/ 1 file. Make 100%-share work by putting *every* file under core/.
+	// 4 files all under "core/". Make 100%-share work by putting *every*
+	// file under core/.
 	tree := stubTreeSource{paths: []string{
 		"core/a.go", "core/b.go", "core/c.go", "core/d.go",
 	}}

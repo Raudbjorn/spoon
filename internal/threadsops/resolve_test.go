@@ -138,15 +138,14 @@ func TestResolve_bodySatisfied_byCurrentUser(t *testing.T) {
 }
 
 func TestResolve_bodySatisfied_byRecencyFallback(t *testing.T) {
-	// requiresBody=true, no --body, currentUser lookup fails, but most recent
-	// comment is within the last 60s.
+	// requiresBody=true, no --body, currentUser lookup returns "" (no error),
+	// most recent comment is within the last 60s — recency fallback engages.
 	recent := time.Now().UTC().Add(-30 * time.Second).Format(time.RFC3339)
-	f := &resolveFake{
+	f := &recencyFallbackFake{
 		fakeAPI: fakeAPI{threads: []github.ReviewThread{{
 			ID:       "PRRT_a",
 			Comments: []github.ThreadComment{{AuthorType: "User", Author: "alice", CreatedAt: recent}},
 		}}},
-		currentUser: "", // lookup fails
 	}
 	got, _, opErr := Resolve(context.Background(), f, "o", "r", 1, "PRRT_a", "")
 	if opErr != nil {
@@ -154,6 +153,45 @@ func TestResolve_bodySatisfied_byRecencyFallback(t *testing.T) {
 	}
 	if got == nil {
 		t.Fatal("expected thread, got nil")
+	}
+}
+
+// recencyFallbackFake returns ("", nil) from CurrentUserLogin so the recency
+// fallback engages (per the documented bodySatisfied semantics).
+type recencyFallbackFake struct {
+	fakeAPI
+}
+
+func (r *recencyFallbackFake) CurrentUserLogin(_ context.Context) (string, error) {
+	return "", nil
+}
+
+func (r *recencyFallbackFake) ReplyToThread(_ context.Context, _, _ string) (github.ThreadComment, error) {
+	return github.ThreadComment{}, nil
+}
+
+func (r *recencyFallbackFake) ResolveThread(_ context.Context, _ string) error {
+	return nil
+}
+
+func TestResolve_bodySatisfied_errorBlocksFallback(t *testing.T) {
+	// requiresBody=true, no --body, CurrentUserLogin returns an error.
+	// Per the documented semantics, recency fallback is NOT used when the
+	// login lookup fails — the body-required gate must trip.
+	recent := time.Now().UTC().Add(-30 * time.Second).Format(time.RFC3339)
+	f := &resolveFake{
+		fakeAPI: fakeAPI{threads: []github.ReviewThread{{
+			ID:       "PRRT_a",
+			Comments: []github.ThreadComment{{AuthorType: "User", Author: "alice", CreatedAt: recent}},
+		}}},
+		currentUser: "", // resolveFake returns an error in this case
+	}
+	_, _, opErr := Resolve(context.Background(), f, "o", "r", 1, "PRRT_a", "")
+	if opErr == nil {
+		t.Fatal("expected policy_violation when CurrentUserLogin errors; got success")
+	}
+	if opErr.Code != OpCodePolicy {
+		t.Errorf("expected OpCodePolicy, got %v", opErr.Code)
 	}
 }
 

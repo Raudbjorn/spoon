@@ -148,11 +148,16 @@ func TestSpnThreadsResolve_partialFailure(t *testing.T) {
 		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
 	}
 	var env map[string]map[string]any
-	_ = json.Unmarshal(stderr.Bytes(), &env)
+	if err := json.Unmarshal(stderr.Bytes(), &env); err != nil {
+		t.Fatalf("unmarshal stderr: %v", err)
+	}
 	if env["error"]["retryable"] != true {
 		t.Errorf("expected retryable")
 	}
-	d := env["error"]["details"].(map[string]any)
+	d, ok := env["error"]["details"].(map[string]any)
+	if !ok {
+		t.Fatalf("details not a map: %T", env["error"]["details"])
+	}
 	if d["comment_posted"] != true {
 		t.Errorf("expected comment_posted=true")
 	}
@@ -188,7 +193,9 @@ func TestSpnThreadsResolveAll_skipsHumanThreads(t *testing.T) {
 		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
 	}
 	var got map[string]any
-	_ = json.Unmarshal(stdout.Bytes(), &got)
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal stdout: %v", err)
+	}
 	succeeded, _ := got["succeeded"].([]any)
 	skipped, _ := got["skipped"].([]any)
 	if len(succeeded) != 1 || succeeded[0] != "PRRT_bot" {
@@ -197,7 +204,10 @@ func TestSpnThreadsResolveAll_skipsHumanThreads(t *testing.T) {
 	if len(skipped) != 1 {
 		t.Fatalf("expected 1 skipped, got %+v", skipped)
 	}
-	sk := skipped[0].(map[string]any)
+	sk, ok := skipped[0].(map[string]any)
+	if !ok {
+		t.Fatalf("skipped[0] not a map: %T", skipped[0])
+	}
 	if sk["id"] != "PRRT_user" || sk["reason"] != "requires_body" {
 		t.Errorf("skipped item: %+v", sk)
 	}

@@ -186,12 +186,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleClusterPrompt(msg)
 
 	case clusterPromptResponseMsg:
-		// User's answer goes back to the SelectEmbedder goroutine.
+		// User's answer goes back to the SelectEmbedder goroutine. Reply
+		// is a buffered channel (capacity 1) created by AskPull, so a
+		// blocking send won't deadlock and we won't silently drop the
+		// user's choice on a full select fallthrough.
 		if msg.Reply != nil {
-			select {
-			case msg.Reply <- msg.Yes:
-			default:
-			}
+			msg.Reply <- msg.Yes
 		}
 		m.clusterPendingPrompt = nil
 		if m.view == viewEmbedderBootstrap {

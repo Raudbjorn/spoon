@@ -299,6 +299,11 @@ func (m Model) collectSiblings(clusterID, selfID string) []string {
 // fitBoxLine pads or truncates a line so it fits inside the detail box
 // of width boxWidth, and appends the closing "│". The input string is
 // expected to start with the opening "│ ".
+//
+// Limitation: width is computed by byte length, not rune width. Multi-byte
+// runes (CJK, emoji) will under-count and produce a slightly wider visual
+// line than the nominal box width. For v1 this is acceptable; a future
+// revision can switch to runewidth.StringWidth + runewidth.Truncate.
 func fitBoxLine(line string, boxWidth int) string {
 	// boxWidth is the total width of the box including borders, so the
 	// content area between the two "│" characters is boxWidth-2 wide.

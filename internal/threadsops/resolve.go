@@ -91,18 +91,27 @@ func resolveTarget(ctx context.Context, api API, target *github.ReviewThread, th
 // because the agent has already explained itself on this thread.
 //
 // Primary signal: most recent comment is authored by the current authenticated
-// user. Fallback (when CurrentUserLogin fails or returns empty): most recent
-// comment is within bodySatisfiedRecencyWindow.
+// user.
+//
+// Fallback (only when CurrentUserLogin succeeds but returns empty login):
+// most recent comment is within bodySatisfiedRecencyWindow. If
+// CurrentUserLogin returns an error, return false without falling back —
+// we can't safely assume identity.
 func bodySatisfied(ctx context.Context, api API, t *github.ReviewThread) bool {
 	if len(t.Comments) == 0 {
 		return false
 	}
 	last := t.Comments[len(t.Comments)-1]
-	if login, err := api.CurrentUserLogin(ctx); err == nil && login != "" {
+	login, err := api.CurrentUserLogin(ctx)
+	if err != nil {
+		return false
+	}
+	if login != "" {
 		return last.Author == login
 	}
-	createdAt, err := time.Parse(time.RFC3339, last.CreatedAt)
-	if err != nil {
+	// err == nil && login == "": fall back to recency heuristic.
+	createdAt, parseErr := time.Parse(time.RFC3339, last.CreatedAt)
+	if parseErr != nil {
 		return false
 	}
 	return time.Since(createdAt) <= bodySatisfiedRecencyWindow

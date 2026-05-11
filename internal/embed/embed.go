@@ -19,6 +19,8 @@ type Vector []float32
 // Dim() may return 0 until the first successful Embed call. Implementations
 // should populate Dim once a real embedding has been seen. Embed must be safe
 // to call concurrently from multiple goroutines.
+// Implementations must use atomic/mutex synchronization to set Dim once
+// populated; concurrent reads must be safe.
 type Embedder interface {
 	Embed(ctx context.Context, texts []string) ([]Vector, error)
 	Dim() int
@@ -35,7 +37,8 @@ type ModelSuggestion struct {
 }
 
 // PreferredEmbeddingModels is the ranked list, best-quality-first per category.
-// Read-only. Do not mutate.
+// Read-only. Do not mutate — use PreferredEmbeddingModelsCopy() for any
+// mutating caller. Retained as an exported var for backwards compatibility.
 var PreferredEmbeddingModels = []ModelSuggestion{
 	{Name: "nomic-embed-text", SizeMB: 274, Dim: 768, Default: true, OnOllama: true},
 	{Name: "mxbai-embed-large", SizeMB: 670, Dim: 1024, OnOllama: true},
@@ -44,6 +47,15 @@ var PreferredEmbeddingModels = []ModelSuggestion{
 	{Name: "jina-embeddings-v2-base-code", Dim: 768, CodeAware: true},
 	{Name: "codebert-base", Dim: 768, CodeAware: true},
 	{Name: "unixcoder-base", Dim: 768, CodeAware: true},
+}
+
+// PreferredEmbeddingModelsCopy returns a defensive copy of
+// PreferredEmbeddingModels. Use this in any caller that may mutate the
+// returned slice (e.g., reordering, appending).
+func PreferredEmbeddingModelsCopy() []ModelSuggestion {
+	out := make([]ModelSuggestion, len(PreferredEmbeddingModels))
+	copy(out, PreferredEmbeddingModels)
+	return out
 }
 
 const (

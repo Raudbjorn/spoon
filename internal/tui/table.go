@@ -80,10 +80,12 @@ func (m Model) viewTable() string {
 		sf := m.forks[i]
 
 		// Emit a cluster header before the first row of each group when
-		// grouping is enabled.
+		// grouping is enabled. Emit at the absolute top of the list, or
+		// whenever the cluster ID changes from the previous (visible or
+		// scrolled-past) row.
 		if m.groupByCluster {
 			curID := sf.Heat.ClusterID
-			if i == start || curID != prevClusterID {
+			if (start == 0 && i == start) || curID != prevClusterID {
 				b.WriteString(m.renderClusterHeader(curID))
 				b.WriteString("\n")
 			}

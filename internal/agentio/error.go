@@ -46,8 +46,13 @@ func (e *Error) WithDetails(d map[string]any) *Error {
 	return e
 }
 
-// WithRetryAfter attaches retry_after_seconds.
+// WithRetryAfter attaches retry_after_seconds. Negative values are clamped
+// to 0 — agents that consume the envelope shouldn't have to handle negative
+// sleeps.
 func (e *Error) WithRetryAfter(seconds int) *Error {
+	if seconds < 0 {
+		seconds = 0
+	}
 	e.RetryAfterSeconds = &seconds
 	return e
 }

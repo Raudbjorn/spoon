@@ -110,7 +110,7 @@ func TestLoadCache_ModelMismatch(t *testing.T) {
 	t.Setenv("HOME", tmp)
 
 	c := newFixtureCache()
-	c.EmbedderModel = "mxbai-embed-large"
+	// EmbedderModel is "mxbai-embed-large" via newFixtureCache.
 	if err := SaveCache(c); err != nil {
 		t.Fatalf("SaveCache: %v", err)
 	}

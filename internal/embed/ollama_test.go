@@ -133,7 +133,10 @@ func TestNewFromEnv_Defaults(t *testing.T) {
 func TestNewFromEnv_Overrides(t *testing.T) {
 	t.Setenv(envEndpoint, "http://example.com:9999")
 	t.Setenv(envModel, "custom-model")
-	oc := NewFromEnv().(*OllamaClient)
+	oc, ok := NewFromEnv().(*OllamaClient)
+	if !ok {
+		t.Fatal("NewFromEnv should return *OllamaClient")
+	}
 	if oc.Endpoint != "http://example.com:9999" {
 		t.Errorf("Endpoint = %q", oc.Endpoint)
 	}
