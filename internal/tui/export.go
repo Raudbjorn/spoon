@@ -50,6 +50,7 @@ type ExportFork struct {
 	ClusterLabel       string  `json:"clusterLabel,omitempty"`
 	NoveltyScore       float64 `json:"noveltyScore,omitempty"`
 	ClusterMemberCount int     `json:"clusterMemberCount,omitempty"`
+	ChangeImpact       float64 `json:"changeImpact,omitempty"`
 }
 
 // ExportLoneWolf is the lone wolf signal export.
