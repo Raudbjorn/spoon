@@ -2014,13 +2014,13 @@ func buildFileMap(repoPath string) (map[string]string, error) {
 		dirToModule[p.ImportPath] = p.ImportPath
 	}
 	// Walk the filesystem and bind file → module.
-	err = filepath.Walk(repoPath, func(path string, info filepathFileInfoAdapter, walkErr error) error {
+	err = filepath.WalkDir(repoPath, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return nil
 		}
-		if info != nil && info.IsDir() {
+		if d.IsDir() {
 			if excludedDirs[filepath.Base(path)] {
-				return filepath.SkipDir
+				return fs.SkipDir
 			}
 			return nil
 		}
@@ -2076,12 +2076,6 @@ func modulePathFor(pkgs []goPkgInfo) string {
 	return prefix
 }
 
-// filepathFileInfoAdapter is the filepath.Walk callback's FileInfo. Aliased
-// here to keep imports tidy.
-type filepathFileInfoAdapter = interface {
-	IsDir() bool
-}
-
 // topKByScore returns the top-K paths from scores, sorted by score desc,
 // ties broken lexicographically.
 func topKByScore(scores map[string]float64, k int) []string {
@@ -2102,7 +2096,7 @@ func topKByScore(scores map[string]float64, k int) []string {
 }
 ```
 
-**Heads-up:** the `filepath.Walk` adapter pattern above is unusual because Go's stdlib `filepath.Walk` uses `os.FileInfo`. If the engineer prefers, replace the Walk call with `filepath.WalkDir` and switch the callback signature accordingly — the rest of the function is unchanged. The intent is "walk repoPath; for each .go file, bind its rel path to a module."
+**Note:** add `"io/fs"` to the imports for `fs.DirEntry` and `fs.SkipDir`. The original draft of this plan used `filepath.Walk` with an ad-hoc adapter interface; that pattern did not compile cleanly against Go's stdlib (`filepath.Walk` requires `os.FileInfo`, not a structural minimal interface). `filepath.WalkDir` is the right tool: it passes `fs.DirEntry` which exposes `IsDir()` directly. This block was rewritten on 2026-05-11 to match what was actually shipped.
 
 - [ ] **Step 4: Run tests to verify they pass**
 

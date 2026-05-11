@@ -111,7 +111,10 @@ func TestParsePythonPackages_MainFileMarked(t *testing.T) {
 	if !main.IsMain {
 		t.Errorf("app.__main__ should be IsMain")
 	}
-	lib := byPath["app.lib"]
+	lib, ok := byPath["app.lib"]
+	if !ok {
+		t.Fatalf("missing app.lib; got %v", pyKeys(byPath))
+	}
 	if lib.IsMain {
 		t.Errorf("app.lib should not be IsMain")
 	}
