@@ -2,14 +2,6 @@ package heat
 
 import "time"
 
-// Signal represents a named component of the heat score (legacy v1 API).
-type Signal struct {
-	Name   string  // e.g., "stars", "recency", "ahead"
-	Value  float64 // normalized value [0, 1]
-	Weight float64 // weight applied
-	Raw    float64 // raw input value before normalization
-}
-
 // Component represents a scored component with point budgets (v2 API).
 type Component struct {
 	Name   string  // e.g., "recency", "mna", "sync_ratio"
@@ -20,11 +12,9 @@ type Component struct {
 
 // HeatResult is the computed heat score for a fork.
 type HeatResult struct {
-	Score      float64  // 0-100
-	Tier       int      // 1, 2, or 3
-	Confidence float64  // 0.0-1.0
-	Signals    []Signal // component breakdown (legacy v1)
-	LoneWolf   *LoneWolfSignal
+	Score      float64 // 0-100
+	Tier       int     // 1, 2, or 3
+	Confidence float64 // 0.0-1.0
 
 	// V2 fields
 	Components []Component  // tiered component breakdown
@@ -41,17 +31,6 @@ type HeatResult struct {
 	NoveltyScore       float64 // 0..1
 	ClusterMemberCount int     // number of forks in this cluster; 0 when ClusterID == ""
 	ChangeImpact       float64 // 0..1; centrality-weighted impact of touched directories; 0 when centrality unavailable
-}
-
-// LoneWolfSignal describes whether a fork shows lone wolf characteristics (legacy).
-type LoneWolfSignal struct {
-	Detected       bool
-	Strength       float64 // 0.0-1.0
-	Contributors   int
-	LinesPerCommit float64
-	NetAdditions   int
-	CommitCount    int
-	Label          string // "lone wolf", "focused effort", "small team"
 }
 
 // Archetype classifies the lone wolf behavior pattern.
