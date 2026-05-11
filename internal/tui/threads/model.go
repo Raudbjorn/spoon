@@ -140,6 +140,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case codeContextLoadedMsg:
+		if msg.err != nil {
+			m.status = "code context fetch failed: " + msg.err.Error()
+			return m, nil
+		}
 		if m.codeContexts == nil {
 			m.codeContexts = map[string]*threadsops.CodeContext{}
 		}
@@ -266,8 +270,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			if sug == nil {
-				// No suggestion on this thread — fall back to resolve-all.
-				m.confirm = "resolve-all"
+				// No suggestion on this thread — show a status message and do nothing.
+				m.status = "no suggestion on this thread"
 				return m, nil
 			}
 			m.confirm = "apply-suggestion"
@@ -304,13 +308,14 @@ type mutationDoneMsg struct {
 type codeContextLoadedMsg struct {
 	threadID string
 	cc       *threadsops.CodeContext
+	err      error
 }
 
 // codeContextCmd issues a single code-context fetch for one thread.
 func (m Model) codeContextCmd(t threadsops.ReviewThreadWithPolicy, headSHA string) tea.Cmd {
 	return func() tea.Msg {
-		cc, _ := threadsops.FetchCodeContext(context.Background(), m.client, headSHA, m.owner, m.repo, t, m.ShowCodeLines)
-		return codeContextLoadedMsg{threadID: t.ID, cc: cc}
+		cc, err := threadsops.FetchCodeContext(context.Background(), m.client, headSHA, m.owner, m.repo, t, m.ShowCodeLines)
+		return codeContextLoadedMsg{threadID: t.ID, cc: cc, err: err}
 	}
 }
 

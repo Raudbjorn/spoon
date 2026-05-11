@@ -55,8 +55,7 @@ func FetchCodeContext(ctx context.Context, fetcher ContentFetcher, prHeadRef, ow
 	}
 	content, err := fetcher.FetchFileContent(ctx, owner, repo, thread.Path, prHeadRef)
 	if err != nil {
-		// Treat as graceful skip rather than fatal — code context is informational.
-		return nil, nil
+		return nil, err
 	}
 	if content == "" {
 		return nil, nil

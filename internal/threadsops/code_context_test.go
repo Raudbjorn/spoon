@@ -2,6 +2,7 @@ package threadsops
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -151,7 +152,7 @@ func TestFetchCodeContext_OutdatedFlag(t *testing.T) {
 	}
 }
 
-func TestFetchCodeContext_FetchFails(t *testing.T) {
+func TestFetchCodeContext_EmptyContent(t *testing.T) {
 	f := &stubFetcher{content: ""}
 	thread := ReviewThreadWithPolicy{
 		ReviewThread: github.ReviewThread{Path: "a.go", Line: 5},
@@ -162,6 +163,20 @@ func TestFetchCodeContext_FetchFails(t *testing.T) {
 	}
 	if cc != nil {
 		t.Errorf("expected nil on empty content, got %+v", cc)
+	}
+}
+
+func TestFetchCodeContext_FetchError(t *testing.T) {
+	fetch := &stubFetcher{err: fmt.Errorf("fetch failed")}
+	thread := ReviewThreadWithPolicy{
+		ReviewThread: github.ReviewThread{Path: "a.go", Line: 5},
+	}
+	cc, err := FetchCodeContext(context.Background(), fetch, "ref", "o", "r", thread, 2)
+	if err == nil {
+		t.Fatal("expected non-nil error when fetch fails")
+	}
+	if cc != nil {
+		t.Errorf("expected nil CodeContext on error, got %+v", cc)
 	}
 }
 

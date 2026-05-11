@@ -66,8 +66,8 @@ func TestResolveAllRequiresConfirm(t *testing.T) {
 	m.threads = []gh.ReviewThread{{ID: "a"}}
 	m.loaded = true
 
-	// 'a' should set confirm state, NOT fire the cmd.
-	out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	// Ctrl+A should set confirm=resolve-all, NOT fire the cmd directly.
+	out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlA})
 	mm := out.(Model)
 	if mm.confirm != "resolve-all" {
 		t.Errorf("confirm=%q want resolve-all", mm.confirm)
@@ -80,6 +80,26 @@ func TestResolveAllRequiresConfirm(t *testing.T) {
 	out2, _ := mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
 	if out2.(Model).confirm != "" {
 		t.Errorf("confirm should clear after non-y key; got %q", out2.(Model).confirm)
+	}
+}
+
+func TestApplySuggestionNoOpWhenNone(t *testing.T) {
+	m := New(nil, "o", "r", 1, false)
+	// Thread with no suggestion in its comments.
+	m.threads = []gh.ReviewThread{{ID: "a", Comments: []gh.ThreadComment{{Body: "just a comment"}}}}
+	m.loaded = true
+
+	// 'a' with no suggestion should NOT trigger resolve-all or any confirm.
+	out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	mm := out.(Model)
+	if mm.confirm != "" {
+		t.Errorf("confirm=%q want empty (no suggestion should be a no-op)", mm.confirm)
+	}
+	if mm.status == "" {
+		t.Errorf("expected a status message when no suggestion present, got empty string")
+	}
+	if cmd != nil {
+		t.Errorf("expected no cmd when no suggestion; got %v", cmd)
 	}
 }
 
