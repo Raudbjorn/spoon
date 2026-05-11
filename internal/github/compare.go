@@ -27,26 +27,6 @@ func (c *Client) FetchCompare(ctx context.Context, parentOwner, parentRepo, pare
 	return result, nil
 }
 
-// UniqueAuthors extracts unique author logins from compare commits.
-func UniqueAuthors(compare CompareResult) []string {
-	seen := make(map[string]bool)
-	var authors []string
-	for _, commit := range compare.Commits {
-		login := ""
-		if commit.Author != nil {
-			login = commit.Author.Login
-		}
-		if login == "" {
-			login = commit.CommitDet.Author.Name
-		}
-		if login != "" && !seen[login] {
-			seen[login] = true
-			authors = append(authors, login)
-		}
-	}
-	return authors
-}
-
 func isNotFound(err error) bool {
 	if err == nil {
 		return false
