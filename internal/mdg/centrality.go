@@ -32,10 +32,19 @@ type Centrality struct {
 	core       []string
 	computedAt time.Time
 
-	// dirToModule maps a slash-separated directory (relative to repoPath,
-	// e.g., "internal/auth") to its canonical module path. Used by ScoreFork
-	// to translate a touched file path → its module's score. The root package
-	// is keyed by the empty string.
+	// fileToModule maps a slash-separated relative file path to its module
+	// path. For Go packages every .go file in a package directory maps to
+	// the package's import path. For Python every .py file maps to its
+	// dotted module name (file-granular). Populated at build time from the
+	// parsers' per-file/per-package data.
+	fileToModule map[string]string
+
+	// dirToModule maps a slash-separated directory key (without trailing
+	// slash) to the canonical module path of any Go package whose files
+	// live there. Used as a fallback in ScoreFork when an exact file match
+	// in fileToModule fails — e.g., a touched README.md inside a Go package
+	// directory. Python entries are not added here because each .py file is
+	// its own module, so there is no useful "dir → one module" mapping.
 	dirToModule map[string]string
 }
 
@@ -55,41 +64,50 @@ func BuildCentrality(
 	tp := g.EntryPointTeleport()
 	scores := g.PageRank(tp, defaultDamping, defaultIterations)
 
-	// Build the dir → module map by inverting each in-module Go node's path:
-	// the on-disk directory equals ImportPath minus the module prefix.
-	// External (Lang == "") nodes don't have an on-disk directory; skip them.
-	modulePath, err := readGoModulePath(repoPath)
-	if err != nil {
-		// Build would normally have failed first, but if Build's pre-checks
-		// ever change and a callout gets here without a go.mod, surface a
-		// clean error rather than building a half-empty map.
-		return nil, err
-	}
+	// Re-derive per-file and per-dir module mappings by calling the parsers
+	// once more. parseGoPackages may return (nil, nil) for non-Go repos and
+	// parsePythonPackages may return nil for non-Python repos; both are fine.
+	fileToModule := make(map[string]string)
 	dirToModule := make(map[string]string)
-	for _, n := range g.Nodes {
-		if n.Lang != "go" {
-			continue
+
+	goPkgs, _ := parseGoPackages(repoPath)
+	for _, p := range goPkgs {
+		for _, f := range p.Files {
+			fileToModule[f] = p.ImportPath
 		}
-		rel := strings.TrimPrefix(n.Path, modulePath)
-		rel = strings.TrimPrefix(rel, "/")
-		dirToModule[rel] = n.Path
+		// Derive directory key from the package's first file (any file in
+		// the package lives in the same directory).
+		if len(p.Files) > 0 {
+			d := parentDir(p.Files[0])
+			dirToModule[d] = p.ImportPath
+		}
+	}
+
+	pyPkgs, _ := parsePythonPackages(repoPath)
+	for _, p := range pyPkgs {
+		fileToModule[p.File] = p.ImportPath
 	}
 
 	return &Centrality{
-		Provider:    provider,
-		Owner:       repoOwner,
-		Repo:        repoName,
-		HeadSHA:     headSHA,
-		Scores:      scores,
-		core:        topKByScore(scores, defaultTopK),
-		computedAt:  time.Now().UTC(),
-		dirToModule: dirToModule,
+		Provider:     provider,
+		Owner:        repoOwner,
+		Repo:         repoName,
+		HeadSHA:      headSHA,
+		Scores:       scores,
+		core:         topKByScore(scores, defaultTopK),
+		computedAt:   time.Now().UTC(),
+		fileToModule: fileToModule,
+		dirToModule:  dirToModule,
 	}, nil
 }
 
 // ScoreFork returns the normalized mean PageRank score across the modules
-// touched by the fork's files. Files whose directory does not map to any
-// known module contribute 0 (and are not counted toward the mean).
+// touched by the fork's files. Files whose path does not map to any known
+// module contribute 0 (and are not counted toward the mean).
+//
+// Lookup order: exact file match in fileToModule wins; if not found, fall
+// back to dirToModule using the file's parent directory (handles non-source
+// files such as README.md inside a known Go package directory).
 //
 // The result is in [0,1]: divided by the top PageRank score in the table so
 // the most-central module produces a 1.0 score.
@@ -113,9 +131,13 @@ func (c *Centrality) ScoreFork(touchedFiles []string) float64 {
 		if f == "" {
 			continue
 		}
-		d := parentDir(f)
-		mod, ok := c.dirToModule[d]
+		// Exact file match wins. Fall back to dir match for non-source
+		// files in known Go package directories.
+		mod, ok := c.fileToModule[f]
 		if !ok {
+			mod = c.dirToModule[parentDir(f)]
+		}
+		if mod == "" {
 			continue
 		}
 		if _, dup := seen[mod]; dup {
