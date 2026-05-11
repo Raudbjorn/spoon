@@ -179,18 +179,18 @@ func parseThreadsFlags(args []string) (threadsFlags, error) {
 			}
 			i++
 			f.repoRoot = args[i]
-		case a == "--show-code":
-			if i+1 >= len(args) {
-				return f, fmt.Errorf("--show-code requires a value")
+		case a == "--show-code", strings.HasPrefix(a, "--show-code="):
+			var val string
+			if a == "--show-code" {
+				if i+1 >= len(args) {
+					return f, fmt.Errorf("--show-code requires a value")
+				}
+				i++
+				val = args[i]
+			} else {
+				val = strings.TrimPrefix(a, "--show-code=")
 			}
-			i++
-			n, err := strconv.Atoi(args[i])
-			if err != nil || n < 0 {
-				return f, fmt.Errorf("--show-code must be a non-negative integer")
-			}
-			f.showCodeLines = n
-		case strings.HasPrefix(a, "--show-code="):
-			n, err := strconv.Atoi(strings.TrimPrefix(a, "--show-code="))
+			n, err := strconv.Atoi(val)
 			if err != nil || n < 0 {
 				return f, fmt.Errorf("--show-code must be a non-negative integer")
 			}
@@ -639,17 +639,16 @@ func runThreads(args []string) int {
 		return 0
 
 	case modeApplySuggestion:
-		status, _, ferr := client.FetchPR(ctx, owner, repo, number, gh.ThreadStateAll)
-		if ferr != nil {
-			fmt.Fprintln(os.Stderr, "❌ Error:", ferr)
-			return 1
-		}
-		emitStatus(os.Stdout, status, number, flags.noStatus)
-		_, threads, opErr := threadsops.List(ctx, client, owner, repo, number, true)
+		// One round-trip: ListWithOptions returns both the PR status header
+		// and the annotated thread list. The previous code did an explicit
+		// FetchPR followed by threadsops.List, which internally calls FetchPR
+		// again — two GraphQL hits for the same data.
+		status, threads, opErr := threadsops.ListWithOptions(ctx, client, owner, repo, number, threadsops.ListOptions{IncludeResolved: true})
 		if opErr != nil {
 			fmt.Fprintln(os.Stderr, "❌ Error:", opErr.Message)
 			return 1
 		}
+		emitStatus(os.Stdout, status, number, flags.noStatus)
 		var target *threadsops.ReviewThreadWithPolicy
 		for i := range threads {
 			if threads[i].ID == flags.targetID {

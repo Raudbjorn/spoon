@@ -50,9 +50,15 @@ func renderModel(m Model) string {
 			}
 			b.WriteString(renderCommentBody(t.Comments[0].Body))
 			b.WriteString("\n")
-			sugs := threadsops.ParseSuggestions("", t.Comments[0].Body)
-			if len(sugs) > 0 {
-				hasSuggestion = true
+			// Scan every comment in the thread for a suggestion block — not just
+			// the first one — so the hint matches what `apply-suggestion` sees.
+			for _, c := range t.Comments {
+				if len(threadsops.ParseSuggestions(c.ID, c.Body)) > 0 {
+					hasSuggestion = true
+					break
+				}
+			}
+			if hasSuggestion {
 				fmt.Fprintf(&b, "\n💡 Suggestion available (a to apply)\n")
 			}
 		}
@@ -97,10 +103,11 @@ func renderTUIStatus(s gh.PullRequestStatus, number int) string {
 	return b.String()
 }
 
-// renderCommentBody renders a comment body. Any embedded ```suggestion blocks
-// are visually marked with a "💡 Suggestion:" prefix on the fence lines so a
-// human reader can spot them at a glance. The body itself is returned
-// otherwise unchanged so the text remains paste-friendly.
+// renderCommentBody renders the comment body for the detail pane. Suggestion
+// blocks are transformed for visual separation: the opening fence becomes a
+// "💡 Suggestion:" marker, the closing fence becomes "    (end suggestion)",
+// and each suggestion-content line is prefixed with "  | ". All other lines
+// (outside any suggestion block) are unchanged.
 func renderCommentBody(body string) string {
 	if body == "" {
 		return body

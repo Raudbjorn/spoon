@@ -77,18 +77,18 @@ func doThreadsList(args []string, stdout, stderr io.Writer) int {
 			filterRaw = args[i]
 		case strings.HasPrefix(a, "--filter="):
 			filterRaw = strings.TrimPrefix(a, "--filter=")
-		case a == "--show-code":
-			if i+1 >= len(args) {
-				return agentio.NewError(agentio.CodeBadInput, "--show-code requires a value", agentio.RemediationBadInput("threads", "list")).Emit(stderr)
+		case a == "--show-code", strings.HasPrefix(a, "--show-code="):
+			var val string
+			if a == "--show-code" {
+				if i+1 >= len(args) {
+					return agentio.NewError(agentio.CodeBadInput, "--show-code requires a value", agentio.RemediationBadInput("threads", "list")).Emit(stderr)
+				}
+				i++
+				val = args[i]
+			} else {
+				val = strings.TrimPrefix(a, "--show-code=")
 			}
-			i++
-			n, err := parseShowCode(args[i])
-			if err != nil {
-				return agentio.NewError(agentio.CodeBadInput, err.Error(), agentio.RemediationBadInput("threads", "list")).Emit(stderr)
-			}
-			showCode = n
-		case strings.HasPrefix(a, "--show-code="):
-			n, err := parseShowCode(strings.TrimPrefix(a, "--show-code="))
+			n, err := parseShowCode(val)
 			if err != nil {
 				return agentio.NewError(agentio.CodeBadInput, err.Error(), agentio.RemediationBadInput("threads", "list")).Emit(stderr)
 			}
@@ -197,18 +197,18 @@ func doThreadsNext(args []string, stdout, stderr io.Writer) int {
 		switch {
 		case a == "--verbose" || a == "-v":
 			verbose = true
-		case a == "--show-code":
-			if i+1 >= len(args) {
-				return agentio.NewError(agentio.CodeBadInput, "--show-code requires a value", agentio.RemediationBadInput("threads", "next")).Emit(stderr)
+		case a == "--show-code", strings.HasPrefix(a, "--show-code="):
+			var val string
+			if a == "--show-code" {
+				if i+1 >= len(args) {
+					return agentio.NewError(agentio.CodeBadInput, "--show-code requires a value", agentio.RemediationBadInput("threads", "next")).Emit(stderr)
+				}
+				i++
+				val = args[i]
+			} else {
+				val = strings.TrimPrefix(a, "--show-code=")
 			}
-			i++
-			n, err := parseShowCode(args[i])
-			if err != nil {
-				return agentio.NewError(agentio.CodeBadInput, err.Error(), agentio.RemediationBadInput("threads", "next")).Emit(stderr)
-			}
-			showCode = n
-		case strings.HasPrefix(a, "--show-code="):
-			n, err := parseShowCode(strings.TrimPrefix(a, "--show-code="))
+			n, err := parseShowCode(val)
 			if err != nil {
 				return agentio.NewError(agentio.CodeBadInput, err.Error(), agentio.RemediationBadInput("threads", "next")).Emit(stderr)
 			}
@@ -397,18 +397,18 @@ func doThreadsResolve(args []string, stdout, stderr io.Writer) int {
 			dryRun = true
 		case a == "--verbose" || a == "-v":
 			verbose = true
-		case a == "--show-code":
-			if i+1 >= len(args) {
-				return agentio.NewError(agentio.CodeBadInput, "--show-code requires a value", agentio.RemediationBadInput("threads", "resolve")).Emit(stderr)
+		case a == "--show-code", strings.HasPrefix(a, "--show-code="):
+			var val string
+			if a == "--show-code" {
+				if i+1 >= len(args) {
+					return agentio.NewError(agentio.CodeBadInput, "--show-code requires a value", agentio.RemediationBadInput("threads", "resolve")).Emit(stderr)
+				}
+				i++
+				val = args[i]
+			} else {
+				val = strings.TrimPrefix(a, "--show-code=")
 			}
-			i++
-			n, err := parseShowCode(args[i])
-			if err != nil {
-				return agentio.NewError(agentio.CodeBadInput, err.Error(), agentio.RemediationBadInput("threads", "resolve")).Emit(stderr)
-			}
-			showCode = n
-		case strings.HasPrefix(a, "--show-code="):
-			n, err := parseShowCode(strings.TrimPrefix(a, "--show-code="))
+			n, err := parseShowCode(val)
 			if err != nil {
 				return agentio.NewError(agentio.CodeBadInput, err.Error(), agentio.RemediationBadInput("threads", "resolve")).Emit(stderr)
 			}
