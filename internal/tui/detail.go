@@ -43,36 +43,24 @@ func (m Model) viewDetail() string {
 	// Why it's hot
 	b.WriteString("│ 🔥 Why it's hot:" + pad(boxWidth-20, " ") + " │\n")
 
-	// Component breakdown
-	if len(sf.Heat.Components) > 0 {
-		for _, c := range sf.Heat.Components {
-			if c.Points < 0.5 {
-				continue
-			}
-			pct := c.Points / c.Max
-			arrow := "→"
-			if pct > 0.75 {
-				arrow = "↑"
-			} else if pct < 0.25 {
-				arrow = "↓"
-			}
-			desc := componentDescription(c.Name, c.Raw, c.Points, c.Max)
-			line := fmt.Sprintf("│  %s %-48s │", arrow, desc)
-			if len(line) > boxWidth+2 {
-				line = line[:boxWidth+1] + "│"
-			}
-			b.WriteString(line + "\n")
+	// Component breakdown (v2)
+	for _, c := range sf.Heat.Components {
+		if c.Points < 0.5 {
+			continue
 		}
-	} else if len(sf.Heat.Signals) > 0 {
-		// Legacy signal breakdown
-		for _, sig := range sf.Heat.Signals {
-			contribution := sig.Value * sig.Weight * 100
-			if contribution < 0.5 {
-				continue
-			}
-			desc := fmt.Sprintf("%-15s +%.0f", sig.Name, contribution)
-			b.WriteString(fmt.Sprintf("│  → %-48s │\n", desc))
+		pct := c.Points / c.Max
+		arrow := "→"
+		if pct > 0.75 {
+			arrow = "↑"
+		} else if pct < 0.25 {
+			arrow = "↓"
 		}
+		desc := componentDescription(c.Name, c.Raw, c.Points, c.Max)
+		line := fmt.Sprintf("│  %s %-48s │", arrow, desc)
+		if len(line) > boxWidth+2 {
+			line = line[:boxWidth+1] + "│"
+		}
+		b.WriteString(line + "\n")
 	}
 
 	// Penalties
@@ -83,30 +71,23 @@ func (m Model) viewDetail() string {
 		}
 	}
 
-	// Lone wolf section
+	// Lone wolf section (v2)
 	lwV2 := sf.Heat.LoneWolfV2
-	lwV1 := sf.Heat.LoneWolf
-	if (lwV2 != nil && lwV2.Detected) || (lwV1 != nil && lwV1.Detected) {
+	if lwV2 != nil && lwV2.Detected {
 		b.WriteString("├" + hr + "┤\n")
 
-		if lwV2 != nil && lwV2.Detected {
-			archLabel := lwV2.Label
-			if lwV2.Archetype.String() != "" {
-				archLabel = lwV2.Archetype.String()
-			}
-			wolfStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Bold(true)
-			b.WriteString(fmt.Sprintf("│ %s", wolfStyle.Render("🐺 The "+archLabel)))
-			b.WriteString(pad(boxWidth-8-len(archLabel), " ") + " │\n")
-			b.WriteString(fmt.Sprintf("│  Solo dev, active over %.0f days%s │\n",
-				lwV2.CommitSpanDays, pad(boxWidth-32-len(fmt.Sprintf("%.0f", lwV2.CommitSpanDays)), " ")))
-			b.WriteString(fmt.Sprintf("│  %d commits · MNA %d%s │\n",
-				lwV2.MeaningfulCommits, lwV2.MNA,
-				pad(boxWidth-22-len(fmt.Sprintf("%d", lwV2.MeaningfulCommits))-len(fmt.Sprintf("%d", lwV2.MNA)), " ")))
-		} else if lwV1 != nil && lwV1.Detected {
-			wolfStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Bold(true)
-			b.WriteString(fmt.Sprintf("│ %s (strength %.0f%%)\n",
-				wolfStyle.Render("["+lwV1.Label+"]"), lwV1.Strength*100))
+		archLabel := lwV2.Label
+		if lwV2.Archetype.String() != "" {
+			archLabel = lwV2.Archetype.String()
 		}
+		wolfStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Bold(true)
+		b.WriteString(fmt.Sprintf("│ %s", wolfStyle.Render("🐺 The "+archLabel)))
+		b.WriteString(pad(boxWidth-8-len(archLabel), " ") + " │\n")
+		b.WriteString(fmt.Sprintf("│  Solo dev, active over %.0f days%s │\n",
+			lwV2.CommitSpanDays, pad(boxWidth-32-len(fmt.Sprintf("%.0f", lwV2.CommitSpanDays)), " ")))
+		b.WriteString(fmt.Sprintf("│  %d commits · MNA %d%s │\n",
+			lwV2.MeaningfulCommits, lwV2.MNA,
+			pad(boxWidth-22-len(fmt.Sprintf("%d", lwV2.MeaningfulCommits))-len(fmt.Sprintf("%d", lwV2.MNA)), " ")))
 	}
 
 	// Branch info

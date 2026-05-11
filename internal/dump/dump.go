@@ -300,15 +300,21 @@ func writeJSON(w io.Writer, auth forge.AuthInfo, parent *forge.ParentData, forks
 		ef.ClusterMemberCount = sf.Heat.ClusterMemberCount
 		ef.ChangeImpact = sf.Heat.ChangeImpact
 
-		if sf.Heat.LoneWolf != nil && sf.Heat.LoneWolf.Detected {
-			lw := sf.Heat.LoneWolf
+		if sf.Heat.LoneWolfV2 != nil && sf.Heat.LoneWolfV2.Detected {
+			lw := sf.Heat.LoneWolfV2
 			ef.LoneWolf = &tui.ExportLoneWolf{
-				Detected:       true,
-				Strength:       lw.Strength,
-				Contributors:   lw.Contributors,
-				LinesPerCommit: lw.LinesPerCommit,
-				NetAdditions:   lw.NetAdditions,
-				Label:          lw.Label,
+				Detected:          true,
+				Strength:          lw.Strength,
+				Archetype:         lw.Archetype.String(),
+				Label:             lw.Label,
+				EffectiveContribs: lw.EffectiveContribs,
+				MeaningfulCommits: lw.MeaningfulCommits,
+				MNA:               lw.MNA,
+				CommitSpanDays:    lw.CommitSpanDays,
+				FileSpread:        lw.FileSpread,
+				RevertCount:       lw.RevertCount,
+				IsSquash:          lw.IsSquash,
+				MsgQualityScore:   lw.MsgQualityScore,
 			}
 		}
 
