@@ -1,6 +1,6 @@
 # Future Work: Behavioral / Execution-Pattern Embeddings for Fork Clustering
 
-**Status:** Deferred from v1 of the fork novelty + cluster subsystem.
+**Status:** Rejected after gate experiment on 2026-05-11 — CodeExecutor underperformed nomic-embed-text by Kendall's tau −0.0826 on 53 hand-curated PR pairs (gate required +0.05). Full write-up: `experiments/started/behavioral-embeddings/RESULTS.md`. Originally deferred from v1 of the fork novelty + cluster subsystem.
 **Parent plan:** `plan-integrating-this-research-declarative-puddle.md`
 **Estimated effort:** 2–3 weeks engineering + evaluation.
 
