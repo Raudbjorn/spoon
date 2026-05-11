@@ -31,6 +31,34 @@ def load_records(path: str) -> list[dict]:
         return json.load(f)
 
 
+# State priority for ranking: prefer pairs of PRs that actually shipped.
+# A merged PR has the strongest signal that its diff represents real intent
+# the project endorsed. CLOSED-unmerged was still intent-bearing work; OPEN
+# is unsettled but still curatable.
+STATE_BONUS = {"MERGED": 0.10, "CLOSED": 0.05, "OPEN": 0.0}
+
+
+def load_states(path: str) -> dict[str, str]:
+    """Return {pr_id: state}. Missing file → empty map (no bonus applied)."""
+    import os
+    if not os.path.exists(path):
+        return {}
+    with open(path) as f:
+        return json.load(f)
+
+
+def state_bonus_for_pair(states: dict[str, str], a: str, b: str) -> float:
+    """Bonus added to a pair's similarity score: merged-merged gets +0.20."""
+    return STATE_BONUS.get(states.get(a, ""), 0.0) + STATE_BONUS.get(states.get(b, ""), 0.0)
+
+
+def state_rank(states: dict[str, str], pr_id: str) -> int:
+    """0=MERGED, 1=CLOSED, 2=OPEN, 3=unknown. Used as a sort key to prefer
+    merged PRs as bucket representatives in the diff-candidate generator."""
+    s = states.get(pr_id, "")
+    return {"MERGED": 0, "CLOSED": 1, "OPEN": 2}.get(s, 3)
+
+
 def first_line(s: str) -> str:
     if not s:
         return ""
@@ -70,8 +98,11 @@ def emit_browser(records: list[dict], out: Path) -> None:
     out.write_text("\n".join(lines) + "\n")
 
 
-def emit_same_candidates(records: list[dict], out: Path, top: int = 100) -> None:
-    """Rank pairs by a combined title-token + path Jaccard score."""
+def emit_same_candidates(
+    records: list[dict], out: Path, states: dict[str, str], top: int = 100
+) -> None:
+    """Rank pairs by title-token + path Jaccard plus a state-bonus that
+    pushes merged-merged pairs above merged-open above open-open."""
     scored = []
     for a, b in combinations(records, 2):
         ta = title_tokens(title_of(a))
@@ -80,29 +111,35 @@ def emit_same_candidates(records: list[dict], out: Path, top: int = 100) -> None
         path_j = jaccard(paths_of(a), paths_of(b))
         if title_j == 0 and path_j == 0:
             continue
-        score = 0.6 * title_j + 0.4 * path_j
-        if score < 0.10:
+        base = 0.6 * title_j + 0.4 * path_j
+        if base < 0.10:
             continue
+        bonus = state_bonus_for_pair(states, a["id"], b["id"])
+        score = base + bonus
         scored.append((score, title_j, path_j, a, b))
     scored.sort(key=lambda t: (-t[0], -t[1], -t[2], t[3]["id"], t[4]["id"]))
 
     lines = [
         "# Same-Intent Candidates\n",
-        "Ranked by `0.6 * title-token-jaccard + 0.4 * file-path-jaccard`. ",
-        "Score > 0.5 is strong, > 0.3 plausible, lower needs human review.\n",
-        "| score | t_j | p_j | a | b | titles |",
+        "Ranked by `0.6 * title-token-jaccard + 0.4 * file-path-jaccard` ",
+        "plus a state bonus (`MERGED`=+0.10, `CLOSED`=+0.05 each PR). ",
+        "Merged-merged pairs surface first; open-open pairs trail.\n",
+        "| score | t_j | p_j | a (state) | b (state) | titles |",
         "| --- | --- | --- | --- | --- | --- |",
     ]
     for s, tj, pj, a, b in scored[:top]:
+        sa = states.get(a["id"], "?")
+        sb = states.get(b["id"], "?")
         lines.append(
-            f"| {s:.2f} | {tj:.2f} | {pj:.2f} | `{a['id']}` | `{b['id']}` | "
-            f"{title_of(a)[:50]} ⇄ {title_of(b)[:50]} |"
+            f"| {s:.2f} | {tj:.2f} | {pj:.2f} | `{a['id']}` ({sa}) | "
+            f"`{b['id']}` ({sb}) | {title_of(a)[:50]} ⇄ {title_of(b)[:50]} |"
         )
     out.write_text("\n".join(lines) + "\n")
 
 
 def emit_different_candidates(
-    records: list[dict], out: Path, top: int = 60, max_per_pr: int = 2
+    records: list[dict], out: Path, states: dict[str, str],
+    top: int = 60, max_per_pr: int = 2,
 ) -> None:
     """Sample pairs with zero file overlap and distinct title themes.
 
@@ -133,9 +170,12 @@ def emit_different_candidates(
     out_pairs: list[tuple[dict, dict]] = []
 
     def least_used(bucket: list[dict]) -> dict | None:
-        # Return the bucket entry with the lowest pr_count; None if all are
-        # already at the cap.
-        ranked = sorted(bucket, key=lambda r: pr_count.get(r["id"], 0))
+        # Return the under-capped bucket entry preferring MERGED > CLOSED >
+        # OPEN, then lowest usage count. None if all are at the cap.
+        ranked = sorted(
+            bucket,
+            key=lambda r: (state_rank(states, r["id"]), pr_count.get(r["id"], 0)),
+        )
         for r in ranked:
             if pr_count.get(r["id"], 0) < max_per_pr:
                 return r
@@ -160,9 +200,20 @@ def emit_different_candidates(
         if len(out_pairs) >= top:
             break
 
+    # Rewrite header to surface state in the table.
+    lines = [
+        "# Different-Intent Candidates\n",
+        "Sampled pairs with no shared title tokens and zero file overlap. ",
+        f"Each PR appears in at most {max_per_pr} rows. Bucket reps preferred ",
+        "by state (MERGED > CLOSED > OPEN), so merged PRs surface first.\n",
+        "| a (state) | b (state) | titles |",
+        "| --- | --- | --- |",
+    ]
     for a, b in out_pairs:
+        sa = states.get(a["id"], "?")
+        sb = states.get(b["id"], "?")
         lines.append(
-            f"| `{a['id']}` | `{b['id']}` | "
+            f"| `{a['id']}` ({sa}) | `{b['id']}` ({sb}) | "
             f"{title_of(a)[:50]} ⇄ {title_of(b)[:50]} |"
         )
     out.write_text("\n".join(lines) + "\n")
@@ -187,9 +238,13 @@ def emit_summary(records: list[dict]) -> None:
 def main() -> None:
     here = Path(__file__).parent
     records = load_records(str(here / "features.json"))
+    states = load_states(str(here / "pr_states.json"))
+    if not states:
+        print("(no pr_states.json — state bonus disabled; "
+              "regenerate via: gh pr list --state all --limit 500 --json number,state | jq ... > pr_states.json)")
     emit_browser(records, here / "candidate_browser.md")
-    emit_same_candidates(records, here / "candidates_same.md")
-    emit_different_candidates(records, here / "candidates_different.md")
+    emit_same_candidates(records, here / "candidates_same.md", states)
+    emit_different_candidates(records, here / "candidates_different.md", states)
     emit_summary(records)
     print("wrote: candidate_browser.md candidates_same.md candidates_different.md")
 
