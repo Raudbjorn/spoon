@@ -69,14 +69,89 @@ func main() { _ = gh.Foo }
 
 func TestBuild_EmptyRepo(t *testing.T) {
 	root := t.TempDir()
-	// No go.mod, no source files. With the polyglot Build, this is not an
-	// error — it just produces an empty graph (no languages detected).
+	// No source files at all.
+	_, err := Build(context.Background(), root, BuildOptions{})
+	if err == nil {
+		t.Fatalf("Build should error when no supported language is present")
+	}
+}
+
+func TestBuild_PythonOnly(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "main.py", `import os
+from pkg.sub import helper
+`)
+	writeFile(t, root, "pkg/__init__.py", "")
+	writeFile(t, root, "pkg/sub/__init__.py", "")
+	writeFile(t, root, "pkg/sub/helper.py", "")
+
 	g, err := Build(context.Background(), root, BuildOptions{})
 	if err != nil {
-		t.Fatalf("Build should not error for an empty repo, got: %v", err)
+		t.Fatalf("Build: %v", err)
 	}
-	if len(g.Nodes) != 0 {
-		t.Fatalf("expected empty graph for empty repo, got %d nodes", len(g.Nodes))
+	if _, ok := g.Index["main"]; !ok {
+		t.Errorf("expected node 'main'; nodes=%+v", g.Nodes)
+	}
+	if _, ok := g.Index["pkg.sub.helper"]; !ok {
+		t.Errorf("expected node 'pkg.sub.helper'; nodes=%+v", g.Nodes)
+	}
+	imports := g.Edges["main"]
+	// "os" filtered as stdlib; "pkg.sub.helper" present (from from-import,
+	// resolved to the sub-module).
+	found := false
+	for _, e := range imports {
+		if e == "pkg.sub.helper" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("main → pkg.sub.helper edge missing; edges=%v", imports)
+	}
+}
+
+func TestBuild_PolyglotGoAndPython(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "go.mod", "module example.com/m\n")
+	writeFile(t, root, "main.go", "package main\nfunc main() {}\n")
+	writeFile(t, root, "scripts/tool.py", "import os\n")
+
+	g, err := Build(context.Background(), root, BuildOptions{})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if _, ok := g.Index["example.com/m"]; !ok {
+		t.Errorf("expected Go node example.com/m")
+	}
+	if _, ok := g.Index["scripts.tool"]; !ok {
+		t.Errorf("expected Python node scripts.tool")
+	}
+}
+
+func TestBuild_LanguageTagsCorrect(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "go.mod", "module example.com/m\n")
+	writeFile(t, root, "main.go", "package main\nfunc main() {}\n")
+	writeFile(t, root, "tool.py", "import os\n")
+
+	g, err := Build(context.Background(), root, BuildOptions{})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	// Find the Go module and confirm Lang=="go", IsMain==true.
+	for _, n := range g.Nodes {
+		if n.Path == "example.com/m" {
+			if n.Lang != "go" {
+				t.Errorf("Go module Lang: want %q, got %q", "go", n.Lang)
+			}
+			if !n.IsMain {
+				t.Errorf("Go main package should be IsMain")
+			}
+		}
+		if n.Path == "tool" {
+			if n.Lang != "python" {
+				t.Errorf("Python module Lang: want %q, got %q", "python", n.Lang)
+			}
+		}
 	}
 }
 
