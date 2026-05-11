@@ -50,18 +50,49 @@ def main() -> int:
 
     feats = load_features(args.features)
     ids = list(feats.keys())
+
+    # Resume support: if --out already exists (a previous partial run), load
+    # it as the starting state and skip ids that already have a vector. This
+    # plus per-batch try/except means a transient OOM or tokenizer hiccup
+    # mid-run doesn't waste the embedded prefix.
     out: dict[str, list[float]] = {}
-    for i in range(0, len(ids), args.batch_size):
-        batch_ids = ids[i : i + args.batch_size]
+    if os.path.exists(args.out):
+        try:
+            with open(args.out) as f:
+                out = json.load(f)
+            print(f"resuming: {len(out)} vectors already in {args.out}", file=sys.stderr)
+        except (OSError, json.JSONDecodeError) as e:
+            print(f"could not resume from {args.out}: {e}; starting fresh", file=sys.stderr)
+            out = {}
+
+    todo_ids = [i for i in ids if i not in out]
+    failed = 0
+    for i in range(0, len(todo_ids), args.batch_size):
+        batch_ids = todo_ids[i : i + args.batch_size]
         batch_texts = [build_text(feats[bid]["features"]) for bid in batch_ids]
-        vecs = embed_batch(model, tokenizer, batch_texts, device)
+        try:
+            vecs = embed_batch(model, tokenizer, batch_texts, device)
+        except Exception as e:
+            failed += len(batch_ids)
+            print(f"  batch {i//args.batch_size}: skip ({len(batch_ids)} ids): {e}", file=sys.stderr)
+            # Flush what we have so far so a later batch failing doesn't kill
+            # progress from earlier batches.
+            with open(args.out, "w") as f:
+                json.dump(out, f)
+            continue
         for bid, v in zip(batch_ids, vecs):
             out[bid] = v
-        print(f"[{i + len(batch_ids)}/{len(ids)}] embedded", file=sys.stderr)
+        # Periodic flush every 4 batches (≈ 128 records) — bounds work-loss
+        # on a hard crash to roughly that interval.
+        if (i // args.batch_size) % 4 == 3:
+            with open(args.out, "w") as f:
+                json.dump(out, f)
+        print(f"[{i + len(batch_ids)}/{len(todo_ids)} new] embedded "
+              f"(total {len(out)}/{len(ids)})", file=sys.stderr)
 
     with open(args.out, "w") as f:
         json.dump(out, f)
-    print(f"wrote {len(out)} vectors to {args.out}", file=sys.stderr)
+    print(f"wrote {len(out)} vectors to {args.out} (failed batches: {failed})", file=sys.stderr)
     return 0
 
 
