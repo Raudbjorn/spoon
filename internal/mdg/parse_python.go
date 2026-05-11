@@ -54,6 +54,7 @@ type rawPyInfo struct {
 func parsePythonPackages(rootDir string) ([]pyPkgInfo, error) {
 	parser := sitter.NewParser()
 	parser.SetLanguage(python.GetLanguage())
+	defer parser.Close()
 
 	var raw []rawPyInfo
 	err := filepath.WalkDir(rootDir, func(path string, d fs.DirEntry, walkErr error) error {

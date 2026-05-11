@@ -2,7 +2,8 @@
 // Package mdg builds a Module Dependency Graph (MDG) for a repository and
 // scores modules by personalized PageRank. The graph nodes are modules
 // (e.g., Go packages), the edges are explicit import statements parsed from
-// source files. Phase A supports Go; later phases add Python and JS/TS.
+// source files. Phases A and B support Go and Python; a later phase may add
+// JS/TS.
 package mdg
 
 // Module is a single node in the MDG. Path is canonical — for Go it is the
