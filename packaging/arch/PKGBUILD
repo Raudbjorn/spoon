@@ -21,7 +21,7 @@ optdepends=(
 )
 provides=("spoon=${pkgver}" "spn=${pkgver}")
 conflicts=('spoon' 'spn')
-source=("${_pkgname}::git+${url}.git")
+source=("${_pkgname}::git+${url}.git#branch=main")
 sha256sums=('SKIP')
 install="${pkgname}.install"
 
@@ -77,11 +77,14 @@ package() {
 
     # Skill — installed to /usr/share/spoon/skills/. Claude Code does NOT
     # auto-discover system locations; the .install hook prints how to
-    # activate it.
-    install -Dm644 docs/superpowers/skills/using-spn/SKILL.md \
-        "${pkgdir}/usr/share/spoon/skills/using-spn/SKILL.md"
+    # activate it. The skill ships in a separate PR; install only when
+    # present so the package stays buildable on revisions that predate it.
+    if [ -f docs/superpowers/skills/using-spn/SKILL.md ]; then
+        install -Dm644 docs/superpowers/skills/using-spn/SKILL.md \
+            "${pkgdir}/usr/share/spoon/skills/using-spn/SKILL.md"
+    fi
 
-    # Design spec + plan as reference docs.
+    # Design spec + README as reference docs.
     install -Dm644 docs/superpowers/specs/2026-05-10-spn-bifurcation-design.md \
         "${pkgdir}/usr/share/doc/${pkgname}/spn-design.md"
     install -Dm644 README.md \
