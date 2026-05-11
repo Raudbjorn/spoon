@@ -340,6 +340,39 @@ func TestStdinPrompter_AskPull_NoCaps(t *testing.T) {
 	}
 }
 
+func TestStdinPrompter_AskPull_EOFDeclines(t *testing.T) {
+	var stderr bytes.Buffer
+	stdin := strings.NewReader("")
+	p := &StdinPrompter{Stderr: &stderr, Stdin: stdin}
+	yes, err := p.AskPull("nomic-embed-text", 274)
+	if err != nil {
+		t.Fatalf("AskPull: %v", err)
+	}
+	if yes {
+		t.Errorf("EOF with no input should decline; got yes")
+	}
+	out := stderr.String()
+	if !strings.Contains(out, "nomic-embed-text") {
+		t.Errorf("prompt text missing from stderr; got %q", out)
+	}
+	if !strings.Contains(out, "(274 MB)? [Y/n]") {
+		t.Errorf("prompt text missing size/options; got %q", out)
+	}
+}
+
+func TestStdinPrompter_AskPull_PartialThenEOF(t *testing.T) {
+	var stderr bytes.Buffer
+	stdin := strings.NewReader("y")
+	p := &StdinPrompter{Stderr: &stderr, Stdin: stdin}
+	yes, err := p.AskPull("nomic-embed-text", 274)
+	if err != nil {
+		t.Fatalf("AskPull: %v", err)
+	}
+	if !yes {
+		t.Errorf("partial input %q before EOF should be honored as yes", "y")
+	}
+}
+
 func TestStdinPrompter_ProgressFunc_Done(t *testing.T) {
 	var stderr bytes.Buffer
 	p := &StdinPrompter{Stderr: &stderr, Stdin: strings.NewReader("\n")}
