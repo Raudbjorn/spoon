@@ -98,3 +98,27 @@ Do **not** open a follow-up plan for the Phase B sidecar. The deferred status of
 If new evidence emerges (e.g., a CodeExecutor successor model with longer context, or a larger curated dataset with bigger diffs), revisit this experiment by rerunning `./run.sh` after replacing the embedder model in `embed_codeexecutor.py`. The harness is intact and the labeling work is preserved.
 
 The spec at `docs/superpowers/specs/future/future-work-behavioral-embeddings.md` should be updated to reflect this result (status: Rejected after gate experiment on 2026-05-11).
+
+## Addendum — CodeBERTa replication
+
+After the initial FAIL, a follow-up question came up: was CodeExecutor's loss specific to its behavioral pre-training, or a structural problem with code-aware MLM embedders on this task? We re-ran the harness against `huggingface/CodeBERTa-small-v1` (a RoBERTa-style MLM trained on CodeSearchNet, the same family as `CodeBERT` from the spec's source paper) to disambiguate.
+
+| embedder | τ | Δ vs nomic | gate |
+| --- | --- | --- | --- |
+| nomic-embed-text | −0.0085 | — | — |
+| CodeExecutor | −0.0911 | −0.0826 | FAIL by 0.13 |
+| CodeBERTa-small-v1 | −0.0940 | −0.0854 | FAIL by 0.14 |
+
+The two code-aware embedders score within 0.003 tau of each other — well within run-to-run noise. **The failure is structural to the "code-aware MLM with 512-token window + mean-pooling" recipe, not specific to CodeExecutor's behavioral pre-training.** Same prompt, same dataset, same analysis — different model — same answer.
+
+This strengthens the original verdict: two embedders from different pre-training paradigms (one masked-LM, one execution-simulation), both code-aware, both consistently underperform a general-text MLM by ~0.08 tau. If a third or fourth code-aware embedder were tested with this exact harness, the same outcome would be expected.
+
+Reproduce with:
+```sh
+.venv/bin/python embed_codeexecutor.py \
+    --model huggingface/CodeBERTa-small-v1 \
+    --out codeberta_vectors.json
+.venv/bin/python analyze.py \
+    --codeexecutor codeberta_vectors.json \
+    --out RESULTS_CODEBERTA.md
+```
