@@ -165,6 +165,34 @@ func TestParsePythonPackages_BrokenFile(t *testing.T) {
 	}
 }
 
+func TestParsePythonPackages_SymbolImportCollapses(t *testing.T) {
+	// `from pkg.util import MyClass` where MyClass is a symbol (not a
+	// MyClass.py file) should collapse the raw "pkg.util.MyClass" import to
+	// "pkg.util" via resolveImport's parent-lookup branch.
+	root := t.TempDir()
+	writeFile(t, root, "main.py", "from pkg.util import MyClass\n")
+	writeFile(t, root, "pkg/__init__.py", "")
+	writeFile(t, root, "pkg/util.py", "class MyClass: pass\n")
+
+	pkgs, err := parsePythonPackages(root)
+	if err != nil {
+		t.Fatalf("parsePythonPackages: %v", err)
+	}
+	byPath := map[string]pyPkgInfo{}
+	for _, p := range pkgs {
+		byPath[p.ImportPath] = p
+	}
+	main, ok := byPath["main"]
+	if !ok {
+		t.Fatalf("missing 'main'; got %v", pyKeys(byPath))
+	}
+	// "pkg.util.MyClass" is not a known module; "pkg.util" is → collapse.
+	// The result should be exactly ["pkg.util"], not ["pkg.util.MyClass"].
+	if !equalStrSlices(main.Imports, []string{"pkg.util"}) {
+		t.Errorf("main imports: want [pkg.util] (collapsed symbol import), got %v", main.Imports)
+	}
+}
+
 // pyKeys is a sorted-keys helper. Named distinctly from Phase A's keys() so
 // the two test files don't collide.
 func pyKeys(m map[string]pyPkgInfo) []string {
