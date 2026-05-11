@@ -98,6 +98,12 @@ type Model struct {
 	clusterPendingPrompt *clusterPromptMsg // active prompt waiting for user answer
 	clusterMsgs          chan tea.Msg      // shared message channel cluster goroutines push onto
 
+	// lifecycleCtx is cancelled when the TUI quits; the cluster message
+	// pump (waitForClusterMsg) honors it so its blocked goroutine exits
+	// instead of leaking past program shutdown.
+	lifecycleCtx    context.Context
+	lifecycleCancel context.CancelFunc
+
 	// Cluster view toggle (T11): when true, the table is rendered with a
 	// header row per cluster. Toggled via the "g" key.
 	groupByCluster bool
@@ -106,15 +112,18 @@ type Model struct {
 // --- Constructor ---
 
 func NewModel(provider forge.Forge, auth forge.AuthInfo, repo string, refresh bool) Model {
+	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
 	return Model{
-		view:        viewInput,
-		provider:    provider,
-		auth:        auth,
-		initRepo:    repo,
-		refresh:     refresh,
-		sortCol:     "heat",
-		sortAsc:     false,
-		clusterMsgs: make(chan tea.Msg, 16),
+		view:            viewInput,
+		provider:        provider,
+		auth:            auth,
+		initRepo:        repo,
+		refresh:         refresh,
+		sortCol:         "heat",
+		sortAsc:         false,
+		clusterMsgs:     make(chan tea.Msg, 16),
+		lifecycleCtx:    lifecycleCtx,
+		lifecycleCancel: lifecycleCancel,
 	}
 }
 
@@ -134,7 +143,7 @@ func (m Model) Init() tea.Cmd {
 	} else {
 		m.authMsg = "Not authenticated. Run `gh auth login` for 5,000 req/hr (currently 60/hr)."
 	}
-	pump := waitForClusterMsg(m.clusterMsgs)
+	pump := waitForClusterMsg(m.clusterMsgs, m.lifecycleCtx)
 	if m.initRepo != "" {
 		return tea.Batch(pump, func() tea.Msg {
 			return startFetchMsg{}
@@ -445,6 +454,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+c":
 		m.quitting = true
 		m.cancelEnrichment()
+		m.cancelLifecycle()
 		return m, tea.Quit
 	}
 
@@ -501,6 +511,7 @@ func (m *Model) handleTableKey(key string) (tea.Model, tea.Cmd) {
 	case "q":
 		m.quitting = true
 		m.cancelEnrichment()
+		m.cancelLifecycle()
 		return m, tea.Quit
 	case "up", "k":
 		if m.cursor > 0 {
@@ -889,6 +900,16 @@ func (m *Model) cancelEnrichment() {
 		m.enrichCancel = nil
 	}
 	m.enriching = false
+}
+
+// cancelLifecycle cancels the model's lifecycle context, signalling the
+// long-running cluster message-pump goroutine to exit. Safe to call
+// multiple times.
+func (m *Model) cancelLifecycle() {
+	if m.lifecycleCancel != nil {
+		m.lifecycleCancel()
+		m.lifecycleCancel = nil
+	}
 }
 
 // --- Browser ---

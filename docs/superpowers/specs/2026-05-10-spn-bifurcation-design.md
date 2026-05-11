@@ -150,6 +150,13 @@ No envelope around success. Stdout is exclusively success data — failing comma
 | `rate_limited` | 1 | Provider returned 403/429 with rate-limit headers |
 | `internal` | 1 | Unexpected error / bug |
 
+The exit-code mapping above is part of the public contract: agent callers
+branch on it (`2` = "I gave you bad input or you lack auth"; `1` = "the
+upstream or the world failed"). Any change to the mapping is a breaking
+change. The contract is pinned by `TestExitCode_Contract` in
+`internal/agentio/error_test.go`; update that test in lockstep with any
+intentional change here.
+
 ### Remediation patterns
 
 Patterns live in `internal/agentio/remediations.go` as named constants with placeholders the call site fills in.

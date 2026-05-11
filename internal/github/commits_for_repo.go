@@ -16,8 +16,11 @@ type commitsListEntry struct {
 	} `json:"commit"`
 }
 
-// errStopPagination is a sentinel returned from GetPaginated callbacks to
-// terminate pagination early without bubbling up as a real error.
+// errStopPagination is a private sentinel returned from the GetPaginated
+// callback below to terminate pagination early. It is identity-compared
+// against the returned error (`err == errStopPagination`, not errors.Is)
+// because it is returned directly by the callback and GetPaginated does
+// not wrap it.
 var errStopPagination = errors.New("stop pagination")
 
 // FetchRecentCommitMessages returns up to `limit` recent commit messages from
@@ -50,8 +53,10 @@ func (c *Client) FetchRecentCommitMessages(ctx context.Context, owner, repo stri
 		}
 		return nil
 	})
-	if err != nil && !errors.Is(err, errStopPagination) {
-		if isNotFound(err) {
+	if err != nil && err != errStopPagination {
+		// 404 (empty/unknown repo) and 403 (private / per-resource rate
+		// limit) both yield no usable messages; return the empty shape.
+		if isNotFound(err) || isForbidden(err) {
 			return nil, nil
 		}
 		return nil, err

@@ -118,3 +118,27 @@ func TestApplyNoveltyToScore_Nil(t *testing.T) {
 	}()
 	ApplyNoveltyToScore(nil)
 }
+
+// TestApplyNoveltyToScore_DoesNotRescaleNonClustered pins the documented
+// asymmetry: novelty is layered on top of percentile-based heat as a
+// separate axis. Forks that didn't go through clustering (NoveltyScore == 0)
+// are left unchanged; forks that did get exactly novelty * 5 added. The two
+// distributions are NOT rescaled together — clustered forks may end up to
+// +5 ahead of unclustered ones for that reason, and this asymmetry is the
+// intentional cost of treating novelty as an additive axis rather than a
+// percentile-adjusted signal. See novelty.go's ApplyNoveltyToScore doc.
+func TestApplyNoveltyToScore_DoesNotRescaleNonClustered(t *testing.T) {
+	unclustered := &HeatResult{Score: 50, NoveltyScore: 0}
+	clustered := &HeatResult{Score: 50, NoveltyScore: 0.5}
+
+	ApplyNoveltyToScore(unclustered)
+	ApplyNoveltyToScore(clustered)
+
+	if unclustered.Score != 50 {
+		t.Errorf("unclustered Score = %v, want 50 (unchanged)", unclustered.Score)
+	}
+	// clustered gets exactly 0.5 * 5 = 2.5 added.
+	if !approxEqual(clustered.Score, 52.5, 0.001) {
+		t.Errorf("clustered Score = %v, want 52.5", clustered.Score)
+	}
+}

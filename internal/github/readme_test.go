@@ -92,6 +92,26 @@ func TestFetchReadme_NotFound(t *testing.T) {
 	}
 }
 
+func TestFetchReadme_Forbidden(t *testing.T) {
+	// 403 = private repo or per-resource rate limit. Both surface as
+	// "no README available" rather than a hard error so the caller can keep
+	// going (round-3 review m3).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message":"Forbidden"}`))
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	got, err := c.FetchReadme(context.Background(), "foo", "bar")
+	if err != nil {
+		t.Fatalf("want nil error on 403, got %v", err)
+	}
+	if got != "" {
+		t.Errorf("want empty content on 403, got %q", got)
+	}
+}
+
 func TestFetchReadme_UnexpectedEncoding(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(readmeResponse{

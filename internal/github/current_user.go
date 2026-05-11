@@ -10,6 +10,11 @@ import (
 // CurrentUserLogin returns the authenticated user's GitHub login (e.g. "octocat").
 // The first call hits the API; subsequent calls return the cached value or
 // cached error. Returns an error when unauthenticated or when the API call fails.
+//
+// Result is memoized via sync.Once: the first call's outcome (success or
+// error) is returned for all subsequent calls on the same Client. Tests that
+// need to vary the response across subtests must construct a fresh Client
+// rather than reusing one across test cases.
 func (c *Client) CurrentUserLogin(ctx context.Context) (string, error) {
 	if !c.authenticated {
 		return "", fmt.Errorf("not authenticated")

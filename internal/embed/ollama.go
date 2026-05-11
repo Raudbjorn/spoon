@@ -50,11 +50,17 @@ func (c *OllamaClient) model() string {
 	return c.Model
 }
 
+// defaultOllamaHTTPClient is the package-level fallback when no HTTP is set
+// on an OllamaClient. Sharing one *http.Client across the process gives us
+// one connection pool, one set of TLS sessions, and no per-call allocation
+// (round-3 review m6).
+var defaultOllamaHTTPClient = &http.Client{Timeout: defaultTimeout}
+
 func (c *OllamaClient) httpClient() *http.Client {
 	if c.HTTP != nil {
 		return c.HTTP
 	}
-	return &http.Client{Timeout: defaultTimeout}
+	return defaultOllamaHTTPClient
 }
 
 // Embed returns one Vector per input text. It calls /api/embeddings once per

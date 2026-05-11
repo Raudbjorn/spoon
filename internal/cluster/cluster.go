@@ -8,6 +8,7 @@
 package cluster
 
 import (
+	"fmt"
 	"math"
 	"sort"
 	"strconv"
@@ -235,9 +236,14 @@ func computeCentroid(points []Point, order, members []int) []float32 {
 	for _, m := range members {
 		v := points[order[m]].Vec
 		if len(v) != dim {
-			// Defensive: shouldn't happen since differing-length vectors
-			// can't share a component, but skip rather than panic.
-			continue
+			// Vectors of differing dimension cannot share a union-find
+			// component (cosineDistance returns +Inf for them, forming no
+			// edge). Reaching this branch means an invariant of Run() was
+			// violated upstream. Silently skipping would bias the centroid
+			// toward whichever members happened to share dim with the
+			// first one — fail loudly instead so the upstream bug is
+			// noticed.
+			panic(fmt.Sprintf("cluster: vector dimension %d != expected %d (this is a bug)", len(v), dim))
 		}
 		for i, x := range v {
 			sum[i] += float64(x)

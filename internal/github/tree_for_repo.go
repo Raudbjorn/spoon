@@ -31,15 +31,19 @@ type treeResponse struct {
 // tree SHA internally. Pass the default branch name (e.g., "main") for the
 // canonical upstream tree.
 //
-// Returns (nil, nil) on 404 — the caller should treat this as "tree
-// unavailable" and skip the centrality pass. Returns (nil, err) when the
-// response is truncated: a partial tree would produce misleading centrality
-// scores, so it's better to skip the pass entirely.
+// Returns (nil, nil) on 404 or 403 — the caller should treat both as "tree
+// unavailable" (404 = unknown ref/repo, 403 = private or per-resource rate
+// limit) and skip the centrality pass. Returns (nil, err) when the response
+// is truncated: a partial tree would produce misleading centrality scores,
+// so it's better to skip the pass entirely.
 func (c *Client) FetchTree(ctx context.Context, owner, repo, ref string) ([]string, error) {
 	path := fmt.Sprintf("repos/%s/%s/git/trees/%s?recursive=1", owner, repo, ref)
 	resp, err := c.GetRaw(ctx, path)
 	if err != nil {
-		if isNotFound(err) {
+		// 404 (unknown ref/repo) and 403 (private / per-resource rate
+		// limit) both leave the tree unavailable; treat as "skip centrality"
+		// rather than a hard error.
+		if isNotFound(err) || isForbidden(err) {
 			return nil, nil
 		}
 		return nil, err

@@ -501,6 +501,7 @@ Keybindings (TUI mode):
   /             Filter forks
   n             Search new repository
   s             Cycle sort column
+  g             Toggle cluster grouping in the table view (when clusters available)
   r             Refresh (bypass cache)
   Space         Mark/unmark fork
   e             Export marked forks to JSON

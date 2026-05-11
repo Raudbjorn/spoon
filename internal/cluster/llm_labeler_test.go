@@ -268,6 +268,44 @@ func TestOllamaChatLabeler_NetworkError(t *testing.T) {
 	}
 }
 
+// TestOllamaChatLabeler_OverlongResponse asserts that a model returning a
+// long single-line label is capped to maxLabelChars runes plus a "..."
+// indicator. Even if the model ignores the system-prompt's <=60 char
+// guidance, downstream consumers receive a bounded string.
+func TestOllamaChatLabeler_OverlongResponse(t *testing.T) {
+	long := strings.Repeat("x", 200)
+	srv := newOllamaServer(t, long, nil)
+	defer srv.Close()
+
+	l := &OllamaChatLabeler{Endpoint: srv.URL, Model: "llama3.2:3b"}
+	got, err := l.Polish(context.Background(), defaultContext())
+	if err != nil {
+		t.Fatalf("Polish: %v", err)
+	}
+	if !strings.HasSuffix(got, "...") {
+		t.Errorf("expected ellipsis suffix, got %q", got)
+	}
+	if n := len([]rune(got)); n > 63 {
+		t.Errorf("rune count %d, want <= 63 (60 + ...)", n)
+	}
+}
+
+// TestOllamaChatLabeler_HTTPClientCached pins that the lazy default HTTP
+// client is constructed once across multiple Polish calls (M4 round-3
+// fix). HTTP set explicitly takes precedence; we test the default branch
+// here.
+func TestOllamaChatLabeler_HTTPClientCached(t *testing.T) {
+	l := &OllamaChatLabeler{Endpoint: "http://example.invalid", Model: "llama3.2:3b"}
+	c1 := l.httpClient()
+	c2 := l.httpClient()
+	if c1 == nil || c2 == nil {
+		t.Fatal("httpClient returned nil")
+	}
+	if c1 != c2 {
+		t.Errorf("expected cached client across calls, got distinct pointers %p vs %p", c1, c2)
+	}
+}
+
 func TestTrimLabel(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"  hello  ", "hello"},

@@ -71,7 +71,9 @@ type ClusterOptions struct {
 }
 
 // defaultLabelerModel is used when --labeler is set but --labeler-model is not.
-const defaultLabelerModel = "llama3.2:3b"
+// Aliases cluster.DefaultLabelerModel so the literal lives in exactly one
+// place — see n4 in the round-3 review.
+const defaultLabelerModel = cluster.DefaultLabelerModel
 
 // SetEmbedderForTest installs an embedder stub on ClusterOptions for tests.
 // Production callers must not use this — they should go through SelectEmbedder.
