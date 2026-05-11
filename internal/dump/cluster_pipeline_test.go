@@ -103,11 +103,16 @@ func makeFork(id string, ahead int, paths []string, heatScore float64) EnrichedF
 		diffs[i] = forge.FileDiff{Path: p, Additions: 5, Deletions: 1}
 	}
 	hr := &heat.HeatResult{Score: heatScore, Tier: 2}
+	parts := strings.SplitN(id, "/", 2)
+	owner, name := id, ""
+	if len(parts) == 2 {
+		owner, name = parts[0], parts[1]
+	}
 	return EnrichedFork{
 		T1: forge.T1Data{
 			ID:            id,
-			Owner:         strings.SplitN(id, "/", 2)[0],
-			Name:          strings.SplitN(id, "/", 2)[1],
+			Owner:         owner,
+			Name:          name,
 			Stars:         10,
 			PushedAt:      time.Now().Add(-24 * time.Hour),
 			DefaultBranch: "main",

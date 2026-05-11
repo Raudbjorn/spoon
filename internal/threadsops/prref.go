@@ -54,6 +54,9 @@ func ParsePRRef(s, fallbackOwner, fallbackRepo string) (owner, repo string, numb
 		if len(parts) < 4 || parts[2] != "pull" {
 			return "", "", 0, fmt.Errorf("URL %q is not a github.com PR URL", s)
 		}
+		if parts[0] == "" || parts[1] == "" {
+			return "", "", 0, fmt.Errorf("invalid PR URL %q: missing owner or repo", s)
+		}
 		n, e := strconv.Atoi(parts[3])
 		if e != nil {
 			return "", "", 0, fmt.Errorf("invalid PR number in %q", s)
@@ -73,7 +76,11 @@ func ParsePRRef(s, fallbackOwner, fallbackRepo string) (owner, repo string, numb
 	if slash < 0 {
 		return "", "", 0, fmt.Errorf("PR ref %q missing 'owner/repo' prefix", s)
 	}
-	return repoPart[:slash], repoPart[slash+1:], n, nil
+	owner, repo = repoPart[:slash], repoPart[slash+1:]
+	if owner == "" || repo == "" {
+		return "", "", 0, fmt.Errorf("PR ref %q: missing owner or repo", s)
+	}
+	return owner, repo, n, nil
 }
 
 // ReadBody returns the body content from path; path "-" reads stdin.

@@ -22,8 +22,12 @@ func TestWriteJSON_object(t *testing.T) {
 
 func TestWriteNDJSON_multipleObjects(t *testing.T) {
 	var b bytes.Buffer
-	_ = WriteNDJSON(&b, map[string]string{"id": "a"})
-	_ = WriteNDJSON(&b, map[string]string{"id": "b"})
+	if err := WriteNDJSON(&b, map[string]string{"id": "a"}); err != nil {
+		t.Fatalf("WriteNDJSON: %v", err)
+	}
+	if err := WriteNDJSON(&b, map[string]string{"id": "b"}); err != nil {
+		t.Fatalf("WriteNDJSON: %v", err)
+	}
 	lines := strings.Split(strings.TrimSuffix(b.String(), "\n"), "\n")
 	if len(lines) != 2 {
 		t.Fatalf("expected 2 lines, got %d: %q", len(lines), b.String())

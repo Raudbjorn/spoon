@@ -98,6 +98,11 @@ func (m *Model) maybeStartClusterPipeline() tea.Cmd {
 	provider := m.provider
 	parent := *m.parent
 	owner, repoName := splitParentName(m.parent.FullName)
+	if owner == "" || repoName == "" {
+		m.clusterStatus = "skipped"
+		m.clusterSkipReason = "malformed parent FullName: " + m.parent.FullName
+		return nil
+	}
 	opts := m.clusterOpts
 	out := m.clusterMsgs
 	forksRef := m.forks
@@ -276,7 +281,13 @@ func (p *tuiPrompter) AskPull(model string, sizeMB int) (bool, error) {
 	// Buffered reply channel so the Update handler can write without
 	// blocking even if AskPull's reader gets cancelled.
 	reply := make(chan bool, 1)
-	p.out <- clusterPromptMsg{Model: model, SizeMB: sizeMB, Reply: reply}
+	// Non-blocking send: if the TUI isn't draining (e.g. mid-quit), drop
+	// the prompt and skip clustering rather than deadlocking the pipeline.
+	select {
+	case p.out <- clusterPromptMsg{Model: model, SizeMB: sizeMB, Reply: reply}:
+	default:
+		return false, errors.New("tui prompter: message channel full; skipping pull prompt")
+	}
 	yes, ok := <-reply
 	if !ok {
 		return false, nil

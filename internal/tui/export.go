@@ -44,13 +44,17 @@ type ExportFork struct {
 	LoneWolf    *ExportLoneWolf `json:"lone_wolf,omitempty"`
 	WhyDistinct []string        `json:"why_distinct"`
 
-	// Cluster + novelty fields (T9). omitempty so consumers can distinguish
-	// "not computed" from "computed and zero".
-	ClusterID          string  `json:"clusterId,omitempty"`
-	ClusterLabel       string  `json:"clusterLabel,omitempty"`
-	NoveltyScore       float64 `json:"noveltyScore,omitempty"`
-	ClusterMemberCount int     `json:"clusterMemberCount,omitempty"`
-	ChangeImpact       float64 `json:"changeImpact,omitempty"`
+	// Cluster + novelty fields (T9). Cluster fields use omitempty +
+	// clusterId-presence gating: a fork without a clusterId has NO cluster
+	// fields in JSON; a clustered fork with zero novelty has noveltyScore: 0
+	// (gated at the serializer level in cmd/spn/forks.go for the NDJSON path).
+	// In this snake_case-style export, all cluster fields use omitempty so
+	// consumers can distinguish "not computed" from "computed and zero".
+	ClusterID          string  `json:"cluster_id,omitempty"`
+	ClusterLabel       string  `json:"cluster_label,omitempty"`
+	NoveltyScore       float64 `json:"novelty_score,omitempty"`
+	ClusterMemberCount int     `json:"cluster_member_count,omitempty"`
+	ChangeImpact       float64 `json:"change_impact,omitempty"`
 }
 
 // ExportLoneWolf is the lone wolf signal export.

@@ -49,7 +49,10 @@ func Next(ctx context.Context, api API, owner, repo string, number int) (github.
 
 func firstCommentTime(t github.ReviewThread) string {
 	if len(t.Comments) == 0 {
-		return ""
+		// Threads with no comments are an edge case; sort them last by
+		// returning a far-future RFC3339 timestamp rather than "" (which
+		// would sort before all real timestamps under lexical compare).
+		return "9999-12-31T23:59:59Z"
 	}
 	return t.Comments[0].CreatedAt
 }

@@ -325,6 +325,10 @@ func writeCSV(w io.Writer, auth forge.AuthInfo, parent *forge.ParentData, forks 
 	cw := csv.NewWriter(w)
 	defer cw.Flush()
 
+	// Cluster columns (cluster_id, cluster_label, novelty_score,
+	// cluster_member_count, change_impact) are intentionally omitted from
+	// the CSV output. CSV is for humans; cluster IDs are noise in tabular
+	// output. Consumers that need cluster fields should use --json.
 	header := []string{
 		"full_name", "url", "heat_score", "tier", "stars", "forks",
 		"open_issues", "language", "ahead", "behind", "files_changed",

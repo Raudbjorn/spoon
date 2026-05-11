@@ -11,8 +11,12 @@ import (
 	"sync"
 )
 
+// maxOllamaRespSize caps response bodies to 10 MB to prevent unbounded reads.
+const maxOllamaRespSize = 10 * 1024 * 1024
+
 // OllamaClient hits POST {Endpoint}/api/embeddings on a local Ollama instance.
-// OllamaClient is safe for concurrent use by multiple goroutines.
+// OllamaClient is safe for concurrent use; Endpoint/Model/HTTP must not be
+// mutated after construction.
 type OllamaClient struct {
 	Endpoint string
 	Model    string
@@ -89,7 +93,7 @@ func (c *OllamaClient) embedOne(ctx context.Context, text string) (Vector, error
 		return nil, err
 	}
 	defer resp.Body.Close()
-	raw, err := io.ReadAll(resp.Body)
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxOllamaRespSize))
 	if err != nil {
 		return nil, err
 	}

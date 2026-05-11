@@ -20,7 +20,10 @@ type Client struct {
 	rest             *ghAPI.RESTClient
 	gql              *ghAPI.GraphQLClient
 	authenticated    bool
-	currentUserLogin string // populated lazily by CurrentUserLogin
+	currentUserLogin string // populated lazily by CurrentUserLogin (gated by currentUserLoginOnce)
+
+	currentUserLoginOnce sync.Once
+	currentUserLoginErr  error
 
 	mu        sync.Mutex
 	rateLimit RateLimit

@@ -103,6 +103,10 @@ func (l *OllamaChatLabeler) Polish(ctx context.Context, lc LabelerContext) (stri
 	path := l.ChatPath
 	if path == "" {
 		path = defaultChatPath
+	} else if !strings.HasPrefix(path, "/") {
+		// Normalize: ensure a single leading slash so the joined URL is
+		// well-formed even when the caller passes a path without one.
+		path = "/" + path
 	}
 	url := strings.TrimRight(l.Endpoint, "/") + path
 

@@ -37,16 +37,24 @@ type ClusterCache struct {
 //
 //	$XDG_CACHE_HOME/spoon/clusters/<provider>/<owner>__<repo>.json
 //
-// or, if XDG_CACHE_HOME is empty, $HOME/.cache/spoon/clusters/...
+// or, if XDG_CACHE_HOME is empty, $HOME/.cache/spoon/clusters/... If the
+// user home dir cannot be resolved, falls back to os.TempDir() so a relative
+// path is never written. Each path component is sanitized via filepath.Base
+// + filepath.Clean to prevent path traversal from untrusted provider/owner/
+// repo strings.
 func CachePath(provider, owner, repo string) string {
 	cacheHome := os.Getenv("XDG_CACHE_HOME")
 	if cacheHome == "" {
 		home, err := os.UserHomeDir()
-		if err != nil {
-			home = ""
+		if err != nil || home == "" {
+			cacheHome = os.TempDir()
+		} else {
+			cacheHome = filepath.Join(home, ".cache")
 		}
-		cacheHome = filepath.Join(home, ".cache")
 	}
+	provider = filepath.Base(filepath.Clean(provider))
+	owner = filepath.Base(filepath.Clean(owner))
+	repo = filepath.Base(filepath.Clean(repo))
 	filename := owner + "__" + repo + ".json"
 	return filepath.Join(cacheHome, "spoon", "clusters", provider, filename)
 }
