@@ -55,6 +55,11 @@ type ClusterOptions struct {
 
 	// EmbedderForTest is reserved for tests.
 	EmbedderForTest embed.Embedder
+
+	// CentralityBackend is forwarded to cluster.PipelineOptions. "" or
+	// "directory" → directory-centrality proxy. "mdg" → Module Dependency
+	// Graph. See `--full-mdg` in `spoon --help`.
+	CentralityBackend string
 }
 
 // tuiDefaultLabelerModel aliases cluster.DefaultLabelerModel for readability
@@ -193,19 +198,20 @@ func runTUIClusterPipeline(
 	}
 
 	pipelineOpts := cluster.PipelineOptions{
-		Enabled:         opts.Enabled,
-		TopN:            opts.TopN,
-		Endpoint:        opts.Endpoint,
-		ModelOverride:   opts.ModelOverride,
-		LabelerEndpoint: opts.LabelerEndpoint,
-		Epsilon:         opts.Epsilon,
-		MinClusterSize:  opts.MinClusterSize,
-		AutoPull:        opts.AutoPull,
-		NoPrompt:        opts.NoPrompt,
-		NonInteractive:  false, // TUI is interactive — let the Prompter run
-		Refresh:         opts.Refresh,
-		Labeler:         labeler,
-		EmbedderForTest: opts.EmbedderForTest,
+		Enabled:           opts.Enabled,
+		TopN:              opts.TopN,
+		Endpoint:          opts.Endpoint,
+		ModelOverride:     opts.ModelOverride,
+		LabelerEndpoint:   opts.LabelerEndpoint,
+		Epsilon:           opts.Epsilon,
+		MinClusterSize:    opts.MinClusterSize,
+		AutoPull:          opts.AutoPull,
+		NoPrompt:          opts.NoPrompt,
+		NonInteractive:    false, // TUI is interactive — let the Prompter run
+		Refresh:           opts.Refresh,
+		Labeler:           labeler,
+		EmbedderForTest:   opts.EmbedderForTest,
+		CentralityBackend: opts.CentralityBackend,
 	}
 
 	// The Prompter is consulted by cluster.RunPipeline via SelectEmbedder.

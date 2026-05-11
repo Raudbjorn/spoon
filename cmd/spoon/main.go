@@ -50,6 +50,10 @@ func main() {
 	autoPull := os.Getenv("SPOON_AUTO_PULL") == "1"
 	noPrompt := false
 
+	// MDG centrality backend. Off by default; --full-mdg opts in. --no-mdg
+	// reverts to off (useful for users who set the env var elsewhere).
+	fullMDG := false
+
 	args := os.Args[1:]
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -173,6 +177,10 @@ func main() {
 			autoPull = true
 		case "--no-prompt":
 			noPrompt = true
+		case "--full-mdg":
+			fullMDG = true
+		case "--no-mdg":
+			fullMDG = false
 		default:
 			if !strings.HasPrefix(args[i], "-") && strings.Contains(args[i], "/") {
 				repo = args[i]
@@ -199,17 +207,18 @@ func main() {
 	}
 
 	tuiClusterOpts := tui.ClusterOptions{
-		Enabled:         !noCluster,
-		TopN:            clusterTop,
-		Endpoint:        embedderURL,
-		ModelOverride:   embedderModel,
-		LabelerEndpoint: labelerURL,
-		LabelerModel:    labelerModel,
-		Epsilon:         clusterEpsilon,
-		MinClusterSize:  clusterMinSize,
-		AutoPull:        autoPull,
-		NoPrompt:        noPrompt,
-		Refresh:         refresh,
+		Enabled:           !noCluster,
+		TopN:              clusterTop,
+		Endpoint:          embedderURL,
+		ModelOverride:     embedderModel,
+		LabelerEndpoint:   labelerURL,
+		LabelerModel:      labelerModel,
+		Epsilon:           clusterEpsilon,
+		MinClusterSize:    clusterMinSize,
+		AutoPull:          autoPull,
+		NoPrompt:          noPrompt,
+		Refresh:           refresh,
+		CentralityBackend: backendFor(fullMDG),
 	}
 	m := tui.NewModelWithCluster(provider, auth, repoArg, refresh, tuiClusterOpts)
 	p := tea.NewProgram(m, tea.WithAltScreen())
@@ -218,6 +227,15 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// backendFor maps the --full-mdg flag to the cluster.PipelineOptions
+// CentralityBackend string. Off (default) → "" (directory proxy). On → "mdg".
+func backendFor(fullMDG bool) string {
+	if fullMDG {
+		return "mdg"
+	}
+	return ""
 }
 
 // createProvider detects the forge provider from the repo URL and flags,
@@ -344,6 +362,15 @@ Flags:
   --cluster-min-size N     Minimum cluster size (default 3)
   --auto-pull              Pull missing embedding model without prompting
   --no-prompt              Skip pull prompt when no embedding model is installed
+  --full-mdg               Build a real Module Dependency Graph for the upstream
+                           using personalized PageRank centrality. Phase A
+                           supports Go repositories; other languages silently
+                           fall back to the directory-centrality proxy. Requires
+                           'git' (and 'gh' for GitHub) on PATH. Adds 10-60 s and
+                           up to ~1 GB peak disk on first run; cached for 24 h
+                           under ~/.cache/spoon/mdg/. Default: off.
+  --no-mdg                 Force the directory-centrality proxy even if an
+                           earlier flag enabled --full-mdg.
   --no-color               Disable colors
   -h, --help               Show help
   -v, --version            Show version
