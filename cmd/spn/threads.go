@@ -619,7 +619,7 @@ func doThreadsApplySuggestion(args []string, stdout, stderr io.Writer) int {
 	if authErr != nil {
 		return authErr.Emit(stderr)
 	}
-	_, threads, opErr := threadsops.List(context.Background(), api, owner, repo, number, true)
+	status, threads, opErr := threadsops.List(context.Background(), api, owner, repo, number, true)
 	if opErr != nil {
 		return translateOpErr(opErr, stderr)
 	}
@@ -641,9 +641,13 @@ func doThreadsApplySuggestion(args []string, stdout, stderr io.Writer) int {
 		return agentio.NewError(agentio.CodeBadInput, "suggestion index out of range", agentio.RemediationBadInput("threads", "apply-suggestion")).Emit(stderr)
 	}
 	res, applyErr := threadsops.ApplySuggestion(context.Background(), *target, sugs[idx], threadsops.ApplyOptions{
-		RepoRoot: repoRoot,
-		DryRun:   dryRun,
-		Force:    force,
+		RepoRoot:  repoRoot,
+		DryRun:    dryRun,
+		Force:     force,
+		Fetcher:   contentFetcherFor(api),
+		Owner:     owner,
+		Repo:      repo,
+		PRHeadRef: status.HeadSHA,
 	})
 	if applyErr != nil {
 		// Translate apply-specific errors with helpful remediations.

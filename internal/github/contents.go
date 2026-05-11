@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"strings"
 )
 
@@ -31,9 +32,17 @@ type contentsResponse struct {
 // Truncates to 1 MB at a UTF-8 rune boundary.
 // encoding field must be "base64"; anything else is an error.
 func (c *Client) FetchFileContent(ctx context.Context, owner, repo, path, ref string) (string, error) {
-	endpoint := fmt.Sprintf("repos/%s/%s/contents/%s", owner, repo, path)
+	// path may legitimately contain forward slashes (subdirectories); preserve
+	// them by escaping each segment independently. Bare fmt.Sprintf would
+	// pass through #, ?, %, space, etc., which malforms the URL.
+	parts := strings.Split(path, "/")
+	for i, p := range parts {
+		parts[i] = url.PathEscape(p)
+	}
+	escapedPath := strings.Join(parts, "/")
+	endpoint := fmt.Sprintf("repos/%s/%s/contents/%s", url.PathEscape(owner), url.PathEscape(repo), escapedPath)
 	if ref != "" {
-		endpoint = fmt.Sprintf("%s?ref=%s", endpoint, ref)
+		endpoint += "?ref=" + url.QueryEscape(ref)
 	}
 	resp, err := c.GetRaw(ctx, endpoint)
 	if err != nil {

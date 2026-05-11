@@ -74,6 +74,10 @@ func ParseSuggestions(commentID, body string) []Suggestion {
 // splitLinesKeepEmpty splits on '\n' without trimming the trailing empty after
 // a final newline (so "a\n" → ["a", ""]). We then ignore the final "" when
 // joining bodyLines later to preserve user expectations.
+//
+// The wrapper exists for symmetry with the join+trim logic elsewhere in this
+// file: callers reason about "lines kept verbatim" vs "lines re-joined and
+// retrimmed", and the named function makes that distinction visible.
 func splitLinesKeepEmpty(s string) []string {
 	// strings.Split keeps the trailing empty if s ends with \n. That's
 	// actually what we want here — the close-fence detection doesn't care.
@@ -201,7 +205,21 @@ func PopulateOneSuggestions(t *ReviewThreadWithPolicy) {
 type ApplyOptions struct {
 	RepoRoot string // local checkout root (default: current dir)
 	DryRun   bool   // if true, print what would change but don't write
-	Force    bool   // bypass dirty-file safety check
+	Force    bool   // bypass outdated-thread check AND dirty-file content check
+
+	// Fetcher, Owner, Repo, and PRHeadRef enable the dirty-file content check.
+	// When Fetcher != nil AND PRHeadRef != "" AND !Force, ApplySuggestion
+	// fetches the file content at the PR head and refuses to apply if the
+	// local working-tree file differs (the suggestion's line numbers anchor
+	// to what the reviewer saw, so a dirty local copy could mis-apply the
+	// change). A nil Fetcher skips the check entirely (back-compat for
+	// callers that don't have a content-fetching API available — e.g.
+	// tests). Fetch failures are treated as a soft skip (the check is a
+	// safety net, not a hard requirement).
+	Fetcher   ContentFetcher
+	Owner     string
+	Repo      string
+	PRHeadRef string
 }
 
 // ApplyResult is the outcome of an ApplySuggestion call.
@@ -216,18 +234,28 @@ type ApplyResult struct {
 
 // ApplySuggestion writes the suggestion's body into the file at the thread's
 // path:line range. Safety checks (unless opts.Force):
+//   - thread.Path is resolved against opts.RepoRoot; paths that escape the
+//     repo root (e.g. "../foo") or are absolute are rejected as bad_input.
+//   - Symlinks at the resolved path are refused (writes never follow links).
 //   - File must exist at filepath.Join(opts.RepoRoot, thread.Path).
 //   - Thread must not be outdated (IsOutdated false).
+//   - When opts.Fetcher and opts.PRHeadRef are set, the working-tree file
+//     content must match the PR head's content at thread.Path (dirty-file
+//     check). Force bypasses this AND the outdated check (but NOT the
+//     path-traversal/symlink guards — those are always enforced).
 //   - The file's lines [startLine, line] inclusive will be replaced with
 //     the suggestion body. If startLine is unset, just `line` is replaced.
+//   - An empty suggestion body deletes the range entirely (no orphan blank
+//     line). A single-newline body still replaces with one blank line.
 //
 // Error code semantics (mapped to agentio.Code):
-//   - bad_input: thread has no Path/Line, or sug is empty CommentID/Body
+//   - bad_input: thread has no Path/Line, path escapes the repo root, path
+//     is a symlink, or the line range is out of bounds
 //   - not_found: file does not exist on disk
-//   - policy_violation: thread is outdated and Force is false (also dirty
-//     working tree when an anchor check would be implemented)
+//   - policy_violation: thread is outdated and Force is false, OR the
+//     working-tree file differs from the PR head and Force is false
 //   - internal: read/write failure
-func ApplySuggestion(_ context.Context, thread ReviewThreadWithPolicy, sug Suggestion, opts ApplyOptions) (ApplyResult, *OpError) {
+func ApplySuggestion(ctx context.Context, thread ReviewThreadWithPolicy, sug Suggestion, opts ApplyOptions) (ApplyResult, *OpError) {
 	res := ApplyResult{DryRun: opts.DryRun}
 	if thread.Path == "" || thread.Line <= 0 {
 		return res, &OpError{
@@ -251,8 +279,52 @@ func ApplySuggestion(_ context.Context, thread ReviewThreadWithPolicy, sug Sugge
 			return res, &OpError{Code: OpCodeInternal, Message: "getwd: " + err.Error()}
 		}
 	}
-	full := filepath.Join(root, thread.Path)
+	// Resolve the repo root to an absolute, cleaned path and then confirm the
+	// joined target stays within it. Without this guard, a malicious
+	// thread.Path like "../../../.ssh/authorized_keys" (the path is
+	// reviewer-controlled — set by the PR comment anchor on GitHub's side)
+	// would let an `apply-suggestion` invocation clobber arbitrary files on
+	// the user's machine.
+	//
+	// We reject absolute paths up front: filepath.Join("/root", "/etc/foo")
+	// silently strips the leading slash and produces "/root/etc/foo", which
+	// would falsely pass the .. check below.
+	if filepath.IsAbs(thread.Path) {
+		return res, &OpError{
+			Code:    OpCodeBadInput,
+			Message: fmt.Sprintf("path %q escapes repo root", thread.Path),
+			Details: map[string]any{"path": thread.Path},
+		}
+	}
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return res, &OpError{Code: OpCodeInternal, Message: "resolve root path: " + err.Error()}
+	}
+	absRoot = filepath.Clean(absRoot)
+	cleaned := filepath.Clean(filepath.Join(absRoot, thread.Path))
+	rel, relErr := filepath.Rel(absRoot, cleaned)
+	if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return res, &OpError{
+			Code:    OpCodeBadInput,
+			Message: fmt.Sprintf("path %q escapes repo root", thread.Path),
+			Details: map[string]any{"path": thread.Path, "repoRoot": absRoot},
+		}
+	}
+	full := cleaned
 	res.Path = thread.Path
+	// Symlink guard: refuse to write through a symlink. A repo can legitimately
+	// contain a symlink that points outside it (e.g. `vendor/foo` → /etc/passwd);
+	// writing through it would clobber the target. Block all symlink writes —
+	// users who need this can resolve the symlink themselves and pass
+	// --repo-root pointing at the resolved location. Skip the check entirely
+	// when the file doesn't exist (handled by the os.ReadFile branch below).
+	if info, lerr := os.Lstat(full); lerr == nil && info.Mode()&os.ModeSymlink != 0 {
+		return res, &OpError{
+			Code:    OpCodeBadInput,
+			Message: fmt.Sprintf("path %q is a symlink; refusing to write through it", thread.Path),
+			Details: map[string]any{"path": thread.Path},
+		}
+	}
 	data, err := os.ReadFile(full)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -263,6 +335,25 @@ func ApplySuggestion(_ context.Context, thread ReviewThreadWithPolicy, sug Sugge
 			}
 		}
 		return res, &OpError{Code: OpCodeInternal, Message: "read file: " + err.Error()}
+	}
+	// Dirty-file check: if the caller wired a Fetcher + PRHeadRef, fetch the
+	// file content at the PR head and refuse to apply if the working-tree file
+	// differs. This guarantees the suggestion's 1-indexed line numbers still
+	// anchor to what the reviewer saw. Force bypasses the check.
+	if !opts.Force && opts.Fetcher != nil && opts.PRHeadRef != "" {
+		expected, ferr := opts.Fetcher.FetchFileContent(ctx, opts.Owner, opts.Repo, thread.Path, opts.PRHeadRef)
+		if ferr == nil && expected != "" && expected != string(data) {
+			return res, &OpError{
+				Code:    OpCodePolicy,
+				Message: "working-tree file differs from PR head; use --force to apply anyway",
+				Details: map[string]any{
+					"path":      thread.Path,
+					"prHeadRef": opts.PRHeadRef,
+				},
+			}
+		}
+		// On fetch error or empty content, fall through (graceful skip — the
+		// check is a safety net, not a hard requirement).
 	}
 	// Split preserving the trailing-newline behavior we'll restore on write.
 	hadTrailingNewline := strings.HasSuffix(string(data), "\n")
@@ -289,8 +380,21 @@ func ApplySuggestion(_ context.Context, thread ReviewThreadWithPolicy, sug Sugge
 	}
 	oldLines := append([]string(nil), lines[start-1:end]...)
 	// Split suggestion body into new lines. An empty body means "delete the
-	// range" -> represented as a single empty line replacement.
-	newLines := strings.Split(sug.Body, "\n")
+	// range entirely" — collapse without leaving an orphan blank line. A
+	// single-newline body ("\n") preserves the historical "replace with one
+	// blank line" behaviour, because that's an explicit single empty line.
+	var newLines []string
+	if sug.Body == "" {
+		newLines = nil
+	} else {
+		newLines = strings.Split(sug.Body, "\n")
+		// A body that ends with "\n" produces a trailing empty element from
+		// Split. Drop it so the suggestion's trailing newline doesn't
+		// translate into an extra blank line in the file.
+		if strings.HasSuffix(sug.Body, "\n") && len(newLines) > 0 && newLines[len(newLines)-1] == "" {
+			newLines = newLines[:len(newLines)-1]
+		}
+	}
 	res.OldLines = oldLines
 	res.NewLines = newLines
 	if opts.DryRun {
