@@ -36,7 +36,7 @@ var _ ContentFetcher = (*github.Client)(nil)
 // can warn the user that the displayed code may differ from what the comment
 // referenced.
 //
-// On fetch failure (file deleted, 404), returns nil + nil (graceful skip).
+// Fetch errors are propagated to the caller (returned as nil, err).
 func FetchCodeContext(ctx context.Context, fetcher ContentFetcher, prHeadRef, owner, repo string, thread ReviewThreadWithPolicy, contextLines int) (*CodeContext, error) {
 	if fetcher == nil || contextLines <= 0 {
 		return nil, nil
