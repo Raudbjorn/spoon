@@ -47,7 +47,7 @@ Nouns and verbs:
   threads resolve-all <pr-ref>
   threads unresolve-all <pr-ref>
   pr status <pr-ref>
-  forks list <repo> [--tier 1|2|3] [--top N] [--bot-allowlist L] [--refresh] [--forge github|gitlab] [--forge-host H]
+  forks list <repo> [--tier 1|2|3] [--top N] [--bot-allowlist L] [--refresh] [--csv] [--forge github|gitlab] [--forge-host H]
                     [--no-cluster] [--cluster-top N] [--embedder URL] [--embedder-model NAME]
                     [--labeler URL] [--labeler-model NAME] [--cluster-epsilon F] [--cluster-min-size N] [--auto-pull]
 

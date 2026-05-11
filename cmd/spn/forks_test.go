@@ -366,6 +366,50 @@ func TestForkToJSON_NoComponents(t *testing.T) {
 	}
 }
 
+func TestSpnForksList_csv_emitsHeaderAndRows(t *testing.T) {
+	prev := providerFactory
+	defer func() { providerFactory = prev }()
+	providerFactory = func(_ context.Context, _, _, _ string) (forge.Forge, string, *agentio.Error) {
+		return &fakeForge{
+			parent: forge.ParentData{DefaultBranch: "main", PushedAt: time.Now()},
+			forks: []forge.T1Data{
+				{ID: "o/a", Owner: "o", Name: "a", URL: "https://github.com/o/a", Stars: 5, PushedAt: time.Now()},
+				{ID: "o/b", Owner: "o", Name: "b", URL: "https://github.com/o/b", Stars: 3, PushedAt: time.Now()},
+			},
+		}, "o/r", nil
+	}
+	var stdout, stderr bytes.Buffer
+	exit := runForksWith([]string{"list", "o/r", "--tier", "1", "--csv"}, &stdout, &stderr)
+	if exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+	}
+	lines := strings.Split(strings.TrimSuffix(stdout.String(), "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected 1 header + 2 data rows, got %d:\n%s", len(lines), stdout.String())
+	}
+	wantHeader := "id,owner,name,url,stars,pushed_at,is_archived,sub_forks,releases,heat,tier,t2_ahead,t2_behind,t2_mna,t3_contributors,t3_commit_span_days,cluster_name,cluster_score"
+	if lines[0] != wantHeader {
+		t.Errorf("header mismatch:\n got: %s\nwant: %s", lines[0], wantHeader)
+	}
+}
+
+func TestSpnForksList_csv_noNDJSONLeak(t *testing.T) {
+	prev := providerFactory
+	defer func() { providerFactory = prev }()
+	providerFactory = func(_ context.Context, _, _, _ string) (forge.Forge, string, *agentio.Error) {
+		return &fakeForge{
+			parent: forge.ParentData{DefaultBranch: "main", PushedAt: time.Now()},
+			forks:  []forge.T1Data{{ID: "o/a", Owner: "o", Name: "a", PushedAt: time.Now()}},
+		}, "o/r", nil
+	}
+	var stdout, stderr bytes.Buffer
+	runForksWith([]string{"list", "o/r", "--tier", "1", "--csv"}, &stdout, &stderr)
+	// CSV output should not contain JSON-shaped lines.
+	if strings.Contains(stdout.String(), `{"id":`) || strings.Contains(stdout.String(), `"id":`) {
+		t.Errorf("CSV output contains JSON object: %s", stdout.String())
+	}
+}
+
 func TestSpnForksList_embedderUnreachable_emitsWarning(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	prev := providerFactory
