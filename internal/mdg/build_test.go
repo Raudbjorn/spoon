@@ -69,10 +69,14 @@ func main() { _ = gh.Foo }
 
 func TestBuild_EmptyRepo(t *testing.T) {
 	root := t.TempDir()
-	// No go.mod, no source files.
-	_, err := Build(context.Background(), root, BuildOptions{})
-	if err == nil {
-		t.Fatalf("Build should error for repo with no go.mod")
+	// No go.mod, no source files. With the polyglot Build, this is not an
+	// error — it just produces an empty graph (no languages detected).
+	g, err := Build(context.Background(), root, BuildOptions{})
+	if err != nil {
+		t.Fatalf("Build should not error for an empty repo, got: %v", err)
+	}
+	if len(g.Nodes) != 0 {
+		t.Fatalf("expected empty graph for empty repo, got %d nodes", len(g.Nodes))
 	}
 }
 
