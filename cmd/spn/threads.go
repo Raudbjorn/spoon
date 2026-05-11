@@ -72,7 +72,7 @@ func doThreadsList(args []string, stdout, stderr io.Writer) int {
 	if prRef == "" {
 		return agentio.NewError(agentio.CodeBadInput, "missing PR reference", agentio.RemediationBadInput("threads", "list")).Emit(stderr)
 	}
-	owner, repo, number, ok := resolvePRRef(prRef, stderr)
+	owner, repo, number, ok := resolvePRRef(prRef, "threads", "list", stderr)
 	if !ok {
 		return 2
 	}
@@ -94,7 +94,7 @@ func doThreadsNext(args []string, stdout, stderr io.Writer) int {
 	if len(args) != 1 {
 		return agentio.NewError(agentio.CodeBadInput, "usage: spn threads next <pr-ref>", agentio.RemediationBadInput("threads", "next")).Emit(stderr)
 	}
-	owner, repo, number, ok := resolvePRRef(args[0], stderr)
+	owner, repo, number, ok := resolvePRRef(args[0], "threads", "next", stderr)
 	if !ok {
 		return 2
 	}
@@ -117,11 +117,11 @@ func doThreadsNext(args []string, stdout, stderr io.Writer) int {
 }
 
 // resolvePRRef parses the PR ref via threadsops, with stderr-emitted error envelope on failure.
-func resolvePRRef(prRef string, stderr io.Writer) (owner, repo string, number int, ok bool) {
+func resolvePRRef(prRef, noun, verb string, stderr io.Writer) (owner, repo string, number int, ok bool) {
 	fbO, fbR := threadsops.DetectRepoContext()
 	o, r, n, err := threadsops.ParsePRRef(prRef, fbO, fbR)
 	if err != nil {
-		agentio.NewError(agentio.CodeBadInput, err.Error(), agentio.RemediationBadInput("threads", "")).Emit(stderr)
+		agentio.NewError(agentio.CodeBadInput, err.Error(), agentio.RemediationBadInput(noun, verb)).Emit(stderr)
 		return "", "", 0, false
 	}
 	return o, r, n, true
@@ -169,7 +169,7 @@ func doThreadsReply(args []string, stdout, stderr io.Writer) int {
 	if body == "" {
 		return agentio.NewError(agentio.CodeBadInput, "--body or --body-file is required", agentio.RemediationBadInput("threads", "reply")).Emit(stderr)
 	}
-	_, _, _, ok := resolvePRRef(prRef, stderr)
+	_, _, _, ok := resolvePRRef(prRef, "threads", "reply", stderr)
 	if !ok {
 		return 2
 	}
@@ -226,7 +226,7 @@ func doThreadsResolve(args []string, stdout, stderr io.Writer) int {
 		}
 		body = b
 	}
-	owner, repo, number, ok := resolvePRRef(prRef, stderr)
+	owner, repo, number, ok := resolvePRRef(prRef, "threads", "resolve", stderr)
 	if !ok {
 		return 2
 	}
@@ -248,7 +248,7 @@ func doThreadsResolveAll(args []string, stdout, stderr io.Writer) int {
 	if len(args) != 1 {
 		return agentio.NewError(agentio.CodeBadInput, "usage: spn threads resolve-all <pr-ref>", agentio.RemediationBadInput("threads", "resolve-all")).Emit(stderr)
 	}
-	owner, repo, number, ok := resolvePRRef(args[0], stderr)
+	owner, repo, number, ok := resolvePRRef(args[0], "threads", "resolve-all", stderr)
 	if !ok {
 		return 2
 	}
@@ -270,7 +270,7 @@ func doThreadsUnresolveAll(args []string, stdout, stderr io.Writer) int {
 	if len(args) != 1 {
 		return agentio.NewError(agentio.CodeBadInput, "usage: spn threads unresolve-all <pr-ref>", agentio.RemediationBadInput("threads", "unresolve-all")).Emit(stderr)
 	}
-	owner, repo, number, ok := resolvePRRef(args[0], stderr)
+	owner, repo, number, ok := resolvePRRef(args[0], "threads", "unresolve-all", stderr)
 	if !ok {
 		return 2
 	}

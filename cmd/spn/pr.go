@@ -40,7 +40,7 @@ func doPRStatus(args []string, stdout, stderr io.Writer) int {
 	if len(args) != 1 {
 		return agentio.NewError(agentio.CodeBadInput, "usage: spn pr status <pr-ref>", agentio.RemediationBadInput("pr", "status")).Emit(stderr)
 	}
-	owner, repo, number, ok := resolvePRRef(args[0], stderr)
+	owner, repo, number, ok := resolvePRRef(args[0], "pr", "status", stderr)
 	if !ok {
 		return 2
 	}
