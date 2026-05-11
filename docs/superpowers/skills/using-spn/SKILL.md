@@ -72,6 +72,40 @@ Stdout is exclusively success data. A failing command writes nothing to stdout.
 - `2` — user / policy error (`bad_input`, `auth_required`, `auth_scope_missing`, `policy_violation`) — do not retry
 - `1` — everything else (`upstream_error`, `rate_limited`, `not_found`, `internal`) — check `error.retryable` before retrying
 
+### Rate Limits
+
+When GitHub rate-limits a request, the error envelope uses `code: "rate_limited"`, populates `retry_after_seconds`, and carries `details.reset_at` (RFC3339 UTC) plus `details.remaining`:
+
+```json
+{"error": {
+  "code": "rate_limited",
+  "message": "rate limit exceeded",
+  "remediation": "Rate limit exceeded. Wait until <details.reset_at> ...",
+  "retryable": true,
+  "retry_after_seconds": 1234,
+  "details": {"reset_at": "2026-05-11T14:30:00Z", "remaining": 0}
+}}
+```
+
+Retry pattern:
+
+```bash
+out=$(spn pr status "$PR" 2>/tmp/err.json) || {
+  code=$(jq -r .error.code /tmp/err.json)
+  if [ "$code" = "rate_limited" ]; then
+    wait=$(jq -r .error.retry_after_seconds /tmp/err.json)
+    sleep "$wait"
+    out=$(spn pr status "$PR")
+  fi
+}
+```
+
+Note: detection works on REST API paths. GitHub's GraphQL endpoint (used internally by `spn threads list/next/reply/resolve` and the forks-list GraphQL fast path) returns rate-limit hits as the generic `upstream_error` code instead. The error remains `retryable: true` in both cases; the difference is whether `retry_after_seconds` is populated.
+
+### CSV mode
+
+`spn forks list <repo> --csv` collects all enriched forks and emits a single CSV blob on stdout with a fixed header (`id,owner,name,url,stars,pushed_at,is_archived,sub_forks,releases,heat,tier,t2_ahead,t2_behind,t2_mna,t3_contributors,t3_commit_span_days,cluster_name,cluster_score`). Per-fork enrichment errors still go to stderr as compact JSON. Use this when downstream tooling expects tabular data; use the default NDJSON when streaming or jq pipelines fit better.
+
 ## Body-Required Policy
 
 The thread JSON has a `requiresBody` boolean. When `true` (any human commenter is present), `spn threads resolve` refuses with `policy_violation` exit 2 unless `--body` is supplied. Bot-only threads (`requiresBody: false`) resolve without a body.
@@ -132,6 +166,7 @@ All commands accept any of:
 | Retrying `resolve --body T` with the same body after a partial failure | Check `error.details.comment_posted`; if true, retry with no `--body`. |
 | Reading PR thread state via `gh pr view --comments` (HTML/scraped) | `spn threads list` is JSON with stable IDs and the policy flag baked in. |
 | Trusting `unresolvedThreads: 0` as "ready to merge" | `spn pr status` also returns `mergeStateStatus` and `checksState` — both must be green. |
+| Treating `rate_limited` as `upstream_error` | Check `code` explicitly — `rate_limited` has a known `retry_after_seconds`. Sleeping that long is reliable; blind retry on `upstream_error` may keep hitting the limit. |
 
 ## Quick Reference
 
@@ -145,3 +180,4 @@ All commands accept any of:
 | `spn threads unresolve-all <pr>` | Re-open every resolved thread |
 | `spn pr status <pr>` | Mergeability snapshot |
 | `spn forks list <repo>` | NDJSON fork enrichment (separate use case, not for PR review) |
+| `spn forks list <repo> --csv` | Batched CSV with fixed header; switches off NDJSON streaming. Use for spreadsheet/tabular consumers. |
