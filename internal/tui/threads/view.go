@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	gh "github.com/svnbjrn/spoon/internal/github"
+	"github.com/svnbjrn/spoon/internal/threadsops"
 )
 
 func renderModel(m Model) string {
@@ -38,16 +39,26 @@ func renderModel(m Model) string {
 		}
 		fmt.Fprintf(&b, "%s%-16s  %s:%d%s\n", marker, reviewer, t.Path, t.Line, outdated)
 	}
+	hasSuggestion := false
 	if m.cursor < len(m.threads) {
 		t := m.threads[m.cursor]
 		b.WriteString("\n")
 		fmt.Fprintf(&b, "%s\n", threadStateLabel(t))
 		if len(t.Comments) > 0 {
-			b.WriteString(t.Comments[0].Body)
+			b.WriteString(renderCommentBody(t.Comments[0].Body))
 			b.WriteString("\n")
+			sugs := threadsops.ParseSuggestions("", t.Comments[0].Body)
+			if len(sugs) > 0 {
+				hasSuggestion = true
+				fmt.Fprintf(&b, "\n💡 Suggestion available (a to apply)\n")
+			}
 		}
 	}
-	b.WriteString("\n[r/Enter] reply  [R] resolve  [a] resolve-all  [A] unresolve-all  [o] open  [?] help  [q] quit\n")
+	footer := "\n[r/Enter] reply  [R] resolve  [A] unresolve-all  [o] open  [?] help  [q] quit\n"
+	if hasSuggestion {
+		footer = "\n[r/Enter] reply  [R] resolve  [a] apply-suggestion  [A] unresolve-all  [o] open  [?] help  [q] quit\n"
+	}
+	b.WriteString(footer)
 	if m.status != "" {
 		fmt.Fprintf(&b, "\n%s\n", m.status)
 	}
@@ -75,6 +86,40 @@ func renderTUIStatus(s gh.PullRequestStatus, number int) string {
 		fmt.Fprintf(&b, "  Threads:   %d unresolved\n", s.UnresolvedThreads)
 	}
 	return b.String()
+}
+
+// renderCommentBody renders a comment body. Any embedded ```suggestion blocks
+// are visually marked with a "💡 Suggestion:" prefix on the fence lines so a
+// human reader can spot them at a glance. The body itself is returned
+// otherwise unchanged so the text remains paste-friendly.
+func renderCommentBody(body string) string {
+	if body == "" {
+		return body
+	}
+	lines := strings.Split(body, "\n")
+	out := make([]string, 0, len(lines))
+	inBlock := false
+	for _, line := range lines {
+		trimmed := strings.TrimLeft(line, " \t")
+		if !inBlock {
+			if strings.HasPrefix(strings.ToLower(trimmed), "```suggestion") ||
+				strings.HasPrefix(strings.ToLower(trimmed), "~~~suggestion") {
+				inBlock = true
+				out = append(out, "💡 Suggestion:")
+				continue
+			}
+			out = append(out, line)
+			continue
+		}
+		// inBlock: detect close fence
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			inBlock = false
+			out = append(out, "    (end suggestion)")
+			continue
+		}
+		out = append(out, "  | "+line)
+	}
+	return strings.Join(out, "\n")
 }
 
 func statusOrDash(v string) string {
@@ -109,7 +154,8 @@ func renderHelp() string {
   ↑/↓, j/k     Navigate threads
   Enter, r     Reply (opens textarea)
   R            Resolve current thread
-  a            Resolve all (with confirm)
+  a            Apply suggestion (if thread has one) or Resolve all
+  Ctrl+A       Resolve all (with confirm)
   A            Unresolve all (with confirm)
   o            Open PR in browser
   ?            Toggle this help

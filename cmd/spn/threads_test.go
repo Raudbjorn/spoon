@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -433,5 +434,217 @@ func TestSpnThreadsResolveAll_skipsHumanThreads(t *testing.T) {
 	}
 	if sk["id"] != "PRRT_user" || sk["reason"] != "requires_body" {
 		t.Errorf("skipped item: %+v", sk)
+	}
+}
+
+// --- G8: suggestion-block tests --------------------------------------------
+
+// captureReplyStub records the body of the most recent reply.
+type captureReplyStub struct {
+	stubAPI
+	lastBody string
+}
+
+func (c *captureReplyStub) ReplyToThread(_ context.Context, _, body string) (github.ThreadComment, error) {
+	c.lastBody = body
+	return github.ThreadComment{ID: "PRC_new", Body: body}, nil
+}
+
+func TestSpnThreadsList_EmitsSuggestionsField(t *testing.T) {
+	prev := apiFactory
+	defer func() { apiFactory = prev }()
+	apiFactory = func() (threadsops.API, *agentio.Error) {
+		return &stubAPI{threads: []github.ReviewThread{{
+			ID: "PRRT_x", Path: "a.go", Line: 3,
+			Comments: []github.ThreadComment{
+				{ID: "PRC_1", Body: "Please use:\n\n```suggestion\nconst Foo = 1\n```"},
+			},
+		}}}, nil
+	}
+	var stdout, stderr bytes.Buffer
+	exit := runThreadsWith([]string{"list", "owner/repo#1"}, &stdout, &stderr)
+	if exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"suggestions"`) {
+		t.Errorf("expected suggestions key, got: %s", stdout.String())
+	}
+	var got []map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len=%d", len(got))
+	}
+	sugs, ok := got[0]["suggestions"].([]any)
+	if !ok || len(sugs) != 1 {
+		t.Fatalf("suggestions=%+v", got[0]["suggestions"])
+	}
+	s := sugs[0].(map[string]any)
+	if s["body"] != "const Foo = 1" {
+		t.Errorf("body=%q", s["body"])
+	}
+	if s["commentId"] != "PRC_1" {
+		t.Errorf("commentId=%q", s["commentId"])
+	}
+	if s["applicable"] != true {
+		t.Errorf("applicable=%v", s["applicable"])
+	}
+}
+
+func TestSpnThreadsApplySuggestion_HappyPath(t *testing.T) {
+	tmp := t.TempDir()
+	srcPath := tmp + "/x.go"
+	if err := os.WriteFile(srcPath, []byte("alpha\nbeta\ngamma\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prev := apiFactory
+	defer func() { apiFactory = prev }()
+	apiFactory = func() (threadsops.API, *agentio.Error) {
+		return &stubAPI{threads: []github.ReviewThread{{
+			ID: "PRRT_x", Path: "x.go", Line: 2,
+			Comments: []github.ThreadComment{{ID: "PRC_1", Body: "```suggestion\nNEW\n```"}},
+		}}}, nil
+	}
+	var stdout, stderr bytes.Buffer
+	exit := runThreadsWith([]string{"apply-suggestion", "owner/repo#1", "PRRT_x", "--repo-root", tmp}, &stdout, &stderr)
+	if exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+	}
+	var res map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
+		t.Fatalf("parse: %v\n%s", err, stdout.String())
+	}
+	if res["applied"] != true {
+		t.Errorf("applied=%v full=%+v", res["applied"], res)
+	}
+	b, err := os.ReadFile(srcPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != "alpha\nNEW\ngamma\n" {
+		t.Errorf("file=%q", string(b))
+	}
+}
+
+func TestSpnThreadsApplySuggestion_NoSuggestion(t *testing.T) {
+	prev := apiFactory
+	defer func() { apiFactory = prev }()
+	apiFactory = func() (threadsops.API, *agentio.Error) {
+		return &stubAPI{threads: []github.ReviewThread{{
+			ID: "PRRT_x", Path: "x.go", Line: 1,
+			Comments: []github.ThreadComment{{ID: "PRC_1", Body: "no suggestion here"}},
+		}}}, nil
+	}
+	var stdout, stderr bytes.Buffer
+	exit := runThreadsWith([]string{"apply-suggestion", "owner/repo#1", "PRRT_x"}, &stdout, &stderr)
+	if exit == 0 {
+		t.Fatalf("expected non-zero exit; stdout=%s", stdout.String())
+	}
+	var env map[string]map[string]any
+	if err := json.Unmarshal(stderr.Bytes(), &env); err != nil {
+		t.Fatalf("stderr not JSON: %v\n%s", err, stderr.String())
+	}
+	if env["error"]["code"] != "not_found" {
+		t.Errorf("code=%v", env["error"]["code"])
+	}
+}
+
+func TestSpnThreadsApplySuggestion_OutdatedRejected(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.WriteFile(tmp+"/x.go", []byte("a\nb\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prev := apiFactory
+	defer func() { apiFactory = prev }()
+	apiFactory = func() (threadsops.API, *agentio.Error) {
+		return &stubAPI{threads: []github.ReviewThread{{
+			ID: "PRRT_x", Path: "x.go", Line: 1, IsOutdated: true,
+			Comments: []github.ThreadComment{{ID: "PRC_1", Body: "```suggestion\nZ\n```"}},
+		}}}, nil
+	}
+	var stdout, stderr bytes.Buffer
+	exit := runThreadsWith([]string{"apply-suggestion", "owner/repo#1", "PRRT_x", "--repo-root", tmp}, &stdout, &stderr)
+	if exit == 0 {
+		t.Fatalf("expected non-zero exit; stdout=%s", stdout.String())
+	}
+	var env map[string]map[string]any
+	if err := json.Unmarshal(stderr.Bytes(), &env); err != nil {
+		t.Fatalf("stderr not JSON: %v\n%s", err, stderr.String())
+	}
+	if env["error"]["code"] != "policy_violation" {
+		t.Errorf("code=%v want policy_violation", env["error"]["code"])
+	}
+	// With --force the same call should succeed.
+	stdout.Reset()
+	stderr.Reset()
+	exit = runThreadsWith([]string{"apply-suggestion", "owner/repo#1", "PRRT_x", "--repo-root", tmp, "--force"}, &stdout, &stderr)
+	if exit != 0 {
+		t.Fatalf("exit with --force=%d stderr=%s", exit, stderr.String())
+	}
+}
+
+func TestSpnThreadsReply_SuggestFlag(t *testing.T) {
+	cap := &captureReplyStub{}
+	prev := apiFactory
+	defer func() { apiFactory = prev }()
+	apiFactory = func() (threadsops.API, *agentio.Error) { return cap, nil }
+	var stdout, stderr bytes.Buffer
+	exit := runThreadsWith([]string{
+		"reply", "owner/repo#1", "PRRT_1",
+		"--suggest", "new content",
+		"--intro", "how about",
+	}, &stdout, &stderr)
+	if exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+	}
+	want := "how about\n\n```suggestion\nnew content\n```"
+	if cap.lastBody != want {
+		t.Errorf("body=%q\nwant %q", cap.lastBody, want)
+	}
+}
+
+func TestSpnThreadsReply_SuggestAndBodyMutuallyExclusive(t *testing.T) {
+	prev := apiFactory
+	defer func() { apiFactory = prev }()
+	apiFactory = func() (threadsops.API, *agentio.Error) { return &captureReplyStub{}, nil }
+	var stdout, stderr bytes.Buffer
+	exit := runThreadsWith([]string{
+		"reply", "owner/repo#1", "PRRT_1",
+		"--suggest", "X", "--body", "Y",
+	}, &stdout, &stderr)
+	if exit != 2 {
+		t.Fatalf("exit=%d (want 2); stderr=%s", exit, stderr.String())
+	}
+	var env map[string]map[string]any
+	if err := json.Unmarshal(stderr.Bytes(), &env); err != nil {
+		t.Fatalf("stderr: %v\n%s", err, stderr.String())
+	}
+	if env["error"]["code"] != "bad_input" {
+		t.Errorf("code=%v", env["error"]["code"])
+	}
+}
+
+func TestSpnThreadsReply_SuggestFile(t *testing.T) {
+	tmp := t.TempDir()
+	path := tmp + "/sug.txt"
+	if err := os.WriteFile(path, []byte("from file"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cap := &captureReplyStub{}
+	prev := apiFactory
+	defer func() { apiFactory = prev }()
+	apiFactory = func() (threadsops.API, *agentio.Error) { return cap, nil }
+	var stdout, stderr bytes.Buffer
+	exit := runThreadsWith([]string{
+		"reply", "owner/repo#1", "PRRT_1",
+		"--suggest-file", path,
+	}, &stdout, &stderr)
+	if exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+	}
+	want := "How about this?\n\n```suggestion\nfrom file\n```"
+	if cap.lastBody != want {
+		t.Errorf("body=%q\nwant %q", cap.lastBody, want)
 	}
 }

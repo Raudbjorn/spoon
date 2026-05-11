@@ -219,3 +219,66 @@ func TestParsePRRef(t *testing.T) {
 	}
 }
 
+func TestParseThreadsFlags_ApplySuggestion(t *testing.T) {
+	f, err := parseThreadsFlags([]string{"owner/repo#1", "--apply-suggestion", "PRRT_1", "--suggestion-index", "2", "--dry-run", "--force", "--repo-root", "/tmp/x"})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if f.mode != modeApplySuggestion {
+		t.Errorf("mode=%v want apply-suggestion", f.mode)
+	}
+	if f.targetID != "PRRT_1" {
+		t.Errorf("targetID=%q", f.targetID)
+	}
+	if f.suggestionIndex != 2 {
+		t.Errorf("index=%d", f.suggestionIndex)
+	}
+	if !f.dryRun || !f.force {
+		t.Errorf("dryRun=%v force=%v", f.dryRun, f.force)
+	}
+	if f.repoRoot != "/tmp/x" {
+		t.Errorf("repoRoot=%q", f.repoRoot)
+	}
+}
+
+func TestParseThreadsFlags_SuggestOnReply(t *testing.T) {
+	f, err := parseThreadsFlags([]string{"owner/repo#1", "--reply", "PRRT_1", "--suggest", "new code"})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if f.mode != modeReply {
+		t.Errorf("mode=%v want reply", f.mode)
+	}
+	// Body must be the wrapped suggestion.
+	if f.body != "How about this?\n\n```suggestion\nnew code\n```" {
+		t.Errorf("body=%q", f.body)
+	}
+}
+
+func TestParseThreadsFlags_SuggestAndBodyMutuallyExclusive(t *testing.T) {
+	_, err := parseThreadsFlags([]string{"owner/repo#1", "--reply", "PRRT_1", "--suggest", "x", "--body", "y"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestParseThreadsFlags_IntroRequiresSuggest(t *testing.T) {
+	_, err := parseThreadsFlags([]string{"owner/repo#1", "--reply", "PRRT_1", "--body", "hi", "--intro", "x"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestParseThreadsFlags_CustomIntro(t *testing.T) {
+	f, err := parseThreadsFlags([]string{"owner/repo#1", "--reply", "PRRT_1", "--suggest", "x", "--intro", "Try:"})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if f.body != "Try:\n\n```suggestion\nx\n```" {
+		t.Errorf("body=%q", f.body)
+	}
+}
+
+// silence the unused-import linter if no usage needs threadsops
+var _ = threadsops.FilterAll
+

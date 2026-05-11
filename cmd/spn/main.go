@@ -40,12 +40,16 @@ Usage:
   spn <noun> <verb> [args]
 
 Nouns and verbs:
-  threads list <pr-ref> [--all]
+  threads list <pr-ref> [--all] [--filter MODE]
   threads next <pr-ref>
   threads reply <pr-ref> <thread-id> --body T | --body-file PATH
+                                    | --suggest BODY [--intro TEXT]
+                                    | --suggest-file PATH [--intro TEXT]
   threads resolve <pr-ref> <thread-id> [--body T | --body-file PATH]
   threads resolve-all <pr-ref>
   threads unresolve-all <pr-ref>
+  threads apply-suggestion <pr-ref> <thread-id>
+        [--suggestion-index N] [--dry-run] [--force] [--repo-root PATH]
   pr status <pr-ref>
   forks list <repo> [--tier 1|2|3] [--top N] [--bot-allowlist L] [--refresh] [--csv] [--forge github|gitlab] [--forge-host H]
                     [--no-cluster] [--cluster-top N] [--embedder URL] [--embedder-model NAME]

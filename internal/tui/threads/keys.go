@@ -16,6 +16,7 @@ const (
 	actUnresolveAll
 	actOpen
 	actHelp
+	actApplySuggestion
 )
 
 func dispatchKey(k tea.KeyMsg) keyAction {
@@ -31,6 +32,12 @@ func dispatchKey(k tea.KeyMsg) keyAction {
 	case "R":
 		return actResolve
 	case "a":
+		// The caller decides between actApplySuggestion (when the focused
+		// thread has a suggestion) and actResolveAll otherwise. We return
+		// actApplySuggestion here; model.Update falls back to actResolveAll
+		// when no suggestion is present.
+		return actApplySuggestion
+	case "ctrl+a":
 		return actResolveAll
 	case "A":
 		return actUnresolveAll

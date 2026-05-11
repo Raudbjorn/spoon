@@ -11,10 +11,12 @@ import (
 )
 
 // ReviewThreadWithPolicy embeds github.ReviewThread plus a derived requiresBody
-// field for agent-facing JSON output.
+// field for agent-facing JSON output. Suggestions, when present, holds the
+// parsed `suggestion` blocks from this thread's comments (document order).
 type ReviewThreadWithPolicy struct {
 	github.ReviewThread
-	RequiresBody bool `json:"requiresBody"`
+	RequiresBody bool         `json:"requiresBody"`
+	Suggestions  []Suggestion `json:"suggestions,omitempty"`
 }
 
 // FilterMode selects which review threads to surface in list/JSON output.

@@ -21,7 +21,9 @@ func List(ctx context.Context, api API, owner, repo string, number int, includeR
 		}
 		return github.PullRequestStatus{}, nil, &OpError{Code: OpCodeUpstream, Message: err.Error(), Retryable: true}
 	}
-	return status, AnnotateWithPolicy(raw), nil
+	annotated := AnnotateWithPolicy(raw)
+	PopulateSuggestions(annotated)
+	return status, annotated, nil
 }
 
 // Next returns the oldest unresolved thread (sorted by firstCommentCreatedAt
@@ -50,7 +52,9 @@ func Next(ctx context.Context, api API, owner, repo string, number int) (github.
 		}
 		return unresolved[i].ID < unresolved[j].ID
 	})
-	return status, AnnotateOneWithPolicy(&unresolved[0]), nil
+	one := AnnotateOneWithPolicy(&unresolved[0])
+	PopulateOneSuggestions(one)
+	return status, one, nil
 }
 
 func firstCommentTime(t github.ReviewThread) string {
