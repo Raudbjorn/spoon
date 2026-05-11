@@ -75,14 +75,18 @@ package() {
     install -Dm755 spoon "${pkgdir}/usr/bin/spoon"
     install -Dm755 spn   "${pkgdir}/usr/bin/spn"
 
-    # Skill — installed to /usr/share/spoon/skills/. Claude Code does NOT
+    # Skills — installed to /usr/share/spoon/skills/. Claude Code does NOT
     # auto-discover system locations; the .install hook prints how to
-    # activate it. The skill ships in a separate PR; install only when
-    # present so the package stays buildable on revisions that predate it.
-    if [ -f docs/superpowers/skills/using-spn/SKILL.md ]; then
-        install -Dm644 docs/superpowers/skills/using-spn/SKILL.md \
-            "${pkgdir}/usr/share/spoon/skills/using-spn/SKILL.md"
-    fi
+    # activate them. Skill directories ship in separate PRs; install only
+    # when present so the package stays buildable on revisions that predate
+    # them. Adding a new skill name to the loop is the only change needed
+    # when more skills land.
+    for skill in using-spn using-spn-forks; do
+        if [ -f "docs/superpowers/skills/${skill}/SKILL.md" ]; then
+            install -Dm644 "docs/superpowers/skills/${skill}/SKILL.md" \
+                "${pkgdir}/usr/share/spoon/skills/${skill}/SKILL.md"
+        fi
+    done
 
     # Design spec + README as reference docs.
     install -Dm644 docs/superpowers/specs/2026-05-10-spn-bifurcation-design.md \
