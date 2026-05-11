@@ -34,6 +34,8 @@ type Model struct {
 	includeResolved bool
 	filter          threadsops.FilterMode
 	showHelp        bool
+
+	pendingSuggestion threadsops.Suggestion // set while m.confirm == "apply-suggestion"
 }
 
 // New constructs an empty Model. The includeResolved flag is mapped to a
@@ -139,6 +141,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, m.resolveAllCmd()
 				case "unresolve-all":
 					return m, m.unresolveAllCmd()
+				case "apply-suggestion":
+					return m, m.applySuggestionCmd(m.pendingSuggestion)
 				}
 			}
 			// Anything else cancels.
@@ -210,6 +214,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, m.resolveCmd(cur.ID)
 				}
 			}
+		case actApplySuggestion:
+			if m.mutating || m.confirm != "" {
+				return m, nil
+			}
+			if len(m.threads) == 0 {
+				return m, nil
+			}
+			cur := m.threads[m.cursor]
+			// Find the first suggestion across all comments.
+			var sug *threadsops.Suggestion
+			for _, c := range cur.Comments {
+				for _, s := range threadsops.ParseSuggestions(c.ID, c.Body) {
+					s := s
+					sug = &s
+					break
+				}
+				if sug != nil {
+					break
+				}
+			}
+			if sug == nil {
+				// No suggestion on this thread — fall back to resolve-all.
+				m.confirm = "resolve-all"
+				return m, nil
+			}
+			m.confirm = "apply-suggestion"
+			m.pendingSuggestion = *sug
 		case actResolveAll:
 			if m.mutating || m.confirm != "" {
 				return m, nil
@@ -273,6 +304,20 @@ func (m Model) unresolveAllCmd() tea.Cmd {
 	return func() tea.Msg {
 		_, err := m.client.UnresolveAllThreads(context.Background(), m.owner, m.repo, m.number, 4)
 		return mutationDoneMsg{what: "bulk-unresolve", err: err}
+	}
+}
+
+func (m Model) applySuggestionCmd(sug threadsops.Suggestion) tea.Cmd {
+	return func() tea.Msg {
+		if m.cursor >= len(m.threads) {
+			return mutationDoneMsg{what: "apply-suggestion", err: fmt.Errorf("no thread selected")}
+		}
+		t := threadsops.ReviewThreadWithPolicy{ReviewThread: m.threads[m.cursor]}
+		_, opErr := threadsops.ApplySuggestion(context.Background(), t, sug, threadsops.ApplyOptions{})
+		if opErr != nil {
+			return mutationDoneMsg{what: "apply-suggestion", err: fmt.Errorf("%s", opErr.Message)}
+		}
+		return mutationDoneMsg{what: "apply-suggestion", err: nil}
 	}
 }
 

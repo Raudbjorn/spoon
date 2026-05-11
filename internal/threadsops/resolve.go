@@ -53,6 +53,7 @@ func ResolveWithThreads(ctx context.Context, api API, threads []github.ReviewThr
 // ResolveWithThreads.
 func resolveTarget(ctx context.Context, api API, target *github.ReviewThread, threadID, body string) (*ReviewThreadWithPolicy, bool, *OpError) {
 	annotated := AnnotateOneWithPolicy(target)
+	PopulateOneSuggestions(annotated)
 	if target.IsResolved {
 		return annotated, true, nil
 	}
@@ -93,6 +94,7 @@ func resolveTarget(ctx context.Context, api API, target *github.ReviewThread, th
 		}
 	}
 	annotated.IsResolved = true
+	PopulateOneSuggestions(annotated)
 	return annotated, false, nil
 }
 

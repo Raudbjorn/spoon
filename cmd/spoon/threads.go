@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -43,6 +44,7 @@ const (
 	modeResolve
 	modeResolveAll
 	modeUnresolveAll
+	modeApplySuggestion
 )
 
 type threadsFlags struct {
@@ -54,6 +56,17 @@ type threadsFlags struct {
 	includeResolved bool
 	filter          threadsops.FilterMode
 	noStatus        bool
+	// suggestion-related flags
+	suggest         string
+	suggestFile     string
+	suggestSet      bool
+	suggestFileSet  bool
+	intro           string
+	introSet        bool
+	suggestionIndex int
+	dryRun          bool
+	force           bool
+	repoRoot        string
 }
 
 // parseThreadsFlags parses the args after "spoon threads".
@@ -123,6 +136,56 @@ func parseThreadsFlags(args []string) (threadsFlags, error) {
 			if err := setMode(modeUnresolveAll, "unresolve-all"); err != nil {
 				return f, err
 			}
+		case a == "--apply-suggestion":
+			if err := setMode(modeApplySuggestion, "apply-suggestion"); err != nil {
+				return f, err
+			}
+			if i+1 >= len(args) {
+				return f, fmt.Errorf("--apply-suggestion requires a thread id")
+			}
+			i++
+			f.targetID = args[i]
+		case a == "--suggestion-index":
+			if i+1 >= len(args) {
+				return f, fmt.Errorf("--suggestion-index requires a value")
+			}
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n < 0 {
+				return f, fmt.Errorf("--suggestion-index must be a non-negative integer")
+			}
+			f.suggestionIndex = n
+		case a == "--dry-run":
+			f.dryRun = true
+		case a == "--force":
+			f.force = true
+		case a == "--repo-root":
+			if i+1 >= len(args) {
+				return f, fmt.Errorf("--repo-root requires a path")
+			}
+			i++
+			f.repoRoot = args[i]
+		case a == "--suggest":
+			if i+1 >= len(args) {
+				return f, fmt.Errorf("--suggest requires a value")
+			}
+			i++
+			f.suggest = args[i]
+			f.suggestSet = true
+		case a == "--suggest-file":
+			if i+1 >= len(args) {
+				return f, fmt.Errorf("--suggest-file requires a path")
+			}
+			i++
+			f.suggestFile = args[i]
+			f.suggestFileSet = true
+		case a == "--intro":
+			if i+1 >= len(args) {
+				return f, fmt.Errorf("--intro requires a value")
+			}
+			i++
+			f.intro = args[i]
+			f.introSet = true
 		case a == "--body":
 			if i+1 >= len(args) {
 				return f, fmt.Errorf("--body requires a value")
@@ -169,6 +232,28 @@ func parseThreadsFlags(args []string) (threadsFlags, error) {
 		f.includeResolved = true
 	}
 
+	// --suggest mutual exclusion + intro guard.
+	if (f.suggestSet || f.suggestFileSet) && (f.body != "" || f.bodyFile != "") {
+		return f, fmt.Errorf("--suggest/--suggest-file is mutually exclusive with --body/--body-file")
+	}
+	if f.suggestSet && f.suggestFileSet {
+		return f, fmt.Errorf("--suggest and --suggest-file are mutually exclusive")
+	}
+	if !f.suggestSet && !f.suggestFileSet && f.introSet {
+		return f, fmt.Errorf("--intro requires --suggest or --suggest-file")
+	}
+	if f.suggestFileSet {
+		b, err := readBody(f.suggestFile)
+		if err != nil {
+			return f, err
+		}
+		f.suggest = b
+		f.suggestSet = true
+	}
+	if f.suggestSet && f.mode == modeReply {
+		f.body = threadsops.WrapSuggestionBody(f.intro, f.suggest)
+	}
+
 	// Resolve --body-file before validating body requirement.
 	if f.bodyFile != "" {
 		body, err := readBody(f.bodyFile)
@@ -181,7 +266,7 @@ func parseThreadsFlags(args []string) (threadsFlags, error) {
 	}
 
 	if f.mode == modeReply && f.body == "" {
-		return f, fmt.Errorf("--reply requires --body or --body-file")
+		return f, fmt.Errorf("--reply requires --body, --body-file, --suggest, or --suggest-file")
 	}
 	return f, nil
 }
@@ -362,6 +447,63 @@ func runThreads(args []string) int {
 		}
 		return 0
 
+	case modeApplySuggestion:
+		status, _, ferr := client.FetchPR(ctx, owner, repo, number, gh.ThreadStateAll)
+		if ferr != nil {
+			fmt.Fprintln(os.Stderr, "❌ Error:", ferr)
+			return 1
+		}
+		emitStatus(os.Stdout, status, number, flags.noStatus)
+		_, threads, opErr := threadsops.List(ctx, client, owner, repo, number, true)
+		if opErr != nil {
+			fmt.Fprintln(os.Stderr, "❌ Error:", opErr.Message)
+			return 1
+		}
+		var target *threadsops.ReviewThreadWithPolicy
+		for i := range threads {
+			if threads[i].ID == flags.targetID {
+				target = &threads[i]
+				break
+			}
+		}
+		if target == nil {
+			fmt.Fprintf(os.Stderr, "❌ Error: thread %s not found on PR\n", flags.targetID)
+			return 1
+		}
+		sugs := target.Suggestions
+		if len(sugs) == 0 {
+			fmt.Fprintln(os.Stderr, "❌ Error: thread has no suggestion blocks")
+			return 1
+		}
+		if flags.suggestionIndex >= len(sugs) {
+			fmt.Fprintf(os.Stderr, "❌ Error: suggestion index %d out of range (have %d)\n", flags.suggestionIndex, len(sugs))
+			return 2
+		}
+		res, applyErr := threadsops.ApplySuggestion(ctx, *target, sugs[flags.suggestionIndex], threadsops.ApplyOptions{
+			RepoRoot: flags.repoRoot,
+			DryRun:   flags.dryRun,
+			Force:    flags.force,
+		})
+		if applyErr != nil {
+			fmt.Fprintln(os.Stderr, "❌ Error:", applyErr.Message)
+			if applyErr.Code == threadsops.OpCodePolicy {
+				return 2
+			}
+			return 1
+		}
+		// Friendly summary
+		verb := "applied"
+		if flags.dryRun {
+			verb = "would apply"
+		}
+		fmt.Printf("✅ %s suggestion at %s (lines %d): replaced %d line(s)\n",
+			verb, target.Path, target.Line, len(res.OldLines))
+		if err := json.NewEncoder(os.Stdout).Encode(res); err != nil {
+			fmt.Fprintln(os.Stderr, "❌ Error:", err)
+			return 1
+		}
+		return 0
+
 	case modeTUI:
 		return runThreadsTUI(ctx, client, owner, repo, number, flags.filter)
 
@@ -395,12 +537,23 @@ Flags:
   --no-status           Suppress the PR status header
   --next                Print the oldest unresolved thread as JSON, or null
   --reply <id> --body T   Append a reply to a thread
+  --reply <id> --suggest BODY [--intro TEXT]
+                        Counter-propose a code change by wrapping BODY in a
+                        suggestion fenced block in the reply.
   --resolve <id> [--body T]
                         Resolve one thread; --body required for non-bot threads
   --resolve-all         Mark every unresolved thread as resolved
   --unresolve-all       Mark every resolved thread as unresolved
+  --apply-suggestion <id> [--suggestion-index N] [--dry-run] [--force] [--repo-root PATH]
+                        Rewrite the local file at the thread's line range
+                        with the parsed suggestion block. --dry-run skips
+                        the write but reports what would change. --force
+                        bypasses the outdated-thread safety check.
   --body T              Comment body
   --body-file PATH      Read body from file ('-' = stdin)
+  --suggest BODY        Wrap BODY in a suggestion fenced block on reply.
+  --suggest-file PATH   Read suggestion content from a file ('-' = stdin).
+  --intro TEXT          Preface text for --suggest (default: "How about this?")
   -h, --help            Show this help
 
 Examples:

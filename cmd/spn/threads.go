@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/svnbjrn/spoon/internal/agentio"
@@ -32,7 +33,7 @@ func runThreads(args []string) int { return runThreadsWith(args, os.Stdout, os.S
 
 func runThreadsWith(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		return agentio.NewError(agentio.CodeBadInput, "missing verb (list|next|reply|resolve|resolve-all|unresolve-all)", agentio.RemediationBadInput("threads", "")).Emit(stderr)
+		return agentio.NewError(agentio.CodeBadInput, "missing verb (list|next|reply|resolve|resolve-all|unresolve-all|apply-suggestion)", agentio.RemediationBadInput("threads", "")).Emit(stderr)
 	}
 	verb, rest := args[0], args[1:]
 	switch verb {
@@ -48,6 +49,8 @@ func runThreadsWith(args []string, stdout, stderr io.Writer) int {
 		return doThreadsResolveAll(rest, stdout, stderr)
 	case "unresolve-all":
 		return doThreadsUnresolveAll(rest, stdout, stderr)
+	case "apply-suggestion":
+		return doThreadsApplySuggestion(rest, stdout, stderr)
 	default:
 		return agentio.NewError(agentio.CodeBadInput, "unknown verb: "+verb, agentio.RemediationBadInput("threads", "")).Emit(stderr)
 	}
@@ -159,7 +162,10 @@ func resolvePRRef(prRef, noun, verb string, stderr io.Writer) (owner, repo strin
 }
 
 func doThreadsReply(args []string, stdout, stderr io.Writer) int {
-	var prRef, threadID, body, bodyFile string
+	var prRef, threadID, body, bodyFile, suggest, suggestFile, intro string
+	suggestSet := false
+	suggestFileSet := false
+	introSet := false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--body":
@@ -174,6 +180,27 @@ func doThreadsReply(args []string, stdout, stderr io.Writer) int {
 			}
 			i++
 			bodyFile = args[i]
+		case "--suggest":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--suggest requires a value", agentio.RemediationBadInput("threads", "reply")).Emit(stderr)
+			}
+			i++
+			suggest = args[i]
+			suggestSet = true
+		case "--suggest-file":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--suggest-file requires a path", agentio.RemediationBadInput("threads", "reply")).Emit(stderr)
+			}
+			i++
+			suggestFile = args[i]
+			suggestFileSet = true
+		case "--intro":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--intro requires a value", agentio.RemediationBadInput("threads", "reply")).Emit(stderr)
+			}
+			i++
+			intro = args[i]
+			introSet = true
 		default:
 			if strings.HasPrefix(args[i], "--") {
 				return agentio.NewError(agentio.CodeBadInput, "unknown flag: "+args[i], agentio.RemediationBadInput("threads", "reply")).Emit(stderr)
@@ -188,7 +215,28 @@ func doThreadsReply(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	if prRef == "" || threadID == "" {
-		return agentio.NewError(agentio.CodeBadInput, "usage: spn threads reply <pr-ref> <thread-id> --body T", agentio.RemediationBadInput("threads", "reply")).Emit(stderr)
+		return agentio.NewError(agentio.CodeBadInput, "usage: spn threads reply <pr-ref> <thread-id> --body T (or --suggest BODY)", agentio.RemediationBadInput("threads", "reply")).Emit(stderr)
+	}
+	// --suggest and --body are mutually exclusive.
+	if (suggestSet || suggestFileSet) && (body != "" || bodyFile != "") {
+		return agentio.NewError(agentio.CodeBadInput, "--suggest/--suggest-file is mutually exclusive with --body/--body-file", agentio.RemediationBadInput("threads", "reply")).Emit(stderr)
+	}
+	if suggestSet && suggestFileSet {
+		return agentio.NewError(agentio.CodeBadInput, "--suggest and --suggest-file are mutually exclusive", agentio.RemediationBadInput("threads", "reply")).Emit(stderr)
+	}
+	if !suggestSet && !suggestFileSet && introSet {
+		return agentio.NewError(agentio.CodeBadInput, "--intro requires --suggest or --suggest-file", agentio.RemediationBadInput("threads", "reply")).Emit(stderr)
+	}
+	if suggestFileSet {
+		b, err := threadsops.ReadBody(suggestFile)
+		if err != nil {
+			return agentio.NewError(agentio.CodeBadInput, err.Error(), agentio.RemediationBadInput("threads", "reply")).Emit(stderr)
+		}
+		suggest = b
+		suggestSet = true
+	}
+	if suggestSet {
+		body = threadsops.WrapSuggestionBody(intro, suggest)
 	}
 	if bodyFile != "" && body == "" {
 		b, err := threadsops.ReadBody(bodyFile)
@@ -198,7 +246,7 @@ func doThreadsReply(args []string, stdout, stderr io.Writer) int {
 		body = b
 	}
 	if body == "" {
-		return agentio.NewError(agentio.CodeBadInput, "--body or --body-file is required", agentio.RemediationBadInput("threads", "reply")).Emit(stderr)
+		return agentio.NewError(agentio.CodeBadInput, "--body, --body-file, --suggest, or --suggest-file is required", agentio.RemediationBadInput("threads", "reply")).Emit(stderr)
 	}
 	_, _, _, ec, ok := resolvePRRef(prRef, "threads", "reply", stderr)
 	if !ok {
@@ -312,6 +360,124 @@ func doThreadsUnresolveAll(args []string, stdout, stderr io.Writer) int {
 	res, opErr := threadsops.UnresolveAll(context.Background(), api, owner, repo, number)
 	if opErr != nil {
 		return translateOpErr(opErr, stderr)
+	}
+	if err := agentio.WriteJSON(stdout, res); err != nil {
+		return agentio.NewError(agentio.CodeInternal, "encode output: "+err.Error(), agentio.RemediationInternal()).Emit(stderr)
+	}
+	return 0
+}
+
+// doThreadsApplySuggestion implements `spn threads apply-suggestion`.
+//
+//	spn threads apply-suggestion <pr-ref> <thread-id>
+//	    [--suggestion-index N] [--dry-run] [--force] [--repo-root PATH]
+//
+// Emits one ApplyResult JSON object on stdout on success. On error, emits the
+// agentio.Error envelope on stderr.
+//
+// Error code semantics:
+//   - bad_input: missing args, invalid index, thread has no Path/Line.
+//   - not_found: thread doesn't exist, no suggestion at the chosen index,
+//     or the file doesn't exist on disk.
+//   - policy_violation: thread is outdated and --force not given.
+//   - internal: read/write failure.
+func doThreadsApplySuggestion(args []string, stdout, stderr io.Writer) int {
+	var prRef, threadID, repoRoot string
+	idx := 0
+	dryRun := false
+	force := false
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--suggestion-index":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--suggestion-index requires a value", agentio.RemediationBadInput("threads", "apply-suggestion")).Emit(stderr)
+			}
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n < 0 {
+				return agentio.NewError(agentio.CodeBadInput, "--suggestion-index must be a non-negative integer", agentio.RemediationBadInput("threads", "apply-suggestion")).Emit(stderr)
+			}
+			idx = n
+		case "--dry-run":
+			dryRun = true
+		case "--force":
+			force = true
+		case "--repo-root":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--repo-root requires a path", agentio.RemediationBadInput("threads", "apply-suggestion")).Emit(stderr)
+			}
+			i++
+			repoRoot = args[i]
+		default:
+			if strings.HasPrefix(args[i], "--") {
+				return agentio.NewError(agentio.CodeBadInput, "unknown flag: "+args[i], agentio.RemediationBadInput("threads", "apply-suggestion")).Emit(stderr)
+			}
+			if prRef == "" {
+				prRef = args[i]
+			} else if threadID == "" {
+				threadID = args[i]
+			} else {
+				return agentio.NewError(agentio.CodeBadInput, "unexpected positional: "+args[i], agentio.RemediationBadInput("threads", "apply-suggestion")).Emit(stderr)
+			}
+		}
+	}
+	if prRef == "" || threadID == "" {
+		return agentio.NewError(agentio.CodeBadInput, "usage: spn threads apply-suggestion <pr-ref> <thread-id> [--suggestion-index N] [--dry-run] [--force]", agentio.RemediationBadInput("threads", "apply-suggestion")).Emit(stderr)
+	}
+	owner, repo, number, ec, ok := resolvePRRef(prRef, "threads", "apply-suggestion", stderr)
+	if !ok {
+		return ec
+	}
+	api, authErr := apiFactory()
+	if authErr != nil {
+		return authErr.Emit(stderr)
+	}
+	_, threads, opErr := threadsops.List(context.Background(), api, owner, repo, number, true)
+	if opErr != nil {
+		return translateOpErr(opErr, stderr)
+	}
+	var target *threadsops.ReviewThreadWithPolicy
+	for i := range threads {
+		if threads[i].ID == threadID {
+			target = &threads[i]
+			break
+		}
+	}
+	if target == nil {
+		return agentio.NewError(agentio.CodeNotFound, "thread "+threadID+" not found on PR", agentio.RemediationNotFound()).Emit(stderr)
+	}
+	sugs := target.Suggestions
+	if len(sugs) == 0 {
+		return agentio.NewError(agentio.CodeNotFound, "thread has no suggestion blocks", "Review the comment body for a ```suggestion fenced block, or use --suggest on the reply command to propose one.").Emit(stderr)
+	}
+	if idx >= len(sugs) {
+		return agentio.NewError(agentio.CodeBadInput, "suggestion index out of range", agentio.RemediationBadInput("threads", "apply-suggestion")).Emit(stderr)
+	}
+	res, applyErr := threadsops.ApplySuggestion(context.Background(), *target, sugs[idx], threadsops.ApplyOptions{
+		RepoRoot: repoRoot,
+		DryRun:   dryRun,
+		Force:    force,
+	})
+	if applyErr != nil {
+		// Translate apply-specific errors with helpful remediations.
+		code := agentio.Code(applyErr.Code)
+		var rem string
+		switch applyErr.Code {
+		case threadsops.OpCodePolicy:
+			rem = "Thread is outdated. Re-run with --force to apply anyway, or skip this thread."
+		case threadsops.OpCodeNotFound:
+			rem = "Verify you're running from the checkout root, or pass --repo-root PATH."
+		case threadsops.OpCodeBadInput:
+			rem = agentio.RemediationBadInput("threads", "apply-suggestion")
+		default:
+			rem = agentio.RemediationInternal()
+		}
+		e := agentio.NewError(code, applyErr.Message, rem)
+		e.Retryable = applyErr.Retryable
+		if applyErr.Details != nil {
+			e = e.WithDetails(applyErr.Details)
+		}
+		return e.Emit(stderr)
 	}
 	if err := agentio.WriteJSON(stdout, res); err != nil {
 		return agentio.NewError(agentio.CodeInternal, "encode output: "+err.Error(), agentio.RemediationInternal()).Emit(stderr)
