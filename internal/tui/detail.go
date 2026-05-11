@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -121,20 +122,45 @@ func (m Model) viewDetail() string {
 		if label == "" {
 			label = sf.Heat.ClusterID
 		}
+		// "noise" gets a minimal block — no label noise, no siblings.
+		isNoise := sf.Heat.ClusterID == "noise"
+
 		line := fmt.Sprintf("│ Cluster: %s", label)
-		if sf.Heat.ClusterMemberCount > 0 {
+		if !isNoise && sf.Heat.ClusterMemberCount > 0 {
 			line += fmt.Sprintf(" (%d members)", sf.Heat.ClusterMemberCount)
 		}
-		if len(line)-1 < boxWidth+1 {
-			line += pad(boxWidth-len(line)+1, " ") + "│"
-		} else {
-			line = line[:boxWidth+1] + "│"
-		}
-		b.WriteString(line + "\n")
+		b.WriteString(fitBoxLine(line, boxWidth) + "\n")
+
 		if sf.Heat.NoveltyScore > 0 {
 			nl := fmt.Sprintf("│  Novelty: %.2f", sf.Heat.NoveltyScore)
-			nl += pad(boxWidth-len(nl)+1, " ") + "│"
-			b.WriteString(nl + "\n")
+			b.WriteString(fitBoxLine(nl, boxWidth) + "\n")
+		}
+		if sf.Heat.ChangeImpact > 0 {
+			ci := fmt.Sprintf("│  ChangeImpact: %.2f", sf.Heat.ChangeImpact)
+			b.WriteString(fitBoxLine(ci, boxWidth) + "\n")
+		}
+
+		if !isNoise {
+			siblings := m.collectSiblings(sf.Heat.ClusterID, sf.Fork.ID)
+			if len(siblings) > 0 {
+				const maxShown = 5
+				header := fmt.Sprintf("│  Siblings (%d):", len(siblings))
+				b.WriteString(fitBoxLine(header, boxWidth) + "\n")
+				shown := siblings
+				extra := 0
+				if len(shown) > maxShown {
+					extra = len(shown) - maxShown
+					shown = shown[:maxShown]
+				}
+				for _, sib := range shown {
+					row := "│    " + sib
+					b.WriteString(fitBoxLine(row, boxWidth) + "\n")
+				}
+				if extra > 0 {
+					more := fmt.Sprintf("│    ... and %d more", extra)
+					b.WriteString(fitBoxLine(more, boxWidth) + "\n")
+				}
+			}
 		}
 	}
 
@@ -237,4 +263,54 @@ func pad(n int, ch string) string {
 		return ""
 	}
 	return strings.Repeat(ch, n)
+}
+
+// collectSiblings returns the fork IDs of other members of the given
+// cluster, sorted by Heat.Score descending. The caller's own fork (by
+// ID) is excluded.
+func (m Model) collectSiblings(clusterID, selfID string) []string {
+	type sib struct {
+		id    string
+		score float64
+	}
+	var sibs []sib
+	for i := range m.forks {
+		if m.forks[i].Heat.ClusterID != clusterID {
+			continue
+		}
+		if m.forks[i].Fork.ID == selfID {
+			continue
+		}
+		sibs = append(sibs, sib{
+			id:    m.forks[i].Fork.ID,
+			score: m.forks[i].Heat.Score,
+		})
+	}
+	sort.SliceStable(sibs, func(i, j int) bool {
+		return sibs[i].score > sibs[j].score
+	})
+	out := make([]string, 0, len(sibs))
+	for _, s := range sibs {
+		out = append(out, s.id)
+	}
+	return out
+}
+
+// fitBoxLine pads or truncates a line so it fits inside the detail box
+// of width boxWidth, and appends the closing "│". The input string is
+// expected to start with the opening "│ ".
+func fitBoxLine(line string, boxWidth int) string {
+	// boxWidth is the total width of the box including borders, so the
+	// content area between the two "│" characters is boxWidth-2 wide.
+	// The closing "│" is appended at column boxWidth-1 (0-indexed) so
+	// the line as-is must occupy boxWidth-1 columns before the trailing
+	// "│" is added.
+	target := boxWidth - 1
+	if len(line) > target {
+		// Truncate, leaving room for the closing border.
+		line = line[:target]
+	} else {
+		line += pad(target-len(line), " ")
+	}
+	return line + "│"
 }

@@ -97,6 +97,10 @@ type Model struct {
 	clusterSkipReason    string            // human-readable skip reason when clusters were skipped
 	clusterPendingPrompt *clusterPromptMsg // active prompt waiting for user answer
 	clusterMsgs          chan tea.Msg      // shared message channel cluster goroutines push onto
+
+	// Cluster view toggle (T11): when true, the table is rendered with a
+	// header row per cluster. Toggled via the "g" key.
+	groupByCluster bool
 }
 
 // --- Constructor ---
@@ -506,12 +510,14 @@ func (m *Model) handleTableKey(key string) (tea.Model, tea.Cmd) {
 		if m.cursor < len(m.forks)-1 {
 			m.cursor++
 		}
-	case "g", "home":
+	case "home":
 		m.cursor = 0
 	case "G", "end":
 		if len(m.forks) > 0 {
 			m.cursor = len(m.forks) - 1
 		}
+	case "g":
+		m.toggleGroupByCluster()
 	case "enter":
 		if m.cursor >= 0 && m.cursor < len(m.forks) {
 			m.view = viewDetail
@@ -548,6 +554,74 @@ func (m *Model) handleTableKey(key string) (tea.Model, tea.Cmd) {
 		return m, m.promptExportAll()
 	}
 	return m, nil
+}
+
+// toggleGroupByCluster flips the cluster-grouping view toggle. When no
+// cluster data is available, the toggle still flips but the renderer
+// silently falls back to a flat table; a transient footer note signals
+// the absence of cluster data so users aren't confused.
+//
+// The cursor is re-anchored to the same fork across the toggle so the
+// user's selection doesn't jump after the resort.
+func (m *Model) toggleGroupByCluster() {
+	var selectedID string
+	if m.cursor >= 0 && m.cursor < len(m.forks) {
+		selectedID = m.forks[m.cursor].Fork.ID
+	}
+	if !m.hasClusterData() {
+		m.errMsg = "no clusters available"
+		m.errMsgTime = time.Now()
+		m.groupByCluster = !m.groupByCluster
+		m.reapplySort()
+		m.restoreCursorByID(selectedID)
+		return
+	}
+	m.groupByCluster = !m.groupByCluster
+	m.reapplySort()
+	m.restoreCursorByID(selectedID)
+}
+
+// reapplySort routes through either sortForks (flat) or
+// sortForksByCluster (grouped) depending on the current toggle.
+func (m *Model) reapplySort() {
+	if m.groupByCluster {
+		m.sortForksByCluster()
+	} else {
+		m.sortForks()
+	}
+}
+
+// restoreCursorByID finds the fork with the given ID in m.forks and sets
+// m.cursor to its index. If not found, the cursor is clamped to a valid
+// position.
+func (m *Model) restoreCursorByID(id string) {
+	if id == "" {
+		return
+	}
+	for i := range m.forks {
+		if m.forks[i].Fork.ID == id {
+			m.cursor = i
+			return
+		}
+	}
+	if m.cursor >= len(m.forks) {
+		m.cursor = len(m.forks) - 1
+	}
+	if m.cursor < 0 {
+		m.cursor = 0
+	}
+}
+
+// hasClusterData reports whether at least one fork carries a populated
+// ClusterID (including "noise"). Used to gate the "g" toggle's user
+// feedback — the toggle itself always flips so tests can observe state.
+func (m *Model) hasClusterData() bool {
+	for i := range m.forks {
+		if m.forks[i].Heat.ClusterID != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Model) handleDetailKey(key string) (tea.Model, tea.Cmd) {

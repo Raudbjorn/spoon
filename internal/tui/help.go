@@ -5,7 +5,8 @@ func (m Model) viewHelp() string {
   Keybindings
   ───────────
   ↑/↓, j/k     Navigate table
-  g/G           Go to top/bottom
+  Home/G        Go to top/bottom
+  g             Toggle cluster grouping (when clusters are available)
   Enter         View fork details
   n             Search new repository
   /             Filter forks
