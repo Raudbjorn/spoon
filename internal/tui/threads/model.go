@@ -85,7 +85,9 @@ func NewWithFilter(client *gh.Client, owner, repo string, number int, mode threa
 		number:          number,
 		includeResolved: mode.NeedsResolvedFetch(),
 		filter:          mode,
-		launchEditor:    defaultEditorLauncher,
+		// launchEditor is intentionally left nil in production. The counter-propose
+		// flow uses tea.ExecProcess directly. Tests set launchEditor to a non-nil
+		// stub to bypass the real editor invocation (Option B test seam).
 	}
 	m.replyFunc = func(ctx context.Context, threadID, body string) (gh.ThreadComment, error) {
 		return m.client.ReplyToThread(ctx, threadID, body)
@@ -312,23 +314,81 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			threadID := m.threads[m.cursor].ID
 			prRef := fmt.Sprintf("%s/%s#%d", m.owner, m.repo, m.number)
-			launch := m.launchEditor
-			reply := m.replyFunc
-			return m, func() tea.Msg {
-				body, err := launch(context.Background(), threadID, prRef)
-				if err != nil {
-					return counterProposeResultMsg{err: err, threadID: threadID}
+
+			// Test seam: if launchEditor is set (non-nil), use the legacy all-in-one
+			// path so tests can inject a fake body without needing tea.ExecProcess.
+			if m.launchEditor != nil {
+				launch := m.launchEditor
+				reply := m.replyFunc
+				return m, func() tea.Msg {
+					body, err := launch(context.Background(), threadID, prRef)
+					if err != nil {
+						return counterProposeResultMsg{err: err, threadID: threadID}
+					}
+					if body == "" {
+						return counterProposeResultMsg{cancelled: true, threadID: threadID}
+					}
+					wrapped := threadsops.WrapSuggestionBody("", body)
+					comment, replyErr := reply(context.Background(), threadID, wrapped)
+					if replyErr != nil {
+						return counterProposeResultMsg{err: replyErr, threadID: threadID}
+					}
+					return counterProposeResultMsg{commentID: comment.ID, threadID: threadID}
 				}
+			}
+
+			// Production path: use tea.ExecProcess so the TUI suspends cleanly
+			// while the editor runs, avoiding terminal contention with the render loop.
+
+			// Step 1: prepare temp file synchronously (fast, no terminal I/O).
+			tmpPath, prepErr := m.prepareEditorFile(threadID, prRef)
+			if prepErr != nil {
+				return m, func() tea.Msg {
+					return counterProposeResultMsg{err: prepErr, threadID: threadID}
+				}
+			}
+
+			// Step 2: resolve the editor binary.
+			editor := os.Getenv("EDITOR")
+			if editor == "" {
+				editor = os.Getenv("VISUAL")
+			}
+			if editor == "" {
+				editor = "vi"
+			}
+			execCmd := exec.Command(editor, tmpPath)
+
+			// Step 3: return tea.ExecProcess which suspends the TUI, runs the editor,
+			// then dispatches the returned tea.Msg when the editor exits.
+			reply := m.replyFunc
+			return m, tea.ExecProcess(execCmd, func(editorErr error) tea.Msg {
+				if editorErr != nil {
+					// Preserve the temp file on error so the user can recover work.
+					return counterProposeResultMsg{
+						err:      fmt.Errorf("editor: %w (work preserved at %s)", editorErr, tmpPath),
+						threadID: threadID,
+					}
+				}
+				body, readErr := readAndStripEditorOutput(tmpPath)
+				if readErr != nil {
+					// Preserve the temp file on read error as well.
+					return counterProposeResultMsg{
+						err:      fmt.Errorf("read editor output: %w (work preserved at %s)", readErr, tmpPath),
+						threadID: threadID,
+					}
+				}
+				// Clean up the temp file only on success or clean cancel.
+				os.Remove(tmpPath)
 				if body == "" {
 					return counterProposeResultMsg{cancelled: true, threadID: threadID}
 				}
 				wrapped := threadsops.WrapSuggestionBody("", body)
-				comment, replyErr := reply(context.Background(), threadID, wrapped)
-				if replyErr != nil {
-					return counterProposeResultMsg{err: replyErr, threadID: threadID}
+				comment, opErr := reply(context.Background(), threadID, wrapped)
+				if opErr != nil {
+					return counterProposeResultMsg{err: opErr, threadID: threadID}
 				}
 				return counterProposeResultMsg{commentID: comment.ID, threadID: threadID}
-			}
+			})
 		case actResolveAll:
 			if m.mutating || m.confirm != "" {
 				return m, nil
@@ -445,47 +505,33 @@ func (m Model) View() string {
 	return renderModel(m)
 }
 
-// defaultEditorLauncher writes a temp file with a 3-line comment header,
-// launches $EDITOR (or $VISUAL or vi) and waits. Returns the body with
-// '#'-prefixed lines and trailing whitespace stripped. An empty string means
-// the user cancelled.
-func defaultEditorLauncher(ctx context.Context, threadID, prRef string) (string, error) {
+// prepareEditorFile creates a temp file with a 3-line comment header and
+// returns the path. Used as the synchronous first half of the counter-propose
+// flow; the second half runs after tea.ExecProcess returns.
+func (m Model) prepareEditorFile(threadID, prRef string) (string, error) {
 	f, err := os.CreateTemp("", "spoon-counter-propose-*.md")
 	if err != nil {
 		return "", fmt.Errorf("create temp file: %w", err)
 	}
+	defer f.Close()
 	tmpPath := f.Name()
 	header := fmt.Sprintf("# Counter-propose for thread %s on %s\n# Lines beginning with # are stripped.\n# Empty content cancels.\n", threadID, prRef)
 	if _, err := f.WriteString(header); err != nil {
-		f.Close()
 		os.Remove(tmpPath)
 		return "", fmt.Errorf("write header: %w", err)
 	}
-	f.Close()
+	return tmpPath, nil
+}
 
-	editor := os.Getenv("EDITOR")
-	if editor == "" {
-		editor = os.Getenv("VISUAL")
-	}
-	if editor == "" {
-		editor = "vi"
-	}
-
-	cmd := exec.CommandContext(ctx, editor, tmpPath)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		os.Remove(tmpPath)
-		return "", fmt.Errorf("editor: %w", err)
-	}
-
-	raw, err := os.ReadFile(tmpPath)
+// readAndStripEditorOutput reads the temp file at tmpPath, strips '#'-prefixed
+// lines and trailing whitespace, and returns the cleaned body. The caller is
+// responsible for deleting the file.
+func readAndStripEditorOutput(tmpPath string) (string, error) {
+	body, err := os.ReadFile(tmpPath)
 	if err != nil {
-		os.Remove(tmpPath)
-		return "", fmt.Errorf("read temp file: %w", err)
+		return "", err
 	}
-	lines := strings.Split(string(raw), "\n")
+	lines := strings.Split(string(body), "\n")
 	out := make([]string, 0, len(lines))
 	for _, line := range lines {
 		if strings.HasPrefix(strings.TrimLeft(line, " \t"), "#") {
@@ -493,7 +539,5 @@ func defaultEditorLauncher(ctx context.Context, threadID, prRef string) (string,
 		}
 		out = append(out, line)
 	}
-	stripped := strings.TrimRight(strings.Join(out, "\n"), " \t\n")
-	os.Remove(tmpPath)
-	return stripped, nil
+	return strings.TrimRight(strings.Join(out, "\n"), " \t\n"), nil
 }
