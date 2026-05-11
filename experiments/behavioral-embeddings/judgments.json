@@ -4,5 +4,35 @@
     "b": "pr-4704",
     "label": 1,
     "rationale": "Identical title (baggage attribute mapping for span customization); evidently duplicate or paired observability PRs."
+  },
+  {
+    "a": "pr-4608",
+    "b": "pr-4596",
+    "label": 1,
+    "rationale": "Same author bumping cpex-rate-limiter — 0.0.5→0.0.6 then 0.0.6→0.0.7; same files (pyproject.toml, plugins/config.yaml, uv.lock)."
+  },
+  {
+    "a": "pr-4658",
+    "b": "pr-4657",
+    "label": 1,
+    "rationale": "Same author, identical title (expand gRPC integration test depth for PR #3202); 4658 is the cleaned-up resubmission of 4657 — same intent, very different file footprint."
+  },
+  {
+    "a": "pr-4538",
+    "b": "pr-4551",
+    "label": 1,
+    "rationale": "Both 'Release 1.0.0' — pr-4538 is an earlier helm/workflow-only attempt, pr-4551 is the canonical release with CHANGELOG/Cargo.lock/secrets.baseline. Same intent, wildly different scope."
+  },
+  {
+    "a": "pr-4633",
+    "b": "pr-4491",
+    "label": 1,
+    "rationale": "Both fix SSO code max_length 512→4096 for Entra ID; pr-4633 explicitly supersedes pr-4491. Same one-line sso.py fix; pr-4633 also adds a security test."
+  },
+  {
+    "a": "pr-4550",
+    "b": "pr-3158",
+    "label": 1,
+    "rationale": "Both cache full team objects in AuthCache. pr-3158 is the re-created original (#3013); pr-4550 is the perf-framed resubmission. Overlapping but distinct file scope."
   }
 ]
