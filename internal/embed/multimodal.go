@@ -29,7 +29,14 @@ func isCodeAwareModel(name string) bool {
 //
 // When embedderModel matches a CodeAware entry in PreferredEmbeddingModels,
 // the call switches to a single-call path: it joins the four modalities with
-// structural separators and embeds once per fork.
+// structural separators and embeds once per fork. Known limitation: the
+// CodeAware path does not escape HTML-like characters inside the modality
+// blobs, so a fork whose data legitimately contains the literal "</paths>"
+// (etc.) would produce ambiguous prompts. We accept this for the embedding
+// use case (small models don't parse the tags, just attend to them) and
+// trade away escaping cost.
+//
+// embedderModel is the resolved model name (e.g., "nomic-embed-text"). Required because the CodeAware fast path depends on the model, and Embedder has no model-introspection method. This deviates from the plan signature as a deliberate simplification.
 func MultiModalEmbed(ctx context.Context, e Embedder, embedderModel string, fs []ForkFeatures) ([]Vector, error) {
 	if e == nil {
 		return nil, fmt.Errorf("nil embedder")
@@ -62,6 +69,9 @@ func codeAwareEmbed(ctx context.Context, e Embedder, fs []ForkFeatures) ([]Vecto
 	if err != nil {
 		return nil, err
 	}
+	if len(vecs) != len(prompts) {
+		return nil, fmt.Errorf("embedder returned %d vectors for %d prompts", len(vecs), len(prompts))
+	}
 	for i := range vecs {
 		l2Normalize(vecs[i])
 	}
@@ -89,6 +99,9 @@ func modalityBlendEmbed(ctx context.Context, e Embedder, fs []ForkFeatures) ([]V
 		raw, err = e.Embed(ctx, prompts)
 		if err != nil {
 			return nil, err
+		}
+		if len(raw) != len(prompts) {
+			return nil, fmt.Errorf("embedder returned %d vectors for %d prompts", len(raw), len(prompts))
 		}
 	}
 

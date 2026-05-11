@@ -8,14 +8,18 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 )
 
 // OllamaClient hits POST {Endpoint}/api/embeddings on a local Ollama instance.
+// OllamaClient is safe for concurrent use by multiple goroutines.
 type OllamaClient struct {
 	Endpoint string
 	Model    string
 	HTTP     *http.Client
-	dim      int
+
+	mu  sync.Mutex
+	dim int
 }
 
 type ollamaSingleReq struct {
@@ -60,9 +64,11 @@ func (c *OllamaClient) Embed(ctx context.Context, texts []string) ([]Vector, err
 			return nil, fmt.Errorf("embed text %d via %s/%s: %w", i, c.endpoint(), c.model(), err)
 		}
 		out[i] = v
+		c.mu.Lock()
 		if c.dim == 0 {
 			c.dim = len(v)
 		}
+		c.mu.Unlock()
 	}
 	return out, nil
 }
@@ -103,8 +109,9 @@ func (c *OllamaClient) embedOne(ctx context.Context, text string) (Vector, error
 	return Vector(parsed.Embedding), nil
 }
 
-// Dim returns the embedding dimensionality. Zero until the first successful
-// Embed call.
+// Dim returns the embedding dimension. Returns 0 until the first successful Embed call. Safe for concurrent use.
 func (c *OllamaClient) Dim() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.dim
 }

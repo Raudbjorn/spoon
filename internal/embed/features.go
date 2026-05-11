@@ -3,6 +3,7 @@ package embed
 import (
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/svnbjrn/spoon/internal/forge"
@@ -96,18 +97,24 @@ func buildDiffChunk(diffs []forge.FileDiff, maxChars int) string {
 		return ci > cj
 	})
 	var b strings.Builder
+	first := true
 	for _, d := range ranked {
 		line := diffLine(d)
 		if line == "" {
 			continue
 		}
-		if b.Len()+len(line) > maxChars {
-			break
-		}
-		if b.Len() > 0 {
+		// Always include the first (largest) entry, even when it exceeds the
+		// budget. Subsequent entries are gated on the budget so callers still
+		// get *some* signal for the dominant change.
+		if !first {
+			extra := len(line) + 1 // for the separating newline
+			if b.Len()+extra > maxChars {
+				break
+			}
 			b.WriteByte('\n')
 		}
 		b.WriteString(line)
+		first = false
 	}
 	return b.String()
 }
@@ -116,35 +123,25 @@ func diffLine(d forge.FileDiff) string {
 	if d.Path == "" {
 		return ""
 	}
+	del := d.Deletions
+	if del < 0 {
+		del = 0
+	}
+	add := d.Additions
+	if add < 0 {
+		add = 0
+	}
 	var b strings.Builder
 	b.WriteString("--- a/")
 	b.WriteString(d.Path)
 	b.WriteString("\n+++ b/")
 	b.WriteString(d.Path)
 	b.WriteString("\n@@ -0,")
-	writeInt(&b, d.Deletions)
+	b.WriteString(strconv.Itoa(del))
 	b.WriteString(" +0,")
-	writeInt(&b, d.Additions)
+	b.WriteString(strconv.Itoa(add))
 	b.WriteString(" @@")
 	return b.String()
-}
-
-func writeInt(b *strings.Builder, n int) {
-	if n < 0 {
-		n = 0
-	}
-	if n == 0 {
-		b.WriteByte('0')
-		return
-	}
-	var digits [20]byte
-	i := len(digits)
-	for n > 0 {
-		i--
-		digits[i] = byte('0' + n%10)
-		n /= 10
-	}
-	b.Write(digits[i:])
 }
 
 var (
