@@ -399,8 +399,6 @@ func classifyArchetype(meaningfulCommits, mna, uniqueFiles int, commitSpanDays f
 	}
 }
 
-// ---- Legacy bridge ----
-
 var featurePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)^(add|implement|create|introduce|support|enable)\b`),
 	regexp.MustCompile(`(?i)^feat(\(|:|\s)`),
@@ -432,75 +430,3 @@ func isFeatureCommit(msg string) bool {
 	return false
 }
 
-// DetectLoneWolf is the legacy API. It wraps DetectLoneWolfV2.
-// Deprecated: use DetectLoneWolfV2 directly.
-func DetectLoneWolf(aheadBy int, uniqueAuthors int, files []FileChange, commitMessages []string) *LoneWolfSignal {
-	// Build logins from unique author count (legacy doesn't have per-commit data)
-	logins := make([]string, uniqueAuthors)
-	for i := range logins {
-		logins[i] = strings.Repeat("a", i+1) // synthetic unique logins
-	}
-
-	commits := make([]LWCommitInfo, len(commitMessages))
-	now := time.Now()
-	for i, msg := range commitMessages {
-		commits[i] = LWCommitInfo{
-			AuthorLogin: logins[0],
-			Message:     msg,
-			Date:        now.Add(-time.Duration(len(commitMessages)-i) * 24 * time.Hour),
-		}
-	}
-
-	input := LoneWolfInput{
-		Commits:       commits,
-		Files:         files,
-		AuthorLogins:  logins,
-		AheadBy:       aheadBy,
-		DaysSincePush: 1, // recent
-	}
-
-	v2 := DetectLoneWolfV2(input)
-	if v2 == nil || !v2.Detected {
-		return nil
-	}
-
-	// Map to legacy signal
-	var totalWeightedAdds, totalWeightedDels float64
-	for _, f := range files {
-		w := FileWeight(f.Filename)
-		totalWeightedAdds += float64(f.Additions) * w
-		totalWeightedDels += float64(f.Deletions) * w
-	}
-	netAdds := int(totalWeightedAdds - totalWeightedDels)
-	if netAdds < 0 {
-		netAdds = 0
-	}
-	totalImpact := totalWeightedAdds + totalWeightedDels
-	linesPerCommit := 0.0
-	if aheadBy > 0 {
-		linesPerCommit = totalImpact / float64(aheadBy)
-	}
-
-	signal := &LoneWolfSignal{
-		Detected:       true,
-		Strength:       v2.Strength,
-		Contributors:   uniqueAuthors,
-		LinesPerCommit: linesPerCommit,
-		NetAdditions:   netAdds,
-		CommitCount:    aheadBy,
-	}
-
-	// Map archetype label to legacy labels
-	switch {
-	case v2.Strength >= 0.7 && uniqueAuthors == 1:
-		signal.Label = "lone wolf"
-	case v2.Strength >= 0.5:
-		signal.Label = "focused effort"
-	case v2.Strength >= 0.3:
-		signal.Label = "small team"
-	default:
-		signal.Detected = false
-	}
-
-	return signal
-}
