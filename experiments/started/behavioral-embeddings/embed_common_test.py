@@ -21,20 +21,21 @@ def test_build_text_empty_blocks_emit_open_close_tags():
     assert got == "<paths></paths><commits></commits><readme></readme><diff></diff>"
 
 
-def test_build_text_truncates_oversize_modalities():
-    from embed_common import PATHS_MAX_CHARS, DIFF_MAX_CHARS
-
+def test_build_text_preserves_full_oversize_payload():
+    # Phase B removed the per-modality cap. Confirm the helper passes long
+    # text through unchanged so downstream tokenizers can do their own
+    # truncation against their native max_length.
     feats = {
-        "Paths": "p" * (PATHS_MAX_CHARS * 2),
+        "Paths": "p" * 10_000,
         "Commits": "",
         "ReadmeDoc": "",
-        "DiffChunk": "d" * (DIFF_MAX_CHARS * 2),
+        "DiffChunk": "d" * 10_000,
     }
     got = build_text(feats)
     paths_block = got.split("</paths>", 1)[0].removeprefix("<paths>")
     diff_block = got.split("<diff>", 1)[1].removesuffix("</diff>")
-    assert len(paths_block) == PATHS_MAX_CHARS
-    assert len(diff_block) == DIFF_MAX_CHARS
+    assert len(paths_block) == 10_000
+    assert len(diff_block) == 10_000
 
 
 def test_load_features_returns_dict_by_id(tmp_path):
