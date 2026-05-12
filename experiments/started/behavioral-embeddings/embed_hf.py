@@ -56,8 +56,15 @@ def main() -> int:
     os.makedirs(args.cache_dir, exist_ok=True)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"loading {args.model} on {device}", file=sys.stderr)
-    tokenizer = AutoTokenizer.from_pretrained(args.model, cache_dir=args.cache_dir)
-    model = AutoModel.from_pretrained(args.model, cache_dir=args.cache_dir).to(device)
+    # trust_remote_code=True is required for nomic-ai/nomic-embed-text-v1 and
+    # jinaai/jina-embeddings-v2-base-code (custom model implementations on
+    # the HF repo). The panel models are all well-known public weights.
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.model, cache_dir=args.cache_dir, trust_remote_code=True
+    )
+    model = AutoModel.from_pretrained(
+        args.model, cache_dir=args.cache_dir, trust_remote_code=True
+    ).to(device)
     model.eval()
 
     feats = load_features(args.features)
