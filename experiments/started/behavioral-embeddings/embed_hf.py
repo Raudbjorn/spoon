@@ -14,12 +14,24 @@ from transformers import AutoModel, AutoTokenizer
 from embed_common import build_text, load_features
 
 
+def _effective_max_length(tokenizer, ceiling: int = 32768) -> int:
+    """Return the tokenizer's native max_length, capped at `ceiling` and
+    floored at 512. Some HF tokenizers report a sentinel value (e.g., 1e9)
+    when no limit was set during pre-training; we cap to avoid absurdly
+    long tensors. Tokenizers without the attribute fall back to 512.
+    """
+    n = getattr(tokenizer, "model_max_length", None)
+    if not n or n <= 0:
+        return 512
+    return min(n, ceiling)
+
+
 def embed_batch(model, tokenizer, texts: list[str], device: str) -> list[list[float]]:
     enc = tokenizer(
         texts,
         padding=True,
         truncation=True,
-        max_length=512,
+        max_length=_effective_max_length(tokenizer),
         return_tensors="pt",
     ).to(device)
     with torch.no_grad():
