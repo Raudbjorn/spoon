@@ -19,7 +19,7 @@ if [ ! -f judgments.json ]; then
 fi
 
 .venv/bin/python embed_nomic.py --features features.json --out nomic_vectors.json
-.venv/bin/python embed_codeexecutor.py --features features.json --out codeexecutor_vectors.json
+.venv/bin/python embed_hf.py --features features.json --out codeexecutor_vectors.json
 .venv/bin/python analyze.py --features features.json --judgments judgments.json \
   --nomic nomic_vectors.json --codeexecutor codeexecutor_vectors.json --out RESULTS.md
 echo "wrote RESULTS.md"
