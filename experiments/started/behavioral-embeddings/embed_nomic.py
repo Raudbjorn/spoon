@@ -9,9 +9,16 @@ from embed_common import build_text, load_features
 
 
 def embed_one(endpoint: str, model: str, text: str) -> list[float]:
+    # num_ctx=8192 matches nomic-embed-text's native window. Without this,
+    # Ollama uses its default 2048 and returns HTTP 500 on prompts that
+    # exceed it (Phase A's first run dropped 34/200 records to this).
     r = requests.post(
         f"{endpoint.rstrip('/')}/api/embeddings",
-        json={"model": model, "prompt": text},
+        json={
+            "model": model,
+            "prompt": text,
+            "options": {"num_ctx": 8192},
+        },
         timeout=60,
     )
     r.raise_for_status()
