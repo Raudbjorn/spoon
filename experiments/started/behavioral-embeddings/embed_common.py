@@ -1,45 +1,27 @@
-"""Shared helpers for both embedding scripts."""
+"""Shared helpers for the panel embedding scripts.
+
+Phase A used per-modality char caps (PATHS_MAX_CHARS, etc.) totaling ~5 KB
+to work around 512-token-window embedders (CodeBERT family) and Ollama's
+default 2048 num_ctx for nomic. The Phase B panel uses long-context models
+(7K-32K) and Ollama with num_ctx=8192, so the artificial caps would
+handicap candidates and baseline alike. Concatenate the full payload;
+let each tokenizer's natural truncation apply.
+"""
 import json
 from typing import Any
-
-# Per-modality character caps applied BEFORE concatenation. Picked so that
-# every embedder sees the same truncated text:
-#   - Ollama's nomic-embed-text returns 500 Internal Server Error on prompts
-#     that exceed ~8K tokens; the huge-fork PRs in this dataset (hundreds of
-#     changed paths) hit that limit and were dropped (34/200 in the first
-#     run). Capping per-modality keeps total length comfortably inside the
-#     window.
-#   - CodeExecutor truncates at 512 tokens; the cap below lands roughly
-#     within that window so the model sees a representative slice of each
-#     modality instead of just the first ~512 tokens of paths.
-# Caps total ≈ 5 KB which is what spoon's BuildFeatures aims for in
-# production (DiffChunk alone is capped at 4 KB upstream).
-PATHS_MAX_CHARS = 1500
-COMMITS_MAX_CHARS = 1000
-README_MAX_CHARS = 1000
-DIFF_MAX_CHARS = 1500
-
-
-def _truncate(s: str, n: int) -> str:
-    if len(s) <= n:
-        return s
-    return s[:n]
 
 
 def build_text(features: dict[str, str]) -> str:
     """Concatenate the four ForkFeatures modalities with structural tags.
 
-    Each modality is truncated to a per-modality character cap so both
-    embedders see the same input. This protects the nomic-via-Ollama path
-    from 500 errors on oversize prompts AND keeps the CodeExecutor 512-token
-    window from being eaten entirely by long path lists.
-
     Mirrors spoon's codeAwareEmbed path (internal/embed/multimodal.go:53).
+    No truncation here — each downstream tokenizer truncates at its own
+    model_max_length.
     """
-    paths = _truncate(features.get("Paths", ""), PATHS_MAX_CHARS)
-    commits = _truncate(features.get("Commits", ""), COMMITS_MAX_CHARS)
-    readme = _truncate(features.get("ReadmeDoc", ""), README_MAX_CHARS)
-    diff = _truncate(features.get("DiffChunk", ""), DIFF_MAX_CHARS)
+    paths = features.get("Paths", "")
+    commits = features.get("Commits", "")
+    readme = features.get("ReadmeDoc", "")
+    diff = features.get("DiffChunk", "")
     return (
         f"<paths>{paths}</paths>"
         f"<commits>{commits}</commits>"
