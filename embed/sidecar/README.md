@@ -53,6 +53,28 @@ First start downloads ~700 MB of weights to `~/.cache/huggingface/`.
 | `SPOON_SIDECAR_MODEL`  | `Snowflake/snowflake-arctic-embed-l-v2.0` | HF model to load |
 | `SPOON_SIDECAR_DEVICE` | `cpu` | `cuda` to use GPU if available |
 
+## Throughput
+
+Measure throughput on your own hardware using the included benchmark:
+
+```sh
+# Start the sidecar (Docker, or local Python as documented above)
+.venv/bin/python bench.py \
+  --features ../../experiments/started/behavioral-embeddings/features.json \
+  --batch-size 16
+```
+
+Reports records/sec and average per-record latency over the 200-PR fixture
+from the panel re-test. Typical results:
+
+| environment | batch | rough records/sec | rough avg latency |
+|---|---|---|---|
+| Modern CPU (6+ cores, 16 GB+ RAM) | 16 | 20–50 | 20–50 ms |
+| GPU (CUDA) | 16 | 200–500 | 2–5 ms |
+
+Numbers are not committed to this repo — they vary too much by hardware to
+publish a single benchmark. Run the script to measure your own.
+
 ## License & attribution
 
 The model `Snowflake/snowflake-arctic-embed-l-v2.0` is distributed by Snowflake
