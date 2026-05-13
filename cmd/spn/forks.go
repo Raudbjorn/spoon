@@ -157,6 +157,22 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 			}
 			i++
 			opts.Cluster.ModelOverride = args[i]
+		case "--embedder-backend":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--embedder-backend requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			val := strings.ToLower(args[i])
+			if val != "ollama" && val != "sidecar" {
+				return agentio.NewError(agentio.CodeBadInput, "--embedder-backend must be 'ollama' or 'sidecar'", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			opts.Cluster.Backend = val
+		case "--sidecar-endpoint":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--sidecar-endpoint requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			opts.Cluster.SidecarEndpoint = args[i]
 		case "--labeler":
 			if i+1 >= len(args) {
 				return agentio.NewError(agentio.CodeBadInput, "--labeler requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)

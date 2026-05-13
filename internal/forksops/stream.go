@@ -60,6 +60,13 @@ type ClusterOptions struct {
 	NonInteractive  bool
 	Refresh         bool
 
+	// Backend selects the Embedder implementation. Empty defaults to "ollama".
+	Backend string
+
+	// SidecarEndpoint is the http://host:port of the Python sidecar process,
+	// used when Backend=="sidecar".
+	SidecarEndpoint string
+
 	// Labeler, when non-nil, overrides automatic construction from
 	// LabelerEndpoint + LabelerModel. Tests inject a stub directly via this
 	// field; production callers usually pass LabelerEndpoint instead.
@@ -392,6 +399,8 @@ func runForksClusterPipeline(
 		Refresh:           opts.Refresh,
 		Labeler:           labeler,
 		CentralityBackend: opts.CentralityBackend,
+		Backend:           opts.Backend,
+		SidecarEndpoint:   opts.SidecarEndpoint,
 	}
 	if opts.embedderForTest != nil {
 		pipelineOpts.EmbedderForTest = opts.embedderForTest
