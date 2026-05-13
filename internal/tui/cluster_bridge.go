@@ -42,6 +42,14 @@ type ClusterOptions struct {
 	NoPrompt        bool
 	Refresh         bool
 
+	// Backend selects the Embedder implementation. Empty defaults to "ollama".
+	// "sidecar" routes through SidecarEmbedder against SidecarEndpoint.
+	Backend string
+
+	// SidecarEndpoint is the http://host:port of the Python sidecar process,
+	// used when Backend=="sidecar".
+	SidecarEndpoint string
+
 	// NonInteractive mirrors the field of the same name on
 	// dump.ClusterOptions / forksops.ClusterOptions. The TUI is always
 	// interactive (and consequently passes false to the pipeline regardless
@@ -202,6 +210,8 @@ func runTUIClusterPipeline(
 		TopN:              opts.TopN,
 		Endpoint:          opts.Endpoint,
 		ModelOverride:     opts.ModelOverride,
+		Backend:           opts.Backend,
+		SidecarEndpoint:   opts.SidecarEndpoint,
 		LabelerEndpoint:   opts.LabelerEndpoint,
 		Epsilon:           opts.Epsilon,
 		MinClusterSize:    opts.MinClusterSize,
@@ -249,11 +259,13 @@ func runTUIPipelineWithPrompter(
 
 	prompter := &tuiPrompter{out: out, answer: make(chan bool, 1)}
 	embedder, modelName, skip := embed.SelectEmbedder(ctx, embed.SelectOptions{
-		Endpoint:       opts.Endpoint,
-		ExplicitModel:  opts.ModelOverride,
-		AutoPull:       opts.AutoPull,
-		NoPrompt:       opts.NoPrompt,
-		NonInteractive: false,
+		Endpoint:        opts.Endpoint,
+		ExplicitModel:   opts.ModelOverride,
+		AutoPull:        opts.AutoPull,
+		NoPrompt:        opts.NoPrompt,
+		NonInteractive:  false,
+		Backend:         opts.Backend,
+		SidecarEndpoint: opts.SidecarEndpoint,
 	}, prompter)
 	if skip != nil {
 		return &cluster.SkipReason{
