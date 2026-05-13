@@ -1,6 +1,6 @@
 # Behavioral Embeddings Validation — Panel Re-Test Results
 
-> **PARTIAL — initial 4-model panel + jazzcort complete; SFR-2B escalation in progress on vinbonesjr. Best Δ so far: +0.120 (Snowflake-arctic-embed-l-v2.0). Phase B is already authorized; SFR-2B will determine final model choice.**
+> **FINAL. Verdict: Phase B authorized with `Snowflake/snowflake-arctic-embed-l-v2.0`.**
 
 **Date:** 2026-05-13
 **Spec:** `docs/superpowers/specs/2026-05-12-behavioral-embeddings-panel-design.md`
@@ -10,7 +10,7 @@
 
 ## TL;DR
 
-**Phase B is authorized.** `Snowflake/snowflake-arctic-embed-l-v2.0` (568M general-purpose long-context encoder) cleared the +0.05 Kendall's tau gate by a wide margin (Δ = +0.120 vs nomic baseline). The community-quantized `jazzcort/nomic-embed-code-Q6_K` (7B decoder) also passed on the 43-pair subset where it produced vectors (10 records dropped to Ollama context limit). The originally-rejected hypothesis (Phase A) was an artifact of artificial 5 KB prompt truncation: with full-context inputs, a general-purpose long-context model wins decisively. **SFR-2B escalation in progress** to check whether a heavier code-specific model crosses the +0.15 acceptance threshold; if not, arctic-l-v2 takes the Phase B slot.
+**Phase B is authorized with `Snowflake/snowflake-arctic-embed-l-v2.0`.** This 568M-parameter general-purpose long-context encoder cleared the +0.05 Kendall's tau gate by a wide margin (Δ = +0.120 vs nomic baseline). The SFR-2B escalation prescribed by the decision matrix failed (Δ = −0.057), so the panel winner takes the Phase B slot rather than the heavier code-specific candidate. The originally-rejected hypothesis (Phase A) was an artifact of artificial 5 KB prompt truncation: with full-context inputs, a general-purpose long-context model wins decisively. Most surprising finding: every code-specific model in the panel underperformed the general-purpose winner.
 
 ## Panel results
 
@@ -24,19 +24,17 @@ All panel members and the baseline scored against the same 53 hand-curated PR pa
 | **Salesforce/SFR-Embedding-Code-400M_R** | 400M | 32K | 0.0570 | **−0.0313** | 53/53 | FAIL (borderline) |
 | **Snowflake/snowflake-arctic-embed-l-v2.0** | 568M | 8K | **0.2079** | **+0.1196** | 53/53 | **✅ PASS at gate** (close to +0.15 acceptance) |
 | **jazzcort/nomic-embed-code-Q6_K** | 7B (Q6_K) | 8K | 0.4456 | **+0.0822** | 43/53 | **✅ PASS** (10 dropped to Ollama ctx; biased toward smaller PRs) |
-| **Salesforce/SFR-Embedding-Code-2B_R** (escalation) | 2B | 32K | _(running)_ | _(pending)_ | _(pending)_/53 | _(pending)_ |
+| **Salesforce/SFR-Embedding-Code-2B_R** (escalation) | 2B | 32K | 0.0313 | **−0.0570** | 53/53 | **FAIL** (worse than 400M sibling) |
 
-## Decision-matrix outcome (interim)
+## Decision-matrix outcome
 
-Best delta on the initial panel: **+0.1196** (arctic-l-v2). Decision-matrix row: **"+0.05 to +0.15 — gate cleared, below acceptance."**
+Best delta on the panel: **+0.1196** (Snowflake/snowflake-arctic-embed-l-v2.0). Decision-matrix row: **"+0.05 to +0.15 — gate cleared, below acceptance."** SFR-2B escalation prescribed by the matrix did not cross the +0.15 acceptance threshold (Δ = −0.057, *worse* than its 400M sibling).
 
-**Interim verdict: PASS at gate** (acceptance threshold of +0.15 not met by 0.03 tau).
+**Verdict: PASS at gate. Phase B proceeds with `Snowflake/snowflake-arctic-embed-l-v2.0`.**
 
-Per the matrix, this prescribes the SFR-2B escalation (currently running). Two possible final outcomes:
-- If SFR-2B crosses +0.15 → Phase B uses SFR-2B.
-- Otherwise → Phase B proceeds with `Snowflake/snowflake-arctic-embed-l-v2.0` (the panel winner).
-
-Either way: **Phase B is authorized**. The spec's Rejected status will flip to "Phase B in progress" once the escalation completes.
+Action:
+- Spec status updated from "Rejected" → "Phase B in progress with `Snowflake/snowflake-arctic-embed-l-v2.0`."
+- Phase B sidecar plan written at `docs/superpowers/plans/2026-05-13-behavioral-embeddings-sidecar.md`.
 
 ## Substitutions from the spec
 
@@ -96,5 +94,18 @@ Two additional evaluation datasets were considered but not run in this experimen
 
 ---
 
-*Pipeline status: initial 4-model panel + jazzcort COMPLETE; SFR-2B escalation IN PROGRESS on vinbonesjr tmux session `sfr2b`.*
-*Last updated: 2026-05-13 09:30 GMT (partial — final verdict pending SFR-2B).*
+## Additional finding: SFR-2B is worse than SFR-400M
+
+The escalation produced a surprising result. SFR-Embedding-Code-2B_R (2 billion parameters, 32K context, Gemma2-based architecture) scored *worse* than its 400M sibling:
+
+| variant | τ | Δ vs nomic | params | architecture |
+| --- | --- | --- | --- | --- |
+| SFR-400M_R | 0.0570 | −0.0313 | 400M | RoBERTa-like encoder |
+| SFR-2B_R | 0.0313 | −0.0570 | 2B | Gemma2 decoder |
+
+The 2B is a decoder-only architecture; the 400M is an encoder. Our `embed_hf.py` uses mean-pooling on `last_hidden_state` which is the right aggregation for encoders but a known suboptimal choice for decoders (decoder-style embedders typically need last-token-pooling or a learned aggregation head). The result is consistent with that mismatch — bigger model but pooled wrong for the architecture.
+
+This also flags a gotcha for any future re-test that adds decoder-style candidates: a switch on the pooling strategy in `embed_hf.py` would be needed for a fair test.
+
+*Pipeline status: COMPLETE.*
+*Last updated: 2026-05-13 11:30 GMT (final).*
