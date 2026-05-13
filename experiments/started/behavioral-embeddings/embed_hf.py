@@ -63,6 +63,25 @@ POOL_FNS = {
 }
 
 
+def _select_device() -> str:
+    """Pick the best device for HF transformers on this host.
+
+    Order: CUDA → Intel XPU (Arc A770 etc.) → CPU. Native torch.xpu lives in
+    torch 2.5+; intel_extension_for_pytorch (IPEX) is imported when present
+    because pre-2.7 stacks need its side-effect registration before
+    torch.xpu.is_available() returns True.
+    """
+    if torch.cuda.is_available():
+        return "cuda"
+    try:
+        import intel_extension_for_pytorch  # noqa: F401 — registers xpu device
+    except ImportError:
+        pass
+    if hasattr(torch, "xpu") and torch.xpu.is_available():
+        return "xpu"
+    return "cpu"
+
+
 def embed_batch(model, tokenizer, texts: list[str], device: str, pooling: str = "mean") -> list[list[float]]:
     enc = tokenizer(
         texts,
@@ -97,7 +116,7 @@ def main() -> int:
     args = ap.parse_args()
 
     os.makedirs(args.cache_dir, exist_ok=True)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = _select_device()
     print(f"loading {args.model} on {device}", file=sys.stderr)
     # trust_remote_code=True is required for nomic-ai/nomic-embed-text-v1 and
     # jinaai/jina-embeddings-v2-base-code (custom model implementations on

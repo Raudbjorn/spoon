@@ -26,6 +26,16 @@
 set -uo pipefail
 cd "$(dirname "$0")"
 
+# The torch==2.9.0+xpu wheel bundles libsycl.so.8 + libur_loader.so.0.12.0
+# under .venv/lib/ — but ldconfig's cache points libur_loader.so.0 at the
+# system /opt/intel/oneapi/2025.3/lib/libur_loader.so.0, which is missing
+# urEnqueueCooperativeKernelLaunchExp. Without this prefix, `import torch`
+# crashes with: undefined symbol: urEnqueueCooperativeKernelLaunchExp,
+# version LIBUR_LOADER_0.12. Prepend the wheel libs so its bundled UR
+# loader wins for THIS process only (still keep the system libs visible
+# so anything else in the venv that wants them resolves correctly).
+export LD_LIBRARY_PATH="$PWD/.venv/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
 # Tuples: model:out:log:pooling
 models=(
   "Qwen/Qwen3-Embedding-0.6B:qwen3_06b_vectors.json:qwen3_06b_run.log:last_token"
