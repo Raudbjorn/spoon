@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 )
 
 // SidecarEmbedder talks HTTP to a Python sidecar process loading
@@ -16,11 +17,19 @@ import (
 // It implements the Embedder interface.
 type SidecarEmbedder struct {
 	Endpoint string       // e.g. "http://localhost:8765"
-	HTTP     *http.Client // optional; defaults to a shared client with 60s timeout
+	HTTP     *http.Client // optional; defaults to defaultSidecarHTTPClient
 
 	mu  sync.Mutex
 	dim int
 }
+
+// defaultSidecarHTTPClient is the package-level fallback for SidecarEmbedder
+// when no HTTP is set. The timeout is much longer than Ollama's because
+// sidecar embeds run a 568M-parameter model on CPU: a batch of ~50 forks
+// with ~5 KB prompts can legitimately take 1-3 minutes. Sharing one client
+// across the process gives a single connection pool and avoids per-call
+// allocation.
+var defaultSidecarHTTPClient = &http.Client{Timeout: 5 * time.Minute}
 
 type sidecarEmbedReq struct {
 	Texts []string `json:"texts"`
@@ -39,7 +48,7 @@ func (e *SidecarEmbedder) httpClient() *http.Client {
 	if e.HTTP != nil {
 		return e.HTTP
 	}
-	return defaultOllamaHTTPClient // reuse the shared client from ollama.go
+	return defaultSidecarHTTPClient
 }
 
 // Embed POSTs to {endpoint}/embed. Returns one Vector per input text.
