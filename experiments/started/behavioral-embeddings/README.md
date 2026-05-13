@@ -101,3 +101,28 @@ commit are what gate the experiment, so use your own judgment.
 ```
 
 `a` and `b` are PR IDs (the `pr-NNNN` keys from `features.json`).
+
+## Post-panel supplement (2026-05-13+)
+
+`RESULTS_PANEL.md` is the final record of the original 5-model panel; do
+not modify it. To evaluate models released *after* the panel against the
+same 53 pairs, use `run_panel_supplement.sh`:
+
+```sh
+./run_panel_supplement.sh
+.venv/bin/python analyze.py --nomic nomic_vectors.json \
+  --codeexecutor <candidate>_vectors.json --out <candidate>_results.md
+```
+
+Current supplement set:
+- `Qwen/Qwen3-Embedding-0.6B` — decoder-style; uses `--pooling last_token`
+  via `embed_hf.py` (mean-pool on a decoder is the SFR-2B gotcha
+  documented in RESULTS_PANEL.md).
+- `ibm-granite/granite-embedding-311m-multilingual-r2` — ModernBERT
+  encoder; uses default `--pooling mean`. Native ONNX/OpenVINO weights
+  open a future path to dropping the Python sidecar entirely.
+
+Adding a new supplement model: append a `model:out:log:pooling` row to
+`run_panel_supplement.sh`. Decoder-only architectures (Qwen, Llama, etc.)
+need `pooling=last_token`; encoders (BERT, RoBERTa, ModernBERT, arctic,
+SFR-400M, jina, granite, etc.) use the default `mean`.

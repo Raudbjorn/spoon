@@ -26,7 +26,44 @@ def _effective_max_length(tokenizer, ceiling: int = 32768) -> int:
     return min(n, ceiling)
 
 
-def embed_batch(model, tokenizer, texts: list[str], device: str) -> list[list[float]]:
+def _pool_mean(hidden, attention_mask):
+    """Mean-pool over the masked sequence. Correct for encoder models."""
+    mask = attention_mask.unsqueeze(-1).to(hidden.dtype)  # [B, T, 1]
+    summed = (hidden * mask).sum(dim=1)  # [B, H]
+    counts = mask.sum(dim=1).clamp(min=1)  # [B, 1]
+    return summed / counts  # [B, H]
+
+
+def _pool_last_token(hidden, attention_mask):
+    """Last-non-padding-token pooling. Correct for left-to-right decoder
+    models — using mean-pool on a decoder is a known suboptimal choice
+    (see RESULTS_PANEL.md "Additional finding: SFR-2B is worse than
+    SFR-400M"). For right-padded inputs, the last real token is at
+    index `sum(mask) - 1` per row; for left-padded inputs it's the last
+    position. We detect by checking whether position 0 is masked
+    anywhere in the batch (left-padding signal) — if so, take index -1
+    per row; otherwise take the per-row right-edge of attention.
+    """
+    seq_lens = attention_mask.sum(dim=1) - 1  # [B], last real index
+    # Detect left-padding: in a left-padded tensor, position 0 has mask=0
+    # for any row shorter than the batch max. If ALL rows have mask=1 at
+    # position 0, the batch is right-padded (or all same length).
+    left_padded = (attention_mask[:, 0] == 0).any().item()
+    if left_padded:
+        # Last token is at the rightmost position for every row.
+        return hidden[:, -1, :]
+    # Right-padded: gather the last real token per row.
+    batch_idx = torch.arange(hidden.size(0), device=hidden.device)
+    return hidden[batch_idx, seq_lens]
+
+
+POOL_FNS = {
+    "mean": _pool_mean,
+    "last_token": _pool_last_token,
+}
+
+
+def embed_batch(model, tokenizer, texts: list[str], device: str, pooling: str = "mean") -> list[list[float]]:
     enc = tokenizer(
         texts,
         padding=True,
@@ -37,10 +74,8 @@ def embed_batch(model, tokenizer, texts: list[str], device: str) -> list[list[fl
     with torch.no_grad():
         out = model(**enc)
     hidden = out.last_hidden_state  # [B, T, H]
-    mask = enc["attention_mask"].unsqueeze(-1).to(hidden.dtype)  # [B, T, 1]
-    summed = (hidden * mask).sum(dim=1)  # [B, H]
-    counts = mask.sum(dim=1).clamp(min=1)  # [B, 1]
-    pooled = summed / counts  # [B, H]
+    pool_fn = POOL_FNS[pooling]
+    pooled = pool_fn(hidden, enc["attention_mask"])
     return pooled.cpu().tolist()
 
 
@@ -51,6 +86,14 @@ def main() -> int:
     ap.add_argument("--model", default="microsoft/codeexecutor")
     ap.add_argument("--cache-dir", default="hf_cache")
     ap.add_argument("--batch-size", type=int, default=32)
+    ap.add_argument(
+        "--pooling",
+        choices=sorted(POOL_FNS.keys()),
+        default="mean",
+        help="Hidden-state pooling. 'mean' for encoders (default; matches "
+        "original panel). 'last_token' for decoder-style embedders (Qwen3, "
+        "SFR-2B) — mean-pool on a decoder is the known SFR-2B gotcha.",
+    )
     args = ap.parse_args()
 
     os.makedirs(args.cache_dir, exist_ok=True)
@@ -90,7 +133,7 @@ def main() -> int:
         batch_ids = todo_ids[i : i + args.batch_size]
         batch_texts = [build_text(feats[bid]["features"]) for bid in batch_ids]
         try:
-            vecs = embed_batch(model, tokenizer, batch_texts, device)
+            vecs = embed_batch(model, tokenizer, batch_texts, device, pooling=args.pooling)
         except Exception as e:
             failed += len(batch_ids)
             print(f"  batch {i//args.batch_size}: skip ({len(batch_ids)} ids): {e}", file=sys.stderr)
