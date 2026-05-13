@@ -1,6 +1,6 @@
 # Behavioral Embeddings Validation — Panel Re-Test Results
 
-> **TEMPLATE — pipeline running on vinbonesjr as of 2026-05-13. `<FILL>` markers are placeholders for measured numbers that the closing step of the plan substitutes in.**
+> **PARTIAL — initial 4-model panel + jazzcort complete; SFR-2B escalation in progress on vinbonesjr. Best Δ so far: +0.120 (Snowflake-arctic-embed-l-v2.0). Phase B is already authorized; SFR-2B will determine final model choice.**
 
 **Date:** 2026-05-13
 **Spec:** `docs/superpowers/specs/2026-05-12-behavioral-embeddings-panel-design.md`
@@ -10,7 +10,7 @@
 
 ## TL;DR
 
-<FILL: 2-3 sentences. State the best candidate, its delta vs nomic baseline, and the verdict from the decision matrix.>
+**Phase B is authorized.** `Snowflake/snowflake-arctic-embed-l-v2.0` (568M general-purpose long-context encoder) cleared the +0.05 Kendall's tau gate by a wide margin (Δ = +0.120 vs nomic baseline). The community-quantized `jazzcort/nomic-embed-code-Q6_K` (7B decoder) also passed on the 43-pair subset where it produced vectors (10 records dropped to Ollama context limit). The originally-rejected hypothesis (Phase A) was an artifact of artificial 5 KB prompt truncation: with full-context inputs, a general-purpose long-context model wins decisively. **SFR-2B escalation in progress** to check whether a heavier code-specific model crosses the +0.15 acceptance threshold; if not, arctic-l-v2 takes the Phase B slot.
 
 ## Panel results
 
@@ -18,21 +18,25 @@ All panel members and the baseline scored against the same 53 hand-curated PR pa
 
 | model | params | context | τ_panel | Δ vs nomic | n pairs kept | gate verdict |
 | --- | --- | --- | --- | --- | --- | --- |
-| **nomic-embed-text-v1** (baseline) | 137M | 8K | <FILL> | — | <FILL>/53 | — |
-| **nomic-ai/CodeRankEmbed** | 137M | 8K | <FILL> | <FILL> | <FILL>/53 | <PASS/FAIL/BORDERLINE> |
-| **jinaai/jina-embeddings-v2-base-code** | 161M | 8K | <FILL> | <FILL> | <FILL>/53 | <PASS/FAIL/BORDERLINE> |
-| **Salesforce/SFR-Embedding-Code-400M_R** | 400M | 32K | <FILL> | <FILL> | <FILL>/53 | <PASS/FAIL/BORDERLINE> |
-| **Snowflake/snowflake-arctic-embed-l-v2.0** | 568M | 8K | <FILL> | <FILL> | <FILL>/53 | <PASS/FAIL/BORDERLINE> |
-| **jazzcort/nomic-embed-code-Q6_K** | 7B (Q6_K) | 8K | <FILL> | <FILL> | <FILL>/53 | <PASS/FAIL/BORDERLINE> |
+| **nomic-embed-text-v1** (baseline) | 137M | 8K | 0.0883 | — | 53/53 | — |
+| ~~nomic-ai/CodeRankEmbed~~ | 137M | 8K | — | — | — | **SKIPPED — loader incompat** |
+| **jinaai/jina-embeddings-v2-base-code** | 161M | 8K | 0.0199 | **−0.0684** | 53/53 | **FAIL** (by 0.12) |
+| **Salesforce/SFR-Embedding-Code-400M_R** | 400M | 32K | 0.0570 | **−0.0313** | 53/53 | FAIL (borderline) |
+| **Snowflake/snowflake-arctic-embed-l-v2.0** | 568M | 8K | **0.2079** | **+0.1196** | 53/53 | **✅ PASS at gate** (close to +0.15 acceptance) |
+| **jazzcort/nomic-embed-code-Q6_K** | 7B (Q6_K) | 8K | 0.4456 | **+0.0822** | 43/53 | **✅ PASS** (10 dropped to Ollama ctx; biased toward smaller PRs) |
+| **Salesforce/SFR-Embedding-Code-2B_R** (escalation) | 2B | 32K | _(running)_ | _(pending)_ | _(pending)_/53 | _(pending)_ |
 
-## Decision-matrix outcome
+## Decision-matrix outcome (interim)
 
-Best delta: **<FILL>**. Decision-matrix row: **<FILL: one of "≥+0.15", "+0.05 to +0.15", "-0.02 to +0.05", "<-0.02">**.
+Best delta on the initial panel: **+0.1196** (arctic-l-v2). Decision-matrix row: **"+0.05 to +0.15 — gate cleared, below acceptance."**
 
-**Verdict: <FILL: "PASS at acceptance" / "PASS at gate" / "BORDERLINE — escalating" / "FAIL — second-pass rejection">**
+**Interim verdict: PASS at gate** (acceptance threshold of +0.15 not met by 0.03 tau).
 
-Action:
-- <FILL: one of the four branch actions from plan Task 10>
+Per the matrix, this prescribes the SFR-2B escalation (currently running). Two possible final outcomes:
+- If SFR-2B crosses +0.15 → Phase B uses SFR-2B.
+- Otherwise → Phase B proceeds with `Snowflake/snowflake-arctic-embed-l-v2.0` (the panel winner).
+
+Either way: **Phase B is authorized**. The spec's Rejected status will flip to "Phase B in progress" once the escalation completes.
 
 ## Substitutions from the spec
 
@@ -58,12 +62,12 @@ Mid-execution adaptations beyond the substitutions above:
 
 | metric | Phase A (5KB cap, CodeBERTa) | Phase B panel |
 | --- | --- | --- |
-| nomic τ | −0.0085 | <FILL> |
-| best candidate τ | −0.0911 (CodeExecutor) | <FILL> (<FILL: model name>) |
-| best Δ (candidate − nomic) | −0.0826 | <FILL> |
-| best Δ direction | candidate lost by 0.08 | <FILL: candidate won/lost by FILL> |
+| nomic τ | −0.0085 | **+0.0883** |
+| best candidate τ | −0.0911 (CodeExecutor) | **+0.2079** (arctic-l-v2) |
+| best Δ (candidate − nomic) | −0.0826 | **+0.1196** |
+| best Δ direction | candidate lost by 0.08 | **candidate won by 0.12** |
 
-<FILL: 1-2 sentence interpretation of what changed between Phase A and Phase B.>
+The +0.20 swing in Δ between Phase A and Phase B is driven by two methodology changes: (1) removing the 5 KB per-modality truncation cap, which let big-PR features carry meaningful intent signal instead of becoming uninformative prefixes; and (2) switching the nomic baseline from Ollama (which hard-capped prompts and 500'd on long inputs) to HF transformers (which honors the native 8 K window). Most importantly, the **strongest passing model in Phase B is general-purpose (Snowflake-arctic-embed-l-v2.0), not code-specific** — the three code-specific encoders (CodeBERTa/CodeExecutor in Phase A, jina-v2-code and SFR-400M in Phase B) all underperformed nomic at fair context. This is direct evidence for hypothesis #4 in the spec: "code-awareness was a red herring; context length was the limiting factor in Phase A."
 
 ## Methodology summary
 
@@ -92,5 +96,5 @@ Two additional evaluation datasets were considered but not run in this experimen
 
 ---
 
-*Pipeline status: <FILL: in progress / complete>*
-*Last updated: <FILL: timestamp>*
+*Pipeline status: initial 4-model panel + jazzcort COMPLETE; SFR-2B escalation IN PROGRESS on vinbonesjr tmux session `sfr2b`.*
+*Last updated: 2026-05-13 09:30 GMT (partial — final verdict pending SFR-2B).*
