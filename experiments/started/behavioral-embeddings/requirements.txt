@@ -5,3 +5,4 @@ scipy==1.16.3
 requests==2.32.3
 pytest==8.3.4
 einops==0.8.2
+accelerate==1.13.0
