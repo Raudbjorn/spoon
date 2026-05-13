@@ -37,6 +37,13 @@ type PipelineOptions struct {
 	NonInteractive  bool // true for --json / --csv / spn runs; false for TUI calls
 	Refresh         bool // true → skip LoadCache, force a fresh clustering pass
 
+	// Backend selects the Embedder implementation. Empty defaults to "ollama".
+	Backend string
+
+	// SidecarEndpoint is the http://host:port of the Python sidecar process,
+	// used when Backend=="sidecar".
+	SidecarEndpoint string
+
 	// Labeler, when non-nil, is invoked after heuristic labeling to polish
 	// each non-noise cluster's label. Errors fall back silently to the
 	// heuristic. Construction is the CLI's responsibility; the pipeline only
@@ -173,11 +180,13 @@ func RunPipeline(ctx context.Context, opts PipelineOptions, inputs PipelineInput
 			prompter = embed.NewStdinPrompter()
 		}
 		e, m, skip := embed.SelectEmbedder(ctx, embed.SelectOptions{
-			Endpoint:       opts.Endpoint,
-			ExplicitModel:  opts.ModelOverride,
-			AutoPull:       opts.AutoPull,
-			NoPrompt:       opts.NoPrompt,
-			NonInteractive: opts.NonInteractive,
+			Endpoint:        opts.Endpoint,
+			ExplicitModel:   opts.ModelOverride,
+			AutoPull:        opts.AutoPull,
+			NoPrompt:        opts.NoPrompt,
+			NonInteractive:  opts.NonInteractive,
+			Backend:         opts.Backend,
+			SidecarEndpoint: opts.SidecarEndpoint,
 		}, prompter)
 		if skip != nil {
 			fmt.Fprintf(logger, "[cluster] skipping: %s\n", skip.Message)

@@ -43,6 +43,8 @@ func main() {
 	clusterTop := 50
 	embedderURL := ""
 	embedderModel := ""
+	embedderBackend := ""
+	sidecarEndpoint := ""
 	labelerURL := ""
 	labelerModel := ""
 	clusterEpsilon := 0.35
@@ -135,6 +137,25 @@ func main() {
 			}
 			i++
 			embedderModel = args[i]
+		case "--embedder-backend":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "Error: --embedder-backend requires a value")
+				os.Exit(1)
+			}
+			i++
+			val := args[i]
+			if val != "ollama" && val != "sidecar" {
+				fmt.Fprintln(os.Stderr, "Error: --embedder-backend must be 'ollama' or 'sidecar'")
+				os.Exit(1)
+			}
+			embedderBackend = val
+		case "--sidecar-endpoint":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "Error: --sidecar-endpoint requires a value")
+				os.Exit(1)
+			}
+			i++
+			sidecarEndpoint = args[i]
 		case "--labeler":
 			if i+1 >= len(args) {
 				fmt.Fprintln(os.Stderr, "Error: --labeler requires a value")
@@ -211,6 +232,8 @@ func main() {
 		TopN:              clusterTop,
 		Endpoint:          embedderURL,
 		ModelOverride:     embedderModel,
+		Backend:           embedderBackend,
+		SidecarEndpoint:   sidecarEndpoint,
 		LabelerEndpoint:   labelerURL,
 		LabelerModel:      labelerModel,
 		Epsilon:           clusterEpsilon,
@@ -356,6 +379,8 @@ Flags:
   --cluster-top N          Max forks fed to the embedder (default 50)
   --embedder URL           Embedding endpoint (default $SPOON_EMBEDDER_URL)
   --embedder-model NAME    Explicit embedding model (default: auto-pick)
+  --embedder-backend NAME  Embedder backend: 'ollama' (default) or 'sidecar'
+  --sidecar-endpoint URL   Python sidecar endpoint (default http://localhost:8765)
   --labeler URL            Optional LLM polish endpoint (default: heuristic)
   --labeler-model NAME     LLM polish model (default: llama3.2:3b)
   --cluster-epsilon F      Cosine distance cutoff (default 0.35)

@@ -3,13 +3,26 @@ package embed
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
+	"time"
 )
 
 // SelectOptions configures embedder bootstrap.
 type SelectOptions struct {
-	Endpoint       string
-	ExplicitModel  string
+	Endpoint      string
+	ExplicitModel string
+
+	// Backend selects which Embedder implementation to use. Empty defaults to
+	// "ollama". "sidecar" routes through SidecarEmbedder against
+	// SidecarEndpoint.
+	Backend string
+
+	// SidecarEndpoint is the http://host:port of the Python sidecar process
+	// for the "sidecar" backend. Defaults to http://localhost:8765 when
+	// Backend=="sidecar" and this is empty.
+	SidecarEndpoint string
+
 	AutoPull       bool
 	NoPrompt       bool
 	NonInteractive bool
@@ -48,6 +61,31 @@ type SkipReason struct {
 // caller has guaranteed no prompt will be needed). SelectEmbedder must NOT
 // dereference a nil prompter.
 func SelectEmbedder(ctx context.Context, opts SelectOptions, prompter Prompter) (Embedder, string, *SkipReason) {
+	if opts.Backend == "" {
+		opts.Backend = strings.ToLower(os.Getenv("SPOON_EMBEDDER_BACKEND"))
+	}
+	if opts.SidecarEndpoint == "" {
+		opts.SidecarEndpoint = os.Getenv("SPOON_SIDECAR_ENDPOINT")
+	}
+
+	if opts.Backend == "sidecar" {
+		endpoint := opts.SidecarEndpoint
+		if endpoint == "" {
+			endpoint = "http://localhost:8765"
+		}
+		se := &SidecarEmbedder{Endpoint: endpoint}
+		hctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		if err := se.HealthCheck(hctx); err != nil {
+			// Sidecar is the requested backend but isn't ready. Fall through
+			// to the Ollama path so clustering doesn't silently skip; surface
+			// the issue via the SkipReason if Ollama is also unavailable.
+			fmt.Fprintf(os.Stderr, "sidecar unavailable (%v); falling back to Ollama\n", err)
+		} else {
+			return se, "sidecar:" + endpoint, nil
+		}
+	}
+
 	running, endpoint, installed := Detect(ctx, opts.Endpoint)
 	if !running {
 		return nil, "", &SkipReason{
