@@ -22,6 +22,12 @@ intent-similarity between fork-equivalent code changes more like a human does?
 2. `judgments.json` records 40 hand-curated PR pairs: 20 labeled `1`
    (functionally same intent) and 20 labeled `0` (functionally different).
    See [Curating judgments.json](#curating-judgmentsjson) below.
+
+   `pr_states.json` is a sibling fixture: `{pr-N: "OPEN"|"MERGED"|"CLOSED"}`
+   for every PR in `features.json`, snapshotted at curation time. It's
+   reference data for the curation TUI (`curate_cli.py`) so labels stay
+   meaningful as PRs change state upstream — none of the embed/analyze
+   scripts read it directly.
 3. `embed_nomic.py` hits the local Ollama `/api/embeddings` endpoint once per
    PR record and writes `nomic_vectors.json`.
 4. `embed_codeexecutor.py` loads `microsoft/codeexecutor` via the HuggingFace

@@ -8,12 +8,14 @@
 
 ## TL;DR
 
-Two embedders released after the original 2026-05-13 panel were evaluated against the same 53-pair judgment set, on the **same nomic-via-Ollama baseline that the panel used at runtime**. Both clear the gate:
+Two embedders released after the original 2026-05-13 panel were evaluated against the same 53-pair judgment set, on the **same nomic-via-Ollama baseline that the panel used at runtime**. Both clear the gate, **on length-biased subsets**:
 
-- **Qwen/Qwen3-Embedding-0.6B** (596M, decoder-style, Apache-2.0) — Δ = **+0.216** (n=35).
-- **ibm-granite/granite-embedding-311m-multilingual-r2** (312M, ModernBERT, Apache-2.0) — Δ = **+0.102** (n=28).
+- **Qwen/Qwen3-Embedding-0.6B** (596M, decoder-style, Apache-2.0) — Δ = **+0.216** on n=35/53.
+- **ibm-granite/granite-embedding-311m-multilingual-r2** (312M, ModernBERT, Apache-2.0) — Δ = **+0.098** on n=35/53 (batch=1 refill from initial n=28; see below).
 
-Neither dethrones `Snowflake/snowflake-arctic-embed-l-v2.0` (panel τ +0.208, n=53) on the strict comparison axis used by the panel decision matrix, because their pair coverage is reduced by Arc-A770 VRAM limits on the longest prompts. They are recorded here as candidates worth re-evaluating if/when Phase B sidecar performance becomes a bottleneck.
+**The dropped pairs are not random.** They correspond exactly to the longest-prompt PRs (17–18 GiB single-sequence allocations that exceed the Arc A770's 16 GiB VRAM ceiling regardless of batch size). Long PRs carry more files and more low-signal tokens per intent, so they are likely *harder* to rank than the retained shorter ones. Both headline Δ values should therefore be read as **upper bounds** on each candidate's true Δ at n=53. Direct comparison against `Snowflake/snowflake-arctic-embed-l-v2.0` (panel τ +0.208 at *full* n=53) is not apples-to-apples — closing the coverage gap (length-based CPU fallback, or routing long sequences off the Arc) is a prerequisite to a fair cross-doc claim.
+
+Neither candidate is therefore promoted to displace the panel winner. They are recorded as candidates worth re-evaluating if/when (a) Phase B sidecar performance becomes a bottleneck, or (b) length-based fallback is implemented and a fair n=53 score becomes possible.
 
 ## Supplement results
 
@@ -23,9 +25,11 @@ Both supplement models scored against the same 53 hand-curated PR pairs from `ju
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | **nomic-embed-text** (baseline, Ollama-served) | 137M | 8K | (server-internal) | 0.340 | — | 35/53 | — |
 | **Qwen/Qwen3-Embedding-0.6B** | 596M | 32K | `last_token` | **0.555** | **+0.216** | 35/53 | ✅ PASS (wide margin) |
-| **ibm-granite/granite-embedding-311m-multilingual-r2** | 312M | 8K | `mean` | **0.490** | **+0.102** | 28/53 | ✅ PASS |
+| **ibm-granite/granite-embedding-311m-multilingual-r2** | 312M | 8K | `mean` | **0.438** | **+0.098** | 35/53 | ✅ PASS (narrow) |
 
-(`τ_nomic` differs across the two rows because the pair-skip list differs per candidate — analyze.py drops any pair where *either* embedder lacks a vector for one side. The granite row pairs τ_nomic = 0.388 against n=28.)
+(After the granite batch=1 refill, both supplement rows pair against the same n=35 subset and share `τ_nomic = 0.340`. The initial granite row at batch=4 scored n=28 against `τ_nomic = 0.388` — that earlier framing is preserved in the OOM table below for transparency, but the headline row reflects the filled-in run.)
+
+**Empirical confirmation of the selection-bias caveat:** filling the gaps moved both candidates' deltas in the conservative direction. Qwen3: +0.306 (n=28) → +0.216 (n=35). Granite: +0.102 (n=28) → +0.098 (n=35). The added pairs are precisely the harder long-prompt ones, and they drag both candidate τ values down without moving baseline τ_nomic by as much. Whatever residual coverage gap remains (n=35 vs the panel's n=53) will continue to pull these Δ values down toward their true asymptote.
 
 ## Why "supplement" and not "re-panel"
 
@@ -52,9 +56,9 @@ The panel switched the nomic baseline from Ollama-served to HF-served because Ol
 | model | batch=4 dropped | batch=1 dropped | smallest failing alloc |
 | --- | --- | --- | --- |
 | Qwen3-Embedding-0.6B | 36 batches (164/200 kept) | 3 batches (197/200 kept) | 17–18 GiB (exceeds 16 GiB Arc cap regardless of batch) |
-| granite-embedding-311m-r2 | 40 batches (160/200 kept) | not re-run | varies; mean-pooling encoder, similar ceiling |
+| granite-embedding-311m-r2 | 40 batches (160/200 kept) | 4 batches (196/200 kept) | 25–27 GiB single-sequence allocs at full 8K context |
 
-Qwen3 was re-run with `--batch-size 1` to fill the gaps; the script's resume support (`out` JSON loaded as starting state, embedded ids skipped) made this cheap. The three remaining Qwen3 failures want 17–18 GiB *single-sequence* allocations: those PRs tokenize past the Arc's per-allocation ceiling at Qwen3's full 32 K context. A length-based fallback (truncate at ~16K, or route to CPU) would close them; not pursued here since the τ result is well clear of the gate without those three pairs.
+Both models were re-run with `--batch-size 1` to fill the gaps; the script's resume support (`out` JSON loaded as starting state, embedded ids skipped) made this cheap. The remaining failures want *single-sequence* allocations that exceed the Arc's per-allocation ceiling at the model's full context window. A length-based fallback (truncate at ~16K, or route long sequences to CPU) would close them; not pursued here. The selection-bias caveat in the TL;DR applies precisely to the gap left by those single-sequence-OOM PRs.
 
 ## Methodology summary
 
