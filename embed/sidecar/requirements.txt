@@ -1,5 +1,11 @@
 torch==2.9.0
-transformers==4.47.1
+# transformers >= 4.53.0 clears the 14 Dependabot alerts on this manifest
+# (CVE-2024-1139[234] deserialization + ReDoS family). The sidecar loads
+# arbitrary HF models through trust_remote_code, so the deserialization
+# alerts are the load-bearing ones. The single remaining alert above 4.53
+# is CVE-2026-1839 (arbitrary code execution in Trainer, fixed in 5.0.0rc3)
+# — we don't import Trainer.
+transformers>=4.53,<5
 sentence-transformers==3.3.1
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
