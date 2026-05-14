@@ -22,6 +22,12 @@ intent-similarity between fork-equivalent code changes more like a human does?
 2. `judgments.json` records 40 hand-curated PR pairs: 20 labeled `1`
    (functionally same intent) and 20 labeled `0` (functionally different).
    See [Curating judgments.json](#curating-judgmentsjson) below.
+
+   `pr_states.json` is a sibling fixture: `{pr-N: "OPEN"|"MERGED"|"CLOSED"}`
+   for every PR in `features.json`, snapshotted at curation time. It's
+   reference data for the curation TUI (`curate_cli.py`) so labels stay
+   meaningful as PRs change state upstream — none of the embed/analyze
+   scripts read it directly.
 3. `embed_nomic.py` hits the local Ollama `/api/embeddings` endpoint once per
    PR record and writes `nomic_vectors.json`.
 4. `embed_codeexecutor.py` loads `microsoft/codeexecutor` via the HuggingFace
@@ -101,3 +107,28 @@ commit are what gate the experiment, so use your own judgment.
 ```
 
 `a` and `b` are PR IDs (the `pr-NNNN` keys from `features.json`).
+
+## Post-panel supplement (2026-05-13+)
+
+`RESULTS_PANEL.md` is the final record of the original 5-model panel; do
+not modify it. To evaluate models released *after* the panel against the
+same 53 pairs, use `run_panel_supplement.sh`:
+
+```sh
+./run_panel_supplement.sh
+.venv/bin/python analyze.py --nomic nomic_vectors.json \
+  --codeexecutor <candidate>_vectors.json --out <candidate>_results.md
+```
+
+Current supplement set:
+- `Qwen/Qwen3-Embedding-0.6B` — decoder-style; uses `--pooling last_token`
+  via `embed_hf.py` (mean-pool on a decoder is the SFR-2B gotcha
+  documented in RESULTS_PANEL.md).
+- `ibm-granite/granite-embedding-311m-multilingual-r2` — ModernBERT
+  encoder; uses default `--pooling mean`. Native ONNX/OpenVINO weights
+  open a future path to dropping the Python sidecar entirely.
+
+Adding a new supplement model: append a `model:out:log:pooling` row to
+`run_panel_supplement.sh`. Decoder-only architectures (Qwen, Llama, etc.)
+need `pooling=last_token`; encoders (BERT, RoBERTa, ModernBERT, arctic,
+SFR-400M, jina, granite, etc.) use the default `mean`.
