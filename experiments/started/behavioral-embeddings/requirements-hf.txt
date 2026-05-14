@@ -1,0 +1,9 @@
+# Optional legacy path: run embed_hf.py in-process instead of going through
+# OpenVINO Model Server. Uses Intel's XPU-enabled torch wheels so the Arc
+# A770 is reachable via torch.xpu. Only needed if you cannot use ovms; the
+# OVMS path (requirements.txt + setup_ovms_models.sh) is preferred.
+--extra-index-url https://download.pytorch.org/whl/xpu
+torch==2.9.0+xpu
+transformers>=4.55,<5
+einops==0.8.2
+accelerate==1.13.0
