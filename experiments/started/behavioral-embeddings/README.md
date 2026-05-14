@@ -132,3 +132,41 @@ Adding a new supplement model: append a `model:out:log:pooling` row to
 `run_panel_supplement.sh`. Decoder-only architectures (Qwen, Llama, etc.)
 need `pooling=last_token`; encoders (BERT, RoBERTa, ModernBERT, arctic,
 SFR-400M, jina, granite, etc.) use the default `mean`.
+
+## OVMS serving prototype (Phase B reference, not a supplement re-run)
+
+The four files `embed_ovms.py`, `setup_ovms_models.sh`, `convert_models.py`,
+and `convert_tokenizers.py` are a daemon-served alternative to the
+in-process `embed_hf.py` path. They are deliberately **not wired into
+`run_panel_supplement.sh`** — the supplement verdict in
+`RESULTS_PANEL_SUPPLEMENT.md` is final and rests on the bias-corrected
+n=53 / HF-baseline methodology that `embed_hf.py` (with its CPU fallback)
+unlocked. Re-running the supplement through OVMS without that same
+methodology would re-introduce the selection-bias and baseline-asymmetry
+the bias-corrected analysis already dismantled.
+
+These files are kept here as the **reference implementation for the Phase
+B sidecar's alternative serving path** — see
+`docs/superpowers/plans/2026-05-13-behavioral-embeddings-sidecar.md`.
+OVMS gives:
+- a tiny client venv (just `requests`/`numpy`/`scipy` — no torch),
+- a stable OpenAI-compatible `/v3/embeddings` endpoint,
+- daemon-managed GPU compilation that survives client restarts.
+
+What the files handle:
+- `setup_ovms_models.sh` — git-LFS pull + `/etc/ovms/config.json`
+  registration + graph.pbtxt pooling patch. Idempotent; delegates to the
+  Intel package's `setup_embeddings_arc.sh` when present.
+- `convert_tokenizers.py` — generates `openvino_tokenizer.{xml,bin}` that
+  the C++ `EmbeddingsCalculatorOV` requires. Needed because the
+  `ovms_python_off` build doesn't bundle `optimum-cli`.
+- `convert_models.py` — turns ONNX/PyTorch weights into `openvino_model.
+  {xml,bin}` (or fetches a prebuilt int8 IR for Qwen3) so OVMS's
+  graph.pbtxt finds them.
+- `embed_ovms.py` — OpenAI-spec client with batching, resume, and
+  per-batch HTTP timeout. Same JSON output shape as `embed_hf.py` so
+  `analyze.py` consumes it unchanged.
+
+When to run any of this: building a serving prototype for Phase B, or
+benchmarking OVMS vs the `embed/sidecar/` FastAPI/transformers path under
+real production load. **Not** for re-litigating the supplement verdict.
