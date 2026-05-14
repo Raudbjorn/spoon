@@ -40,8 +40,25 @@ def main() -> int:
     args = ap.parse_args()
 
     feats = load_features(args.features)
+
+    # Resume support: load existing --out as starting state and skip ids that
+    # already have a vector. Lets transient 500s from Ollama (which can fire
+    # on long prompts that exceed the model's compiled context window even
+    # with num_ctx set) be retried cheaply without re-embedding the rest.
+    import os as _os
     out: dict[str, list[float]] = {}
+    if _os.path.exists(args.out):
+        try:
+            with open(args.out) as f:
+                out = json.load(f)
+            print(f"resuming: {len(out)} vectors already in {args.out}", file=sys.stderr)
+        except (OSError, json.JSONDecodeError) as e:
+            print(f"could not resume from {args.out}: {e}; starting fresh", file=sys.stderr)
+            out = {}
+
     for i, (fid, rec) in enumerate(feats.items(), start=1):
+        if fid in out:
+            continue
         text = build_text(rec["features"])
         try:
             out[fid] = embed_one(args.endpoint, args.model, text)

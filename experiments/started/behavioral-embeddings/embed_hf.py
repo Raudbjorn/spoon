@@ -113,6 +113,15 @@ def main() -> int:
         "original panel). 'last_token' for decoder-style embedders (Qwen3, "
         "SFR-2B) — mean-pool on a decoder is the known SFR-2B gotcha.",
     )
+    ap.add_argument(
+        "--no-cpu-fallback",
+        action="store_true",
+        help="Disable the CPU fallback for batches that OOM on the primary "
+        "(XPU/CUDA) device. By default, the runner keeps a lazy CPU-resident "
+        "copy of the model and retries OOM'd batches there — this closes the "
+        "n_pairs gap when the Arc A770's 16 GiB cap rejects single-sequence "
+        "allocations on the longest PRs (see RESULTS_PANEL_SUPPLEMENT.md).",
+    )
     args = ap.parse_args()
 
     os.makedirs(args.cache_dir, exist_ok=True)
@@ -126,8 +135,28 @@ def main() -> int:
     )
     model = AutoModel.from_pretrained(
         args.model, cache_dir=args.cache_dir, trust_remote_code=True
-    ).to(device)
+    )
+    # Some HF models (e.g. SFR-Embedding-Code-2B_R) self-dispatch with
+    # device_map="auto" inside their custom modeling_*.py, which leaves
+    # tensors on meta until accelerate's hooks fire — a subsequent .to()
+    # explodes with "Cannot copy out of meta tensor". Detect self-placement
+    # via the hf_device_map attribute set by accelerate, and respect it.
+    if getattr(model, "hf_device_map", None):
+        actual_dev = next(model.parameters()).device.type
+        if actual_dev != device:
+            print(f"  model self-dispatched to {actual_dev} via accelerate "
+                  f"(requested {device}); honoring its placement",
+                  file=sys.stderr)
+            device = actual_dev
+    else:
+        model = model.to(device)
     model.eval()
+
+    # CPU fallback: lazy-loaded only after the first XPU/CUDA OOM, so we don't
+    # pay the duplicate-resident cost for runs that never trip the ceiling.
+    cpu_fallback_enabled = device != "cpu" and not args.no_cpu_fallback
+    cpu_model: AutoModel | None = None
+    cpu_recovered = 0
 
     feats = load_features(args.features)
     ids = list(feats.keys())
@@ -154,13 +183,57 @@ def main() -> int:
         try:
             vecs = embed_batch(model, tokenizer, batch_texts, device, pooling=args.pooling)
         except Exception as e:
-            failed += len(batch_ids)
-            print(f"  batch {i//args.batch_size}: skip ({len(batch_ids)} ids): {e}", file=sys.stderr)
-            # Flush what we have so far so a later batch failing doesn't kill
-            # progress from earlier batches.
-            with open(args.out, "w") as f:
-                json.dump(out, f)
-            continue
+            # Resource-exhaustion on XPU/CUDA: free fragmented memory and
+            # retry on CPU. Match by exception type AND a set of error-message
+            # signatures because:
+            #   - The XPU backend can raise plain RuntimeError without
+            #     subclassing torch.OutOfMemoryError on older intel-pti builds.
+            #   - Large models on Arc trip "UR_RESULT_ERROR_OUT_OF_RESOURCES"
+            #     (UR/Level-Zero command-list / heap exhaustion) before they
+            #     hit the per-allocator OOM path.
+            err_lc = str(e).lower()
+            is_resource_err = (
+                isinstance(e, getattr(torch, "OutOfMemoryError", RuntimeError))
+                or "out of memory" in err_lc
+                or "out_of_resources" in err_lc
+                or "ur backend failed" in err_lc
+                or "ur_result_error_out_of_resources" in err_lc
+            )
+            is_oom = is_resource_err
+            if cpu_fallback_enabled and is_oom:
+                if device == "xpu" and hasattr(torch, "xpu"):
+                    torch.xpu.empty_cache()
+                elif device == "cuda":
+                    torch.cuda.empty_cache()
+                if cpu_model is None:
+                    print(f"  batch {i//args.batch_size}: {device} OOM; "
+                          f"loading CPU fallback model", file=sys.stderr)
+                    cpu_model = AutoModel.from_pretrained(
+                        args.model, cache_dir=args.cache_dir, trust_remote_code=True
+                    ).to("cpu")
+                    cpu_model.eval()
+                try:
+                    vecs = embed_batch(cpu_model, tokenizer, batch_texts, "cpu",
+                                       pooling=args.pooling)
+                    cpu_recovered += len(batch_ids)
+                    print(f"  batch {i//args.batch_size}: recovered "
+                          f"{len(batch_ids)} ids on CPU", file=sys.stderr)
+                except Exception as e2:
+                    failed += len(batch_ids)
+                    print(f"  batch {i//args.batch_size}: skip ({len(batch_ids)} "
+                          f"ids) after CPU retry: {e2}", file=sys.stderr)
+                    with open(args.out, "w") as f:
+                        json.dump(out, f)
+                    continue
+            else:
+                failed += len(batch_ids)
+                print(f"  batch {i//args.batch_size}: skip ({len(batch_ids)} ids): {e}",
+                      file=sys.stderr)
+                # Flush what we have so far so a later batch failing doesn't kill
+                # progress from earlier batches.
+                with open(args.out, "w") as f:
+                    json.dump(out, f)
+                continue
         for bid, v in zip(batch_ids, vecs):
             out[bid] = v
         # Periodic flush every 4 batches (≈ 128 records) — bounds work-loss
@@ -173,7 +246,8 @@ def main() -> int:
 
     with open(args.out, "w") as f:
         json.dump(out, f)
-    print(f"wrote {len(out)} vectors to {args.out} (failed batches: {failed})", file=sys.stderr)
+    print(f"wrote {len(out)} vectors to {args.out} (failed batches: {failed}, "
+          f"cpu_recovered_ids: {cpu_recovered})", file=sys.stderr)
     return 0
 
 

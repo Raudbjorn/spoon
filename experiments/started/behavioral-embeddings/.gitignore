@@ -28,3 +28,6 @@ qwen3_06b_vectors.json
 qwen3_06b_run.log
 granite_311m_r2_vectors.json
 granite_311m_r2_run.log
+sfr_code_2b_lasttoken_vectors.json
+sfr_code_2b_lasttoken_run.log
+nomic_hf_vectors.json
