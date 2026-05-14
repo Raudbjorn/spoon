@@ -4,69 +4,125 @@
 # notable negative datapoint with corrected pooling. All on the same
 # 53-pair judgment set.
 #
-# Models:
+# Inference path: OpenVINO Model Server (ovms) on the Intel Arc A770. The
+# models are pulled and registered once by setup_ovms_models.sh; this
+# script just hits OVMS /v3/embeddings (OpenAI-compat) for each.
 #
-#  * Qwen/Qwen3-Embedding-0.6B          — 596M, decoder-style (uses
-#    last-token pooling, NOT mean — see embed_hf.py POOL_FNS).
-#    Same param budget as the panel winner (arctic-l-v2, 568M) but a
-#    different architecture and lab. Apache-2.0, post-dates the panel.
+# Models (all Apache-2.0, post-date the panel):
+#  * Qwen/Qwen3-Embedding-0.6B          — 596M decoder, LAST-token pooling.
+#  * ibm-granite/granite-embedding-311m-multilingual-r2 — 312M ModernBERT,
+#    native ONNX + OpenVINO weights, CLS pooling per model card.
 #
-#  * ibm-granite/granite-embedding-311m-multilingual-r2 — 312M ModernBERT
-#    encoder, native ONNX + OpenVINO weights, Matryoshka-trained (full
-#    1024-dim used here for parity; downstream consumers can truncate).
-#    Smaller than arctic-l-v2; could enable dropping the Python sidecar
-#    entirely if it wins. Apache-2.0, post-dates the panel.
-#
-#  * Salesforce/SFR-Embedding-Code-2B_R — 2B Gemma2 decoder. Originally
-#    panel-tested at --pooling mean and lost by Δ=−0.057 (worse than its
-#    400M sibling, which was a clue the pooling was wrong). Re-tested
-#    here with --pooling last_token, the architecturally correct choice
-#    for a decoder-as-embedder (same gotcha SFR-2B revealed first).
-#    SFR-Embedding-Code-2B is the panel artifact this row contradicts
-#    or confirms — see RESULTS_PANEL.md "Additional finding".
-#
-# This script does NOT re-run the original panel (those vectors are
-# already produced and the verdict in RESULTS_PANEL.md is final). It
-# only embeds the supplement models so they can be scored against the
-# existing nomic baseline via analyze.py.
+# nomic_vectors.json is the panel baseline. If absent it's regenerated here:
+# preferred path is OVMS (nomic-ai/nomic-embed-text-v1.5 with patched MEAN
+# pooling); fall back to Ollama (http://localhost:11434) if OVMS doesn't
+# serve nomic. Either reproduces the baseline closely enough that the
+# Kendall tau delta stays interpretable.
 #
 # Run from this directory. Each model writes its own *_vectors.json
-# (gitignored). Resume support in embed_hf.py makes re-runs cheap on
-# partial state. The CPU fallback in embed_hf.py (since 2026-05-14)
-# closes the n_pairs gap for prompts that OOM the Arc A770's 16 GiB.
+# (gitignored). Resume support in embed_ovms.py makes re-runs cheap.
 set -uo pipefail
 cd "$(dirname "$0")"
 
-# The torch==2.9.0+xpu wheel bundles libsycl.so.8 + libur_loader.so.0.12.0
-# under .venv/lib/ — but ldconfig's cache points libur_loader.so.0 at the
-# system /opt/intel/oneapi/2025.3/lib/libur_loader.so.0, which is missing
-# urEnqueueCooperativeKernelLaunchExp. Without this prefix, `import torch`
-# crashes with: undefined symbol: urEnqueueCooperativeKernelLaunchExp,
-# version LIBUR_LOADER_0.12. Prepend the wheel libs so its bundled UR
-# loader wins for THIS process only (still keep the system libs visible
-# so anything else in the venv that wants them resolves correctly).
-export LD_LIBRARY_PATH="$PWD/.venv/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+OVMS_ENDPOINT="${OVMS_ENDPOINT:-http://localhost:8978}"
 
-# Tuples: model:out:log:pooling:batch_size
-# SFR-2B uses batch_size=1 — at 2B params the model itself is ~8 GiB
-# in fp32 and the attention working set quickly exceeds the Arc's 16 GiB.
-# CPU fallback in embed_hf.py will catch what XPU can't.
+if [ ! -d .venv ]; then
+  uv venv .venv
+  uv pip install --python .venv/bin/python -r requirements.txt
+fi
+
+# Sanity-check the OVMS endpoint before launching three slow GPU compiles.
+if ! curl -fsS --max-time 5 "$OVMS_ENDPOINT/v2/health/ready" >/dev/null 2>&1; then
+  echo "OVMS not ready at $OVMS_ENDPOINT. Start it (systemctl start ovms),"
+  echo "then register models with:  ./setup_ovms_models.sh"
+  exit 2
+fi
+
+ovms_has_model() {
+  # Probes the v2 model-ready endpoint. The OVMS routing layer rejects raw
+  # `/` in the model name segment (returns 400 "Invalid request URL"), so
+  # encode any slashes to %2F before issuing the request — model names
+  # like `Qwen/Qwen3-Embedding-0.6B` need this. HTTP 200 means loaded; any
+  # other status (404 missing, 503 mid-compile, etc.) is treated as "not".
+  local encoded="${1//\//%2F}"
+  curl -fsS --max-time 5 -o /dev/null -w '%{http_code}' \
+    "$OVMS_ENDPOINT/v2/models/$encoded/ready" 2>/dev/null | grep -q '^200$'
+}
+
+# Lazy bootstrap: if neither Qwen3 nor granite is loaded yet, run the pull
+# helper. Idempotent — already-pulled models are skipped. Set
+# OVMS_SKIP_PULL=1 to opt out (e.g. you maintain the repo by hand).
+if [ "${OVMS_SKIP_PULL:-0}" != "1" ]; then
+  if ! ovms_has_model "Qwen/Qwen3-Embedding-0.6B" \
+     || ! ovms_has_model "ibm-granite/granite-embedding-311m-multilingual-r2"; then
+    echo "== bootstrapping OVMS model repository =="
+    ./setup_ovms_models.sh || {
+      echo "setup_ovms_models.sh failed — fix and re-run, or set OVMS_SKIP_PULL=1" >&2
+      exit 2
+    }
+    # Give OVMS a generous window to discover + compile each model on GPU.
+    # First-load GPU JIT on Arc A770 is 60-180 s per embedder.
+    echo "waiting for models to become ready..."
+    deadline=$(( $(date +%s) + 600 ))
+    ready=0
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+      if ovms_has_model "Qwen/Qwen3-Embedding-0.6B" \
+         && ovms_has_model "ibm-granite/granite-embedding-311m-multilingual-r2"; then
+        ready=1
+        break
+      fi
+      sleep 5
+    done
+    if [ "$ready" -ne 1 ]; then
+      echo "ERROR: models failed to become ready in OVMS within 10 minutes." >&2
+      exit 3
+    fi
+  fi
+fi
+
+# nomic baseline (re)generation if needed.
+if [ ! -f nomic_vectors.json ]; then
+  echo "== nomic_vectors.json missing — regenerating baseline =="
+  if ovms_has_model "nomic-ai/nomic-embed-text-v1.5"; then
+    .venv/bin/python embed_ovms.py \
+      --model nomic-ai/nomic-embed-text-v1.5 \
+      --features features.json \
+      --out nomic_vectors.json \
+      --endpoint "$OVMS_ENDPOINT" 2>nomic_run.log \
+      && echo "  -> $(jq 'length' nomic_vectors.json) vectors (via ovms)" \
+      || echo "  -> FAILED (see nomic_run.log)"
+  elif curl -fsS --max-time 3 http://localhost:11434/api/tags >/dev/null 2>&1; then
+    echo "  (OVMS has no nomic model — falling back to Ollama)"
+    .venv/bin/python embed_nomic.py \
+      --features features.json \
+      --out nomic_vectors.json 2>nomic_run.log \
+      && echo "  -> $(jq 'length' nomic_vectors.json) vectors (via ollama)" \
+      || echo "  -> FAILED (see nomic_run.log)"
+  else
+    echo "  -> no nomic backend available (neither OVMS nor Ollama)"
+    exit 3
+  fi
+fi
+
+# (model_name, output_file, log_file)
 models=(
-  "Qwen/Qwen3-Embedding-0.6B:qwen3_06b_vectors.json:qwen3_06b_run.log:last_token:4"
-  "ibm-granite/granite-embedding-311m-multilingual-r2:granite_311m_r2_vectors.json:granite_311m_r2_run.log:mean:4"
-  "Salesforce/SFR-Embedding-Code-2B_R:sfr_code_2b_lasttoken_vectors.json:sfr_code_2b_lasttoken_run.log:last_token:1"
+  "Qwen/Qwen3-Embedding-0.6B:qwen3_06b_vectors.json:qwen3_06b_run.log"
+  "ibm-granite/granite-embedding-311m-multilingual-r2:granite_311m_r2_vectors.json:granite_311m_r2_run.log"
 )
 
 for entry in "${models[@]}"; do
-  IFS=":" read -r model out log pooling bs <<< "$entry"
-  echo "=== ${model}  (pooling=${pooling}, batch_size=${bs}) ==="
-  if .venv/bin/python embed_hf.py \
+  IFS=":" read -r model out log <<< "$entry"
+  echo "== $model =="
+  if ! ovms_has_model "$model"; then
+    echo "  -> not loaded in OVMS — run ./setup_ovms_models.sh first"
+    continue
+  fi
+  if .venv/bin/python embed_ovms.py \
       --model "$model" \
       --features features.json \
       --out "$out" \
-      --cache-dir hf_cache \
-      --batch-size "$bs" \
-      --pooling "$pooling" 2>"$log" ; then
+      --endpoint "$OVMS_ENDPOINT" \
+      --batch-size 4 2>"$log" ; then
     echo "  -> $(jq 'length' "$out") vectors in $out"
   else
     echo "  -> FAILED (see $log); continuing"
@@ -83,7 +139,3 @@ echo "  .venv/bin/python analyze.py \\"
 echo "    --nomic nomic_vectors.json \\"
 echo "    --codeexecutor granite_311m_r2_vectors.json \\"
 echo "    --out granite_311m_r2_results.md"
-echo "  .venv/bin/python analyze.py \\"
-echo "    --nomic nomic_vectors.json \\"
-echo "    --codeexecutor sfr_code_2b_lasttoken_vectors.json \\"
-echo "    --out sfr_code_2b_lasttoken_results.md"

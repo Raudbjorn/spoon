@@ -2,12 +2,12 @@
 
 | metric | value |
 | --- | --- |
-| Kendall's tau (nomic-embed-text) | 0.3396 |
-| Kendall's tau (CodeExecutor) | 0.4376 |
-| Delta (CE − nomic) | 0.0980 |
+| Kendall's tau (nomic-embed-text) | 0.3289 |
+| Kendall's tau (CodeExecutor) | 0.4267 |
+| Delta (CE − nomic) | 0.0978 |
 | Gate threshold | 0.05 |
-| Pairs scored | 35 |
-| Pairs skipped (missing vector) | 18 |
+| Pairs scored | 30 |
+| Pairs skipped (missing vector) | 23 |
 
 ## Verdict
 

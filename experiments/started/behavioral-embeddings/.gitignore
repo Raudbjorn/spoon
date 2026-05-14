@@ -31,3 +31,7 @@ granite_311m_r2_run.log
 sfr_code_2b_lasttoken_vectors.json
 sfr_code_2b_lasttoken_run.log
 nomic_hf_vectors.json
+# OVMS workflow scratch dirs / logs
+tokenizer_staging/
+model_staging/
+run_panel_supplement.out
