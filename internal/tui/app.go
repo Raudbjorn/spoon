@@ -694,11 +694,21 @@ func (m *Model) fetchForks() tea.Cmd {
 		}
 
 		var forks []forge.T1Data
+		var streamErr error
 		for msg := range ch {
 			if msg.Err != nil {
-				continue // skip error items
+				streamErr = msg.Err // remember; per-fork errors are tolerated below
+				continue
 			}
 			forks = append(forks, msg.Fork)
+		}
+
+		// A fatal fetch failure (e.g. the GraphQL forks query erroring out)
+		// arrives as a stream error and would otherwise leave us silently
+		// showing zero forks. Surface it instead — but only when nothing came
+		// through, so partial results from per-fork failures are still kept.
+		if len(forks) == 0 && streamErr != nil {
+			return forksFetchedMsg{err: streamErr}
 		}
 
 		// Save to GitHub cache if applicable
