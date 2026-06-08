@@ -58,6 +58,46 @@ func TestValidate_RejectsBadEnums(t *testing.T) {
 	}
 }
 
+func TestCoalesce(t *testing.T) {
+	if got := Coalesce("", "", "c"); got != "c" {
+		t.Errorf("got %q", got)
+	}
+	if got := Coalesce("a", "b"); got != "a" {
+		t.Errorf("flag should win: %q", got)
+	}
+	if got := Coalesce("", ""); got != "" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestLoadDefault(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	// Absent → (nil, nil).
+	c, err := LoadDefault()
+	if c != nil || err != nil {
+		t.Fatalf("absent: c=%v err=%v", c, err)
+	}
+
+	// Present → loaded.
+	p, _ := DefaultPath()
+	if err := Save(p, &Config{Embedder: EmbedderConfig{Backend: "openai"}}); err != nil {
+		t.Fatal(err)
+	}
+	c, err = LoadDefault()
+	if err != nil || c == nil || c.Embedder.Backend != "openai" {
+		t.Fatalf("present: c=%v err=%v", c, err)
+	}
+
+	// SPOON_NO_CONFIG disables.
+	t.Setenv("SPOON_NO_CONFIG", "1")
+	c, err = LoadDefault()
+	if c != nil || err != nil {
+		t.Fatalf("disabled: c=%v err=%v", c, err)
+	}
+}
+
 func TestSave_RejectsInvalid(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := Save(path, &Config{Embedder: EmbedderConfig{Backend: "nope"}}); err == nil {

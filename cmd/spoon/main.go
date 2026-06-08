@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/svnbjrn/spoon/internal/config"
 	"github.com/svnbjrn/spoon/internal/forge"
 	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/gitlab"
@@ -225,6 +226,19 @@ func main() {
 
 	if noColor {
 		os.Setenv("NO_COLOR", "1")
+	}
+
+	// Layer saved embedder defaults under flags/env (flags > env > config >
+	// built-in). Provider/host are intentionally NOT layered — the repo URL
+	// determines the forge. A bad config warns but never blocks a run.
+	if cfg, cerr := config.LoadDefault(); cerr != nil {
+		fmt.Fprintf(os.Stderr, "warning: ignoring spoon config: %v\n", cerr)
+	} else if cfg != nil {
+		embedderBackend = strings.ToLower(config.Coalesce(embedderBackend, os.Getenv("SPOON_EMBEDDER_BACKEND"), cfg.Embedder.Backend))
+		embedderURL = config.Coalesce(embedderURL, os.Getenv("SPOON_EMBEDDER_URL"), cfg.Embedder.Endpoint)
+		embedderModel = config.Coalesce(embedderModel, cfg.Embedder.Model)
+		sidecarEndpoint = config.Coalesce(sidecarEndpoint, os.Getenv("SPOON_SIDECAR_ENDPOINT"), cfg.Embedder.SidecarEndpoint)
+		labelerModel = config.Coalesce(labelerModel, cfg.Embedder.LabelerModel)
 	}
 
 	_ = concurrency // TODO: pass to auth overrides

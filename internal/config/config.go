@@ -102,6 +102,37 @@ func Save(path string, c *Config) error {
 	return nil
 }
 
+// LoadDefault loads the config from DefaultPath as an optional defaults layer.
+// Returns (nil, nil) when no config exists; (nil, err) when one exists but is
+// unreadable/invalid (callers should warn but continue — a run must not fail on
+// a bad config); (cfg, nil) on success. Honors $SPOON_NO_CONFIG=1 (returns
+// nil, nil) so the layer can be disabled.
+func LoadDefault() (*Config, error) {
+	if os.Getenv("SPOON_NO_CONFIG") == "1" {
+		return nil, nil
+	}
+	path, err := DefaultPath()
+	if err != nil {
+		return nil, err
+	}
+	c, err := Load(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	return c, err
+}
+
+// Coalesce returns the first non-empty string, or "" if all are empty. Used to
+// layer precedence: Coalesce(flag, env, config).
+func Coalesce(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 var (
 	validBackends  = map[string]bool{"": true, "ollama": true, "sidecar": true, "openai": true}
 	validProviders = map[string]bool{"": true, "github": true, "gitlab": true}

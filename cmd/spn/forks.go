@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/svnbjrn/spoon/internal/agentio"
+	"github.com/svnbjrn/spoon/internal/config"
 	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/forge"
 	"github.com/svnbjrn/spoon/internal/forksops"
@@ -236,6 +237,19 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	// Layer saved embedder defaults under flags/env (flags > env > config >
+	// built-in). Provider/host are not layered — the repo arg determines the
+	// forge. A bad config emits a warning but never blocks the run.
+	if cfg, cerr := config.LoadDefault(); cerr != nil {
+		emitConfigWarning(stderr, cerr)
+	} else if cfg != nil {
+		opts.Cluster.Backend = strings.ToLower(config.Coalesce(opts.Cluster.Backend, os.Getenv("SPOON_EMBEDDER_BACKEND"), cfg.Embedder.Backend))
+		opts.Cluster.Endpoint = config.Coalesce(opts.Cluster.Endpoint, os.Getenv("SPOON_EMBEDDER_URL"), cfg.Embedder.Endpoint)
+		opts.Cluster.ModelOverride = config.Coalesce(opts.Cluster.ModelOverride, cfg.Embedder.Model)
+		opts.Cluster.SidecarEndpoint = config.Coalesce(opts.Cluster.SidecarEndpoint, os.Getenv("SPOON_SIDECAR_ENDPOINT"), cfg.Embedder.SidecarEndpoint)
+		opts.Cluster.LabelerModel = config.Coalesce(opts.Cluster.LabelerModel, cfg.Embedder.LabelerModel)
+	}
+
 	ctx := context.Background()
 	provider, repoArg, e := providerFactory(ctx, repo, forgeFlag, forgeHost)
 	if e != nil {
@@ -294,6 +308,18 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	return 0
+}
+
+// emitConfigWarning writes a structured, non-fatal warning when the saved
+// config could not be read. The run continues with flags/env/defaults.
+func emitConfigWarning(stderr io.Writer, err error) {
+	_ = json.NewEncoder(stderr).Encode(map[string]any{
+		"warning": map[string]any{
+			"code":        "config_ignored",
+			"message":     "ignoring spoon config: " + err.Error(),
+			"remediation": "Fix or remove the config file, or set SPOON_NO_CONFIG=1.",
+		},
+	})
 }
 
 func splitRepoArg(s string) (owner, repo string) {
