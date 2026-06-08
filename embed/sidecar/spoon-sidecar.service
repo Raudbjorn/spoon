@@ -22,7 +22,7 @@ Type=simple
 Environment=SPOON_SIDECAR_MODEL=Snowflake/snowflake-arctic-embed-l-v2.0
 Environment=SPOON_SIDECAR_DEVICE=cpu
 WorkingDirectory=%h/.local/share/spoon/sidecar
-ExecStart=%h/.local/share/spoon/sidecar/.venv/bin/uvicorn server:app --host 127.0.0.1 --port 8765
+ExecStart=%h/.local/share/spoon/sidecar/.venv/bin/uvicorn server:app --host 127.0.0.1 --port 8766
 Restart=on-failure
 RestartSec=5
 # The first start downloads ~700 MB of model weights to ~/.cache/huggingface;

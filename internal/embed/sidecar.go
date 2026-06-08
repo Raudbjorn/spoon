@@ -16,7 +16,7 @@ import (
 // Snowflake/snowflake-arctic-embed-l-v2.0 (or any drop-in successor).
 // It implements the Embedder interface.
 type SidecarEmbedder struct {
-	Endpoint string       // e.g. "http://localhost:8765"
+	Endpoint string       // e.g. "http://localhost:8766"
 	HTTP     *http.Client // optional; defaults to defaultSidecarHTTPClient
 
 	mu  sync.Mutex

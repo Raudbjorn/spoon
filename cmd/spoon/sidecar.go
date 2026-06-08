@@ -155,7 +155,7 @@ Usage:
 
 Flags (install):
   --runtime NAME   Provisioning runtime (default: auto — uv > python3 > docker)
-  --port N         HTTP port (default 8765)
+  --port N         HTTP port (default 8766)
   --device cpu|cuda  Inference device (default cpu)
   --no-enable      Write the unit but don't enable/start it
 
