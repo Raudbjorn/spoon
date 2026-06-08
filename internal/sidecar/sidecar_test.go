@@ -49,7 +49,7 @@ func TestRenderUnit_Docker(t *testing.T) {
 	if !strings.Contains(unit, "docker run") {
 		t.Errorf("docker ExecStart missing:\n%s", unit)
 	}
-	if !strings.Contains(unit, "127.0.0.1:9000:8765") {
+	if !strings.Contains(unit, "127.0.0.1:9000:8766") {
 		t.Errorf("port mapping wrong:\n%s", unit)
 	}
 	if !strings.Contains(unit, "SPOON_SIDECAR_DEVICE=cuda") {
@@ -59,7 +59,7 @@ func TestRenderUnit_Docker(t *testing.T) {
 
 func TestRenderUnit_Defaults(t *testing.T) {
 	unit := RenderUnit(RuntimeVenv, Paths{VenvDir: "/v"}, 0, "")
-	if !strings.Contains(unit, "--port 8765") {
+	if !strings.Contains(unit, "--port 8766") {
 		t.Errorf("default port not applied:\n%s", unit)
 	}
 	if !strings.Contains(unit, "DEVICE=cpu") {

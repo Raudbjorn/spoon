@@ -390,7 +390,7 @@ Flags:
   --embedder URL           Embedding endpoint (default $SPOON_EMBEDDER_URL)
   --embedder-model NAME    Explicit embedding model (default: auto-pick)
   --embedder-backend NAME  Embedder backend: 'ollama' (default) or 'sidecar'
-  --sidecar-endpoint URL   Python sidecar endpoint (default http://localhost:8765)
+  --sidecar-endpoint URL   Python sidecar endpoint (default http://localhost:8766)
   --labeler URL            Optional LLM polish endpoint (default: heuristic)
   --labeler-model NAME     LLM polish model (default: llama3.2:3b)
   --cluster-epsilon F      Cosine distance cutoff (default 0.35)
@@ -454,7 +454,7 @@ Concepts:
                                locally via Ollama. Good enough, nothing to run.
                        sidecar a separate Python HTTP service you start
                                yourself (--sidecar-endpoint, default
-                               http://localhost:8765) that serves a stronger
+                               http://localhost:8766) that serves a stronger
                                model (arctic-embed-l-v2). Sharper similarity
                                rankings at the cost of ~2 GB RAM and managing a
                                process. Setup: embed/sidecar/README.md.

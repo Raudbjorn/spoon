@@ -25,7 +25,7 @@ import (
 
 const (
 	// DefaultPort is the sidecar's HTTP port and the spoon default endpoint.
-	DefaultPort = 8765
+	DefaultPort = 8766
 	// UnitName is the systemd unit filename.
 	UnitName = "spoon-sidecar.service"
 	// DefaultModel is the HuggingFace model the sidecar serves.

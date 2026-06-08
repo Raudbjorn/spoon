@@ -19,7 +19,7 @@ type SelectOptions struct {
 	Backend string
 
 	// SidecarEndpoint is the http://host:port of the Python sidecar process
-	// for the "sidecar" backend. Defaults to http://localhost:8765 when
+	// for the "sidecar" backend. Defaults to http://localhost:8766 when
 	// Backend=="sidecar" and this is empty.
 	SidecarEndpoint string
 
@@ -71,7 +71,7 @@ func SelectEmbedder(ctx context.Context, opts SelectOptions, prompter Prompter) 
 	if opts.Backend == "sidecar" {
 		endpoint := opts.SidecarEndpoint
 		if endpoint == "" {
-			endpoint = "http://localhost:8765"
+			endpoint = "http://localhost:8766"
 		}
 		se := &SidecarEmbedder{Endpoint: endpoint}
 		hctx, cancel := context.WithTimeout(ctx, 5*time.Second)

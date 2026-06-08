@@ -523,7 +523,7 @@ Flags:
   --forge github|gitlab    Provider to check (default: github)
   --forge-host HOSTNAME    Self-hosted GitLab/GHES hostname
   --embedder-backend NAME  Force a backend: 'ollama' or 'sidecar' (default: auto)
-  --sidecar-endpoint URL   Sidecar endpoint (default http://localhost:8765)
+  --sidecar-endpoint URL   Sidecar endpoint (default http://localhost:8766)
   --embedder URL           Ollama endpoint (default $SPOON_EMBEDDER_URL)
   --embedder-model NAME     Treat this embedding model as the desired one
   --labeler-model NAME      Labeler model to check (default llama3.2:3b)

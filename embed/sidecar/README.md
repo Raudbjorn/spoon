@@ -19,13 +19,13 @@ Trade-off: ~2 GB resident memory and a Python process to manage.
 
 ```sh
 docker build -t spoon-sidecar embed/sidecar/
-docker run --rm -d -p 8765:8765 --name spoon-sidecar spoon-sidecar
+docker run --rm -d -p 8766:8766 --name spoon-sidecar spoon-sidecar
 ```
 
 Then point spoon at it:
 
 ```sh
-spn forks list --embedder-backend sidecar --sidecar-endpoint http://localhost:8765 owner/repo
+spn forks list --embedder-backend sidecar --sidecar-endpoint http://localhost:8766 owner/repo
 ```
 
 ### Local Python
@@ -34,7 +34,7 @@ spn forks list --embedder-backend sidecar --sidecar-endpoint http://localhost:87
 cd embed/sidecar
 uv venv .venv
 uv pip install --python .venv/bin/python -r requirements.txt
-.venv/bin/uvicorn server:app --host 0.0.0.0 --port 8765
+.venv/bin/uvicorn server:app --host 0.0.0.0 --port 8766
 ```
 
 First start downloads ~700 MB of weights to `~/.cache/huggingface/`.

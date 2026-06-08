@@ -29,8 +29,8 @@ COPY --from=deps /usr/local/bin /usr/local/bin
 COPY --from=deps /root/.cache/huggingface /root/.cache/huggingface
 COPY server.py .
 
-EXPOSE 8765
+EXPOSE 8766
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
-    CMD python -c "import urllib.request, sys; urllib.request.urlopen('http://localhost:8765/health', timeout=3).read()" || exit 1
+    CMD python -c "import urllib.request, sys; urllib.request.urlopen('http://localhost:8766/health', timeout=3).read()" || exit 1
 
-CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8765"]
+CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8766"]

@@ -20,11 +20,11 @@ behavioral-embeddings gate experiment). Requires a Python sidecar process.
 
 ```sh
 docker build -t spoon-sidecar embed/sidecar/
-docker run --rm -d -p 8765:8765 spoon-sidecar
+docker run --rm -d -p 8766:8766 spoon-sidecar
 spn forks list --embedder-backend sidecar golang/go
 ```
 
-Or via env: `SPOON_EMBEDDER_BACKEND=sidecar SPOON_SIDECAR_ENDPOINT=http://localhost:8765 spn forks list golang/go`.
+Or via env: `SPOON_EMBEDDER_BACKEND=sidecar SPOON_SIDECAR_ENDPOINT=http://localhost:8766 spn forks list golang/go`.
 
 Falls back to Ollama if the sidecar is unreachable.
 

@@ -2,7 +2,7 @@
 
 Usage:
     .venv/bin/python bench.py --features ../../experiments/started/behavioral-embeddings/features.json
-    .venv/bin/python bench.py --sidecar http://localhost:8765 --batch-size 16
+    .venv/bin/python bench.py --sidecar http://localhost:8766 --batch-size 16
 """
 import argparse
 import json
@@ -14,7 +14,7 @@ import requests
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--features", required=True)
-    ap.add_argument("--sidecar", default="http://localhost:8765")
+    ap.add_argument("--sidecar", default="http://localhost:8766")
     ap.add_argument("--batch-size", type=int, default=16)
     args = ap.parse_args()
 
