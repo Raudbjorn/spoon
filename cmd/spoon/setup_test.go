@@ -6,9 +6,11 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"strings"
 	"testing"
 
+	"github.com/svnbjrn/spoon/internal/config"
 	"github.com/svnbjrn/spoon/internal/forge"
 	"github.com/svnbjrn/spoon/internal/sidecar"
 )
@@ -91,6 +93,9 @@ func TestEmbedModelSizeHint(t *testing.T) {
 
 func stubProvider(t *testing.T, auth forge.AuthInfo, err error) {
 	t.Helper()
+	// Isolate the config file so setup's read/write doesn't touch the real
+	// ~/.config/spoon/config.json during tests.
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	prev := setupProviderFn
 	t.Cleanup(func() { setupProviderFn = prev })
 	setupProviderFn = func(_ context.Context, _, _, _ string) (forge.Forge, forge.AuthInfo, string, error) {
@@ -245,5 +250,75 @@ func TestRunSetup_badFlag(t *testing.T) {
 	exit := runSetupWith(context.Background(), []string{"--embedder-backend", "bogus"}, strings.NewReader(""), false, &stdout, &stderr)
 	if exit != 2 {
 		t.Fatalf("exit=%d want 2", exit)
+	}
+}
+
+func TestRunSetup_writesConfig(t *testing.T) {
+	stubProvider(t, forge.AuthInfo{Tier: forge.AuthCLI, RateLimit: 5000, RateUnit: "hour"}, nil)
+	stubOllama(t, true, []string{"nomic-embed-text:latest", setupLabelerModel})
+
+	var stdout, stderr bytes.Buffer
+	exit := runSetupWith(context.Background(), []string{"--no-color"}, strings.NewReader(""), false, &stdout, &stderr)
+	if exit != 0 {
+		t.Fatalf("exit=%d\n%s", exit, stdout.String())
+	}
+	path, _ := config.DefaultPath()
+	c, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("config not written/loadable: %v", err)
+	}
+	if c.Forge.Provider != "github" {
+		t.Errorf("forge.provider=%q", c.Forge.Provider)
+	}
+	if c.Embedder.Backend != "ollama" || c.Embedder.Model != "nomic-embed-text" {
+		t.Errorf("embedder=%+v", c.Embedder)
+	}
+	if !strings.Contains(stdout.String(), "Wrote config at") {
+		t.Errorf("missing write notice:\n%s", stdout.String())
+	}
+}
+
+func TestRunSetup_noConfigSkipsWrite(t *testing.T) {
+	stubProvider(t, forge.AuthInfo{Tier: forge.AuthCLI, RateLimit: 5000, RateUnit: "hour"}, nil)
+	stubOllama(t, true, []string{"nomic-embed-text:latest"})
+
+	var stdout, stderr bytes.Buffer
+	runSetupWith(context.Background(), []string{"--no-color", "--no-config"}, strings.NewReader(""), false, &stdout, &stderr)
+	path, _ := config.DefaultPath()
+	if _, err := config.Load(path); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("expected no config file with --no-config, got err=%v", err)
+	}
+}
+
+func TestRunSetup_loadsConfigAsDefaults(t *testing.T) {
+	stubProvider(t, forge.AuthInfo{Tier: forge.AuthCLI, RateLimit: 5000, RateUnit: "hour"}, nil)
+
+	// Pre-write a config selecting the openai backend; setup with no backend
+	// flag should pick it up, validate, and keep it.
+	path, _ := config.DefaultPath()
+	if err := config.Save(path, &config.Config{
+		Embedder: config.EmbedderConfig{Backend: "openai", Endpoint: "http://ovms:8978", Model: "m"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	prev := setupOpenAIServedFn
+	t.Cleanup(func() { setupOpenAIServedFn = prev })
+	var gotEndpoint string
+	setupOpenAIServedFn = func(_ context.Context, endpoint, _ string) ([]string, error) {
+		gotEndpoint = endpoint
+		return []string{"m"}, nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	exit := runSetupWith(context.Background(), []string{"--no-color"}, strings.NewReader(""), false, &stdout, &stderr)
+	if exit != 0 {
+		t.Fatalf("exit=%d\n%s", exit, stdout.String())
+	}
+	if gotEndpoint != "http://ovms:8978" {
+		t.Errorf("config endpoint not used as default: %q", gotEndpoint)
+	}
+	if !strings.Contains(stdout.String(), "Loaded config from") {
+		t.Errorf("missing load notice:\n%s", stdout.String())
 	}
 }
