@@ -163,8 +163,8 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 			}
 			i++
 			val := strings.ToLower(args[i])
-			if val != "ollama" && val != "sidecar" {
-				return agentio.NewError(agentio.CodeBadInput, "--embedder-backend must be 'ollama' or 'sidecar'", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			if val != "ollama" && val != "sidecar" && val != "openai" {
+				return agentio.NewError(agentio.CodeBadInput, "--embedder-backend must be 'ollama', 'sidecar', or 'openai'", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
 			}
 			opts.Cluster.Backend = val
 		case "--sidecar-endpoint":

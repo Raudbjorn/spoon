@@ -68,6 +68,35 @@ func SelectEmbedder(ctx context.Context, opts SelectOptions, prompter Prompter) 
 		opts.SidecarEndpoint = os.Getenv("SPOON_SIDECAR_ENDPOINT")
 	}
 
+	if opts.Backend == "openai" {
+		endpoint := opts.Endpoint
+		if endpoint == "" {
+			endpoint = os.Getenv("SPOON_OPENAI_BASE_URL")
+		}
+		if endpoint == "" {
+			return nil, "", &SkipReason{
+				Code:    "openai_no_endpoint",
+				Message: "openai backend requires an endpoint (--embedder URL or $SPOON_OPENAI_BASE_URL)",
+			}
+		}
+		model := opts.ExplicitModel
+		if model == "" {
+			model = DefaultOpenAIEmbeddingModel
+		}
+		oe := &OpenAIEmbedder{Endpoint: endpoint, Model: model}
+		hctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		if err := oe.HealthCheck(hctx); err != nil {
+			return nil, "", &SkipReason{
+				Code:     "openai_unreachable",
+				Message:  fmt.Sprintf("openai embeddings endpoint not ready: %v", err),
+				Endpoint: endpoint,
+				Model:    model,
+			}
+		}
+		return oe, "openai:" + model, nil
+	}
+
 	if opts.Backend == "sidecar" {
 		endpoint := opts.SidecarEndpoint
 		if endpoint == "" {

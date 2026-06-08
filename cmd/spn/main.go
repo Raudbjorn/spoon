@@ -64,12 +64,14 @@ Nouns and verbs:
   pr status <pr-ref>
   forks list <repo> [--tier 1|2|3] [--top N] [--bot-allowlist L] [--refresh] [--csv] [--forge github|gitlab] [--forge-host H]
                     [--no-cluster] [--cluster-top N] [--embedder URL] [--embedder-model NAME]
-                    [--embedder-backend ollama|sidecar] [--sidecar-endpoint URL]
+                    [--embedder-backend ollama|sidecar|openai] [--sidecar-endpoint URL]
                     [--labeler URL] [--labeler-model NAME] [--cluster-epsilon F] [--cluster-min-size N] [--auto-pull]
                     [--full-mdg] [--no-mdg]
         Flags go AFTER 'forks list <repo>'. --embedder URL is an Ollama API
         endpoint; the Python sidecar is selected with --embedder-backend sidecar
-        --sidecar-endpoint URL (different protocol — not --embedder).
+        --sidecar-endpoint URL (different protocol — not --embedder). For an
+        OpenAI-compatible endpoint (e.g. OVMS on a GPU): --embedder-backend
+        openai --embedder URL --embedder-model NAME.
   embed status [--endpoint URL]
   embed pull <model> [--endpoint URL]
   embed models

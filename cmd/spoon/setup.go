@@ -44,6 +44,12 @@ var (
 		return se.Dim(), nil
 	}
 	setupSidecarInstallFn = sidecar.Install
+	setupOpenAIServedFn   = func(ctx context.Context, endpoint, model string) ([]string, error) {
+		oe := &embed.OpenAIEmbedder{Endpoint: endpoint, Model: model}
+		hctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		return oe.ServedModels(hctx)
+	}
 )
 
 func runSetup(args []string) int {
@@ -107,8 +113,8 @@ func runSetupWith(ctx context.Context, args []string, stdin io.Reader, interacti
 			}
 			i++
 			f.backend = strings.ToLower(args[i])
-			if f.backend != "ollama" && f.backend != "sidecar" {
-				return setupErr(stderr, "--embedder-backend must be 'ollama' or 'sidecar'")
+			if f.backend != "ollama" && f.backend != "sidecar" && f.backend != "openai" {
+				return setupErr(stderr, "--embedder-backend must be 'ollama', 'sidecar', or 'openai'")
 			}
 		case "--sidecar-endpoint":
 			if needsValue(i) {
@@ -189,6 +195,9 @@ func setupErr(stderr io.Writer, msg string) int {
 //	explicit ollama   → probe ollama; pull missing models; never silently use sidecar
 //	auto (default)    → ollama if running (+ pulls); else sidecar; else install guidance
 func runEmbedderSetup(ctx context.Context, f setupFlags, interactive bool, stdin io.Reader, out io.Writer) bool {
+	if f.backend == "openai" {
+		return checkOpenAI(ctx, f, out)
+	}
 	if f.backend == "sidecar" {
 		return checkSidecar(ctx, f, interactive, stdin, out)
 	}
@@ -263,6 +272,59 @@ func checkOllama(ctx context.Context, f setupFlags, endpoint string, installed [
 	}
 
 	return embedReady
+}
+
+// checkOpenAI probes an OpenAI-compatible embeddings endpoint (e.g. OVMS on an
+// Intel GPU) and confirms the configured model is served.
+func checkOpenAI(ctx context.Context, f setupFlags, out io.Writer) bool {
+	endpoint := f.embedderURL
+	if endpoint == "" {
+		endpoint = os.Getenv("SPOON_OPENAI_BASE_URL")
+	}
+	model := f.embedderModel
+	if model == "" {
+		model = embed.DefaultOpenAIEmbeddingModel
+	}
+	if endpoint == "" {
+		printCheck(out, "Embedder (openai)", false, []string{
+			"No endpoint set.",
+			"Fix: pass an OpenAI-compatible base URL (e.g. an OVMS server):",
+			"  • spoon setup --embedder-backend openai --embedder http://localhost:8978",
+			"  • or set $SPOON_OPENAI_BASE_URL",
+		}, f.noColor)
+		return false
+	}
+	served, err := setupOpenAIServedFn(ctx, endpoint, model)
+	if err != nil {
+		printCheck(out, "Embedder (openai)", false, []string{
+			fmt.Sprintf("Endpoint not reachable at %s: %v", endpoint, err),
+			"Fix: ensure the OpenAI-compatible server (e.g. OVMS) is running and the URL is correct.",
+		}, f.noColor)
+		return false
+	}
+	lines := []string{fmt.Sprintf("Endpoint reachable at %s", endpoint)}
+	if len(served) > 0 {
+		lines = append(lines, "Served models: "+strings.Join(served, ", "))
+	}
+	for _, m := range served {
+		if m == model {
+			lines = append(lines, "Using model: "+model)
+			printCheck(out, "Embedder (openai)", true, lines, f.noColor)
+			return true
+		}
+	}
+	if len(served) == 0 {
+		// Endpoint up but advertises no model list; trust it and use the model.
+		lines = append(lines, "Using model: "+model+" (endpoint lists no models to verify against)")
+		printCheck(out, "Embedder (openai)", true, lines, f.noColor)
+		return true
+	}
+	lines = append(lines,
+		"Configured model not served: "+model,
+		"Fix: choose one of the served models with --embedder-model.",
+	)
+	printCheck(out, "Embedder (openai)", false, lines, f.noColor)
+	return false
 }
 
 // checkSidecar probes the sidecar and, when it's down, offers to install it.
@@ -522,9 +584,11 @@ Usage:
 Flags:
   --forge github|gitlab    Provider to check (default: github)
   --forge-host HOSTNAME    Self-hosted GitLab/GHES hostname
-  --embedder-backend NAME  Force a backend: 'ollama' or 'sidecar' (default: auto)
+  --embedder-backend NAME  Force a backend: 'ollama', 'sidecar', or 'openai'
+                           (default: auto — ollama, else sidecar)
   --sidecar-endpoint URL   Sidecar endpoint (default http://localhost:8766)
-  --embedder URL           Ollama endpoint (default $SPOON_EMBEDDER_URL)
+  --embedder URL           Ollama endpoint, or the base URL for --embedder-backend
+                           openai (e.g. an OVMS server). Default $SPOON_EMBEDDER_URL
   --embedder-model NAME     Treat this embedding model as the desired one
   --labeler-model NAME      Labeler model to check (default llama3.2:3b)
   --auto-pull              Pull missing models / install the sidecar without asking
