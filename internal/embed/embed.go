@@ -41,6 +41,7 @@ type ModelSuggestion struct {
 // mutating caller. Retained as an exported var for backwards compatibility.
 var PreferredEmbeddingModels = []ModelSuggestion{
 	{Name: "nomic-embed-text", SizeMB: 274, Dim: 768, Default: true, OnOllama: true},
+	{Name: "snowflake-arctic-embed2", SizeMB: 1200, Dim: 1024, OnOllama: true}, // arctic-embed-l-v2.0 on Ollama
 	{Name: "mxbai-embed-large", SizeMB: 670, Dim: 1024, OnOllama: true},
 	{Name: "bge-m3", SizeMB: 1200, Dim: 1024, OnOllama: true},
 	{Name: "snowflake-arctic-embed", SizeMB: 670, Dim: 1024, OnOllama: true},
