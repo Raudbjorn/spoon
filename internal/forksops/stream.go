@@ -106,6 +106,22 @@ type Result struct {
 	// first Result in the batch carries it; downstream consumers fan out a
 	// single user-facing warning. Nil when clustering ran or was disabled.
 	ClusterSkip *ClusterSkip
+
+	// T3Skip is set when the contributors (T3) enrichment was skipped for a
+	// non-fatal reason — most commonly GitHub's stats endpoint returning 202
+	// (stats not yet computed). The fork is still emitted with its T1+T2 data
+	// and heat; consumers surface a warning rather than dropping the fork.
+	// Nil when T3 ran, was not requested, or failed fatally (rate limit).
+	T3Skip *StageSkip
+}
+
+// StageSkip describes a non-fatal, per-fork enrichment skip. Unlike Error it
+// does not drop the fork from output — the fork is emitted with whatever data
+// did resolve, and the skip is surfaced as a warning.
+type StageSkip struct {
+	Stage  string // enrichment stage, e.g. "contributors"
+	ForkID string
+	Reason string
 }
 
 // ClusterSkip describes why the cluster pipeline was skipped for this run.
@@ -284,7 +300,16 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 									},
 								}
 							} else {
-								r.Err = &Error{Code: "upstream_error", Message: terr.Error(), Details: map[string]any{"fork": s.fork.ID, "stage": "contributors"}}
+								// Contributors is optional enrichment (it only feeds
+								// CommitSpanDays into scoring). A failure here —
+								// notably GitHub's 202 "still computing stats" — must
+								// not drop an otherwise-good fork from the output.
+								// Degrade gracefully: skip T3, flag it, keep the fork.
+								r.T3Skip = &StageSkip{
+									Stage:  "contributors",
+									ForkID: s.fork.ID,
+									Reason: terr.Error(),
+								}
 							}
 						} else {
 							r.T3 = &t3

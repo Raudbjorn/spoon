@@ -275,6 +275,9 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 		if r.ClusterSkip != nil {
 			emitClusterWarning(stderr, r.ClusterSkip)
 		}
+		if r.T3Skip != nil {
+			emitStageSkipWarning(stderr, r.T3Skip)
+		}
 		if r.Err != nil {
 			// Compact one-line stderr error per failing fork.
 			_ = agentio.WriteNDJSON(stderr, map[string]any{
@@ -327,6 +330,10 @@ func forkToJSON(r forksops.Result) map[string]any {
 			"contributors":     len(r.T3.Contributors),
 			"commit_span_days": r.T3.CommitSpanDays,
 		}
+	} else if r.T3Skip != nil {
+		// T3 was requested but skipped (e.g. GitHub stats 202). Flag it so the
+		// absence of "t3" reads as "unavailable", not "computed and empty".
+		out["t3_skipped"] = true
 	}
 	// Cluster fields are emitted as a unit, gated on ClusterID. Per the plan:
 	// omission means "not computed"; a clustered fork with genuine zero
@@ -379,6 +386,9 @@ func emitForksCSV(stdout, stderr io.Writer, ch <-chan forksops.Result) int {
 	for r := range ch {
 		if r.ClusterSkip != nil {
 			emitClusterWarning(stderr, r.ClusterSkip)
+		}
+		if r.T3Skip != nil {
+			emitStageSkipWarning(stderr, r.T3Skip)
 		}
 		if r.Err != nil {
 			_ = agentio.WriteNDJSON(stderr, map[string]any{
@@ -475,6 +485,30 @@ func remediationForMissingModel() string {
 	}
 	return "Install an embedding model: e.g. 'ollama pull " + models[0] +
 		"' (also supported: " + strings.Join(models[1:], ", ") + ")"
+}
+
+// emitStageSkipWarning writes a structured, non-fatal warning to stderr when a
+// per-fork enrichment stage was skipped (e.g. contributors stats unavailable).
+// The fork itself is still emitted on stdout — this only flags the missing
+// enrichment so agents can tell "skipped" apart from "computed and empty".
+func emitStageSkipWarning(stderr io.Writer, skip *forksops.StageSkip) {
+	remediation := ""
+	if skip.Stage == "contributors" {
+		remediation = "GitHub computes contributor stats asynchronously; retry later to populate t3"
+	}
+	envelope := map[string]any{
+		"warning": map[string]any{
+			"code":        "stage_skipped",
+			"message":     skip.Stage + " enrichment skipped: " + skip.Reason,
+			"remediation": remediation,
+			"details": map[string]any{
+				"stage": skip.Stage,
+				"fork":  skip.ForkID,
+			},
+		},
+	}
+	enc := json.NewEncoder(stderr)
+	_ = enc.Encode(envelope)
 }
 
 // emitClusterWarning writes a structured warning to stderr (one JSON object
