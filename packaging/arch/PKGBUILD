@@ -7,7 +7,7 @@
 
 pkgname=spoon-git
 _pkgname=spoon
-pkgver=r0
+pkgver=r225.907fcfd
 pkgrel=1
 pkgdesc="Find useful forks of a Git repo (spoon) + agent-shaped CLI (spn)"
 arch=('x86_64' 'aarch64')
@@ -28,11 +28,14 @@ install="${pkgname}.install"
 pkgver() {
     cd "${srcdir}/${_pkgname}"
     # Prefer a tagged describe; fall back to rN.shortsha for untagged trees.
-    git describe --long --tags 2>/dev/null \
-        | sed 's/\([^-]*-g\)/r\1/;s/-/./g' \
-        || printf 'r%s.%s' \
+    local described
+    if described="$(git describe --long --tags 2>/dev/null)"; then
+        printf '%s\n' "${described}" | sed 's/\([^-]*-g\)/r\1/;s/-/./g'
+    else
+        printf 'r%s.%s\n' \
             "$(git rev-list --count HEAD)" \
             "$(git rev-parse --short HEAD)"
+    fi
 }
 
 prepare() {

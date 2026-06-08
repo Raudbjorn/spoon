@@ -419,6 +419,7 @@ func runForksClusterPipeline(
 		Epsilon:         opts.Epsilon,
 		MinClusterSize:  opts.MinClusterSize,
 		AutoPull:        opts.AutoPull,
+		NoPrompt:        opts.NoPrompt,
 		NonInteractive:    opts.NonInteractive,
 		Refresh:           opts.Refresh,
 		Labeler:           labeler,
