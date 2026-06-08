@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -109,11 +108,20 @@ func (e *OpenAIEmbedder) Embed(ctx context.Context, texts []string) ([]Vector, e
 	if len(parsed.Data) != len(texts) {
 		return nil, fmt.Errorf("openai embeddings returned %d vectors for %d texts", len(parsed.Data), len(texts))
 	}
-	// Order by index so output aligns with input regardless of server ordering.
-	sort.Slice(parsed.Data, func(i, j int) bool { return parsed.Data[i].Index < parsed.Data[j].Index })
-	out := make([]Vector, len(parsed.Data))
-	for i, d := range parsed.Data {
-		out[i] = Vector(d.Embedding)
+	// Place each vector at its response index so output aligns with input
+	// regardless of server ordering; reject out-of-range or duplicate indices
+	// rather than silently misaligning vectors with their texts.
+	out := make([]Vector, len(texts))
+	seen := make([]bool, len(texts))
+	for _, d := range parsed.Data {
+		if d.Index < 0 || d.Index >= len(texts) {
+			return nil, fmt.Errorf("openai embeddings returned out-of-range index %d for %d texts", d.Index, len(texts))
+		}
+		if seen[d.Index] {
+			return nil, fmt.Errorf("openai embeddings returned duplicate index %d", d.Index)
+		}
+		out[d.Index] = Vector(d.Embedding)
+		seen[d.Index] = true
 	}
 	if len(out) > 0 {
 		e.mu.Lock()
@@ -154,7 +162,7 @@ func (e *OpenAIEmbedder) HealthCheck(ctx context.Context) error {
 		return err
 	}
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("openai %s returned %d", url, resp.StatusCode)
+		return fmt.Errorf("openai %s returned %d: %s", url, resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
 	var parsed struct {
 		Data []struct {
@@ -203,7 +211,7 @@ func (e *OpenAIEmbedder) ServedModels(ctx context.Context) ([]string, error) {
 		return nil, err
 	}
 	if resp.StatusCode/100 != 2 {
-		return nil, fmt.Errorf("openai %s returned %d", url, resp.StatusCode)
+		return nil, fmt.Errorf("openai %s returned %d: %s", url, resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
 	var parsed struct {
 		Data []struct {

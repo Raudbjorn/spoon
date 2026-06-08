@@ -130,6 +130,6 @@ func statusJSON(st sidecar.State) map[string]any {
 		"active":        st.Active,
 		"enabled":       st.Enabled,
 		"unitPath":      st.UnitPath,
-		"endpoint":      "http://localhost:" + strconv.Itoa(sidecar.DefaultPort),
+		"endpoint":      "http://localhost:" + strconv.Itoa(st.Port),
 	}
 }

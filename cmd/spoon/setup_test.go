@@ -61,7 +61,7 @@ func TestInstalledHas(t *testing.T) {
 
 func TestSidecarStatusLines(t *testing.T) {
 	t.Run("error suggests install", func(t *testing.T) {
-		ok, lines := sidecarStatusLines("http://localhost:8765", 0, errors.New("conn refused"))
+		ok, lines := sidecarStatusLines("http://localhost:8766", 0, errors.New("conn refused"))
 		if ok {
 			t.Error("want not ok")
 		}
@@ -70,7 +70,7 @@ func TestSidecarStatusLines(t *testing.T) {
 		}
 	})
 	t.Run("healthy reports dim", func(t *testing.T) {
-		ok, lines := sidecarStatusLines("http://localhost:8765", 1024, nil)
+		ok, lines := sidecarStatusLines("http://localhost:8766", 1024, nil)
 		if !ok {
 			t.Error("want ok")
 		}
