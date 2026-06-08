@@ -7,6 +7,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/mattn/go-isatty"
 	"github.com/svnbjrn/spoon/internal/cluster"
+	"github.com/svnbjrn/spoon/internal/config"
 	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/forge"
 	"github.com/svnbjrn/spoon/internal/sidecar"
@@ -63,11 +65,13 @@ func runSetup(args []string) int {
 type setupFlags struct {
 	forgeFlag       string
 	forgeHost       string
-	backend         string // "" (auto) | "ollama" | "sidecar"
+	backend         string // "" (auto) | "ollama" | "sidecar" | "openai"
 	sidecarEndpoint string
 	embedderURL     string
 	embedderModel   string
 	labelerModel    string
+	configPath      string
+	noConfig        bool
 	autoPull        bool
 	noPrompt        bool
 	noColor         bool
@@ -75,9 +79,8 @@ type setupFlags struct {
 
 func runSetupWith(ctx context.Context, args []string, stdin io.Reader, interactive bool, stdout, stderr io.Writer) int {
 	f := setupFlags{
-		labelerModel: setupLabelerModel,
-		autoPull:     os.Getenv("SPOON_AUTO_PULL") == "1",
-		noColor:      os.Getenv("NO_COLOR") != "",
+		autoPull: os.Getenv("SPOON_AUTO_PULL") == "1",
+		noColor:  os.Getenv("NO_COLOR") != "",
 	}
 
 	needsValue := func(i int) bool { return i+1 >= len(args) }
@@ -140,6 +143,14 @@ func runSetupWith(ctx context.Context, args []string, stdin io.Reader, interacti
 			}
 			i++
 			f.labelerModel = args[i]
+		case "--config":
+			if needsValue(i) {
+				return setupErr(stderr, "--config requires a value")
+			}
+			i++
+			f.configPath = args[i]
+		case "--no-config":
+			f.noConfig = true
 		default:
 			fmt.Fprintf(stderr, "Error: unknown flag %q\n", args[i])
 			printSetupHelp(stderr)
@@ -147,18 +158,48 @@ func runSetupWith(ctx context.Context, args []string, stdin io.Reader, interacti
 		}
 	}
 
-	// Resolve backend the same way a real run does: flag → env → auto.
+	// Resolve backend the same way a real run does: flag → env (config fills
+	// in below, then built-in defaults last).
 	if f.backend == "" {
 		f.backend = strings.ToLower(os.Getenv("SPOON_EMBEDDER_BACKEND"))
 	}
 	if f.sidecarEndpoint == "" {
 		f.sidecarEndpoint = os.Getenv("SPOON_SIDECAR_ENDPOINT")
 	}
+
+	// --- Config: load + merge as defaults (precedence: flag/env > config) -----
+	configPath := f.configPath
+	if configPath == "" {
+		if p, err := config.DefaultPath(); err == nil {
+			configPath = p
+		}
+	}
+	var loadedCfg *config.Config
+	if !f.noConfig && configPath != "" {
+		c, err := config.Load(configPath)
+		switch {
+		case err == nil:
+			loadedCfg = c
+			mergeConfigDefaults(&f, c)
+		case errors.Is(err, os.ErrNotExist):
+			// No config yet — setup will create one.
+		default:
+			fmt.Fprintf(stderr, "warning: ignoring config %s: %v\n", configPath, err)
+		}
+	}
+
+	// Built-in defaults (lowest precedence, after flag/env/config).
 	if f.sidecarEndpoint == "" {
 		f.sidecarEndpoint = fmt.Sprintf("http://localhost:%d", sidecar.DefaultPort)
 	}
+	if f.labelerModel == "" {
+		f.labelerModel = setupLabelerModel
+	}
 
 	fmt.Fprintln(stdout, "spoon setup — checking credentials and embedder readiness")
+	if loadedCfg != nil {
+		fmt.Fprintf(stdout, "Loaded config from %s\n", configPath)
+	}
 	fmt.Fprintln(stdout)
 
 	// --- Provider credentials -------------------------------------------------
@@ -171,7 +212,12 @@ func runSetupWith(ctx context.Context, args []string, stdin io.Reader, interacti
 	printCheck(stdout, fmt.Sprintf("Provider (%s)", provider), provOK, provLines, f.noColor)
 
 	// --- Embedder -------------------------------------------------------------
-	embOK := runEmbedderSetup(ctx, f, interactive, stdin, stdout)
+	embOK, resolved := runEmbedderSetup(ctx, f, interactive, stdin, stdout)
+
+	// --- Persist config -------------------------------------------------------
+	if !f.noConfig && configPath != "" {
+		writeSetupConfig(configPath, loadedCfg, provider, f.forgeHost, embOK, resolved, stdout, stderr)
+	}
 
 	// --- Summary --------------------------------------------------------------
 	if provOK && embOK {
@@ -180,6 +226,58 @@ func runSetupWith(ctx context.Context, args []string, stdin io.Reader, interacti
 	}
 	fmt.Fprintln(stdout, colorize("Some checks need attention — see the suggestions above.", "\033[33m", f.noColor))
 	return 1
+}
+
+// mergeConfigDefaults fills unset flag fields from a loaded config, so the
+// precedence is flag/env > config > built-in defaults.
+func mergeConfigDefaults(f *setupFlags, c *config.Config) {
+	if f.forgeFlag == "" {
+		f.forgeFlag = strings.ToLower(c.Forge.Provider)
+	}
+	if f.forgeHost == "" {
+		f.forgeHost = c.Forge.Host
+	}
+	if f.backend == "" {
+		f.backend = strings.ToLower(c.Embedder.Backend)
+	}
+	if f.embedderURL == "" {
+		f.embedderURL = c.Embedder.Endpoint
+	}
+	if f.embedderModel == "" {
+		f.embedderModel = c.Embedder.Model
+	}
+	if f.sidecarEndpoint == "" {
+		f.sidecarEndpoint = c.Embedder.SidecarEndpoint
+	}
+	if f.labelerModel == "" {
+		f.labelerModel = c.Embedder.LabelerModel
+	}
+}
+
+// writeSetupConfig updates (or creates) the config file. The forge provider is
+// always recorded; the embedder section is only overwritten when this run
+// validated a working embedder, so a transient failure can't clobber a known
+// good config.
+func writeSetupConfig(path string, existing *config.Config, provider forge.Provider, forgeHost string, embOK bool, resolved config.EmbedderConfig, stdout, stderr io.Writer) {
+	cfg := existing
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
+	cfg.Version = config.CurrentVersion
+	cfg.Forge.Provider = provider.String()
+	cfg.Forge.Host = forgeHost
+	if embOK {
+		cfg.Embedder = resolved
+	}
+	verb := "Wrote"
+	if existing != nil {
+		verb = "Updated"
+	}
+	if err := config.Save(path, cfg); err != nil {
+		fmt.Fprintf(stderr, "warning: could not write config %s: %v\n", path, err)
+		return
+	}
+	fmt.Fprintf(stdout, "%s config at %s\n\n", verb, path)
 }
 
 func setupErr(stderr io.Writer, msg string) int {
@@ -194,23 +292,27 @@ func setupErr(stderr io.Writer, msg string) int {
 //	explicit sidecar  → probe sidecar; offer to install if down
 //	explicit ollama   → probe ollama; pull missing models; never silently use sidecar
 //	auto (default)    → ollama if running (+ pulls); else sidecar; else install guidance
-func runEmbedderSetup(ctx context.Context, f setupFlags, interactive bool, stdin io.Reader, out io.Writer) bool {
+func runEmbedderSetup(ctx context.Context, f setupFlags, interactive bool, stdin io.Reader, out io.Writer) (bool, config.EmbedderConfig) {
+	sidecarCfg := config.EmbedderConfig{Backend: "sidecar", SidecarEndpoint: f.sidecarEndpoint}
+
 	if f.backend == "openai" {
-		return checkOpenAI(ctx, f, out)
+		ok, endpoint, model := checkOpenAI(ctx, f, out)
+		return ok, config.EmbedderConfig{Backend: "openai", Endpoint: endpoint, Model: model}
 	}
 	if f.backend == "sidecar" {
-		return checkSidecar(ctx, f, interactive, stdin, out)
+		return checkSidecar(ctx, f, interactive, stdin, out), sidecarCfg
 	}
 
 	running, endpoint, installed := setupOllamaDetectFn(ctx, f.embedderURL)
 	if running {
-		return checkOllama(ctx, f, endpoint, installed, interactive, stdin, out)
+		ok, model := checkOllama(ctx, f, endpoint, installed, interactive, stdin, out)
+		return ok, config.EmbedderConfig{Backend: "ollama", Endpoint: endpoint, Model: model, LabelerModel: f.labelerModel}
 	}
 
 	// Ollama not running. If the user forced ollama, don't fall back silently.
 	if f.backend == "ollama" {
 		printCheck(out, "Embedder (ollama)", false, ollamaDownLines(endpoint), f.noColor)
-		return false
+		return false, config.EmbedderConfig{Backend: "ollama", Endpoint: endpoint}
 	}
 
 	// Auto mode: Ollama is down → try the sidecar instead.
@@ -218,21 +320,21 @@ func runEmbedderSetup(ctx context.Context, f setupFlags, interactive bool, stdin
 		_, lines := sidecarStatusLines(f.sidecarEndpoint, dim, nil)
 		lines = append([]string{"Ollama not detected — using the Python sidecar instead."}, lines...)
 		printCheck(out, "Embedder (sidecar)", true, lines, f.noColor)
-		return true
+		return true, sidecarCfg
 	}
 
 	// Neither is available — guide the user (and offer to install the sidecar).
-	return offerSidecarInstall(ctx, f, interactive, stdin, out,
-		ollamaDownLines(endpoint))
+	return offerSidecarInstall(ctx, f, interactive, stdin, out, ollamaDownLines(endpoint)), sidecarCfg
 }
 
 // checkOllama verifies an embedding model is available (pulling the arctic
 // model when none is, with consent) and ensures the labeler model. Returns
 // whether an embedding model is ready; the labeler is advisory.
-func checkOllama(ctx context.Context, f setupFlags, endpoint string, installed []string, interactive bool, stdin io.Reader, out io.Writer) bool {
+func checkOllama(ctx context.Context, f setupFlags, endpoint string, installed []string, interactive bool, stdin io.Reader, out io.Writer) (bool, string) {
 	lines := []string{fmt.Sprintf("Ollama running at %s", endpoint)}
 
 	embedReady := false
+	model := f.embedderModel
 	switch {
 	case f.embedderModel != "":
 		if installedHas(installed, f.embedderModel) {
@@ -245,6 +347,7 @@ func checkOllama(ctx context.Context, f setupFlags, endpoint string, installed [
 	default:
 		if have := embed.PickInstalled(installed); have != "" {
 			lines = append(lines, "Embedding model installed: "+have)
+			model = have
 			embedReady = true
 		} else {
 			lines = append(lines, "No suitable embedding model installed.")
@@ -256,6 +359,7 @@ func checkOllama(ctx context.Context, f setupFlags, endpoint string, installed [
 	if !embedReady && f.embedderModel == "" {
 		if pullModel(ctx, endpoint, setupEmbedPullModel, "embedding", embedModelSizeHint(setupEmbedPullModel), f, interactive, stdin, out) {
 			embedReady = true
+			model = setupEmbedPullModel
 		}
 	}
 
@@ -271,12 +375,12 @@ func checkOllama(ctx context.Context, f setupFlags, endpoint string, installed [
 		pullModel(ctx, endpoint, f.labelerModel, "labeler", "", f, interactive, stdin, out)
 	}
 
-	return embedReady
+	return embedReady, model
 }
 
 // checkOpenAI probes an OpenAI-compatible embeddings endpoint (e.g. OVMS on an
 // Intel GPU) and confirms the configured model is served.
-func checkOpenAI(ctx context.Context, f setupFlags, out io.Writer) bool {
+func checkOpenAI(ctx context.Context, f setupFlags, out io.Writer) (bool, string, string) {
 	endpoint := f.embedderURL
 	if endpoint == "" {
 		endpoint = os.Getenv("SPOON_OPENAI_BASE_URL")
@@ -292,7 +396,7 @@ func checkOpenAI(ctx context.Context, f setupFlags, out io.Writer) bool {
 			"  • spoon setup --embedder-backend openai --embedder http://localhost:8978",
 			"  • or set $SPOON_OPENAI_BASE_URL",
 		}, f.noColor)
-		return false
+		return false, endpoint, model
 	}
 	served, err := setupOpenAIServedFn(ctx, endpoint, model)
 	if err != nil {
@@ -300,7 +404,7 @@ func checkOpenAI(ctx context.Context, f setupFlags, out io.Writer) bool {
 			fmt.Sprintf("Endpoint not reachable at %s: %v", endpoint, err),
 			"Fix: ensure the OpenAI-compatible server (e.g. OVMS) is running and the URL is correct.",
 		}, f.noColor)
-		return false
+		return false, endpoint, model
 	}
 	lines := []string{fmt.Sprintf("Endpoint reachable at %s", endpoint)}
 	if len(served) > 0 {
@@ -310,21 +414,21 @@ func checkOpenAI(ctx context.Context, f setupFlags, out io.Writer) bool {
 		if m == model {
 			lines = append(lines, "Using model: "+model)
 			printCheck(out, "Embedder (openai)", true, lines, f.noColor)
-			return true
+			return true, endpoint, model
 		}
 	}
 	if len(served) == 0 {
 		// Endpoint up but advertises no model list; trust it and use the model.
 		lines = append(lines, "Using model: "+model+" (endpoint lists no models to verify against)")
 		printCheck(out, "Embedder (openai)", true, lines, f.noColor)
-		return true
+		return true, endpoint, model
 	}
 	lines = append(lines,
 		"Configured model not served: "+model,
 		"Fix: choose one of the served models with --embedder-model.",
 	)
 	printCheck(out, "Embedder (openai)", false, lines, f.noColor)
-	return false
+	return false, endpoint, model
 }
 
 // checkSidecar probes the sidecar and, when it's down, offers to install it.
@@ -593,8 +697,15 @@ Flags:
   --labeler-model NAME      Labeler model to check (default llama3.2:3b)
   --auto-pull              Pull missing models / install the sidecar without asking
   --no-prompt              Never prompt (report only; don't pull or install)
+  --config PATH            Config file to read/write (default
+                           $XDG_CONFIG_HOME/spoon/config.json)
+  --no-config              Don't read or write the config file
   --no-color               Disable colors
   -h, --help               Show this help
+
+setup reads the config file (if present) as defaults, re-validates the
+settings, and writes the validated result back — so re-running keeps it
+current. Precedence: flags/env > config > built-in defaults.
 
 Models pulled when missing (with consent): embedding 'snowflake-arctic-embed2'
 (arctic-embed-l-v2.0) and labeler 'llama3.2:3b'. Already-installed suitable
