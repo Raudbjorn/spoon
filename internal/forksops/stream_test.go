@@ -251,6 +251,9 @@ func TestStream_clusterDisabled_emitsImmediately(t *testing.T) {
 }
 
 func TestStream_clusterEmbedderUnreachable_emitsSkip(t *testing.T) {
+	// Isolate the on-disk cluster cache, or a prior run's cached result would
+	// short-circuit the embed step and no ClusterSkip would be surfaced.
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	now := time.Now()
 	ff := &fakeForge{
 		parent: forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
