@@ -29,6 +29,16 @@ func main() {
 		os.Exit(runSpoonEmbed(os.Args[2:]))
 	}
 
+	// Subcommand dispatch: "spoon setup ..."
+	if len(os.Args) >= 2 && os.Args[1] == "setup" {
+		os.Exit(runSetup(os.Args[2:]))
+	}
+
+	// Subcommand dispatch: "spoon sidecar <verb> ..."
+	if len(os.Args) >= 2 && os.Args[1] == "sidecar" {
+		os.Exit(runSidecar(os.Args[2:]))
+	}
+
 	var repo string
 	noColor := false
 	refresh := false
@@ -425,8 +435,29 @@ Keybindings (TUI mode):
   q             Quit
 
 Subcommands:
+  spoon setup              Check provider credentials + embedder, pull/install fixes
+  spoon sidecar <verb>     Install/status/uninstall the embedding sidecar service
   spoon threads <pr-ref>   Operate on PR review threads (see 'spoon threads --help')
   spoon embed status       Human-readable Ollama embedder status
+
+Concepts:
+  Provider (forge)   The Git host spoon queries for forks: GitHub or GitLab.
+                     It is auto-detected from the repo URL (e.g. a gitlab.com
+                     link forces GitLab); override detection with --forge and
+                     point at a self-hosted GitLab/GHES instance with
+                     --forge-host. Auth is per-provider: the gh CLI / a GitHub
+                     token, or the glab CLI / GITLAB_TOKEN.
+
+  Embedder backend   How spoon turns each fork into a vector so it can cluster
+                     similar forks (--embedder-backend). Two choices:
+                       ollama  (default) zero-setup, serves nomic-embed-text
+                               locally via Ollama. Good enough, nothing to run.
+                       sidecar a separate Python HTTP service you start
+                               yourself (--sidecar-endpoint, default
+                               http://localhost:8765) that serves a stronger
+                               model (arctic-embed-l-v2). Sharper similarity
+                               rankings at the cost of ~2 GB RAM and managing a
+                               process. Setup: embed/sidecar/README.md.
 
 Tip: Run 'gh auth login' (GitHub) or set GITLAB_TOKEN (GitLab) for higher rate limits.
 `)

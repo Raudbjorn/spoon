@@ -1,0 +1,33 @@
+# spoon-sidecar.service — systemd unit for the behavioral-embeddings sidecar.
+#
+# This is the canonical TEMPLATE. `spoon sidecar install` (or `spn sidecar
+# install`) renders a concrete unit from it — substituting the resolved data
+# directory, port, device, and runtime (local uv/venv ExecStart shown here, or
+# a `docker run` ExecStart when the Docker runtime is chosen) — and writes it
+# to ~/.config/systemd/user/spoon-sidecar.service.
+#
+# To install by hand instead: copy this file to
+#   ~/.config/systemd/user/spoon-sidecar.service
+# fix the paths below to your checkout, then:
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now spoon-sidecar.service
+[Unit]
+Description=Spoon behavioral-embeddings sidecar (arctic-embed-l-v2.0)
+Documentation=https://github.com/Raudbjorn/spoon/tree/main/embed/sidecar
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=SPOON_SIDECAR_MODEL=Snowflake/snowflake-arctic-embed-l-v2.0
+Environment=SPOON_SIDECAR_DEVICE=cpu
+WorkingDirectory=%h/.local/share/spoon/sidecar
+ExecStart=%h/.local/share/spoon/sidecar/.venv/bin/uvicorn server:app --host 127.0.0.1 --port 8765
+Restart=on-failure
+RestartSec=5
+# The first start downloads ~700 MB of model weights to ~/.cache/huggingface;
+# give it room before systemd calls the start a failure.
+TimeoutStartSec=600
+
+[Install]
+WantedBy=default.target
