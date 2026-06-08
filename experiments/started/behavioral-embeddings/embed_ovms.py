@@ -105,8 +105,11 @@ def main() -> int:
                 f"({len(batch_ids)} ids): {e}",
                 file=sys.stderr,
             )
-            with open(args.out, "w") as f:
-                json.dump(out, f)
+            import tempfile
+            with tempfile.NamedTemporaryFile("w", dir=os.path.dirname(args.out) or ".", delete=False) as tf:
+                json.dump(out, tf)
+                temp_name = tf.name
+            os.replace(temp_name, args.out)
             continue
         for bid, v in zip(batch_ids, vecs):
             out[bid] = v
