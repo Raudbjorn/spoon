@@ -1,7 +1,8 @@
 # Spoon Embedders
 
 Spoon's fork-clustering pipeline uses text embeddings to compare forks.
-Two embedder backends are supported.
+Three embedder backends are supported: `ollama` (default), `sidecar`, and
+`openai`.
 
 ## Default: Ollama (`nomic-embed-text`)
 
@@ -31,6 +32,30 @@ Falls back to Ollama if the sidecar is unreachable.
 See `embed/sidecar/README.md` for sidecar setup details. See
 `experiments/started/behavioral-embeddings/RESULTS_PANEL.md` for the
 evaluation that motivated this choice.
+
+## Optional: OpenAI-compatible endpoint (`openai`) — incl. GPU via OVMS
+
+Point spoon at any server that speaks the OpenAI embeddings API
+(`POST {base}/embeddings`). This covers [OpenVINO Model Server
+(OVMS)](https://github.com/openvinotoolkit/model_server) — which serves
+embedding models on an Intel GPU — as well as vLLM, LocalAI, and the OpenAI
+API itself. This is the recommended way to run embeddings on a GPU.
+
+```sh
+# OVMS serving an embedding model on an Intel Arc GPU (OpenAI /v3 API):
+spn forks list --embedder-backend openai \
+  --embedder http://localhost:8000 \
+  --embedder-model nomic-ai/nomic-embed-text-v1.5 \
+  golang/go
+```
+
+Or via env: `SPOON_EMBEDDER_BACKEND=openai SPOON_OPENAI_BASE_URL=http://localhost:8000`.
+Set `OPENAI_API_KEY` for hosted endpoints that require auth (OVMS does not).
+
+The base URL's API version is inferred: pass `.../v1` for OpenAI/vLLM; a bare
+host (e.g. `http://localhost:8000`) defaults to OVMS's `/v3`. `spoon setup
+--embedder-backend openai --embedder URL` reports reachability and the served
+model list. The default model is `nomic-ai/nomic-embed-text-v1.5`.
 
 ## Choosing a backend
 

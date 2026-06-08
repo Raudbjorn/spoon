@@ -153,9 +153,9 @@ func main() {
 				os.Exit(1)
 			}
 			i++
-			val := args[i]
-			if val != "ollama" && val != "sidecar" {
-				fmt.Fprintln(os.Stderr, "Error: --embedder-backend must be 'ollama' or 'sidecar'")
+			val := strings.ToLower(args[i])
+			if val != "ollama" && val != "sidecar" && val != "openai" {
+				fmt.Fprintln(os.Stderr, "Error: --embedder-backend must be 'ollama', 'sidecar', or 'openai'")
 				os.Exit(1)
 			}
 			embedderBackend = val
@@ -389,7 +389,8 @@ Flags:
   --cluster-top N          Max forks fed to the embedder (default 50)
   --embedder URL           Embedding endpoint (default $SPOON_EMBEDDER_URL)
   --embedder-model NAME    Explicit embedding model (default: auto-pick)
-  --embedder-backend NAME  Embedder backend: 'ollama' (default) or 'sidecar'
+  --embedder-backend NAME  Embedder backend: 'ollama' (default), 'sidecar', or
+                           'openai' (any OpenAI-compatible endpoint, e.g. OVMS)
   --sidecar-endpoint URL   Python sidecar endpoint (default http://localhost:8766)
   --labeler URL            Optional LLM polish endpoint (default: heuristic)
   --labeler-model NAME     LLM polish model (default: llama3.2:3b)
@@ -449,7 +450,7 @@ Concepts:
                      token, or the glab CLI / GITLAB_TOKEN.
 
   Embedder backend   How spoon turns each fork into a vector so it can cluster
-                     similar forks (--embedder-backend). Two choices:
+                     similar forks (--embedder-backend). Three choices:
                        ollama  (default) zero-setup, serves nomic-embed-text
                                locally via Ollama. Good enough, nothing to run.
                        sidecar a separate Python HTTP service you start
@@ -457,7 +458,11 @@ Concepts:
                                http://localhost:8766) that serves a stronger
                                model (arctic-embed-l-v2). Sharper similarity
                                rankings at the cost of ~2 GB RAM and managing a
-                               process. Setup: embed/sidecar/README.md.
+                               process. Setup: 'spoon sidecar install'.
+                       openai  any OpenAI-compatible embeddings endpoint
+                               (--embedder URL, --embedder-model NAME). Use this
+                               to run embeddings on a GPU via OpenVINO Model
+                               Server (OVMS) or to point at vLLM / the OpenAI API.
 
 Tip: Run 'gh auth login' (GitHub) or set GITLAB_TOKEN (GitLab) for higher rate limits.
 `)
