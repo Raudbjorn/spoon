@@ -113,6 +113,9 @@ func doSidecarStatus(ctx context.Context, args []string, stdout, stderr io.Write
 	fmt.Fprintf(stdout, "%s unit installed: %s\n", setupMark(st.UnitInstalled, noColor), st.UnitPath)
 	fmt.Fprintf(stdout, "%s service active\n", setupMark(st.Active, noColor))
 	fmt.Fprintf(stdout, "%s service enabled (starts at login)\n", setupMark(st.Enabled, noColor))
+	if st.UnitInstalled {
+		fmt.Fprintf(stdout, "  endpoint: http://localhost:%d\n", st.Port)
+	}
 	if !st.Active {
 		fmt.Fprintln(stdout, "Start it with: spoon sidecar install   (or systemctl --user start "+sidecar.UnitName+")")
 		return 1

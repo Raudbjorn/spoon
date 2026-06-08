@@ -33,7 +33,7 @@ func TestRenderUnit_Venv(t *testing.T) {
 	for _, want := range []string{
 		"[Unit]", "[Service]", "[Install]",
 		"WorkingDirectory=/d",
-		"ExecStart=/d/.venv/bin/uvicorn server:app --host 127.0.0.1 --port 8765",
+		`ExecStart="/d/.venv/bin/uvicorn" server:app --host 127.0.0.1 --port 8765`,
 		"Environment=SPOON_SIDECAR_DEVICE=cpu",
 		"WantedBy=default.target",
 	} {
@@ -54,6 +54,25 @@ func TestRenderUnit_Docker(t *testing.T) {
 	}
 	if !strings.Contains(unit, "SPOON_SIDECAR_DEVICE=cuda") {
 		t.Errorf("device missing:\n%s", unit)
+	}
+	// The container needs the model passed via -e (Environment= only reaches
+	// the docker CLI, not the container).
+	if !strings.Contains(unit, "-e SPOON_SIDECAR_MODEL="+DefaultModel) {
+		t.Errorf("docker run missing -e SPOON_SIDECAR_MODEL:\n%s", unit)
+	}
+}
+
+func TestPortFromUnit(t *testing.T) {
+	venv := RenderUnit(RuntimeUv, Paths{VenvDir: "/v"}, 8771, "cpu")
+	if got := portFromUnit(venv); got != 8771 {
+		t.Errorf("venv port=%d want 8771", got)
+	}
+	docker := RenderUnit(RuntimeDocker, Paths{DataDir: "/d"}, 9123, "cpu")
+	if got := portFromUnit(docker); got != 9123 {
+		t.Errorf("docker port=%d want 9123", got)
+	}
+	if got := portFromUnit("no port here"); got != 0 {
+		t.Errorf("no-match port=%d want 0", got)
 	}
 }
 
@@ -131,7 +150,7 @@ func TestInstall_VenvFlow_StubbedRunner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unit not written: %v", err)
 	}
-	if !strings.Contains(string(unit), "uvicorn server:app") {
+	if !strings.Contains(string(unit), `uvicorn" server:app`) {
 		t.Errorf("unit content:\n%s", unit)
 	}
 	// Expected commands ran: venv create, pip install, daemon-reload, enable.

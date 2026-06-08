@@ -18,6 +18,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 
 	sidecarassets "github.com/svnbjrn/spoon/embed/sidecar"
@@ -151,13 +153,20 @@ func RenderUnit(rt Runtime, p Paths, port int, device string) string {
 	switch rt {
 	case RuntimeDocker:
 		workdir = p.DataDir
+		// The container's own port is fixed (DefaultPort); map the host-side
+		// port onto it. Pass both model and device into the container — the
+		// unit's Environment= lines only reach the docker CLI, not the
+		// container process.
 		execStart = fmt.Sprintf(
 			"/usr/bin/env docker run --rm --name %s -p 127.0.0.1:%d:%d "+
-				"-e SPOON_SIDECAR_DEVICE=%s -v %%h/.cache/huggingface:/root/.cache/huggingface %s",
-			ImageName, port, DefaultPort, device, ImageName)
+				"-e SPOON_SIDECAR_MODEL=%s -e SPOON_SIDECAR_DEVICE=%s "+
+				"-v %%h/.cache/huggingface:/root/.cache/huggingface %s",
+			ImageName, port, DefaultPort, DefaultModel, device, ImageName)
 	default: // uv / venv both run uvicorn from the venv
 		workdir = p.DataDir
-		execStart = fmt.Sprintf("%s/bin/uvicorn server:app --host 127.0.0.1 --port %d", p.VenvDir, port)
+		// %q quotes the path so a home dir with spaces still parses in systemd.
+		execStart = fmt.Sprintf("%q server:app --host 127.0.0.1 --port %d",
+			filepath.Join(p.VenvDir, "bin", "uvicorn"), port)
 	}
 
 	var b strings.Builder
@@ -204,7 +213,7 @@ func Install(ctx context.Context, opts Options, out io.Writer) error {
 	if err := writeSource(paths, rt, out); err != nil {
 		return err
 	}
-	if err := provision(ctx, rt, paths, opts.port(), out); err != nil {
+	if err := provision(ctx, rt, paths, out); err != nil {
 		return err
 	}
 	if err := writeUnit(rt, paths, opts.port(), opts.device(), out); err != nil {
@@ -250,7 +259,7 @@ func writeSource(p Paths, rt Runtime, out io.Writer) error {
 }
 
 // provision prepares the chosen runtime: a populated venv, or a built image.
-func provision(ctx context.Context, rt Runtime, p Paths, port int, out io.Writer) error {
+func provision(ctx context.Context, rt Runtime, p Paths, out io.Writer) error {
 	switch rt {
 	case RuntimeUv:
 		fmt.Fprintf(out, "  creating venv with uv and installing dependencies (this can take a few minutes) ...\n")
@@ -300,17 +309,41 @@ type State struct {
 	Active        bool // systemctl --user is-active == "active"
 	Enabled       bool // systemctl --user is-enabled == "enabled"
 	UnitPath      string
+	Port          int // port the installed unit serves on; DefaultPort if undetectable
 }
 
-// Status reports whether the unit is installed and whether it is active.
+var (
+	unitVenvPortRe   = regexp.MustCompile(`--port\s+(\d+)`)
+	unitDockerPortRe = regexp.MustCompile(`-p\s+127\.0\.0\.1:(\d+):`)
+)
+
+// portFromUnit extracts the configured host port from an installed unit's
+// ExecStart (venv --port, or docker -p host:container). Returns 0 when neither
+// pattern is found.
+func portFromUnit(unit string) int {
+	for _, re := range []*regexp.Regexp{unitVenvPortRe, unitDockerPortRe} {
+		if m := re.FindStringSubmatch(unit); m != nil {
+			if n, err := strconv.Atoi(m[1]); err == nil {
+				return n
+			}
+		}
+	}
+	return 0
+}
+
+// Status reports whether the unit is installed, whether it is active, and the
+// port it serves on (read from the installed unit; DefaultPort otherwise).
 func Status(ctx context.Context) (State, error) {
 	paths, err := ResolvePaths()
 	if err != nil {
 		return State{}, err
 	}
-	st := State{UnitPath: paths.UnitPath}
-	if _, err := os.Stat(paths.UnitPath); err == nil {
+	st := State{UnitPath: paths.UnitPath, Port: DefaultPort}
+	if data, err := os.ReadFile(paths.UnitPath); err == nil {
 		st.UnitInstalled = true
+		if p := portFromUnit(string(data)); p != 0 {
+			st.Port = p
+		}
 	}
 	if !hasSystemd() {
 		return st, nil

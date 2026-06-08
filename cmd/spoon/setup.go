@@ -516,16 +516,24 @@ func pullModel(ctx context.Context, endpoint, model, kind, sizeHint string, f se
 	}
 	fmt.Fprintf(out, "    Pulling %s ...\n", model)
 	last := -1
-	err := setupPullFn(ctx, endpoint, model, func(phase string, pct float64) {
+	// Cancel the (potentially large) pull if writing progress fails — a closed
+	// pipe/terminal shouldn't leave the download running.
+	pullCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	err := setupPullFn(pullCtx, endpoint, model, func(phase string, pct float64) {
 		switch phase {
 		case "downloading":
 			p := int(pct * 100)
 			if p/10 != last/10 { // throttle to ~every 10%
-				fmt.Fprintf(out, "      downloading %d%%\n", p)
+				if _, werr := fmt.Fprintf(out, "      downloading %d%%\n", p); werr != nil {
+					cancel()
+				}
 				last = p
 			}
 		case "done":
-			fmt.Fprintf(out, "    %s %s pulled.\n", setupMark(true, f.noColor), model)
+			if _, werr := fmt.Fprintf(out, "    %s %s pulled.\n", setupMark(true, f.noColor), model); werr != nil {
+				cancel()
+			}
 		}
 	})
 	if err != nil {
