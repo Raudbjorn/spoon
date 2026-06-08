@@ -9,14 +9,26 @@ import (
 	"time"
 )
 
-// ErrContributorsTimeout is returned when the contributors endpoint keeps returning 202.
-var ErrContributorsTimeout = errors.New("contributors endpoint timed out (202 retries exhausted)")
+// ErrContributorsTimeout is returned when the contributors endpoint keeps
+// returning 202. GitHub computes contributor statistics asynchronously and
+// returns 202 (Accepted) until the cache is warm; for forks that nobody has
+// requested stats for, it can keep 202-ing indefinitely. Callers should treat
+// this as "stats unavailable right now" and degrade gracefully — the
+// contributors stage is optional enrichment, not a hard dependency.
+//
+// Use errors.Is(err, ErrContributorsTimeout) to detect it.
+var ErrContributorsTimeout = errors.New("contributors endpoint unavailable (202 — GitHub still computing stats)")
 
 const (
-	maxContribRetries   = 5
-	initialContribWait  = 2 * time.Second
-	contribBackoff      = 1.5
-	maxContribWait      = 30 * time.Second
+	// maxContribRetries is deliberately small. The first request primes
+	// GitHub's async stats computation; a couple of short retries give it a
+	// moment to settle. We do NOT sit and exhaust a long backoff per fork —
+	// when stats stay cold, the right move is to skip and flag, not to block
+	// the whole scan. See ErrContributorsTimeout.
+	maxContribRetries  = 2
+	initialContribWait = 2 * time.Second
+	contribBackoff     = 1.5
+	maxContribWait     = 5 * time.Second
 )
 
 // FetchContributors fetches contributor stats for a repository with 202 retry logic.
