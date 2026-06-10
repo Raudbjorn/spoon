@@ -27,6 +27,14 @@ type Options struct {
 	BotAllowlist map[string]bool
 	HeatWeights  map[string]float64
 
+	// Budget caps how many forks get the expensive compare (T2) / contributors
+	// (T3) calls. When > 0, the forks to spend on are chosen by an
+	// optimal-stopping ("secretary problem") gate over a cheap divergence
+	// signal, instead of the top-TopN-by-surface-score slice — so the budget
+	// lands on forks that likely diverged, not the most popular ones. 0 = no
+	// cap (the TopN / full-tier behavior applies).
+	Budget int
+
 	// Cluster configures the optional post-T2 cluster pipeline. When
 	// Cluster.Enabled is true and at least one fork is eligible, Stream will
 	// collect every T1/T2 result, run the shared cluster.RunPipeline, and
@@ -213,11 +221,38 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 			input := buildScoreInput(f, parent, now)
 			all[i] = scored{fork: f, res: scorer.ScoreRaw(input)}
 		}
+
+		// Optimal-stopping ("secretary") compare gate (see secretary.go): when a
+		// Budget is set, decide which forks earn the expensive T2/T3 calls by a
+		// cheap divergence signal, computed here in enumeration (arrival) order
+		// — before the surface-score sort below, which only governs output rank.
+		compareByID := make(map[string]bool)
+		if opts.Budget > 0 {
+			promises := make([]float64, len(all))
+			for i, s := range all {
+				promises[i] = ComparePromise(s.fork, parent.PushedAt)
+			}
+			for i, keep := range SelectByOptimalStopping(promises, opts.Budget) {
+				if keep {
+					compareByID[all[i].fork.ID] = true
+				}
+			}
+		}
+
 		sort.Slice(all, func(i, j int) bool { return all[i].res.Score > all[j].res.Score })
 
 		topN := opts.TopN
 		if topN <= 0 || topN > len(all) {
 			topN = len(all)
+		}
+		// eligible reports whether a fork should get the expensive compare /
+		// contributors calls: the secretary-selected set when a Budget is set,
+		// otherwise the top-N-by-surface-score slice.
+		eligible := func(forkID string, i int) bool {
+			if opts.Budget > 0 {
+				return compareByID[forkID]
+			}
+			return i < topN
 		}
 		tier := opts.Tier
 		if tier == 0 {
@@ -262,7 +297,7 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 					i := j.idx
 					s := j.s
 					r := Result{Fork: s.fork, Heat: s.res}
-					if tier >= 2 && i < topN {
+					if tier >= 2 && eligible(s.fork.ID, i) {
 						t2, terr := provider.Compare(ctx, s.fork, s.fork.DefaultBranch)
 						if terr != nil {
 							var rl *gh.RateLimitError
@@ -284,7 +319,7 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 							r.T2 = &t2
 						}
 					}
-					if tier >= 3 && i < topN && r.Err == nil {
+					if tier >= 3 && eligible(s.fork.ID, i) && r.Err == nil {
 						t3, terr := provider.Contributors(ctx, s.fork)
 						if terr != nil {
 							var rl *gh.RateLimitError
@@ -411,15 +446,15 @@ func runForksClusterPipeline(
 	}
 
 	pipelineOpts := cluster.PipelineOptions{
-		Enabled:         opts.Enabled,
-		TopN:            opts.TopN,
-		Endpoint:        opts.Endpoint,
-		ModelOverride:   opts.ModelOverride,
-		LabelerEndpoint: opts.LabelerEndpoint,
-		Epsilon:         opts.Epsilon,
-		MinClusterSize:  opts.MinClusterSize,
-		AutoPull:        opts.AutoPull,
-		NoPrompt:        opts.NoPrompt,
+		Enabled:           opts.Enabled,
+		TopN:              opts.TopN,
+		Endpoint:          opts.Endpoint,
+		ModelOverride:     opts.ModelOverride,
+		LabelerEndpoint:   opts.LabelerEndpoint,
+		Epsilon:           opts.Epsilon,
+		MinClusterSize:    opts.MinClusterSize,
+		AutoPull:          opts.AutoPull,
+		NoPrompt:          opts.NoPrompt,
 		NonInteractive:    opts.NonInteractive,
 		Refresh:           opts.Refresh,
 		Labeler:           labeler,
