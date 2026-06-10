@@ -35,8 +35,24 @@ func ComparePromise(fork forge.T1Data, parentPushedAt time.Time) float64 {
 
 	p += float64(fork.OpenPRCount) * 5  // PRs imply real, upstream-aimed changes
 	p += float64(fork.SubForkCount) * 3 // others forked it → notable
-	p += math.Log1p(float64(fork.Stars))
+	// Stars are only a faint tiebreak (×0.1): the whole point is that a
+	// no-stars fork with real divergence must outrank a popular-but-stale one,
+	// so popularity must never dominate the divergence signals above.
+	p += math.Log1p(float64(fork.Stars)) * 0.1
 	return p
+}
+
+// dispatchSurfaceTiebreak scales the surface heat score into a genuinely faint
+// additive tiebreak (heat maxes ~100 → ≤0.1), so it only orders forks whose
+// divergence promise is essentially equal and never overrides it.
+const dispatchSurfaceTiebreak = 1e-3
+
+// DispatchPriority is the expected-value-per-request used to order which forks
+// get their expensive T2/T3 calls first, so the compare budget (and any rate
+// window) is spent best-first. The cheap divergence promise dominates; surface
+// heat is only a faint tiebreak among equally-promising forks. Higher = sooner.
+func DispatchPriority(fork forge.T1Data, parentPushedAt time.Time, surfaceScore float64) float64 {
+	return ComparePromise(fork, parentPushedAt) + surfaceScore*dispatchSurfaceTiebreak
 }
 
 // newestBranchTime returns the most recent branch commit date known at T1, or

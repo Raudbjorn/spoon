@@ -123,6 +123,16 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 				return agentio.NewError(agentio.CodeBadInput, "--budget must be a positive integer", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
 			}
 			opts.Budget = n
+		case "--shortlist":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--shortlist requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n < 1 {
+				return agentio.NewError(agentio.CodeBadInput, "--shortlist must be a positive integer", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			opts.ShortlistN = n
 		case "--bot-allowlist":
 			if i+1 >= len(args) {
 				return agentio.NewError(agentio.CodeBadInput, "--bot-allowlist requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
@@ -406,6 +416,12 @@ func forkToJSON(r forksops.Result) map[string]any {
 	}
 	if r.Heat.ChangeImpact != 0 {
 		out["changeImpact"] = r.Heat.ChangeImpact
+	}
+	// Robbins expected-rank shortlist fields (set only with --shortlist). Rank
+	// is always >= 1 when computed, so >0 distinguishes "computed" from "unset".
+	if r.ExpectedRank > 0 {
+		out["expectedRank"] = r.ExpectedRank
+		out["rankConfidence"] = r.RankConfidence
 	}
 	// Components is populated by the v2 scoring path (forksops uses
 	// Scorer.ScoreRaw). Emit when present so downstream agents can inspect
