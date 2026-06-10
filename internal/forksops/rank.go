@@ -5,8 +5,14 @@ import "math"
 // Robbins expected-rank shortlisting. Rather than maximizing the chance of
 // picking the single best fork, we minimize each fork's *expected rank* under
 // uncertainty — a better fit for "give me the top-k worth integrating, with
-// confidence." Computed over the enriched set only (budget/topN candidates), so
-// the O(n^2) pass is cheap.
+// confidence." The pass is O(n^2) in the number of forks ranked; the caller
+// (stream.go) bounds it to the strongest rankPoolCap candidates by heat so it
+// stays cheap even on huge fork networks.
+
+// rankPoolCap bounds the O(n^2) expected-rank pass: only the strongest
+// candidates by surface heat are ranked (a fork outside this pool would not
+// make a small shortlist anyway).
+const rankPoolCap = 200
 
 // normalCDF is Φ(x), the standard normal CDF.
 func normalCDF(x float64) float64 {
@@ -46,7 +52,7 @@ func expectedRanks(mu, sigma []float64) []float64 {
 			if i == j {
 				continue
 			}
-			denom := math.Sqrt(sigma[i]*sigma[i] + sigma[j]*sigma[j])
+			denom := math.Hypot(sigma[i], sigma[j])
 			if denom < 1e-9 {
 				// No uncertainty → deterministic comparison with a stable tiebreak.
 				switch {

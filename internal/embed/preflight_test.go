@@ -2,6 +2,7 @@ package embed
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -74,6 +75,28 @@ func TestPreflight_OpenAI(t *testing.T) {
 	t.Run("no endpoint fails", func(t *testing.T) {
 		if err := Preflight(context.Background(), PreflightOptions{Enabled: true, Backend: "openai"}); err == nil {
 			t.Error("openai with no endpoint should fail")
+		}
+	})
+	t.Run("empty model defaults (does not send empty model)", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/v3/embeddings" {
+				http.NotFound(w, r)
+				return
+			}
+			var req struct {
+				Model string `json:"model"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			if req.Model == "" {
+				http.Error(w, "empty model", http.StatusBadRequest)
+				return
+			}
+			_, _ = w.Write([]byte(`{"data":[{"index":0,"embedding":[0.1]}]}`))
+		}))
+		defer srv.Close()
+		// Model omitted → must default to DefaultOpenAIEmbeddingModel.
+		if err := Preflight(context.Background(), PreflightOptions{Enabled: true, Backend: "openai", Endpoint: srv.URL}); err != nil {
+			t.Errorf("empty model should default and pass: %v", err)
 		}
 	})
 	t.Run("unreachable fails", func(t *testing.T) {

@@ -80,8 +80,13 @@ func (l *limiter) Wait(ctx context.Context) error {
 		if rate <= 0 {
 			rate = 1e-6
 		}
-		// Sleep outside the lock so other goroutines can refill/proceed.
+		// Sleep outside the lock so other goroutines can refill/proceed. Guard
+		// against a zero/negative duration (float→Duration truncation when the
+		// bucket is a hair below full), which would otherwise busy-spin.
 		wait := time.Duration(deficit / rate * float64(time.Second))
+		if wait <= 0 {
+			wait = time.Nanosecond
+		}
 		if err := l.sleep(ctx, wait); err != nil {
 			return err
 		}
