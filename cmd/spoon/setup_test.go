@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/svnbjrn/spoon/internal/config"
+	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/forge"
 	"github.com/svnbjrn/spoon/internal/sidecar"
 )
@@ -309,6 +310,9 @@ func TestRunSetup_loadsConfigAsDefaults(t *testing.T) {
 		gotEndpoint = endpoint
 		return []string{"m"}, nil
 	}
+	prevProbe := setupEmbedProbeFn
+	t.Cleanup(func() { setupEmbedProbeFn = prevProbe })
+	setupEmbedProbeFn = func(_ context.Context, _ embed.PreflightOptions) error { return nil } // embeds OK
 
 	var stdout, stderr bytes.Buffer
 	exit := runSetupWith(context.Background(), []string{"--no-color"}, strings.NewReader(""), false, &stdout, &stderr)

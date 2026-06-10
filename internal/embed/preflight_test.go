@@ -8,111 +8,152 @@ import (
 	"testing"
 )
 
+// openaiEmbedServer serves an OpenAI-compatible endpoint. embedOK controls
+// whether /v3/embeddings succeeds; /v3/models always lists the model (so the
+// "reachable but cannot embed" case is representable — the OVMS bug).
+func openaiEmbedServer(embedOK bool) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v3/models":
+			_, _ = w.Write([]byte(`{"data":[{"id":"m"}]}`))
+		case "/v3/embeddings":
+			if !embedOK {
+				http.Error(w, `{"error":"Mediapipe ... RET_CHECK failure"}`, http.StatusBadRequest)
+				return
+			}
+			_, _ = w.Write([]byte(`{"data":[{"index":0,"embedding":[0.1,0.2]}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+}
+
+func ollamaEmbedServer(hasModel, embedOK bool) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/tags":
+			if hasModel {
+				_, _ = w.Write([]byte(`{"models":[{"name":"nomic-embed-text"}]}`))
+			} else {
+				_, _ = w.Write([]byte(`{"models":[]}`))
+			}
+		case "/api/embeddings":
+			if !embedOK {
+				http.Error(w, "boom", http.StatusInternalServerError)
+				return
+			}
+			_, _ = w.Write([]byte(`{"embedding":[0.1,0.2]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+}
+
 func TestPreflight_Disabled(t *testing.T) {
-	// Clustering off → no-op even with a bogus endpoint.
 	if err := Preflight(context.Background(), PreflightOptions{Enabled: false, Endpoint: "http://127.0.0.1:1"}); err != nil {
 		t.Errorf("disabled should be a no-op: %v", err)
 	}
 }
 
-func TestPreflight_DefaultBackendChecked(t *testing.T) {
-	// The default Ollama backend (no endpoint given) is validated too. Detect
-	// resolves an empty endpoint via $SPOON_EMBEDDER_URL, so point it at a
-	// controlled server to keep the test hermetic.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/tags" {
-			_, _ = w.Write([]byte(`{"models":[]}`))
-		}
-	}))
-	defer srv.Close()
-
-	t.Run("default reachable passes", func(t *testing.T) {
-		t.Setenv("SPOON_EMBEDDER_URL", srv.URL)
-		if err := Preflight(context.Background(), PreflightOptions{Enabled: true, Backend: "", Endpoint: ""}); err != nil {
-			t.Errorf("reachable default should pass: %v", err)
-		}
-	})
-	t.Run("default unreachable fails", func(t *testing.T) {
-		t.Setenv("SPOON_EMBEDDER_URL", "http://127.0.0.1:1")
-		if err := Preflight(context.Background(), PreflightOptions{Enabled: true, Backend: "", Endpoint: ""}); err == nil {
-			t.Error("unreachable default backend should fail")
-		}
-	})
-}
-
-func TestPreflight_OllamaExplicit(t *testing.T) {
-	// Reachable Ollama-style endpoint.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/tags" {
-			_, _ = w.Write([]byte(`{"models":[]}`))
-			return
-		}
-		http.NotFound(w, r)
-	}))
-	defer srv.Close()
-	if err := Preflight(context.Background(), PreflightOptions{Enabled: true, Endpoint: srv.URL}); err != nil {
-		t.Errorf("reachable ollama endpoint should pass: %v", err)
-	}
-	// Unreachable explicit endpoint → error (this is the user's --embedder bug).
-	err := Preflight(context.Background(), PreflightOptions{Enabled: true, Endpoint: "http://127.0.0.1:1"})
-	if err == nil || !strings.Contains(err.Error(), "not reachable") {
-		t.Errorf("unreachable ollama endpoint should fail: %v", err)
-	}
-}
-
 func TestPreflight_OpenAI(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"data":[{"id":"m"}]}`))
-	}))
-	defer srv.Close()
-	if err := Preflight(context.Background(), PreflightOptions{Enabled: true, Backend: "openai", Endpoint: srv.URL, Model: "m"}); err != nil {
-		t.Errorf("reachable openai endpoint should pass: %v", err)
-	}
-	// Missing endpoint for openai → error.
-	if err := Preflight(context.Background(), PreflightOptions{Enabled: true, Backend: "openai"}); err == nil {
-		t.Error("openai with no endpoint should fail")
-	}
-	// Unreachable openai endpoint → error.
-	if err := Preflight(context.Background(), PreflightOptions{Enabled: true, Backend: "openai", Endpoint: "http://127.0.0.1:1", Model: "m"}); err == nil {
-		t.Error("unreachable openai endpoint should fail")
-	}
+	t.Run("embeds OK passes", func(t *testing.T) {
+		srv := openaiEmbedServer(true)
+		defer srv.Close()
+		if err := Preflight(context.Background(), PreflightOptions{Enabled: true, Backend: "openai", Endpoint: srv.URL, Model: "m"}); err != nil {
+			t.Errorf("want pass, got %v", err)
+		}
+	})
+	t.Run("reachable but cannot embed fails (the OVMS case)", func(t *testing.T) {
+		srv := openaiEmbedServer(false) // /v3/models 200, /v3/embeddings 400
+		defer srv.Close()
+		err := Preflight(context.Background(), PreflightOptions{Enabled: true, Backend: "openai", Endpoint: srv.URL, Model: "m"})
+		if err == nil || !strings.Contains(err.Error(), "cannot embed") {
+			t.Errorf("reachable-but-broken endpoint must fail; got %v", err)
+		}
+	})
+	t.Run("no endpoint fails", func(t *testing.T) {
+		if err := Preflight(context.Background(), PreflightOptions{Enabled: true, Backend: "openai"}); err == nil {
+			t.Error("openai with no endpoint should fail")
+		}
+	})
+	t.Run("unreachable fails", func(t *testing.T) {
+		if err := Preflight(context.Background(), PreflightOptions{Enabled: true, Backend: "openai", Endpoint: "http://127.0.0.1:1", Model: "m"}); err == nil {
+			t.Error("unreachable openai should fail")
+		}
+	})
 }
 
 func TestPreflight_Sidecar(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/health" {
-			_, _ = w.Write([]byte(`{"status":"ok","dim":1024}`))
-			return
+	t.Run("embeds OK passes", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/embed" {
+				_, _ = w.Write([]byte(`{"vectors":[[0.1,0.2]],"dim":2}`))
+				return
+			}
+			http.NotFound(w, r)
+		}))
+		defer srv.Close()
+		if err := Preflight(context.Background(), PreflightOptions{Enabled: true, Backend: "sidecar", SidecarEndpoint: srv.URL}); err != nil {
+			t.Errorf("want pass, got %v", err)
 		}
-		http.NotFound(w, r)
-	}))
-	defer srv.Close()
-	if err := Preflight(context.Background(), PreflightOptions{Enabled: true, Backend: "sidecar", SidecarEndpoint: srv.URL}); err != nil {
-		t.Errorf("reachable sidecar should pass: %v", err)
-	}
-	if err := Preflight(context.Background(), PreflightOptions{Enabled: true, Backend: "sidecar", SidecarEndpoint: "http://127.0.0.1:1"}); err == nil {
-		t.Error("unreachable sidecar should fail")
-	}
+	})
+	t.Run("unreachable fails", func(t *testing.T) {
+		if err := Preflight(context.Background(), PreflightOptions{Enabled: true, Backend: "sidecar", SidecarEndpoint: "http://127.0.0.1:1"}); err == nil {
+			t.Error("unreachable sidecar should fail")
+		}
+	})
+}
+
+func TestPreflight_Ollama(t *testing.T) {
+	t.Run("default backend embeds OK passes", func(t *testing.T) {
+		srv := ollamaEmbedServer(true, true)
+		defer srv.Close()
+		t.Setenv("SPOON_EMBEDDER_URL", srv.URL) // Detect resolves empty endpoint via env
+		if err := Preflight(context.Background(), PreflightOptions{Enabled: true, Backend: ""}); err != nil {
+			t.Errorf("want pass, got %v", err)
+		}
+	})
+	t.Run("running but cannot embed fails", func(t *testing.T) {
+		srv := ollamaEmbedServer(true, false)
+		defer srv.Close()
+		t.Setenv("SPOON_EMBEDDER_URL", srv.URL)
+		if err := Preflight(context.Background(), PreflightOptions{Enabled: true}); err == nil {
+			t.Error("ollama that can't embed should fail")
+		}
+	})
+	t.Run("no model installed fails", func(t *testing.T) {
+		srv := ollamaEmbedServer(false, true)
+		defer srv.Close()
+		t.Setenv("SPOON_EMBEDDER_URL", srv.URL)
+		err := Preflight(context.Background(), PreflightOptions{Enabled: true})
+		if err == nil || !strings.Contains(err.Error(), "no usable embedding model") {
+			t.Errorf("want no-model failure, got %v", err)
+		}
+	})
+	t.Run("unreachable fails", func(t *testing.T) {
+		t.Setenv("SPOON_EMBEDDER_URL", "http://127.0.0.1:1")
+		if err := Preflight(context.Background(), PreflightOptions{Enabled: true}); err == nil {
+			t.Error("unreachable ollama should fail")
+		}
+	})
 }
 
 func TestPreflight_Labeler(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNotFound) // any HTTP response counts as reachable
-	}))
-	defer srv.Close()
-	// Ollama endpoint reachable + labeler reachable → pass.
-	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/tags" {
-			_, _ = w.Write([]byte(`{"models":[]}`))
+	ok := openaiEmbedServer(true) // valid embedder so we reach the labeler check
+	defer ok.Close()
+	t.Run("reachable labeler passes", func(t *testing.T) {
+		lab := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound) // any HTTP response = reachable
+		}))
+		defer lab.Close()
+		if err := Preflight(context.Background(), PreflightOptions{Enabled: true, Backend: "openai", Endpoint: ok.URL, Model: "m", LabelerEndpoint: lab.URL}); err != nil {
+			t.Errorf("want pass, got %v", err)
 		}
-	}))
-	defer ollama.Close()
-	if err := Preflight(context.Background(), PreflightOptions{Enabled: true, Endpoint: ollama.URL, LabelerEndpoint: srv.URL}); err != nil {
-		t.Errorf("reachable labeler should pass: %v", err)
-	}
-	// Unreachable labeler → error.
-	err := Preflight(context.Background(), PreflightOptions{Enabled: true, Endpoint: ollama.URL, LabelerEndpoint: "http://127.0.0.1:1"})
-	if err == nil || !strings.Contains(err.Error(), "labeler") {
-		t.Errorf("unreachable labeler should fail: %v", err)
-	}
+	})
+	t.Run("unreachable labeler fails", func(t *testing.T) {
+		err := Preflight(context.Background(), PreflightOptions{Enabled: true, Backend: "openai", Endpoint: ok.URL, Model: "m", LabelerEndpoint: "http://127.0.0.1:1"})
+		if err == nil || !strings.Contains(err.Error(), "labeler") {
+			t.Errorf("want labeler failure, got %v", err)
+		}
+	})
 }
