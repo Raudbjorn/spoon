@@ -10,6 +10,7 @@ import (
 	"io"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/svnbjrn/spoon/internal/cluster"
@@ -34,6 +35,11 @@ type Options struct {
 	// lands on forks that likely diverged, not the most popular ones. 0 = no
 	// cap (the TopN / full-tier behavior applies).
 	Budget int
+
+	// ShortlistN, when > 0, buffers all results, computes each fork's Robbins
+	// expected rank (with confidence) over the enriched set, and emits only the
+	// top-N by expected rank. Forces collect-then-emit semantics.
+	ShortlistN int
 
 	// Cluster configures the optional post-T2 cluster pipeline. When
 	// Cluster.Enabled is true and at least one fork is eligible, Stream will
@@ -108,6 +114,12 @@ type Result struct {
 	T3   *forge.T3Data
 	Heat heat.HeatResult
 	Err  *Error
+
+	// ExpectedRank / RankConfidence are set only when ShortlistN > 0 (Robbins
+	// expected-rank shortlist). Lower ExpectedRank ≈ more likely the best fork;
+	// RankConfidence mirrors Heat.Confidence (tier reached).
+	ExpectedRank   float64
+	RankConfidence float64
 
 	// ClusterSkip is set when the cluster pipeline was enabled but skipped
 	// for a non-fatal reason (embedder unreachable, no model, etc.). Only the
@@ -212,25 +224,30 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 		scorer := heat.NewScorer(stats)
 
 		type scored struct {
-			fork forge.T1Data
-			res  heat.HeatResult
+			fork    forge.T1Data
+			res     heat.HeatResult
+			promise float64 // cheap divergence signal (ComparePromise), survives the sort
 		}
 		all := make([]scored, len(t1Forks))
 		now := time.Now()
 		for i, f := range t1Forks {
 			input := buildScoreInput(f, parent, now)
-			all[i] = scored{fork: f, res: scorer.ScoreRaw(input)}
+			all[i] = scored{
+				fork:    f,
+				res:     scorer.ScoreRaw(input),
+				promise: ComparePromise(f, parent.PushedAt),
+			}
 		}
 
 		// Optimal-stopping ("secretary") compare gate (see secretary.go): when a
-		// Budget is set, decide which forks earn the expensive T2/T3 calls by a
-		// cheap divergence signal, computed here in enumeration (arrival) order
-		// — before the surface-score sort below, which only governs output rank.
+		// Budget is set, decide which forks earn the expensive T2/T3 calls by the
+		// cheap divergence signal, in enumeration (arrival) order — before the
+		// surface-score sort below, which only governs output rank.
 		compareByID := make(map[string]bool)
 		if opts.Budget > 0 {
 			promises := make([]float64, len(all))
 			for i, s := range all {
-				promises[i] = ComparePromise(s.fork, parent.PushedAt)
+				promises[i] = s.promise
 			}
 			for i, keep := range SelectByOptimalStopping(promises, opts.Budget) {
 				if keep {
@@ -263,26 +280,30 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 			concurrency = a.Concurrency
 		}
 
-		type rank struct {
-			idx int
-			s   scored
+		// EVPR best-first dispatch (see secretary.go DispatchPriority): workers
+		// claim forks in descending expected-value-per-request order, so the
+		// expensive compare/contributors budget — and any rate window — is spent
+		// on the most-divergent forks first. This is decoupled from `all`'s
+		// surface-score order: dispatchOrder is a separate permutation, so the
+		// eligible() index `i` (and thus the top-N path) is unchanged. A lock-free
+		// atomic cursor hands each position to exactly one worker.
+		dispatchOrder := make([]int, len(all))
+		for i := range dispatchOrder {
+			dispatchOrder[i] = i
 		}
-		jobs := make(chan rank)
-		go func() {
-			defer close(jobs)
-			for i, s := range all {
-				select {
-				case <-ctx.Done():
-					return
-				case jobs <- rank{idx: i, s: s}:
-				}
-			}
-		}()
+		sort.SliceStable(dispatchOrder, func(a, b int) bool {
+			pa := DispatchPriority(all[dispatchOrder[a]].fork, parent.PushedAt, all[dispatchOrder[a]].res.Score)
+			pb := DispatchPriority(all[dispatchOrder[b]].fork, parent.PushedAt, all[dispatchOrder[b]].res.Score)
+			return pa > pb
+		})
+		var cursor atomic.Int64
 
 		// In streaming mode (no clustering) we forward results to `out` as
 		// they finish. In batch mode (clustering enabled) we instead collect
 		// them into `collected` (mu-guarded) and emit at the end.
-		batchMode := opts.Cluster.Enabled
+		// Clustering and the expected-rank shortlist both require all enriched
+		// results in hand, so either forces collect-then-emit.
+		batchMode := opts.Cluster.Enabled || opts.ShortlistN > 0
 		var (
 			collectedMu sync.Mutex
 			collected   []Result
@@ -293,9 +314,16 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				for j := range jobs {
-					i := j.idx
-					s := j.s
+				for {
+					if ctx.Err() != nil {
+						return
+					}
+					pos := int(cursor.Add(1) - 1)
+					if pos >= len(dispatchOrder) {
+						return
+					}
+					i := dispatchOrder[pos]
+					s := all[i]
 					r := Result{Fork: s.fork, Heat: s.res}
 					if tier >= 2 && eligible(s.fork.ID, i) {
 						t2, terr := provider.Compare(ctx, s.fork, s.fork.DefaultBranch)
@@ -374,12 +402,37 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 		// Cluster pass: build EnrichedFork pointers over `collected`, run the
 		// shared pipeline, then emit each Result. Heat is mutated in place via
 		// the EnrichedFork pointer back into collected[i].Heat.
-		skip := runForksClusterPipeline(ctx, provider, &parent, owner, repo, collected, opts.Cluster, logger)
+		var skip *ClusterSkip
+		if opts.Cluster.Enabled {
+			skip = runForksClusterPipeline(ctx, provider, &parent, owner, repo, collected, opts.Cluster, logger)
+		}
 
-		// Re-sort emitted output by heat desc to match dump's ordering.
-		sort.SliceStable(collected, func(i, j int) bool {
-			return collected[i].Heat.Score > collected[j].Heat.Score
-		})
+		if opts.ShortlistN > 0 {
+			// Robbins expected-rank shortlist: compute over the final heat (after
+			// clustering, so novelty is included), then keep the top-N.
+			mu := make([]float64, len(collected))
+			sigma := make([]float64, len(collected))
+			for i := range collected {
+				mu[i] = collected[i].Heat.Score
+				sigma[i] = rankSigma(collected[i].Heat.Confidence)
+			}
+			ranks := expectedRanks(mu, sigma)
+			for i := range collected {
+				collected[i].ExpectedRank = ranks[i]
+				collected[i].RankConfidence = collected[i].Heat.Confidence
+			}
+			sort.SliceStable(collected, func(i, j int) bool {
+				return collected[i].ExpectedRank < collected[j].ExpectedRank
+			})
+			if len(collected) > opts.ShortlistN {
+				collected = collected[:opts.ShortlistN]
+			}
+		} else {
+			// Re-sort emitted output by heat desc to match dump's ordering.
+			sort.SliceStable(collected, func(i, j int) bool {
+				return collected[i].Heat.Score > collected[j].Heat.Score
+			})
+		}
 
 		for i, r := range collected {
 			if i == 0 && skip != nil {

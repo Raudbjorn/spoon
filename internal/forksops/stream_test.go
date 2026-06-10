@@ -22,10 +22,18 @@ type fakeForge struct {
 	t2            map[string]forge.T2Data
 	t3            map[string]forge.T3Data
 	contribErrors map[string]error
+
+	// Test seams (optional; zero values preserve prior behavior):
+	concurrency  int       // 0 → default 2
+	compareOrder *[]string // when non-nil, Compare appends fk.ID (dispatch order)
 }
 
 func (f *fakeForge) Auth(_ context.Context) (forge.AuthInfo, error) {
-	return forge.AuthInfo{Tier: forge.AuthCLI, Concurrency: 2}, nil
+	conc := 2
+	if f.concurrency > 0 {
+		conc = f.concurrency
+	}
+	return forge.AuthInfo{Tier: forge.AuthCLI, Concurrency: conc}, nil
 }
 func (f *fakeForge) Parent(_ context.Context, _, _ string) (forge.ParentData, error) {
 	return f.parent, f.parentErr
@@ -42,6 +50,9 @@ func (f *fakeForge) Branches(_ context.Context, fk forge.T1Data, _ int) ([]forge
 	return []forge.BranchRef{{Name: fk.DefaultBranch}}, nil
 }
 func (f *fakeForge) Compare(_ context.Context, fk forge.T1Data, _ string) (forge.T2Data, error) {
+	if f.compareOrder != nil {
+		*f.compareOrder = append(*f.compareOrder, fk.ID)
+	}
 	if err, ok := f.forkErrors[fk.ID]; ok {
 		return forge.T2Data{}, err
 	}
@@ -54,6 +65,91 @@ func (f *fakeForge) Contributors(_ context.Context, fk forge.T1Data) (forge.T3Da
 	return f.t3[fk.ID], nil
 }
 func (f *fakeForge) Headroom() float64 { return 1.0 }
+
+func TestStream_dispatchesByPriorityNotSurfaceScore(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	now := time.Now()
+	parentPushed := now.Add(-30 * 24 * time.Hour)
+	var order []string
+	ff := &fakeForge{
+		parent:       forge.ParentData{DefaultBranch: "main", PushedAt: parentPushed},
+		concurrency:  1, // serialize so compareOrder == dispatch order
+		compareOrder: &order,
+		// Listed popular-stale first to prove dispatch reorders by promise:
+		forks: []forge.T1Data{
+			// many stars, but newest branch predates upstream → low promise
+			{ID: "o/b", Owner: "o", Name: "b", DefaultBranch: "main", Stars: 9000, PushedAt: now.Add(-24 * time.Hour),
+				Branches: []forge.BranchRef{{Name: "main", CommittedDate: parentPushed.Add(-10 * 24 * time.Hour)}}},
+			// no stars, but a branch with commits 29d after upstream → highest promise
+			{ID: "o/a", Owner: "o", Name: "a", DefaultBranch: "main", Stars: 0, PushedAt: now.Add(-24 * time.Hour),
+				Branches: []forge.BranchRef{{Name: "feat", CommittedDate: now.Add(-1 * 24 * time.Hour)}}},
+			// no stars, branch 25d after upstream → second
+			{ID: "o/c", Owner: "o", Name: "c", DefaultBranch: "main", Stars: 0, PushedAt: now.Add(-24 * time.Hour),
+				Branches: []forge.BranchRef{{Name: "feat", CommittedDate: now.Add(-5 * 24 * time.Hour)}}},
+		},
+		t2: map[string]forge.T2Data{"o/a": {AheadCount: 1}, "o/b": {AheadCount: 1}, "o/c": {AheadCount: 1}},
+	}
+	ch, err := Stream(context.Background(), ff, "o", "r", Options{Tier: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range ch {
+	}
+	if len(order) != 3 {
+		t.Fatalf("expected 3 compares, got %v", order)
+	}
+	pos := map[string]int{}
+	for i, id := range order {
+		pos[id] = i
+	}
+	// The divergent (post-upstream-branch) forks must be compared before the
+	// popular-but-stale one — best-first by promise, not by stars/surface score.
+	if pos["o/a"] > pos["o/b"] || pos["o/c"] > pos["o/b"] {
+		t.Errorf("popular-stale fork o/b should be dispatched after the divergent ones; order=%v", order)
+	}
+	if order[0] != "o/a" {
+		t.Errorf("highest-promise fork o/a should be compared first; order=%v", order)
+	}
+}
+
+func TestStream_shortlistTruncatesAndRanks(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	now := time.Now()
+	ff := &fakeForge{
+		parent: forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
+		forks: []forge.T1Data{
+			{ID: "o/a", Owner: "o", Name: "a", DefaultBranch: "main", PushedAt: now},
+			{ID: "o/b", Owner: "o", Name: "b", DefaultBranch: "main", PushedAt: now},
+			{ID: "o/c", Owner: "o", Name: "c", DefaultBranch: "main", PushedAt: now},
+			{ID: "o/d", Owner: "o", Name: "d", DefaultBranch: "main", PushedAt: now},
+		},
+		t2: map[string]forge.T2Data{
+			"o/a": {AheadCount: 1, MNA: 500, Diffs: []forge.FileDiff{{Path: "a.go", Additions: 500}}},
+			"o/b": {AheadCount: 1, MNA: 5},
+			"o/c": {AheadCount: 1, MNA: 50},
+			"o/d": {AheadCount: 1, MNA: 1},
+		},
+	}
+	ch, err := Stream(context.Background(), ff, "o", "r", Options{Tier: 2, ShortlistN: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []Result
+	for r := range ch {
+		got = append(got, r)
+	}
+	if len(got) != 2 {
+		t.Fatalf("shortlist should emit 2, got %d", len(got))
+	}
+	for i, r := range got {
+		if r.ExpectedRank <= 0 {
+			t.Errorf("result %d missing expectedRank", i)
+		}
+	}
+	if got[0].ExpectedRank > got[1].ExpectedRank {
+		t.Errorf("shortlist not sorted by expected rank ascending: %v, %v", got[0].ExpectedRank, got[1].ExpectedRank)
+	}
+}
 
 func TestStream_emitsAllForks(t *testing.T) {
 	ff := &fakeForge{

@@ -62,7 +62,7 @@ Nouns and verbs:
             the fetch + policy gates run, but no GraphQL resolveReviewThread
             (or unresolveReviewThread) is issued. Output is marked dryRun=true.
   pr status <pr-ref>
-  forks list <repo> [--tier 1|2|3] [--top N] [--budget N] [--bot-allowlist L] [--refresh] [--csv] [--forge github|gitlab] [--forge-host H]
+  forks list <repo> [--tier 1|2|3] [--top N] [--budget N] [--shortlist N] [--bot-allowlist L] [--refresh] [--csv] [--forge github|gitlab] [--forge-host H]
                     [--no-cluster] [--cluster-top N] [--embedder URL] [--embedder-model NAME]
                     [--embedder-backend ollama|sidecar|openai] [--sidecar-endpoint URL]
                     [--labeler URL] [--labeler-model NAME] [--cluster-epsilon F] [--cluster-min-size N] [--auto-pull]
@@ -73,6 +73,8 @@ Nouns and verbs:
         a huge fork network spends its budget on forks that likely diverged
         rather than the most popular ones. Re-running resumes via the 24h compare
         cache. --top N instead deep-scans the top N by surface score.
+        --shortlist N emits only the top N forks by Robbins expected rank (lower
+        = more likely best), adding expectedRank + rankConfidence to each.
         Flags go AFTER 'forks list <repo>'. --embedder URL is an Ollama API
         endpoint; the Python sidecar is selected with --embedder-backend sidecar
         --sidecar-endpoint URL (different protocol — not --embedder). For an
