@@ -229,6 +229,15 @@ func main() {
 		os.Setenv("NO_COLOR", "1")
 	}
 
+	// An explicit --sidecar-endpoint expresses intent to use the sidecar, so it
+	// implies --embedder-backend sidecar — even when a saved config selects
+	// another backend. (Only the flag sets these vars at this point; env/config
+	// are layered below.) Without this, a saved openai/ollama config would
+	// silently override the flag and ignore the sidecar.
+	if sidecarEndpoint != "" && embedderBackend == "" {
+		embedderBackend = "sidecar"
+	}
+
 	// Layer saved embedder defaults under flags/env (flags > env > config >
 	// built-in). Provider/host are intentionally NOT layered — the repo URL
 	// determines the forge. A bad config warns but never blocks a run.

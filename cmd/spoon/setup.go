@@ -52,6 +52,11 @@ var (
 		defer cancel()
 		return oe.ServedModels(hctx)
 	}
+	// setupEmbedProbeFn verifies the embedder can actually produce a vector (a
+	// real embed), so setup never validates-and-saves a "reachable but broken"
+	// endpoint (e.g. an OVMS that lists a model but 400s when embedding it).
+	// Defaults to the same check the run path uses.
+	setupEmbedProbeFn = embed.Preflight
 )
 
 func runSetup(args []string) int {
@@ -410,25 +415,36 @@ func checkOpenAI(ctx context.Context, f setupFlags, out io.Writer) (bool, string
 	if len(served) > 0 {
 		lines = append(lines, "Served models: "+strings.Join(served, ", "))
 	}
+	modelServed := len(served) == 0 // empty list → nothing to check against; trust
 	for _, m := range served {
 		if m == model {
-			lines = append(lines, "Using model: "+model)
-			printCheck(out, "Embedder (openai)", true, lines, f.noColor)
-			return true, endpoint, model
+			modelServed = true
+			break
 		}
 	}
-	if len(served) == 0 {
-		// Endpoint up but advertises no model list; trust it and use the model.
-		lines = append(lines, "Using model: "+model+" (endpoint lists no models to verify against)")
-		printCheck(out, "Embedder (openai)", true, lines, f.noColor)
-		return true, endpoint, model
+	if !modelServed {
+		lines = append(lines,
+			"Configured model not served: "+model,
+			"Fix: choose one of the served models with --embedder-model.",
+		)
+		printCheck(out, "Embedder (openai)", false, lines, f.noColor)
+		return false, endpoint, model
 	}
-	lines = append(lines,
-		"Configured model not served: "+model,
-		"Fix: choose one of the served models with --embedder-model.",
-	)
-	printCheck(out, "Embedder (openai)", false, lines, f.noColor)
-	return false, endpoint, model
+	// The model is listed — but can it ACTUALLY embed? A real probe catches a
+	// "reachable but broken" server (e.g. OVMS that 400s when embedding), so we
+	// never validate-and-save a config that fails at run time.
+	if perr := setupEmbedProbeFn(ctx, embed.PreflightOptions{Enabled: true, Backend: "openai", Endpoint: endpoint, Model: model}); perr != nil {
+		lines = append(lines,
+			"Model "+model+" is listed but the server cannot embed it:",
+			"  "+perr.Error(),
+			"Fix: the server lists the model but fails to embed (broken model/deployment); pick another served model or repair the server.",
+		)
+		printCheck(out, "Embedder (openai)", false, lines, f.noColor)
+		return false, endpoint, model
+	}
+	lines = append(lines, "Using model: "+model+" (embed probe OK)")
+	printCheck(out, "Embedder (openai)", true, lines, f.noColor)
+	return true, endpoint, model
 }
 
 // checkSidecar probes the sidecar and, when it's down, offers to install it.

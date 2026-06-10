@@ -257,6 +257,12 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	// An explicit --sidecar-endpoint implies the sidecar backend, overriding a
+	// saved openai/ollama config so the flag isn't silently ignored.
+	if opts.Cluster.SidecarEndpoint != "" && opts.Cluster.Backend == "" {
+		opts.Cluster.Backend = "sidecar"
+	}
+
 	// Layer saved embedder defaults under flags/env (flags > env > config >
 	// built-in). Provider/host are not layered — the repo arg determines the
 	// forge. A bad config emits a warning but never blocks the run.

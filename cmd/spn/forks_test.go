@@ -367,6 +367,7 @@ func TestForkToJSON_NoComponents(t *testing.T) {
 }
 
 func TestSpnForksList_csv_emitsHeaderAndRows(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // don't read the real embedder config
 	prev := providerFactory
 	defer func() { providerFactory = prev }()
 	providerFactory = func(_ context.Context, _, _, _ string) (forge.Forge, string, *agentio.Error) {
@@ -379,7 +380,7 @@ func TestSpnForksList_csv_emitsHeaderAndRows(t *testing.T) {
 		}, "o/r", nil
 	}
 	var stdout, stderr bytes.Buffer
-	exit := runForksWith([]string{"list", "o/r", "--tier", "1", "--csv"}, &stdout, &stderr)
+	exit := runForksWith([]string{"list", "o/r", "--tier", "1", "--no-cluster", "--csv"}, &stdout, &stderr)
 	if exit != 0 {
 		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
 	}
@@ -394,6 +395,7 @@ func TestSpnForksList_csv_emitsHeaderAndRows(t *testing.T) {
 }
 
 func TestSpnForksList_csv_noNDJSONLeak(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	prev := providerFactory
 	defer func() { providerFactory = prev }()
 	providerFactory = func(_ context.Context, _, _, _ string) (forge.Forge, string, *agentio.Error) {
@@ -403,7 +405,7 @@ func TestSpnForksList_csv_noNDJSONLeak(t *testing.T) {
 		}, "o/r", nil
 	}
 	var stdout, stderr bytes.Buffer
-	runForksWith([]string{"list", "o/r", "--tier", "1", "--csv"}, &stdout, &stderr)
+	runForksWith([]string{"list", "o/r", "--tier", "1", "--no-cluster", "--csv"}, &stdout, &stderr)
 	// CSV output should not contain JSON-shaped lines.
 	if strings.Contains(stdout.String(), `{"id":`) || strings.Contains(stdout.String(), `"id":`) {
 		t.Errorf("CSV output contains JSON object: %s", stdout.String())
