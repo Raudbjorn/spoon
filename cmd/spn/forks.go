@@ -251,6 +251,25 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 	}
 
 	ctx := context.Background()
+
+	// Validate the embedder endpoint up front so a bad URL fails fast (before
+	// enumerating forks) instead of silently disabling clustering. --no-cluster
+	// skips this. Skipped when a test embedder is injected (it bypasses
+	// SelectEmbedder, so there's no real endpoint to probe).
+	if embedderHookForTest == nil {
+		if perr := embed.Preflight(ctx, embed.PreflightOptions{
+			Enabled:         opts.Cluster.Enabled,
+			Backend:         opts.Cluster.Backend,
+			Endpoint:        opts.Cluster.Endpoint,
+			Model:           opts.Cluster.ModelOverride,
+			SidecarEndpoint: opts.Cluster.SidecarEndpoint,
+			LabelerEndpoint: opts.Cluster.LabelerEndpoint,
+		}); perr != nil {
+			return agentio.NewError(agentio.CodeBadInput, perr.Error(),
+				"Start the embedder or fix the endpoint (--embedder/--sidecar-endpoint), run 'spoon setup' to configure one, or pass --no-cluster to skip clustering.").Emit(stderr)
+		}
+	}
+
 	provider, repoArg, e := providerFactory(ctx, repo, forgeFlag, forgeHost)
 	if e != nil {
 		return e.Emit(stderr)

@@ -410,74 +410,63 @@ func TestSpnForksList_csv_noNDJSONLeak(t *testing.T) {
 	}
 }
 
-func TestSpnForksList_embedderUnreachable_emitsWarning(t *testing.T) {
+func TestSpnForksList_embedderUnreachable_failsFast(t *testing.T) {
+	// Isolate config so the real ~/.config/spoon/config.json can't change the
+	// resolved backend; the default (ollama) backend + bad --embedder is the case.
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	prev := providerFactory
 	defer func() { providerFactory = prev }()
-
-	now := time.Now()
-	parentPushed := now.Add(-7 * 24 * time.Hour)
+	// providerFactory must NOT be called: preflight should fail before enumeration.
 	providerFactory = func(_ context.Context, _, _, _ string) (forge.Forge, string, *agentio.Error) {
-		return makeClusterForks(now, parentPushed), "up/stream", nil
+		t.Fatal("providerFactory should not be reached when the embedder endpoint is unreachable")
+		return nil, "", nil
 	}
 
-	// No embedder hook → real SelectEmbedder runs, points at a guaranteed-
-	// unreachable endpoint, returns ollama_unreachable skip.
 	var stdout, stderr bytes.Buffer
 	exit := runForksWith([]string{
 		"list", "up/stream",
 		"--tier", "2",
 		"--embedder", "http://127.0.0.1:1",
-		"--cluster-epsilon", "0.6",
-		"--cluster-min-size", "3",
+	}, &stdout, &stderr)
+
+	// New contract: an unreachable embedder endpoint fails fast (exit 2),
+	// emitting a structured error and no stdout — not a warning-and-continue.
+	if exit != 2 {
+		t.Fatalf("exit=%d want 2\nstderr=%s", exit, stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("expected no stdout on preflight failure, got: %s", stdout.String())
+	}
+	var env map[string]any
+	if err := json.Unmarshal(stderr.Bytes(), &env); err != nil {
+		t.Fatalf("stderr is not a JSON error envelope: %v\n%s", err, stderr.String())
+	}
+	e, _ := env["error"].(map[string]any)
+	if e == nil || e["code"] != "bad_input" {
+		t.Errorf("expected bad_input error, got: %s", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "not reachable") {
+		t.Errorf("error should explain the endpoint is unreachable: %s", stderr.String())
+	}
+}
+
+func TestSpnForksList_noClusterSkipsPreflight(t *testing.T) {
+	// --no-cluster bypasses the embedder preflight entirely.
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	prev := providerFactory
+	defer func() { providerFactory = prev }()
+	now := time.Now()
+	providerFactory = func(_ context.Context, _, _, _ string) (forge.Forge, string, *agentio.Error) {
+		return makeClusterForks(now, now.Add(-7*24*time.Hour)), "up/stream", nil
+	}
+	var stdout, stderr bytes.Buffer
+	exit := runForksWith([]string{
+		"list", "up/stream", "--tier", "1", "--no-cluster",
+		"--embedder", "http://127.0.0.1:1", // unreachable, but ignored
 	}, &stdout, &stderr)
 	if exit != 0 {
-		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
-	}
-
-	// Cluster fields should be absent.
-	for _, line := range strings.Split(strings.TrimSuffix(stdout.String(), "\n"), "\n") {
-		if line == "" {
-			continue
-		}
-		var obj map[string]any
-		if err := json.Unmarshal([]byte(line), &obj); err != nil {
-			t.Fatalf("invalid JSON: %v", err)
-		}
-		if _, ok := obj["clusterId"]; ok {
-			t.Errorf("expected no clusterId when embedder unreachable, got: %s", line)
-		}
-	}
-
-	// stderr should contain exactly one warning envelope. Find the first JSON
-	// object on a line and inspect it.
-	var warning map[string]any
-	for _, line := range strings.Split(stderr.String(), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		var obj map[string]any
-		if err := json.Unmarshal([]byte(line), &obj); err != nil {
-			continue
-		}
-		if _, ok := obj["warning"]; ok {
-			warning = obj
-			break
-		}
-	}
-	if warning == nil {
-		t.Fatalf("expected a warning envelope on stderr, got:\n%s", stderr.String())
-	}
-	w, _ := warning["warning"].(map[string]any)
-	if w == nil {
-		t.Fatalf("warning envelope shape unexpected: %+v", warning)
-	}
-	code, _ := w["code"].(string)
-	if code == "" {
-		t.Errorf("warning missing code; got %+v", w)
-	}
-	if _, ok := w["remediation"].(string); !ok {
-		t.Errorf("warning missing remediation; got %+v", w)
+		t.Fatalf("exit=%d want 0 (--no-cluster should skip preflight)\nstderr=%s", exit, stderr.String())
 	}
 }

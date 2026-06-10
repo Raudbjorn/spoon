@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/svnbjrn/spoon/internal/config"
+	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/forge"
 	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/gitlab"
@@ -243,8 +244,25 @@ func main() {
 
 	_ = concurrency // TODO: pass to auth overrides
 
-	// Detect provider from repo URL and flags
 	ctx := context.Background()
+
+	// Validate any explicitly-configured embedder endpoint before launching, so
+	// a bad URL fails fast instead of silently disabling clustering. --no-cluster
+	// skips this.
+	if perr := embed.Preflight(ctx, embed.PreflightOptions{
+		Enabled:         !noCluster,
+		Backend:         embedderBackend,
+		Endpoint:        embedderURL,
+		Model:           embedderModel,
+		SidecarEndpoint: sidecarEndpoint,
+		LabelerEndpoint: labelerURL,
+	}); perr != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", perr)
+		fmt.Fprintln(os.Stderr, "Start the embedder or fix the endpoint, run 'spoon setup' to configure one, or pass --no-cluster to skip clustering.")
+		os.Exit(1)
+	}
+
+	// Detect provider from repo URL and flags
 	provider, auth, repoArg, err := createProvider(ctx, repo, forgeFlag, forgeHost)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
