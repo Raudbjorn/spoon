@@ -63,7 +63,11 @@ func Preflight(ctx context.Context, o PreflightOptions) error {
 		if ep == "" {
 			return fmt.Errorf("--embedder-backend openai needs an endpoint: pass --embedder URL or set $SPOON_OPENAI_BASE_URL")
 		}
-		if err := probeEmbed(ctx, &OpenAIEmbedder{Endpoint: ep, Model: o.Model}, "embedder endpoint", ep); err != nil {
+		model := o.Model
+		if model == "" {
+			model = DefaultOpenAIEmbeddingModel // match SelectEmbedder's default
+		}
+		if err := probeEmbed(ctx, &OpenAIEmbedder{Endpoint: ep, Model: model}, "embedder endpoint", ep); err != nil {
 			return err
 		}
 	case "sidecar":

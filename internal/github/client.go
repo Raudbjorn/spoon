@@ -54,8 +54,9 @@ func (c *Client) initRateControls() {
 
 // refillRate computes the token-bucket rate (req/sec): pace Remaining over the
 // time until Reset, clamped to [minRefillRate, refillBurst]. Before the first
-// response (Limit==0) it falls back to a conservative per-tier default. Slows
-// hard when headroom is low to avoid tripping secondary limits.
+// response (Limit==0) — and while headroom is healthy — it runs at refillBurst
+// so small scans aren't slowed. Slows hard when headroom is low to avoid
+// tripping secondary limits.
 func (c *Client) refillRate() float64 {
 	c.mu.Lock()
 	limit, remaining, reset := c.rateLimit.Limit, c.rateLimit.Remaining, c.rateLimit.Reset

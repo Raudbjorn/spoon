@@ -287,14 +287,16 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 		// surface-score order: dispatchOrder is a separate permutation, so the
 		// eligible() index `i` (and thus the top-N path) is unchanged. A lock-free
 		// atomic cursor hands each position to exactly one worker.
+		priorities := make([]float64, len(all))
+		for i, s := range all {
+			priorities[i] = DispatchPriority(s.fork, parent.PushedAt, s.res.Score)
+		}
 		dispatchOrder := make([]int, len(all))
 		for i := range dispatchOrder {
 			dispatchOrder[i] = i
 		}
 		sort.SliceStable(dispatchOrder, func(a, b int) bool {
-			pa := DispatchPriority(all[dispatchOrder[a]].fork, parent.PushedAt, all[dispatchOrder[a]].res.Score)
-			pb := DispatchPriority(all[dispatchOrder[b]].fork, parent.PushedAt, all[dispatchOrder[b]].res.Score)
-			return pa > pb
+			return priorities[dispatchOrder[a]] > priorities[dispatchOrder[b]]
 		})
 		var cursor atomic.Int64
 
@@ -409,14 +411,25 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 
 		if opts.ShortlistN > 0 {
 			// Robbins expected-rank shortlist: compute over the final heat (after
-			// clustering, so novelty is included), then keep the top-N.
-			mu := make([]float64, len(collected))
-			sigma := make([]float64, len(collected))
-			for i := range collected {
+			// clustering, so novelty is included). Bound the O(n^2) rank pass to
+			// the strongest rankPoolCap candidates by heat — a fork outside that
+			// pool would not make a small shortlist anyway — so it stays cheap on
+			// huge fork networks.
+			sort.SliceStable(collected, func(i, j int) bool {
+				return collected[i].Heat.Score > collected[j].Heat.Score
+			})
+			pool := len(collected)
+			if pool > rankPoolCap {
+				pool = rankPoolCap
+			}
+			mu := make([]float64, pool)
+			sigma := make([]float64, pool)
+			for i := 0; i < pool; i++ {
 				mu[i] = collected[i].Heat.Score
 				sigma[i] = rankSigma(collected[i].Heat.Confidence)
 			}
 			ranks := expectedRanks(mu, sigma)
+			collected = collected[:pool]
 			for i := range collected {
 				collected[i].ExpectedRank = ranks[i]
 				collected[i].RankConfidence = collected[i].Heat.Confidence
