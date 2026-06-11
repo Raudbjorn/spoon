@@ -33,10 +33,10 @@ func dispatchKey(k tea.KeyMsg) keyAction {
 	case "R":
 		return actResolve
 	case "a":
-		// The caller decides between actApplySuggestion (when the focused
-		// thread has a suggestion) and actResolveAll otherwise. We return
-		// actApplySuggestion here; model.Update falls back to actResolveAll
-		// when no suggestion is present.
+		// "a" always dispatches actApplySuggestion. When the focused thread has
+		// no suggestion, model.Update shows a "no suggestion on this thread"
+		// status and no-ops — it does NOT fall back to resolve-all (that's the
+		// dedicated Ctrl+A binding).
 		return actApplySuggestion
 	case "ctrl+a":
 		return actResolveAll
