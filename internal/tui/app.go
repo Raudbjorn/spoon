@@ -320,6 +320,11 @@ func (m *Model) handleForksFetched(msg forksFetchedMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	if msg.warn != nil {
+		m.errMsg = fmt.Sprintf("Warning: fork list may be incomplete: %s", msg.warn)
+		m.errMsgTime = time.Now()
+	}
+
 	m.scoreForks(msg.forks)
 	m.view = viewTable
 	m.cursor = 0
@@ -739,6 +744,13 @@ func (m *Model) fetchForks() tea.Cmd {
 		// through, so partial results from per-fork failures are still kept.
 		if len(forks) == 0 && streamErr != nil {
 			return forksFetchedMsg{err: streamErr}
+		}
+
+		// Partial result: forks arrived but the stream then errored. Keep the
+		// list but surface a non-fatal warning so the user knows it was cut short
+		// rather than silently trusting an incomplete list.
+		if streamErr != nil {
+			return forksFetchedMsg{forks: forks, warn: streamErr}
 		}
 
 		// Save to GitHub cache if applicable
