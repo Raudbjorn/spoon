@@ -335,6 +335,14 @@ func createProvider(ctx context.Context, repo, forgeFlag, forgeHost string) (for
 
 	// If no repo given, default to GitHub provider for interactive mode
 	if repo == "" {
+		if forceProvider == forge.ProviderGitea {
+			host := forgeHost
+			if host == "" {
+				host = "codeberg.org"
+			}
+			auth, client := gitea.DetectAuth(ctx, host)
+			return gitea.NewProvider(client, auth, host), auth, "", nil
+		}
 		if forceProvider == forge.ProviderGitLab || forgeHost != "" {
 			host := forgeHost
 			if host == "" {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -53,6 +54,7 @@ func (p *Provider) Parent(ctx context.Context, owner, repo string) (forge.Parent
 	p.sourceOwner, p.sourceRepo = owner, repo
 	p.sourceFull = r.FullName
 	p.sourceDefault = r.DefaultBranch
+	p.sourceTip = "" // invalidate any tip cached for a previous upstream
 	p.mu.Unlock()
 
 	return forge.ParentData{
@@ -175,9 +177,14 @@ func maxInt(a, b int) int {
 }
 
 func sortBranchesDescByDate(refs []forge.BranchRef) {
-	for i := 1; i < len(refs); i++ {
-		for j := i; j > 0 && refs[j].CommittedDate.After(refs[j-1].CommittedDate); j-- {
-			refs[j], refs[j-1] = refs[j-1], refs[j]
+	slices.SortFunc(refs, func(a, b forge.BranchRef) int {
+		switch {
+		case a.CommittedDate.After(b.CommittedDate):
+			return -1
+		case b.CommittedDate.After(a.CommittedDate):
+			return 1
+		default:
+			return 0
 		}
-	}
+	})
 }
