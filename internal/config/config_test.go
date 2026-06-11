@@ -58,6 +58,47 @@ func TestValidate_RejectsBadEnums(t *testing.T) {
 	}
 }
 
+func TestLayerEmbedder(t *testing.T) {
+	cfg := &Config{Embedder: EmbedderConfig{
+		Backend: "openai", Endpoint: "http://ovms:8978", Model: "nomic-ai/x",
+		SidecarEndpoint: "http://side:8766", LabelerModel: "llama3.2:3b",
+	}}
+
+	t.Run("no flag backend adopts config fully", func(t *testing.T) {
+		b, ep, m, _, lab := cfg.LayerEmbedder("", "", "", "", "")
+		if b != "openai" || ep != "http://ovms:8978" || m != "nomic-ai/x" || lab != "llama3.2:3b" {
+			t.Errorf("got backend=%q ep=%q model=%q labeler=%q", b, ep, m, lab)
+		}
+	})
+
+	t.Run("switching backend does NOT inherit the saved endpoint/model", func(t *testing.T) {
+		b, ep, m, _, lab := cfg.LayerEmbedder("ollama", "", "", "", "")
+		if b != "ollama" {
+			t.Errorf("backend=%q want ollama", b)
+		}
+		if ep != "" || m != "" {
+			t.Errorf("openai endpoint/model leaked into ollama: ep=%q model=%q", ep, m)
+		}
+		if lab != "llama3.2:3b" {
+			t.Errorf("labeler is backend-agnostic, want it layered; got %q", lab)
+		}
+	})
+
+	t.Run("matching backend inherits endpoint/model", func(t *testing.T) {
+		_, ep, m, _, _ := cfg.LayerEmbedder("openai", "", "", "", "")
+		if ep != "http://ovms:8978" || m != "nomic-ai/x" {
+			t.Errorf("ep=%q model=%q", ep, m)
+		}
+	})
+
+	t.Run("flag overrides config endpoint", func(t *testing.T) {
+		_, ep, _, _, _ := cfg.LayerEmbedder("openai", "http://flag:1", "", "", "")
+		if ep != "http://flag:1" {
+			t.Errorf("ep=%q want flag value", ep)
+		}
+	})
+}
+
 func TestCoalesce(t *testing.T) {
 	if got := Coalesce("", "", "c"); got != "c" {
 		t.Errorf("got %q", got)
