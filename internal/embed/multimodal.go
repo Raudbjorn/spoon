@@ -9,6 +9,30 @@ import (
 
 var modalityWeights = [4]float32{0.3, 0.3, 0.2, 0.2}
 
+// maxEmbedModalityChars caps each modality blob (paths/commits/readme/diff)
+// before it is sent to the embedder. A fork with a large diff can otherwise
+// exceed a small embedding model's context window (e.g. nomic-embed-text's
+// 2048 tokens), which makes Ollama return HTTP 500 ("the input length exceeds
+// the context length") and aborts the entire clustering pass. The leading
+// chunk is representative for similarity clustering. ~3000 chars stays well
+// under 2048 tokens even for dense code/diffs.
+const maxEmbedModalityChars = 3000
+
+// truncateForEmbed caps s to maxEmbedModalityChars runes (rune-safe).
+func truncateForEmbed(s string) string {
+	if len(s) <= maxEmbedModalityChars {
+		return s // fast path: byte length already within cap
+	}
+	n := 0
+	for i := range s { // i is the byte offset of each rune start
+		if n >= maxEmbedModalityChars {
+			return s[:i]
+		}
+		n++
+	}
+	return s
+}
+
 func isCodeAwareModel(name string) bool {
 	if name == "" {
 		return false
@@ -55,13 +79,13 @@ func codeAwareEmbed(ctx context.Context, e Embedder, fs []ForkFeatures) ([]Vecto
 	for i, f := range fs {
 		var b strings.Builder
 		b.WriteString("<paths>")
-		b.WriteString(f.Paths)
+		b.WriteString(truncateForEmbed(f.Paths))
 		b.WriteString("</paths><commits>")
-		b.WriteString(f.Commits)
+		b.WriteString(truncateForEmbed(f.Commits))
 		b.WriteString("</commits><readme>")
-		b.WriteString(f.ReadmeDoc)
+		b.WriteString(truncateForEmbed(f.ReadmeDoc))
 		b.WriteString("</readme><diff>")
-		b.WriteString(f.DiffChunk)
+		b.WriteString(truncateForEmbed(f.DiffChunk))
 		b.WriteString("</diff>")
 		prompts[i] = b.String()
 	}
@@ -89,7 +113,7 @@ func modalityBlendEmbed(ctx context.Context, e Embedder, fs []ForkFeatures) ([]V
 				continue
 			}
 			present[i][j] = true
-			prompts = append(prompts, m)
+			prompts = append(prompts, truncateForEmbed(m))
 		}
 	}
 
