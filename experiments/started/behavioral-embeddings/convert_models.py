@@ -4,8 +4,10 @@ OVMS's EmbeddingsCalculatorOV looks specifically for a file named
 `openvino_model.xml` next to the graph.pbtxt — none of the upstream HF
 repos for the panel models ship that filename:
 
-  * granite-embedding-311m-multilingual-r2 already has openvino IR
-    weights but under a non-standard name; rename/symlink fixes it.
+  * granite-embedding-311m-multilingual-r2 already ships full-precision
+    openvino_model.{xml,bin} in the pulled repo, so no conversion is
+    needed — link_granite_ir() just verifies those files are present and
+    readable before the install step.
   * nomic-embed-text-v1.5 ships ONNX (model.onnx). Convert in-process
     via `openvino.convert_model(...)` — fast, pure-CPU, no torch needed.
   * Qwen3-Embedding-0.6B ships only PyTorch safetensors. Avoid pulling
@@ -24,11 +26,6 @@ import subprocess
 import sys
 from pathlib import Path
 from urllib.request import urlopen
-
-
-def _sudo_read(path: Path) -> bytes | None:
-    r = subprocess.run(["sudo", "cat", str(path)], check=False, capture_output=True)
-    return r.stdout if r.returncode == 0 else None
 
 
 def _sudo_list(path: Path) -> set[str]:
@@ -61,12 +58,18 @@ def convert_onnx_to_ir(model_dir: Path, staging: Path) -> bool:
     staging.mkdir(parents=True, exist_ok=True)
     staged_onnx = staging / "model.onnx"
     if not staged_onnx.exists():
-        data = _sudo_read(src_onnx)
-        if data is None:
-            print(f"  could not read {src_onnx}", file=sys.stderr)
+        # Stream `sudo cat` straight to disk rather than buffering the whole
+        # ONNX in memory (capture_output) — multi-GB models would OOM.
+        try:
+            with open(staged_onnx, "wb") as f:
+                subprocess.run(["sudo", "cat", str(src_onnx)], stdout=f, check=True)
+        except (subprocess.CalledProcessError, OSError) as e:
+            print(f"  could not read {src_onnx}: {e}", file=sys.stderr)
+            if staged_onnx.exists():
+                staged_onnx.unlink()
             return False
-        staged_onnx.write_bytes(data)
-        print(f"  staged {staged_onnx} ({len(data)//1024//1024} MB)", file=sys.stderr)
+        print(f"  staged {staged_onnx} ({staged_onnx.stat().st_size//1024//1024} MB)",
+              file=sys.stderr)
     print("  converting ONNX -> OpenVINO IR", file=sys.stderr)
     ov_model = convert_model(str(staged_onnx))
     save_model(ov_model, str(staging / "openvino_model.xml"))
@@ -91,7 +94,9 @@ def download_ov_repo(repo: str, files: list[str], staging: Path) -> bool:
         url = f"{base}/{name}"
         print(f"  downloading {url}", file=sys.stderr)
         try:
-            with urlopen(url) as r, open(dst, "wb") as f:
+            # timeout guards against a network stall hanging an unattended
+            # staging run indefinitely; applies to connect + each read.
+            with urlopen(url, timeout=120) as r, open(dst, "wb") as f:
                 shutil.copyfileobj(r, f, length=1024 * 1024)
         except Exception as e:
             print(f"  FAILED {url}: {e}", file=sys.stderr)
