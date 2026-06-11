@@ -14,6 +14,9 @@ type Provider int
 const (
 	ProviderGitHub Provider = iota
 	ProviderGitLab
+	// ProviderGitea covers Gitea and its fork Forgejo (e.g. codeberg.org). They
+	// share the /api/v1 REST surface, so one provider serves both.
+	ProviderGitea
 )
 
 func (p Provider) String() string {
@@ -22,6 +25,8 @@ func (p Provider) String() string {
 		return "github"
 	case ProviderGitLab:
 		return "gitlab"
+	case ProviderGitea:
+		return "gitea"
 	default:
 		return "unknown"
 	}

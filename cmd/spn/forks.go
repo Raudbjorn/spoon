@@ -18,6 +18,7 @@ import (
 	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/forge"
 	"github.com/svnbjrn/spoon/internal/forksops"
+	"github.com/svnbjrn/spoon/internal/gitea"
 	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/gitlab"
 )
@@ -36,6 +37,8 @@ var providerFactory = func(ctx context.Context, repo, forgeFlag, forgeHost strin
 		forced = forge.ProviderGitLab
 	case "github":
 		forced = forge.ProviderGitHub
+	case "gitea", "forgejo", "codeberg":
+		forced = forge.ProviderGitea
 	}
 	parsed, err := forge.Parse(forge.Config{RepoURL: repo, ForceProvider: forced, ForgeHost: forgeHost})
 	if err != nil {
@@ -55,6 +58,9 @@ var providerFactory = func(ctx context.Context, repo, forgeFlag, forgeHost strin
 		}
 		tok := gitlab.TokenFromAuth(ctx, parsed.Host)
 		return gitlab.NewProvider(gitlab.NewClient(parsed.Host, tok), auth), parsed.Owner + "/" + parsed.Repo, nil
+	case forge.ProviderGitea:
+		info, client := gitea.DetectAuth(ctx, parsed.Host)
+		return gitea.NewProvider(client, info, parsed.Host), parsed.Owner + "/" + parsed.Repo, nil
 	default:
 		return nil, "", agentio.NewError(agentio.CodeBadInput, "unsupported provider", agentio.RemediationBadInput("forks", "list"))
 	}

@@ -69,11 +69,15 @@ func ParseRepoURL(raw, defaultHost string, forceProvider Provider) (provider Pro
 		provider = ProviderGitHub
 	case host == "gitlab.com":
 		provider = ProviderGitLab
+	case host == "codeberg.org":
+		provider = ProviderGitea
 	case strings.Contains(host, "gitlab"):
 		provider = ProviderGitLab
+	case strings.Contains(host, "gitea") || strings.Contains(host, "forgejo") || strings.Contains(host, "codeberg"):
+		provider = ProviderGitea
 	default:
 		provider = ProviderGitHub
-		slog.Warn("forge provider ambiguous for custom host; defaulting to GitHub -- use --forge gitlab to override",
+		slog.Warn("forge provider ambiguous for custom host; defaulting to GitHub -- use --forge gitea (or gitlab) to override",
 			"host", host,
 		)
 	}
