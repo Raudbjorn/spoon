@@ -13,6 +13,7 @@ import (
 	"github.com/svnbjrn/spoon/internal/config"
 	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/forge"
+	"github.com/svnbjrn/spoon/internal/gitea"
 	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/gitlab"
 	"github.com/svnbjrn/spoon/internal/tui"
@@ -88,8 +89,10 @@ func main() {
 			}
 			i++
 			forgeFlag = strings.ToLower(args[i])
-			if forgeFlag != "github" && forgeFlag != "gitlab" {
-				fmt.Fprintln(os.Stderr, "Error: --forge must be 'github' or 'gitlab'")
+			switch forgeFlag {
+			case "github", "gitlab", "gitea", "forgejo", "codeberg":
+			default:
+				fmt.Fprintln(os.Stderr, "Error: --forge must be 'github', 'gitlab', or 'gitea' (forgejo/codeberg)")
 				os.Exit(1)
 			}
 		case "--forge-host":
@@ -326,6 +329,8 @@ func createProvider(ctx context.Context, repo, forgeFlag, forgeHost string) (for
 		forceProvider = forge.ProviderGitLab
 	case "github":
 		forceProvider = forge.ProviderGitHub
+	case "gitea", "forgejo", "codeberg":
+		forceProvider = forge.ProviderGitea
 	}
 
 	// If no repo given, default to GitHub provider for interactive mode
@@ -383,6 +388,10 @@ func createProvider(ctx context.Context, repo, forgeFlag, forgeHost string) (for
 		provider := gh.NewGHProvider(client, status)
 		auth, _ := provider.Auth(ctx)
 		return provider, auth, repoArg, nil
+
+	case forge.ProviderGitea:
+		auth, client := gitea.DetectAuth(ctx, parsed.Host)
+		return gitea.NewProvider(client, auth, parsed.Host), auth, repoArg, nil
 
 	default:
 		return nil, forge.AuthInfo{}, "", forge.ErrUnsupportedProvider
