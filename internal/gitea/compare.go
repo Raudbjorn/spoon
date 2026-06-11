@@ -85,24 +85,28 @@ func (p *Provider) Compare(ctx context.Context, fork forge.T1Data, branch string
 
 	// 2. Behind: intra-upstream compare (merge-base is in upstream, so this works).
 	if !capped {
-		if behind, bErr := p.intraCompareCount(ctx, srcOwner, srcRepo, mergeBase, srcTip); bErr == nil {
-			t2.BehindCount = behind
+		behind, bErr := p.intraCompareCount(ctx, srcOwner, srcRepo, mergeBase, srcTip)
+		if bErr != nil {
+			return forge.T2Data{}, fmt.Errorf("behind count %s: %w", fork.ID, bErr)
 		}
+		t2.BehindCount = behind
 	}
 
 	// 3. Per-file diff via the intra-fork raw .diff (the compare files array has
 	// no counts). Skipped when there's nothing ahead.
 	if len(aheadCommits) > 0 || capped {
 		forkTip := commits[0].SHA
-		if diff, dErr := p.client.RawDiff(ctx, fo, fr, mergeBase, forkTip); dErr == nil {
-			diffs := parseUnifiedDiff(diff)
-			t2.Diffs = diffs
-			for _, d := range diffs {
-				t2.TotalAdditions += d.Additions
-				t2.TotalDeletions += d.Deletions
-			}
-			t2.MNA = computeMNA(diffs)
+		diff, dErr := p.client.RawDiff(ctx, fo, fr, mergeBase, forkTip)
+		if dErr != nil {
+			return forge.T2Data{}, fmt.Errorf("raw diff %s: %w", fork.ID, dErr)
 		}
+		diffs := parseUnifiedDiff(diff)
+		t2.Diffs = diffs
+		for _, d := range diffs {
+			t2.TotalAdditions += d.Additions
+			t2.TotalDeletions += d.Deletions
+		}
+		t2.MNA = computeMNA(diffs)
 	}
 
 	return t2, nil
@@ -111,24 +115,23 @@ func (p *Provider) Compare(ctx context.Context, fork forge.T1Data, branch string
 // upstreamTip returns the cached upstream owner/repo and resolves its
 // default-branch tip SHA once.
 func (p *Provider) upstreamTip(ctx context.Context) (owner, repo, tip string, err error) {
+	// Hold the lock across the HTTP fetch: every Compare worker blocks on this
+	// tip anyway, so serializing here collapses the thundering herd into a
+	// single upstream branch-tip request instead of one per concurrent worker.
 	p.mu.Lock()
-	owner, repo, tip = p.sourceOwner, p.sourceRepo, p.sourceTip
-	def := p.sourceDefault
-	p.mu.Unlock()
-	if owner == "" || repo == "" {
+	defer p.mu.Unlock()
+	if p.sourceOwner == "" || p.sourceRepo == "" {
 		return "", "", "", fmt.Errorf("upstream not resolved (Parent not called)")
 	}
-	if tip != "" {
-		return owner, repo, tip, nil
+	if p.sourceTip != "" {
+		return p.sourceOwner, p.sourceRepo, p.sourceTip, nil
 	}
 	var b gtBranch
-	if _, e := p.client.Get(ctx, fmt.Sprintf("/repos/%s/%s/branches/%s", owner, repo, def), nil, &b); e != nil {
+	if _, e := p.client.Get(ctx, fmt.Sprintf("/repos/%s/%s/branches/%s", p.sourceOwner, p.sourceRepo, p.sourceDefault), nil, &b); e != nil {
 		return "", "", "", e
 	}
-	p.mu.Lock()
 	p.sourceTip = b.Commit.ID
-	p.mu.Unlock()
-	return owner, repo, b.Commit.ID, nil
+	return p.sourceOwner, p.sourceRepo, p.sourceTip, nil
 }
 
 // forkCommits returns up to limit commits of fork@branch, newest-first.
@@ -167,6 +170,9 @@ func parseUnifiedDiff(diff string) []forge.FileDiff {
 	if diff == "" {
 		return nil
 	}
+	// Normalize CRLF so a trailing '\r' can't corrupt parsed paths or be
+	// miscounted as a content line.
+	diff = strings.ReplaceAll(diff, "\r\n", "\n")
 	var out []forge.FileDiff
 	var cur *forge.FileDiff
 	flush := func() {
@@ -194,14 +200,17 @@ func parseUnifiedDiff(diff string) []forge.FileDiff {
 	return out
 }
 
-// gitDiffPath extracts the new path from a "diff --git a/X b/Y" header.
+// gitDiffPath extracts the new path from a "diff --git a/X b/Y" header. It
+// locates the " b/" separator with LastIndex rather than splitting on spaces so
+// that filenames containing spaces survive intact.
 func gitDiffPath(header string) string {
-	fields := strings.Fields(header)
-	if len(fields) >= 4 {
-		return strings.TrimPrefix(fields[3], "b/")
+	const prefix = "diff --git "
+	if !strings.HasPrefix(header, prefix) {
+		return ""
 	}
-	if len(fields) >= 3 {
-		return strings.TrimPrefix(fields[2], "a/")
+	line := header[len(prefix):]
+	if idx := strings.LastIndex(line, " b/"); idx != -1 {
+		return strings.Trim(line[idx+3:], `"`)
 	}
 	return ""
 }
@@ -209,15 +218,15 @@ func gitDiffPath(header string) string {
 // computeMNA weights net additions per file by heat.FileWeight (junk/generated
 // stripped), matching the GitHub/GitLab providers.
 func computeMNA(diffs []forge.FileDiff) int {
-	total := 0
+	var total float64
 	for _, d := range diffs {
 		net := d.Additions - d.Deletions
 		if net < 0 {
 			net = 0
 		}
-		total += int(float64(net) * heat.FileWeight(d.Path))
+		total += float64(net) * heat.FileWeight(d.Path)
 	}
-	return total
+	return int(total)
 }
 
 func featureCommitRatio(commits []forge.AheadCommit) float64 {

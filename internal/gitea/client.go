@@ -90,6 +90,9 @@ func (c *Client) Get(ctx context.Context, apiPath string, q url.Values, dst any)
 			return total, fmt.Errorf("decode response from %s: %w", rawURL, decErr)
 		}
 	}
+	// Drain any unread remainder so the connection can be reused (keep-alive);
+	// this matters when dst is nil or the decoder stopped before EOF.
+	_, _ = io.Copy(io.Discard, resp.Body)
 	return total, nil
 }
 
@@ -140,9 +143,15 @@ func (c *Client) RawDiff(ctx context.Context, owner, repo, base, head string) (s
 	if resp.StatusCode/100 != 2 {
 		return "", fmt.Errorf("GET %s: status %d", rawURL, resp.StatusCode)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxDiffSize))
+	// Read one byte past the cap so we can distinguish a diff that exactly fills
+	// the budget from one that was truncated. A silently-truncated diff would
+	// feed parseUnifiedDiff incorrect per-file stats, so we fail loudly instead.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxDiffSize+1))
 	if err != nil {
 		return "", fmt.Errorf("read diff %s: %w", rawURL, err)
+	}
+	if len(body) > maxDiffSize {
+		return "", fmt.Errorf("read diff %s: exceeds %d byte cap (truncated)", rawURL, maxDiffSize)
 	}
 	return string(body), nil
 }
