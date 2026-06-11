@@ -1,11 +1,11 @@
 """Embed every fork in features.json via OpenVINO Model Server.
 
 Speaks OVMS's OpenAI-compatible `/v3/embeddings` endpoint. The model must
-already be loaded by the server (use ../../../../setup_ovms_models.sh —
-or, on a host with the ovms package, run setup_ovms_embeddings.sh from
-/usr/lib/ovms/contrib/). Inference target (CPU / GPU / NPU) is decided
-when the model is pulled, not by this client; for Intel Arc A770 the
-helper pulls with --target_device GPU.
+already be loaded by the server (run ./setup_ovms_models.sh from this
+directory — on a host with the ovms package it delegates to the packaged
+/usr/lib/ovms/contrib/setup_embeddings_arc.sh helper). Inference target
+(CPU / GPU / NPU) is decided when the model is pulled, not by this client;
+for Intel Arc A770 the helper pulls with --target_device GPU.
 
 Same on-disk vector format and resume semantics as embed_hf.py so
 analyze.py consumes either interchangeably.
@@ -61,8 +61,9 @@ def embed_batch(endpoint: str, model: str, texts: list[str], timeout: float) -> 
         # missing/out-of-range value (or a duplicate clobbering an earlier
         # slot) means we can't trust the ordering, so fail loudly instead
         # of silently writing to slot 0 or raising a bare IndexError.
+        # bool is a subclass of int, so reject it explicitly.
         idx = item.get("index")
-        if not isinstance(idx, int) or not (0 <= idx < len(texts)):
+        if not isinstance(idx, int) or isinstance(idx, bool) or not (0 <= idx < len(texts)):
             raise RuntimeError(f"ovms returned out-of-bounds or missing index {idx!r}")
         if out[idx] is not None:
             raise RuntimeError(f"ovms returned duplicate index {idx}")
