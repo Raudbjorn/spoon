@@ -22,6 +22,10 @@ type parentFetchedMsg struct {
 type forksFetchedMsg struct {
 	forks []forge.T1Data
 	err   error
+	// warn is a non-fatal warning to surface alongside a populated fork list —
+	// e.g. the stream was cut short by an error after some forks arrived, so the
+	// displayed list is partial. Distinct from err, which suppresses the list.
+	warn error
 }
 
 type tier2ResultMsg struct {
