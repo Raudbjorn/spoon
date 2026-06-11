@@ -35,3 +35,5 @@ nomic_hf_vectors.json
 tokenizer_staging/
 model_staging/
 run_panel_supplement.out
+RESULTS_RUN.md
+dump_features
