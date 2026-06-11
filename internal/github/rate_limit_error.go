@@ -72,10 +72,20 @@ func detectRateLimitFromHTTPError(err error) *RateLimitError {
 	}
 
 	if httpErr.StatusCode == http.StatusForbidden && h.Get("X-RateLimit-Remaining") == "0" {
-		rl := &RateLimitError{cause: err}
+		// Default to now so ResetAt is never the zero value (which would surface
+		// as a year-0001 timestamp and retry_after_seconds=0 downstream).
+		rl := &RateLimitError{ResetAt: time.Now(), cause: err}
 		if v := h.Get("X-RateLimit-Reset"); v != "" {
 			if epoch, parseErr := strconv.ParseInt(v, 10, 64); parseErr == nil {
 				rl.ResetAt = time.Unix(epoch, 0)
+			}
+		}
+		// Retry-After, when present, is the authoritative back-off hint; prefer it.
+		if ra := h.Get("Retry-After"); ra != "" {
+			if secs, parseErr := strconv.Atoi(ra); parseErr == nil {
+				rl.ResetAt = time.Now().Add(time.Duration(secs) * time.Second)
+			} else if t, parseErr := http.ParseTime(ra); parseErr == nil {
+				rl.ResetAt = t
 			}
 		}
 		return rl

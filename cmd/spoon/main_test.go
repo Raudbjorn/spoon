@@ -1,8 +1,9 @@
 package main
 
 import (
+	"bytes"
+	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -76,17 +77,30 @@ func TestBackendFor(t *testing.T) {
 }
 
 func TestSpoonRejectsRemovedJSONFlag(t *testing.T) {
-	cmd := exec.Command("go", "run", ".")
-	cmd.Args = append(cmd.Args, "--help")
-	cmd.Dir = "."
-	out, _ := cmd.CombinedOutput()
-	if strings.Contains(string(out), "--json") {
+	// Capture printHelp() output in-process rather than spawning `go run .`,
+	// which is slow and fragile in restricted CI environments.
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stdout = w
+	printHelp()
+	_ = w.Close()
+	os.Stdout = old
+
+	var buf bytes.Buffer
+	if _, err := io.Copy(&buf, r); err != nil {
+		t.Fatalf("read pipe: %v", err)
+	}
+	out := buf.String()
+	if strings.Contains(out, "--json") {
 		t.Errorf("--help still advertises --json; expected to be removed:\n%s", out)
 	}
-	if strings.Contains(string(out), "--csv") {
+	if strings.Contains(out, "--csv") {
 		t.Errorf("--help still advertises --csv; expected to be removed:\n%s", out)
 	}
-	if strings.Contains(string(out), "--output") {
+	if strings.Contains(out, "--output") {
 		t.Errorf("--help still advertises --output; expected to be removed:\n%s", out)
 	}
 }
