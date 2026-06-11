@@ -325,13 +325,23 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 	if embedderHookForTest != nil {
 		opts.Cluster.SetEmbedderForTest(embedderHookForTest)
 	}
+	// Shadow ctx with a cancellable child so any early return below (a write
+	// error in the CSV or NDJSON path) aborts the upstream Stream goroutine
+	// instead of leaking it blocked on a channel send.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	ch, streamErr := forksops.Stream(ctx, provider, owner, name, opts)
 	if streamErr != nil {
 		var rl *gh.RateLimitError
 		if errors.As(streamErr, &rl) {
 			resetAt := rl.ResetAt.UTC().Format("2006-01-02T15:04:05Z07:00")
 			secs := rl.RetryAfterSeconds()
-			e := agentio.NewError(agentio.CodeRateLimited, streamErr.Error(), agentio.RemediationRateLimited(resetAt, secs))
+			e := agentio.NewError(agentio.CodeRateLimited, streamErr.Error(), agentio.RemediationRateLimited(resetAt, secs)).
+				WithDetails(map[string]any{
+					"reset_at":            resetAt,
+					"retry_after_seconds": secs,
+					"remaining":           rl.Remaining,
+				})
 			if secs > 0 {
 				e = e.WithRetryAfter(secs)
 			}

@@ -207,6 +207,9 @@ func (c *Client) doGet(ctx context.Context, path string) (*http.Response, error)
 func (c *Client) Get(ctx context.Context, path string, result interface{}) error {
 	resp, err := c.doGet(ctx, path)
 	if err != nil {
+		if rl := detectRateLimitFromHTTPError(err); rl != nil {
+			return rl
+		}
 		return err
 	}
 	defer resp.Body.Close()
@@ -230,6 +233,9 @@ func (c *Client) GetPaginated(ctx context.Context, path string, onPage func(json
 	for url != "" {
 		resp, err := c.doGet(ctx, url)
 		if err != nil {
+			if rl := detectRateLimitFromHTTPError(err); rl != nil {
+				return rl
+			}
 			return err
 		}
 
