@@ -41,6 +41,13 @@ type Options struct {
 	// top-N by expected rank. Forces collect-then-emit semantics.
 	ShortlistN int
 
+	// ReserveDisabled turns off the automatic rate-limit reserve floor
+	// (ReserveHeadroom). By default the pipeline stops enriching when the forge's
+	// headroom drops below the reserve and marks the remaining forks degraded
+	// (Result.BudgetSkip), so a scan can't drain the rate window to zero. Set
+	// this (e.g. from SPOON_NO_RESERVE=1) to drain the full budget in one pass.
+	ReserveDisabled bool
+
 	// Cluster configures the optional post-T2 cluster pipeline. When
 	// Cluster.Enabled is true and at least one fork is eligible, Stream will
 	// collect every T1/T2 result, run the shared cluster.RunPipeline, and
@@ -133,6 +140,14 @@ type Result struct {
 	// and heat; consumers surface a warning rather than dropping the fork.
 	// Nil when T3 ran, was not requested, or failed fatally (rate limit).
 	T3Skip *StageSkip
+
+	// BudgetSkip is set when a fork that WOULD have been enriched was skipped
+	// because the rate-limit reserve floor (ReserveHeadroom) was reached. The
+	// fork is emitted with T1 data only; consumers should mark it un-enriched /
+	// the run degraded rather than reporting its (absent) divergence as zero.
+	// Re-running after the rate window resets backfills it from cache. Nil when
+	// the fork was enriched, or was never eligible for enrichment by design.
+	BudgetSkip *StageSkip
 }
 
 // StageSkip describes a non-fatal, per-fork enrichment skip. Unlike Error it
@@ -275,6 +290,15 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 		if tier == 0 {
 			tier = 3
 		}
+
+		// Up-front request estimate + headroom heads-up, so the user sees the
+		// scope without having to count forks. The live reserve floor below, not
+		// this estimate, governs when enrichment actually stops.
+		if tier >= 2 && len(all) > 0 {
+			fmt.Fprintf(logger, "[triage] %d forks; ~%d+ API requests to enrich at tier %d; rate headroom %.0f%%\n",
+				len(all), EstimateRequests(len(all), tier), tier, provider.Headroom()*100)
+		}
+
 		concurrency := 4
 		if a, _ := provider.Auth(ctx); a.Concurrency > 0 {
 			concurrency = a.Concurrency
@@ -312,6 +336,7 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 		)
 
 		var wg sync.WaitGroup
+		var budgetSkipped atomic.Int64
 		for w := 0; w < concurrency; w++ {
 			wg.Add(1)
 			go func() {
@@ -327,7 +352,23 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 					i := dispatchOrder[pos]
 					s := all[i]
 					r := Result{Fork: s.fork, Heat: s.res}
-					if tier >= 2 && eligible(s.fork.ID, i) {
+
+					// Auto-budget: an eligible fork is enriched only while the
+					// rate-limit reserve holds. Because dispatch is best-first
+					// (DispatchPriority), the forks enriched before the floor is
+					// reached are the most promising; the rest are flagged
+					// degraded (BudgetSkip), not silently zeroed.
+					enrich := eligible(s.fork.ID, i)
+					if enrich && tier >= 2 && !opts.ReserveDisabled && provider.Headroom() < ReserveHeadroom {
+						enrich = false
+						r.BudgetSkip = &StageSkip{
+							Stage:  "compare",
+							ForkID: s.fork.ID,
+							Reason: "rate-limit reserve reached; re-run after the window resets to enrich (cached results resume)",
+						}
+						budgetSkipped.Add(1)
+					}
+					if tier >= 2 && enrich {
 						t2, terr := provider.Compare(ctx, s.fork, s.fork.DefaultBranch)
 						if terr != nil {
 							var rl *gh.RateLimitError
@@ -349,7 +390,7 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 							r.T2 = &t2
 						}
 					}
-					if tier >= 3 && eligible(s.fork.ID, i) && r.Err == nil {
+					if tier >= 3 && enrich && r.Err == nil {
 						t3, terr := provider.Contributors(ctx, s.fork)
 						if terr != nil {
 							var rl *gh.RateLimitError
@@ -396,6 +437,11 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 			}()
 		}
 		wg.Wait()
+
+		if n := budgetSkipped.Load(); n > 0 {
+			fmt.Fprintf(logger, "[triage] degraded: %d/%d forks left un-enriched at the rate-limit reserve; re-run after the window resets to backfill (cached results resume)\n",
+				n, len(all))
+		}
 
 		if !batchMode {
 			return

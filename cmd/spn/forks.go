@@ -6,6 +6,7 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"strconv"
@@ -311,6 +312,10 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 	// emitClusterWarning. The discard is intentional — do not wire stderr
 	// here, prose log lines would interleave with the agent envelopes.
 	opts.Logger = io.Discard
+	// Auto-budget reserve is on by default (stop enriching before the rate
+	// window is drained, marking the rest degraded). SPOON_NO_RESERVE=1 opts out
+	// to drain the full budget in one pass.
+	opts.ReserveDisabled = os.Getenv("SPOON_NO_RESERVE") == "1"
 	if embedderHookForTest != nil {
 		opts.Cluster.SetEmbedderForTest(embedderHookForTest)
 	}
@@ -332,6 +337,7 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 		return emitForksCSV(stdout, stderr, ch)
 	}
 	// NDJSON streaming path.
+	degraded, total := 0, 0
 	for r := range ch {
 		if r.ClusterSkip != nil {
 			emitClusterWarning(stderr, r.ClusterSkip)
@@ -350,9 +356,22 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 			})
 			continue
 		}
+		total++
+		if r.BudgetSkip != nil {
+			degraded++
+		}
 		if err := agentio.WriteNDJSON(stdout, forkToJSON(r)); err != nil {
 			return agentio.NewError(agentio.CodeInternal, err.Error(), agentio.RemediationInternal()).Emit(stderr)
 		}
+	}
+	if degraded > 0 {
+		_ = json.NewEncoder(stderr).Encode(map[string]any{
+			"warning": map[string]any{
+				"code":        "degraded_rate_reserve",
+				"message":     fmt.Sprintf("%d/%d forks left un-enriched at the rate-limit reserve; their divergence is absent, not zero", degraded, total),
+				"remediation": "Re-run after the rate window resets to backfill (cached compares resume), or set SPOON_NO_RESERVE=1 to drain the full budget.",
+			},
+		})
 	}
 	return 0
 }
@@ -397,6 +416,10 @@ func forkToJSON(r forksops.Result) map[string]any {
 			"behind": r.T2.BehindCount,
 			"mna":    r.T2.MNA,
 		}
+	} else if r.BudgetSkip != nil {
+		// Compare was skipped at the rate-limit reserve. Flag it so the absence
+		// of "t2" reads as "not computed" (re-run to backfill), not "no divergence".
+		out["budget_skipped"] = true
 	}
 	if r.T3 != nil {
 		out["t3"] = map[string]any{

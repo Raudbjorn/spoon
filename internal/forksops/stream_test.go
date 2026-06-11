@@ -26,6 +26,7 @@ type fakeForge struct {
 	// Test seams (optional; zero values preserve prior behavior):
 	concurrency  int       // 0 → default 2
 	compareOrder *[]string // when non-nil, Compare appends fk.ID (dispatch order)
+	headroom     *float64  // nil → 1.0 (full); set below ReserveHeadroom to trip the floor
 }
 
 func (f *fakeForge) Auth(_ context.Context) (forge.AuthInfo, error) {
@@ -64,7 +65,12 @@ func (f *fakeForge) Contributors(_ context.Context, fk forge.T1Data) (forge.T3Da
 	}
 	return f.t3[fk.ID], nil
 }
-func (f *fakeForge) Headroom() float64 { return 1.0 }
+func (f *fakeForge) Headroom() float64 {
+	if f.headroom != nil {
+		return *f.headroom
+	}
+	return 1.0
+}
 
 func TestStream_dispatchesByPriorityNotSurfaceScore(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
@@ -109,6 +115,82 @@ func TestStream_dispatchesByPriorityNotSurfaceScore(t *testing.T) {
 	}
 	if order[0] != "o/a" {
 		t.Errorf("highest-promise fork o/a should be compared first; order=%v", order)
+	}
+}
+
+func TestStream_reserveFloor_marksBudgetSkipNotZero(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	now := time.Now()
+	low := 0.05 // below ReserveHeadroom (0.10) → floor trips
+	var order []string
+	ff := &fakeForge{
+		parent:       forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
+		concurrency:  1,
+		compareOrder: &order,
+		headroom:     &low,
+		forks: []forge.T1Data{
+			{ID: "o/a", Owner: "o", Name: "a", DefaultBranch: "main", PushedAt: now},
+			{ID: "o/b", Owner: "o", Name: "b", DefaultBranch: "main", PushedAt: now},
+		},
+		t2: map[string]forge.T2Data{"o/a": {AheadCount: 7}, "o/b": {AheadCount: 3}},
+	}
+	ch, err := Stream(context.Background(), ff, "o", "r", Options{Tier: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for r := range ch {
+		n++
+		if r.T2 != nil {
+			t.Errorf("%s enriched despite reserve floor", r.Fork.ID)
+		}
+		if r.BudgetSkip == nil {
+			t.Errorf("%s should be marked BudgetSkip when below the reserve", r.Fork.ID)
+		}
+	}
+	if n != 2 {
+		t.Fatalf("expected 2 forks emitted, got %d", n)
+	}
+	if len(order) != 0 {
+		t.Errorf("no Compare call should happen below the reserve; got %v", order)
+	}
+}
+
+func TestStream_reserveDisabled_drainsBelowFloor(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	now := time.Now()
+	low := 0.02
+	ff := &fakeForge{
+		parent:   forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
+		headroom: &low,
+		forks: []forge.T1Data{
+			{ID: "o/a", Owner: "o", Name: "a", DefaultBranch: "main", PushedAt: now},
+		},
+		t2: map[string]forge.T2Data{"o/a": {AheadCount: 7}},
+	}
+	ch, err := Stream(context.Background(), ff, "o", "r", Options{Tier: 2, ReserveDisabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for r := range ch {
+		if r.BudgetSkip != nil {
+			t.Errorf("ReserveDisabled must bypass the floor; %s was skipped", r.Fork.ID)
+		}
+		if r.T2 == nil {
+			t.Errorf("%s should be enriched when the reserve is disabled", r.Fork.ID)
+		}
+	}
+}
+
+func TestEstimateRequests(t *testing.T) {
+	if got := EstimateRequests(10, 2); got != 30 {
+		t.Errorf("tier2: got %d want 30", got)
+	}
+	if got := EstimateRequests(10, 3); got != 50 {
+		t.Errorf("tier3: got %d want 50", got)
+	}
+	if got := EstimateRequests(10, 1); got != 0 {
+		t.Errorf("tier1 needs no enrichment requests: got %d", got)
 	}
 }
 
