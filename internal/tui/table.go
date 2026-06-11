@@ -2,7 +2,9 @@ package tui
 
 import (
 	"fmt"
+	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -68,8 +70,30 @@ func (m Model) viewTable() string {
 		end = len(m.forks)
 	}
 
+	prevClusterID := ""
+	if m.groupByCluster && start > 0 {
+		// Track the cluster that the row immediately above `start` belongs
+		// to, so the first header is emitted only when the visible window
+		// actually starts a new group.
+		prevClusterID = m.forks[start-1].Heat.ClusterID
+	}
+
 	for i := start; i < end; i++ {
 		sf := m.forks[i]
+
+		// Emit a cluster header before the first row of each group when
+		// grouping is enabled. Emit at the absolute top of the list, or
+		// whenever the cluster ID changes from the previous (visible or
+		// scrolled-past) row.
+		if m.groupByCluster {
+			curID := sf.Heat.ClusterID
+			if (start == 0 && i == start) || curID != prevClusterID {
+				b.WriteString(m.renderClusterHeader(curID))
+				b.WriteString("\n")
+			}
+			prevClusterID = curID
+		}
+
 		isSelected := i == m.cursor
 
 		prefix := " "
@@ -133,13 +157,15 @@ func (m Model) viewTable() string {
 		b.WriteString(" " + subtitleStyle.Render(m.clipMsg) + "\n")
 	} else if m.errMsg != "" && time.Since(m.errMsgTime) < 5*time.Second {
 		b.WriteString(" " + subtitleStyle.Render(m.errMsg) + "\n")
+	} else if cs := m.clusterFooter(); cs != "" {
+		b.WriteString(" " + subtitleStyle.Render(cs) + "\n")
 	} else {
 		b.WriteString("\n")
 	}
 	if legend := m.badgeLegend(); legend != "" {
 		b.WriteString(helpStyle.Render(" "+legend) + "\n")
 	}
-	b.WriteString(helpStyle.Render(" ↑↓ navigate  Enter detail  Space mark  e export marked  E export all  o open  y yank  s sort  ? help  q quit"))
+	b.WriteString(helpStyle.Render(" ↑↓ navigate  Enter detail  Space mark  e export marked  E export all  o open  y yank  s sort  g cluster  ? help  q quit"))
 
 	return b.String()
 }
@@ -147,10 +173,7 @@ func (m Model) viewTable() string {
 func renderBadges(sf ScoredFork) string {
 	var badges []string
 
-	// Lone wolf badge
-	if sf.Heat.LoneWolf != nil && sf.Heat.LoneWolf.Detected {
-		badges = append(badges, lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Render("🐺"))
-	}
+	// Lone wolf badge (v2)
 	if sf.Heat.LoneWolfV2 != nil && sf.Heat.LoneWolfV2.Detected {
 		badges = append(badges, lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Render("🐺"))
 	}
@@ -183,8 +206,7 @@ func renderBadges(sf ScoredFork) string {
 func (m Model) badgeLegend() string {
 	var hasWolf, hasPR, hasSubFork, hasBranch, hasRelease bool
 	for _, sf := range m.forks {
-		if (sf.Heat.LoneWolf != nil && sf.Heat.LoneWolf.Detected) ||
-			(sf.Heat.LoneWolfV2 != nil && sf.Heat.LoneWolfV2.Detected) {
+		if sf.Heat.LoneWolfV2 != nil && sf.Heat.LoneWolfV2.Detected {
 			hasWolf = true
 		}
 		if sf.Fork.OpenPRCount > 0 {
@@ -300,6 +322,113 @@ func (m *Model) sortForks() {
 			return less
 		}
 		return !less
+	})
+	if m.cursor >= len(m.forks) {
+		m.cursor = len(m.forks) - 1
+	}
+	if m.cursor < 0 {
+		m.cursor = 0
+	}
+}
+
+// renderClusterHeader returns a one-line styled header for a cluster
+// group. The label and member-count are pulled from any fork in the
+// group that has them populated (cluster fields are written uniformly
+// per-cluster by the pipeline, so any member's copy suffices).
+//
+// Empty ClusterID renders as "(ungrouped)"; "noise" renders as "noise"
+// with no label. Real clusters render as "── <id>: <label> (N members) ──"
+// in the dim help-text style so they don't visually compete with rows.
+func (m Model) renderClusterHeader(clusterID string) string {
+	label, count := m.clusterLabelAndCount(clusterID)
+
+	var inner string
+	switch clusterID {
+	case "":
+		inner = fmt.Sprintf("(ungrouped) (%d members)", count)
+	case "noise":
+		inner = fmt.Sprintf("noise (%d members)", count)
+	default:
+		if label == "" {
+			inner = fmt.Sprintf("%s (%d members)", clusterID, count)
+		} else {
+			inner = fmt.Sprintf("%s: %s (%d members)", clusterID, label, count)
+		}
+	}
+	line := "── " + inner + " ──"
+	return helpStyle.Render(" " + line)
+}
+
+// clusterLabelAndCount returns the label and member-count for a cluster
+// ID by scanning m.forks. The label is read from the first fork that
+// has a non-empty ClusterLabel; member-count is computed by tallying
+// matching ClusterID entries.
+func (m Model) clusterLabelAndCount(clusterID string) (string, int) {
+	label := ""
+	count := 0
+	for i := range m.forks {
+		if m.forks[i].Heat.ClusterID != clusterID {
+			continue
+		}
+		count++
+		if label == "" && m.forks[i].Heat.ClusterLabel != "" {
+			label = m.forks[i].Heat.ClusterLabel
+		}
+	}
+	return label, count
+}
+
+// clusterGroupRank returns a sort key for a cluster ID such that:
+//   - real clusters (e.g. "c0", "c1", "c2") sort by their numeric suffix asc,
+//   - the empty-cluster bucket ("") sorts just before "noise",
+//   - the "noise" bucket sorts last.
+//
+// The returned pair (rank, numeric-or-id) is compared by callers: equal
+// ranks fall through to a stable numeric comparator for real clusters
+// (so "c10" sorts after "c2"), or a string comparator otherwise.
+func clusterGroupRank(id string) (int, int, string) {
+	switch id {
+	case "noise":
+		return 2, 0, ""
+	case "":
+		return 1, 0, ""
+	default:
+		return 0, clusterNumericKey(id), id
+	}
+}
+
+// clusterNumericKey parses the numeric suffix of a "c<N>" cluster ID.
+// Returns math.MaxInt for IDs that don't match the canonical form, so
+// they sort after all numbered clusters but in a stable order driven by
+// the string fallback.
+func clusterNumericKey(id string) int {
+	if len(id) > 1 && id[0] == 'c' {
+		if n, err := strconv.Atoi(id[1:]); err == nil {
+			return n
+		}
+	}
+	return math.MaxInt
+}
+
+// sortForksByCluster orders forks by cluster, then by heat descending
+// within each group. Cluster order: real clusters first (sorted by
+// numeric suffix asc so "c10" follows "c2"), then the ungrouped bucket,
+// then "noise" last.
+func (m *Model) sortForksByCluster() {
+	sort.SliceStable(m.forks, func(i, j int) bool {
+		ri, ni, ki := clusterGroupRank(m.forks[i].Heat.ClusterID)
+		rj, nj, kj := clusterGroupRank(m.forks[j].Heat.ClusterID)
+		if ri != rj {
+			return ri < rj
+		}
+		if ni != nj {
+			return ni < nj
+		}
+		if ki != kj {
+			return ki < kj
+		}
+		// Within a cluster, higher heat first.
+		return m.forks[i].Heat.Score > m.forks[j].Heat.Score
 	})
 	if m.cursor >= len(m.forks) {
 		m.cursor = len(m.forks) - 1

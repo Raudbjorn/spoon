@@ -5,184 +5,11 @@ import (
 	"time"
 )
 
-// Tier1Params are the inputs for Tier 1 scoring (from forks list only).
-type Tier1Params struct {
-	Stars          int
-	Forks          int
-	OpenIssues     int
-	ForkSize       int
-	ParentSize     int
-	ForkDesc       string
-	ParentDesc     string
-	Archived       bool
-	PushedAt       time.Time
-	ParentPushedAt time.Time
-	Now            time.Time
-}
-
-// ComputeTier1 computes a heat score using only data from the forks list endpoint.
-func ComputeTier1(p Tier1Params) HeatResult {
-	now := p.Now
-	if now.IsZero() {
-		now = time.Now()
-	}
-
-	// Relative recency: normalize against parent's activity
-	daysSinceForkPush := now.Sub(p.PushedAt).Hours() / 24
-	daysSinceParentPush := now.Sub(p.ParentPushedAt).Hours() / 24
-	// If parent is dormant, adjust halflife upward
-	halflife := 180.0
-	if daysSinceParentPush > 365 {
-		halflife = math.Max(halflife, daysSinceParentPush*0.5)
-	}
-
-	signals := []Signal{
-		{
-			Name:   "stars",
-			Value:  LogNorm(float64(p.Stars), 50),
-			Weight: 0.25,
-			Raw:    float64(p.Stars),
-		},
-		{
-			Name:   "sub-forks",
-			Value:  LogNorm(float64(p.Forks), 10),
-			Weight: 0.15,
-			Raw:    float64(p.Forks),
-		},
-		{
-			Name:   "recency",
-			Value:  DecayNorm(daysSinceForkPush, halflife),
-			Weight: 0.30,
-			Raw:    daysSinceForkPush,
-		},
-		{
-			Name:   "issues",
-			Value:  LogNorm(float64(p.OpenIssues), 5),
-			Weight: 0.10,
-			Raw:    float64(p.OpenIssues),
-		},
-		{
-			Name:   "size-delta",
-			Value:  LogNorm(math.Abs(float64(p.ForkSize-p.ParentSize)), 500),
-			Weight: 0.10,
-			Raw:    math.Abs(float64(p.ForkSize - p.ParentSize)),
-		},
-		{
-			Name:   "description",
-			Value:  boolToFloat(p.ForkDesc != "" && p.ForkDesc != p.ParentDesc),
-			Weight: 0.05,
-			Raw:    boolToFloat(p.ForkDesc != "" && p.ForkDesc != p.ParentDesc),
-		},
-		{
-			Name:   "not-archived",
-			Value:  boolToFloat(!p.Archived),
-			Weight: 0.05,
-			Raw:    boolToFloat(!p.Archived),
-		},
-	}
-
-	score := weightedSum(signals)
-
-	return HeatResult{
-		Score:      clampScore(score * 100),
-		Tier:       1,
-		Confidence: 0.3,
-		Signals:    signals,
-	}
-}
-
-// Tier2Params extends Tier1Params with compare data.
-type Tier2Params struct {
-	Tier1Params
-
-	AheadBy       int
-	BehindBy      int
-	FilesChanged  int
-	TotalAdds     int
-	TotalDels     int
-	UniqueAuthors int
-	Diverged      bool
-}
-
-// ComputeTier2 computes a heat score using fork list + compare data.
-func ComputeTier2(p Tier2Params) HeatResult {
-	now := p.Now
-	if now.IsZero() {
-		now = time.Now()
-	}
-
-	daysSinceForkPush := now.Sub(p.PushedAt).Hours() / 24
-	daysSinceParentPush := now.Sub(p.ParentPushedAt).Hours() / 24
-	halflife := 180.0
-	if daysSinceParentPush > 365 {
-		halflife = math.Max(halflife, daysSinceParentPush*0.5)
-	}
-
-	netAdds := p.TotalAdds - p.TotalDels
-	if netAdds < 0 {
-		netAdds = 0
-	}
-
-	// Tier 1 signals (reweighted: 0.45 total)
-	t1Signals := []Signal{
-		{Name: "stars", Value: LogNorm(float64(p.Stars), 50), Weight: 0.10, Raw: float64(p.Stars)},
-		{Name: "sub-forks", Value: LogNorm(float64(p.Forks), 10), Weight: 0.05, Raw: float64(p.Forks)},
-		{Name: "recency", Value: DecayNorm(daysSinceForkPush, halflife), Weight: 0.15, Raw: daysSinceForkPush},
-		{Name: "issues", Value: LogNorm(float64(p.OpenIssues), 5), Weight: 0.05, Raw: float64(p.OpenIssues)},
-		{Name: "size-delta", Value: LogNorm(math.Abs(float64(p.ForkSize-p.ParentSize)), 500), Weight: 0.05, Raw: math.Abs(float64(p.ForkSize - p.ParentSize))},
-		{Name: "description", Value: boolToFloat(p.ForkDesc != "" && p.ForkDesc != p.ParentDesc), Weight: 0.03, Raw: boolToFloat(p.ForkDesc != "" && p.ForkDesc != p.ParentDesc)},
-		{Name: "not-archived", Value: boolToFloat(!p.Archived), Weight: 0.02, Raw: boolToFloat(!p.Archived)},
-	}
-
-	// Tier 2 signals (0.55 total)
-	t2Signals := []Signal{
-		{Name: "ahead", Value: LogNorm(float64(p.AheadBy), 100), Weight: 0.20, Raw: float64(p.AheadBy)},
-		{Name: "behind", Value: InverseLogNorm(float64(p.BehindBy), 200), Weight: 0.08, Raw: float64(p.BehindBy)},
-		{Name: "files-changed", Value: LogNorm(float64(p.FilesChanged), 50), Weight: 0.08, Raw: float64(p.FilesChanged)},
-		{Name: "net-additions", Value: LogNorm(float64(netAdds), 2000), Weight: 0.10, Raw: float64(netAdds)},
-		{Name: "impact", Value: LogNorm(float64(p.TotalAdds+p.TotalDels), 5000), Weight: 0.04, Raw: float64(p.TotalAdds + p.TotalDels)},
-		{Name: "authors", Value: LogNorm(float64(p.UniqueAuthors), 5), Weight: 0.05, Raw: float64(p.UniqueAuthors)},
-	}
-
-	signals := append(t1Signals, t2Signals...)
-	score := weightedSum(signals)
-
-	confidence := 0.7
-	if p.Diverged {
-		confidence = 0.5
-	}
-
-	return HeatResult{
-		Score:      clampScore(score * 100),
-		Tier:       2,
-		Confidence: confidence,
-		Signals:    signals,
-	}
-}
-
-func weightedSum(signals []Signal) float64 {
-	var sum float64
-	for _, s := range signals {
-		sum += s.Value * s.Weight
-	}
-	return sum
-}
-
 func boolToFloat(b bool) float64 {
 	if b {
 		return 1
 	}
 	return 0
-}
-
-func clampScore(s float64) float64 {
-	if s < 0 {
-		return 0
-	}
-	if s > 100 {
-		return 100
-	}
-	return s
 }
 
 // ---- V2 Scoring API (additive point tiers) ----
@@ -285,16 +112,21 @@ func ComputeTier2V2(p Tier2ParamsV2) (float64, []Component) {
 type Tier3ParamsV2 struct {
 	LoneWolf       *LoneWolfResult
 	CommitSpanDays float64
+	NoveltyScore   float64 // 0..1
 }
 
-// ComputeTier3V2 scores T3 with additive point budgets.
+// ComputeTier3V2 scores T3 with additive point budgets. Max 20 points.
+//
+//	lone_wolf : 0..7   (was 0..10)
+//	span      : 0..8   (was 0..10)
+//	novelty   : 0..5   (new)
 func ComputeTier3V2(p Tier3ParamsV2) (float64, []Component) {
-	// Lone Wolf: strength * 10, with archetype multiplier
+	// Lone Wolf: strength * 7, with archetype multiplier (Drifter * 0.8).
 	var lwPts float64
 	var lwRaw float64
 	if p.LoneWolf != nil && p.LoneWolf.Detected {
 		lwRaw = p.LoneWolf.Strength
-		lwPts = p.LoneWolf.Strength * 10
+		lwPts = p.LoneWolf.Strength * 7
 		switch p.LoneWolf.Archetype {
 		case ArchetypeSniper:
 			// Full credit — no change
@@ -304,21 +136,25 @@ func ComputeTier3V2(p Tier3ParamsV2) (float64, []Component) {
 			lwPts *= 0.8
 		}
 	}
-	if lwPts > 10 {
-		lwPts = 10
+	if lwPts > 7 {
+		lwPts = 7
 	}
 
-	// Commit span: logNorm(spanDays, 180) * 10
-	span := LogNormRange(p.CommitSpanDays, 180, 10)
+	// Commit span: logNorm(spanDays, 180) * 8.
+	span := LogNormRange(p.CommitSpanDays, 180, 8)
 
-	total := lwPts + span
+	// Novelty: NoveltyComponent helper returns up to 5.
+	noveltyComp := NoveltyComponent(p.NoveltyScore)
+
+	total := lwPts + span + noveltyComp.Points
 	if total > 20 {
 		total = 20
 	}
 
 	components := []Component{
-		{Name: "lone_wolf", Points: lwPts, Max: 10, Raw: lwRaw},
-		{Name: "span", Points: span, Max: 10, Raw: p.CommitSpanDays},
+		{Name: "lone_wolf", Points: lwPts, Max: 7, Raw: lwRaw},
+		{Name: "span", Points: span, Max: 8, Raw: p.CommitSpanDays},
+		noveltyComp,
 	}
 
 	return total, components

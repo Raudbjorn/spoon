@@ -10,7 +10,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/svnbjrn/spoon/internal/dump"
+	"github.com/svnbjrn/spoon/internal/config"
+	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/forge"
 	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/gitlab"
@@ -25,18 +26,47 @@ func main() {
 		os.Exit(runThreads(os.Args[2:]))
 	}
 
+	// Subcommand dispatch: "spoon embed <verb> ..."
+	if len(os.Args) >= 2 && os.Args[1] == "embed" {
+		os.Exit(runSpoonEmbed(os.Args[2:]))
+	}
+
+	// Subcommand dispatch: "spoon setup ..."
+	if len(os.Args) >= 2 && os.Args[1] == "setup" {
+		os.Exit(runSetup(os.Args[2:]))
+	}
+
+	// Subcommand dispatch: "spoon sidecar <verb> ..."
+	if len(os.Args) >= 2 && os.Args[1] == "sidecar" {
+		os.Exit(runSidecar(os.Args[2:]))
+	}
+
 	var repo string
 	noColor := false
-	jsonMode := false
-	csvMode := false
 	refresh := false
 	concurrency := 0
-	tier := 0
-	topN := 0
-	botAllowlist := ""
 	forgeFlag := ""
 	forgeHost := ""
-	outputPath := ""
+
+	// Cluster pipeline flags (T9). Clustering is ON by default; --no-cluster
+	// turns it off. When enabled, the pipeline still degrades silently if the
+	// embedder is unreachable or no embedding model is installed.
+	noCluster := false
+	clusterTop := 50
+	embedderURL := ""
+	embedderModel := ""
+	embedderBackend := ""
+	sidecarEndpoint := ""
+	labelerURL := ""
+	labelerModel := ""
+	clusterEpsilon := 0.35
+	clusterMinSize := 3
+	autoPull := os.Getenv("SPOON_AUTO_PULL") == "1"
+	noPrompt := false
+
+	// MDG centrality backend. Off by default; --full-mdg opts in. --no-mdg
+	// reverts to off (useful for users who set the env var elsewhere).
+	fullMDG := false
 
 	args := os.Args[1:]
 	for i := 0; i < len(args); i++ {
@@ -49,74 +79,141 @@ func main() {
 			os.Exit(0)
 		case "--no-color":
 			noColor = true
-		case "--json":
-			jsonMode = true
-		case "--csv":
-			csvMode = true
 		case "--refresh", "--no-cache":
 			refresh = true
 		case "--forge":
-			if i+1 < len(args) {
-				i++
-				forgeFlag = strings.ToLower(args[i])
-				if forgeFlag != "github" && forgeFlag != "gitlab" {
-					fmt.Fprintln(os.Stderr, "Error: --forge must be 'github' or 'gitlab'")
-					os.Exit(1)
-				}
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "Error: --forge requires a value")
+				os.Exit(1)
+			}
+			i++
+			forgeFlag = strings.ToLower(args[i])
+			if forgeFlag != "github" && forgeFlag != "gitlab" {
+				fmt.Fprintln(os.Stderr, "Error: --forge must be 'github' or 'gitlab'")
+				os.Exit(1)
 			}
 		case "--forge-host":
-			if i+1 < len(args) {
-				i++
-				forgeHost = args[i]
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "Error: --forge-host requires a value")
+				os.Exit(1)
 			}
-		case "-o", "--output":
-			if i+1 < len(args) {
-				i++
-				outputPath = args[i]
-			}
+			i++
+			forgeHost = args[i]
 		case "--concurrency":
-			if i+1 < len(args) {
-				i++
-				n, err := strconv.Atoi(args[i])
-				if err != nil || n < 1 {
-					fmt.Fprintln(os.Stderr, "Error: --concurrency requires a positive integer")
-					os.Exit(1)
-				}
-				concurrency = n
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "Error: --concurrency requires a value")
+				os.Exit(1)
 			}
-		case "--tier":
-			if i+1 < len(args) {
-				i++
-				n, err := strconv.Atoi(args[i])
-				if err != nil || n < 1 || n > 3 {
-					fmt.Fprintln(os.Stderr, "Error: --tier must be 1, 2, or 3")
-					os.Exit(1)
-				}
-				tier = n
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n < 1 {
+				fmt.Fprintln(os.Stderr, "Error: --concurrency requires a positive integer")
+				os.Exit(1)
 			}
-		case "--top":
-			if i+1 < len(args) {
-				i++
-				n, err := strconv.Atoi(args[i])
-				if err != nil || n < 1 {
-					fmt.Fprintln(os.Stderr, "Error: --top requires a positive integer")
-					os.Exit(1)
-				}
-				topN = n
-			}
-		case "--bot-allowlist":
-			if i+1 < len(args) {
-				i++
-				botAllowlist = args[i]
-			}
+			concurrency = n
 		case "--heat-weights":
-			if i+1 < len(args) {
-				i++
-				if err := validateHeatWeights(args[i]); err != nil {
-					fmt.Fprintf(os.Stderr, "Error: --heat-weights: %v\n", err)
-					os.Exit(1)
-				}
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "Error: --heat-weights requires a value")
+				os.Exit(1)
 			}
+			i++
+			if err := validateHeatWeights(args[i]); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: --heat-weights: %v\n", err)
+				os.Exit(1)
+			}
+		case "--no-cluster":
+			noCluster = true
+		case "--cluster-top":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "Error: --cluster-top requires a value")
+				os.Exit(1)
+			}
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n < 1 {
+				fmt.Fprintln(os.Stderr, "Error: --cluster-top requires a positive integer")
+				os.Exit(1)
+			}
+			clusterTop = n
+		case "--embedder":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "Error: --embedder requires a value")
+				os.Exit(1)
+			}
+			i++
+			embedderURL = args[i]
+		case "--embedder-model":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "Error: --embedder-model requires a value")
+				os.Exit(1)
+			}
+			i++
+			embedderModel = args[i]
+		case "--embedder-backend":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "Error: --embedder-backend requires a value")
+				os.Exit(1)
+			}
+			i++
+			val := strings.ToLower(args[i])
+			if val != "ollama" && val != "sidecar" && val != "openai" {
+				fmt.Fprintln(os.Stderr, "Error: --embedder-backend must be 'ollama', 'sidecar', or 'openai'")
+				os.Exit(1)
+			}
+			embedderBackend = val
+		case "--sidecar-endpoint":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "Error: --sidecar-endpoint requires a value")
+				os.Exit(1)
+			}
+			i++
+			sidecarEndpoint = args[i]
+		case "--labeler":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "Error: --labeler requires a value")
+				os.Exit(1)
+			}
+			i++
+			labelerURL = args[i]
+		case "--labeler-model":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "Error: --labeler-model requires a value")
+				os.Exit(1)
+			}
+			i++
+			labelerModel = args[i]
+		case "--cluster-epsilon":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "Error: --cluster-epsilon requires a value")
+				os.Exit(1)
+			}
+			i++
+			f, err := strconv.ParseFloat(args[i], 64)
+			if err != nil || f < 0 {
+				fmt.Fprintln(os.Stderr, "Error: --cluster-epsilon requires a non-negative number")
+				os.Exit(1)
+			}
+			clusterEpsilon = f
+		case "--cluster-min-size":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "Error: --cluster-min-size requires a value")
+				os.Exit(1)
+			}
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n < 1 {
+				fmt.Fprintln(os.Stderr, "Error: --cluster-min-size requires a positive integer")
+				os.Exit(1)
+			}
+			clusterMinSize = n
+		case "--auto-pull":
+			autoPull = true
+		case "--no-prompt":
+			noPrompt = true
+		case "--full-mdg":
+			fullMDG = true
+		case "--no-mdg":
+			fullMDG = false
 		default:
 			if !strings.HasPrefix(args[i], "-") && strings.Contains(args[i], "/") {
 				repo = args[i]
@@ -132,83 +229,90 @@ func main() {
 		os.Setenv("NO_COLOR", "1")
 	}
 
-	// Parse bot allowlist
-	var bots map[string]bool
-	if botAllowlist != "" {
-		bots = make(map[string]bool)
-		for _, b := range strings.Split(botAllowlist, ",") {
-			b = strings.TrimSpace(b)
-			if b != "" {
-				bots[strings.ToLower(b)] = true
-			}
-		}
+	// An explicit --sidecar-endpoint expresses intent to use the sidecar, so it
+	// implies --embedder-backend sidecar — even when a saved config selects
+	// another backend. (Only the flag sets these vars at this point; env/config
+	// are layered below.) Without this, a saved openai/ollama config would
+	// silently override the flag and ignore the sidecar.
+	if sidecarEndpoint != "" && embedderBackend == "" {
+		embedderBackend = "sidecar"
+	}
+
+	// Layer saved embedder defaults under flags/env (flags > env > config >
+	// built-in). Provider/host are intentionally NOT layered — the repo URL
+	// determines the forge. A bad config warns but never blocks a run.
+	if cfg, cerr := config.LoadDefault(); cerr != nil {
+		fmt.Fprintf(os.Stderr, "warning: ignoring spoon config: %v\n", cerr)
+	} else if cfg != nil {
+		// Resolve flag > env first, then layer the config backend-aware (a saved
+		// backend's endpoint/model is not inherited when a different backend is
+		// selected).
+		be := strings.ToLower(config.Coalesce(embedderBackend, os.Getenv("SPOON_EMBEDDER_BACKEND")))
+		eu := config.Coalesce(embedderURL, os.Getenv("SPOON_EMBEDDER_URL"))
+		se := config.Coalesce(sidecarEndpoint, os.Getenv("SPOON_SIDECAR_ENDPOINT"))
+		embedderBackend, embedderURL, embedderModel, sidecarEndpoint, labelerModel =
+			cfg.LayerEmbedder(be, eu, embedderModel, se, labelerModel)
 	}
 
 	_ = concurrency // TODO: pass to auth overrides
 
-	// Detect provider from repo URL and flags
 	ctx := context.Background()
+
+	// Validate any explicitly-configured embedder endpoint before launching, so
+	// a bad URL fails fast instead of silently disabling clustering. --no-cluster
+	// skips this.
+	if perr := embed.Preflight(ctx, embed.PreflightOptions{
+		Enabled:         !noCluster,
+		Backend:         embedderBackend,
+		Endpoint:        embedderURL,
+		Model:           embedderModel,
+		SidecarEndpoint: sidecarEndpoint,
+		LabelerEndpoint: labelerURL,
+	}); perr != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", perr)
+		fmt.Fprintln(os.Stderr, "Start the embedder or fix the endpoint, run 'spoon setup' to configure one, or pass --no-cluster to skip clustering.")
+		os.Exit(1)
+	}
+
+	// Detect provider from repo URL and flags
 	provider, auth, repoArg, err := createProvider(ctx, repo, forgeFlag, forgeHost)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Dump modes bypass the TUI
-	if jsonMode || csvMode {
-		if repoArg == "" {
-			fmt.Fprintln(os.Stderr, "Error: owner/repo is required for --json and --csv modes")
-			os.Exit(1)
-		}
-
-		// Split into owner/repo for the dump API
-		owner, repoName := splitRepo(repoArg)
-		if owner == "" || repoName == "" {
-			fmt.Fprintln(os.Stderr, "Error: invalid repository format, use owner/repo")
-			os.Exit(1)
-		}
-
-		format := "json"
-		if csvMode {
-			format = "csv"
-		}
-
-		var w *os.File
-		if outputPath != "" {
-			w, err = os.Create(outputPath)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
-				os.Exit(1)
-			}
-			defer w.Close()
-		} else {
-			w = os.Stdout
-		}
-
-		err = dump.Run(provider, auth, owner, repoName, dump.Options{
-			Format:       format,
-			Refresh:      refresh,
-			Tier:         tier,
-			TopN:         topN,
-			BotAllowlist: bots,
-		}, w)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-		if outputPath != "" {
-			fmt.Fprintf(os.Stderr, "Exported to %s\n", outputPath)
-		}
-		return
+	tuiClusterOpts := tui.ClusterOptions{
+		Enabled:           !noCluster,
+		TopN:              clusterTop,
+		Endpoint:          embedderURL,
+		ModelOverride:     embedderModel,
+		Backend:           embedderBackend,
+		SidecarEndpoint:   sidecarEndpoint,
+		LabelerEndpoint:   labelerURL,
+		LabelerModel:      labelerModel,
+		Epsilon:           clusterEpsilon,
+		MinClusterSize:    clusterMinSize,
+		AutoPull:          autoPull,
+		NoPrompt:          noPrompt,
+		Refresh:           refresh,
+		CentralityBackend: backendFor(fullMDG),
 	}
-
-	m := tui.NewModel(provider, auth, repoArg, refresh)
+	m := tui.NewModelWithCluster(provider, auth, repoArg, refresh, tuiClusterOpts)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// backendFor maps the --full-mdg flag to the cluster.PipelineOptions
+// CentralityBackend string. Off (default) → "" (directory proxy). On → "mdg".
+func backendFor(fullMDG bool) string {
+	if fullMDG {
+		return "mdg"
+	}
+	return ""
 }
 
 // createProvider detects the forge provider from the repo URL and flags,
@@ -285,19 +389,10 @@ func createProvider(ctx context.Context, repo, forgeFlag, forgeHost string) (for
 	}
 }
 
-// splitRepo splits "owner/repo" or "group/subgroup/repo" into owner and repo parts.
-func splitRepo(s string) (owner, repo string) {
-	parts := strings.SplitN(s, "/", 2)
-	if len(parts) != 2 {
-		return "", ""
-	}
-	return parts[0], parts[1]
-}
-
 var validHeatWeightKeys = map[string]bool{
 	"recency": true, "stars": true, "sub_forks": true, "releases": true,
 	"mna": true, "sync_ratio": true, "feature_ratio": true,
-	"lone_wolf": true, "span": true,
+	"lone_wolf": true, "span": true, "novelty": true,
 }
 
 func validateHeatWeights(path string) error {
@@ -329,17 +424,33 @@ Usage:
   spoon [flags] [owner/repo | https://gitlab.com/group/repo]
 
 Flags:
-  --json                   Output JSON (no TUI; stdout or -o file)
-  --csv                    Output CSV (no TUI; stdout or -o file)
-  -o, --output PATH        Write output to file instead of stdout
   --forge github|gitlab    Override provider detection
   --forge-host HOSTNAME    Self-hosted GitLab/GHES hostname
   --refresh, --no-cache    Bypass cache (re-fetch all data)
   --concurrency N          Override worker pool size (default: 10 authed, 2 unauthed)
-  --tier 1|2|3             Cap enrichment depth
-  --top N                  Only enrich top N forks by T1 score
-  --bot-allowlist a,b,c    Treat these logins as human contributors
   --heat-weights path      Path to JSON weight override file
+  --no-cluster             Disable the embedding + clustering pass
+  --cluster-top N          Max forks fed to the embedder (default 50)
+  --embedder URL           Embedding endpoint (default $SPOON_EMBEDDER_URL)
+  --embedder-model NAME    Explicit embedding model (default: auto-pick)
+  --embedder-backend NAME  Embedder backend: 'ollama' (default), 'sidecar', or
+                           'openai' (any OpenAI-compatible endpoint, e.g. OVMS)
+  --sidecar-endpoint URL   Python sidecar endpoint (default http://localhost:8766)
+  --labeler URL            Optional LLM polish endpoint (default: heuristic)
+  --labeler-model NAME     LLM polish model (default: llama3.2:3b)
+  --cluster-epsilon F      Cosine distance cutoff (default 0.35)
+  --cluster-min-size N     Minimum cluster size (default 3)
+  --auto-pull              Pull missing embedding model without prompting
+  --no-prompt              Skip pull prompt when no embedding model is installed
+  --full-mdg               Build a real Module Dependency Graph for the upstream
+                           using personalized PageRank centrality. Phase A
+                           supports Go repositories; other languages silently
+                           fall back to the directory-centrality proxy. Requires
+                           'git' (and 'gh' for GitHub) on PATH. Adds 10-60 s and
+                           up to ~1 GB peak disk on first run; cached for 24 h
+                           under ~/.cache/spoon/mdg/. Default: off.
+  --no-mdg                 Force the directory-centrality proxy even if an
+                           earlier flag enabled --full-mdg.
   --no-color               Disable colors
   -h, --help               Show help
   -v, --version            Show version
@@ -350,10 +461,6 @@ Examples:
   spoon gitlab.com/inkscape/inkscape             GitLab (auto-detected)
   spoon --forge gitlab group/repo                Force GitLab provider
   spoon --forge-host gitlab.example.com g/repo   Self-hosted GitLab
-  spoon --json charmbracelet/bubbletea           JSON output
-  spoon --csv charmbracelet/bubbletea            CSV output
-  spoon --tier 1 golang/go                       T1 only (no compare calls)
-  spoon --top 5 golang/go                        Enrich only top 5 forks
 
 Keybindings (TUI mode):
   ↑/↓, j/k     Navigate table
@@ -364,6 +471,7 @@ Keybindings (TUI mode):
   /             Filter forks
   n             Search new repository
   s             Cycle sort column
+  g             Toggle cluster grouping in the table view (when clusters available)
   r             Refresh (bypass cache)
   Space         Mark/unmark fork
   e             Export marked forks to JSON
@@ -372,7 +480,33 @@ Keybindings (TUI mode):
   q             Quit
 
 Subcommands:
+  spoon setup              Check provider credentials + embedder, pull/install fixes
+  spoon sidecar <verb>     Install/status/uninstall the embedding sidecar service
   spoon threads <pr-ref>   Operate on PR review threads (see 'spoon threads --help')
+  spoon embed status       Human-readable Ollama embedder status
+
+Concepts:
+  Provider (forge)   The Git host spoon queries for forks: GitHub or GitLab.
+                     It is auto-detected from the repo URL (e.g. a gitlab.com
+                     link forces GitLab); override detection with --forge and
+                     point at a self-hosted GitLab/GHES instance with
+                     --forge-host. Auth is per-provider: the gh CLI / a GitHub
+                     token, or the glab CLI / GITLAB_TOKEN.
+
+  Embedder backend   How spoon turns each fork into a vector so it can cluster
+                     similar forks (--embedder-backend). Three choices:
+                       ollama  (default) zero-setup, serves nomic-embed-text
+                               locally via Ollama. Good enough, nothing to run.
+                       sidecar a separate Python HTTP service you start
+                               yourself (--sidecar-endpoint, default
+                               http://localhost:8766) that serves a stronger
+                               model (arctic-embed-l-v2). Sharper similarity
+                               rankings at the cost of ~2 GB RAM and managing a
+                               process. Setup: 'spoon sidecar install'.
+                       openai  any OpenAI-compatible embeddings endpoint
+                               (--embedder URL, --embedder-model NAME). Use this
+                               to run embeddings on a GPU via OpenVINO Model
+                               Server (OVMS) or to point at vLLM / the OpenAI API.
 
 Tip: Run 'gh auth login' (GitHub) or set GITLAB_TOKEN (GitLab) for higher rate limits.
 `)

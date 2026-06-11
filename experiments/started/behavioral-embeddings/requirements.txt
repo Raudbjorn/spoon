@@ -1,0 +1,22 @@
+# Use Intel's XPU-enabled torch wheels so embed_hf.py can dispatch to the
+# Arc A770 via torch.xpu (host has no NVIDIA GPU). The +xpu wheel ships
+# with native Level Zero + oneDNN runtimes — no IPEX needed for torch>=2.7.
+--extra-index-url https://download.pytorch.org/whl/xpu
+torch==2.9.0+xpu
+# transformers >= 4.52 is required for Qwen3 (model_type=qwen3) and >= 4.48
+# for granite-embedding-311m (ModernBERT). The original panel pinned 4.47.1
+# pre-supplement; bumping does not affect the already-recorded panel vectors,
+# which are static JSON. Tested up to 4.55.x as of 2026-05-13.
+transformers>=4.55,<5
+numpy==2.4.4
+scipy==1.16.3
+# requests >= 2.33.0 fixes the .netrc credentials-leak issue Dependabot
+# flagged on this manifest (GHSA-9hjg-9r4m-mvj7 family). embed_nomic.py
+# uses requests against an explicit endpoint we control, so this isn't
+# directly exploitable, but it's a trivial bump.
+requests>=2.33.0
+# pytest >= 9.0.3 fixes the tmpdir-handling issue (CVE-2025-XXXX) — fixture
+# / collection paths don't take user input here, so the bump is hygiene.
+pytest>=9.0.3
+einops==0.8.2
+accelerate==1.13.0

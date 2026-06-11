@@ -29,6 +29,13 @@ func NewGHProvider(client *Client, status AuthStatus) *GHProvider {
 	return &GHProvider{client: client, status: status}
 }
 
+// Client returns the underlying *Client. Exposed so callers (e.g., the dump
+// cluster pipeline) can build adapters against the same HTTP client without
+// re-authenticating.
+func (p *GHProvider) Client() *Client {
+	return p.client
+}
+
 // Auth implements forge.Forge.
 func (p *GHProvider) Auth(_ context.Context) (forge.AuthInfo, error) {
 	tier := forge.AuthNone

@@ -16,7 +16,17 @@ import (
 type ExportData struct {
 	Parent     ExportParent `json:"parent"`
 	ExportedAt string       `json:"exported_at"`
-	Forks      []ExportFork `json:"forks"`
+
+	// Degraded is true when one or more forks could not be enriched (compare)
+	// because the rate-limit reserve was reached — so their divergence is
+	// absent, not zero. EnrichedCount/TotalCount quantify it. Consumers should
+	// treat a degraded export as partial and re-run after the rate window
+	// resets (cached compares resume) for complete data.
+	Degraded      bool `json:"degraded"`
+	EnrichedCount int  `json:"enriched_count"`
+	TotalCount    int  `json:"total_count"`
+
+	Forks []ExportFork `json:"forks"`
 }
 
 // ExportParent describes the parent repository.
@@ -29,37 +39,73 @@ type ExportParent struct {
 
 // ExportFork is the per-fork export data.
 type ExportFork struct {
-	FullName    string          `json:"full_name"`
-	URL         string          `json:"url"`
-	CompareURL  string          `json:"compare_url"`
-	Owner       string          `json:"owner"`
-	Stars       int             `json:"stars"`
-	Forks       int             `json:"forks"`
-	OpenIssues  int             `json:"open_issues"`
-	Language    string          `json:"language,omitempty"`
-	PushedAt    string          `json:"pushed_at"`
-	CreatedAt   string          `json:"created_at"`
-	Heat        ExportHeat      `json:"heat"`
-	Divergence  *ExportDiv      `json:"divergence,omitempty"`
-	LoneWolf    *ExportLoneWolf `json:"lone_wolf,omitempty"`
-	WhyDistinct []string        `json:"why_distinct"`
+	FullName   string `json:"full_name"`
+	URL        string `json:"url"`
+	CompareURL string `json:"compare_url"`
+	Owner      string `json:"owner"`
+	Stars      int    `json:"stars"`
+	Forks      int    `json:"forks"`
+	OpenIssues int    `json:"open_issues"`
+	Language   string `json:"language,omitempty"`
+	PushedAt   string `json:"pushed_at"`
+	CreatedAt  string `json:"created_at"`
+
+	// Enriched is true when this fork's compare (divergence) actually ran. When
+	// false, Divergence is absent (omitted) rather than reported as zero — the
+	// fork was skipped at the rate-limit reserve, not found inert.
+	Enriched bool `json:"enriched"`
+
+	Heat        ExportHeat        `json:"heat"`
+	Components  []ExportComponent `json:"components,omitempty"`
+	Divergence  *ExportDiv        `json:"divergence,omitempty"`
+	LoneWolf    *ExportLoneWolf   `json:"lone_wolf,omitempty"`
+	WhyDistinct []string          `json:"why_distinct"`
+
+	// Cluster + novelty fields (T9). Cluster fields use omitempty +
+	// clusterId-presence gating: a fork without a clusterId has NO cluster
+	// fields in JSON; a clustered fork with zero novelty has noveltyScore: 0
+	// (gated at the serializer level in cmd/spn/forks.go for the NDJSON path).
+	// In this snake_case-style export, all cluster fields use omitempty so
+	// consumers can distinguish "not computed" from "computed and zero".
+	ClusterID          string  `json:"cluster_id,omitempty"`
+	ClusterLabel       string  `json:"cluster_label,omitempty"`
+	NoveltyScore       float64 `json:"novelty_score,omitempty"`
+	ClusterMemberCount int     `json:"cluster_member_count,omitempty"`
+	ChangeImpact       float64 `json:"change_impact,omitempty"`
 }
 
-// ExportLoneWolf is the lone wolf signal export.
+// ExportLoneWolf is the lone wolf signal export (v2 shape).
 type ExportLoneWolf struct {
-	Detected       bool    `json:"detected"`
-	Strength       float64 `json:"strength"`
-	Contributors   int     `json:"contributors"`
-	LinesPerCommit float64 `json:"lines_per_commit"`
-	NetAdditions   int     `json:"net_additions"`
-	Label          string  `json:"label"`
+	Detected          bool    `json:"detected"`
+	Strength          float64 `json:"strength"`
+	Archetype         string  `json:"archetype"`
+	Label             string  `json:"label"`
+	EffectiveContribs int     `json:"effectiveContribs"`
+	MeaningfulCommits int     `json:"meaningfulCommits"`
+	MNA               int     `json:"mna"`
+	CommitSpanDays    float64 `json:"commitSpanDays"`
+	FileSpread        float64 `json:"fileSpread"`
+	RevertCount       int     `json:"revertCount"`
+	IsSquash          bool    `json:"isSquash"`
+	MsgQualityScore   float64 `json:"msgQualityScore"`
 }
 
 // ExportHeat is the heat score section.
 type ExportHeat struct {
-	Score      float64 `json:"score"`
-	Tier       int     `json:"tier"`
-	Confidence float64 `json:"confidence"`
+	Score      float64   `json:"score"`
+	Tier       int       `json:"tier"`
+	Confidence float64   `json:"confidence"`
+	Trust      float64   `json:"trust,omitempty"`
+	TierScores []float64 `json:"tier_scores,omitempty"`
+	Penalties  []string  `json:"penalties,omitempty"`
+}
+
+// ExportComponent is one entry in the per-fork component breakdown.
+type ExportComponent struct {
+	Name   string  `json:"name"`
+	Points float64 `json:"points"`
+	Max    float64 `json:"max"`
+	Raw    float64 `json:"raw"`
 }
 
 // ExportDiv is the divergence data from compare.
@@ -180,6 +226,18 @@ func (m *Model) doExport(toExport []ScoredFork, filename string) tea.Cmd {
 		}
 
 		for _, sf := range toExport {
+			efHeat := ExportHeat{
+				Score:      sf.Heat.Score,
+				Tier:       sf.Heat.Tier,
+				Confidence: sf.Heat.Confidence,
+				Trust:      sf.Heat.Trust,
+				Penalties:  sf.Heat.Penalties,
+			}
+			if sf.Heat.TierScores != [3]float64{} {
+				ts := sf.Heat.TierScores
+				efHeat.TierScores = ts[:]
+			}
+
 			ef := ExportFork{
 				FullName:   sf.Fork.ID,
 				URL:        sf.Fork.URL,
@@ -190,33 +248,63 @@ func (m *Model) doExport(toExport []ScoredFork, filename string) tea.Cmd {
 				Language:   sf.Fork.Language,
 				PushedAt:   sf.Fork.PushedAt.Format(time.RFC3339),
 				CreatedAt:  sf.Fork.CreatedAt.Format(time.RFC3339),
-				Heat: ExportHeat{
-					Score:      sf.Heat.Score,
-					Tier:       sf.Heat.Tier,
-					Confidence: sf.Heat.Confidence,
-				},
+				Enriched:   sf.Enriched,
+				Heat:       efHeat,
 				CompareURL: forge.CompareURL(auth.Provider, auth.Host,
 					parent.FullName, parent.DefaultBranch, sf.Fork.Owner, sf.Fork.DefaultBranch),
 			}
 
 			ef.Divergence = forgeT2ToExportDiv(sf.T2)
+			if sf.Enriched {
+				data.EnrichedCount++
+			}
 
-			// Lone wolf
-			if sf.Heat.LoneWolf != nil && sf.Heat.LoneWolf.Detected {
-				lw := sf.Heat.LoneWolf
+			// Components (v2 point budget breakdown).
+			if len(sf.Heat.Components) > 0 {
+				ef.Components = make([]ExportComponent, 0, len(sf.Heat.Components))
+				for _, c := range sf.Heat.Components {
+					ef.Components = append(ef.Components, ExportComponent{
+						Name:   c.Name,
+						Points: c.Points,
+						Max:    c.Max,
+						Raw:    c.Raw,
+					})
+				}
+			}
+
+			// Cluster + novelty fields (populated only if the cluster
+			// pipeline produced results for this fork).
+			ef.ClusterID = sf.Heat.ClusterID
+			ef.ClusterLabel = sf.Heat.ClusterLabel
+			ef.NoveltyScore = sf.Heat.NoveltyScore
+			ef.ClusterMemberCount = sf.Heat.ClusterMemberCount
+			ef.ChangeImpact = sf.Heat.ChangeImpact
+
+			// Lone wolf (v2)
+			if sf.Heat.LoneWolfV2 != nil && sf.Heat.LoneWolfV2.Detected {
+				lw := sf.Heat.LoneWolfV2
 				ef.LoneWolf = &ExportLoneWolf{
-					Detected:       true,
-					Strength:       lw.Strength,
-					Contributors:   lw.Contributors,
-					LinesPerCommit: lw.LinesPerCommit,
-					NetAdditions:   lw.NetAdditions,
-					Label:          lw.Label,
+					Detected:          true,
+					Strength:          lw.Strength,
+					Archetype:         lw.Archetype.String(),
+					Label:             lw.Label,
+					EffectiveContribs: lw.EffectiveContribs,
+					MeaningfulCommits: lw.MeaningfulCommits,
+					MNA:               lw.MNA,
+					CommitSpanDays:    lw.CommitSpanDays,
+					FileSpread:        lw.FileSpread,
+					RevertCount:       lw.RevertCount,
+					IsSquash:          lw.IsSquash,
+					MsgQualityScore:   lw.MsgQualityScore,
 				}
 			}
 
 			ef.WhyDistinct = GenerateWhyDistinct(sf, parent)
 			data.Forks = append(data.Forks, ef)
 		}
+
+		data.TotalCount = len(data.Forks)
+		data.Degraded = data.EnrichedCount < data.TotalCount
 
 		jsonData, err := json.MarshalIndent(data, "", "  ")
 		if err != nil {
@@ -256,11 +344,14 @@ func GenerateWhyDistinct(sf ScoredFork, parent *forge.ParentData) []string {
 		}
 	}
 
-	// Lone wolf
-	if sf.Heat.LoneWolf != nil && sf.Heat.LoneWolf.Detected {
-		lw := sf.Heat.LoneWolf
-		reasons = append(reasons, fmt.Sprintf("%s: %d contributor(s), ~%.0f lines/commit",
-			lw.Label, lw.Contributors, lw.LinesPerCommit))
+	// Lone wolf (v2)
+	if sf.Heat.LoneWolfV2 != nil && sf.Heat.LoneWolfV2.Detected {
+		lw := sf.Heat.LoneWolfV2
+		archetype := lw.Label
+		if lw.Archetype.String() != "" {
+			archetype = lw.Archetype.String()
+		}
+		reasons = append(reasons, fmt.Sprintf("%s: strength %.0f%%", archetype, lw.Strength*100))
 	}
 
 	// From fork metadata

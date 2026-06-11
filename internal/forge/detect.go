@@ -21,11 +21,22 @@ import (
 func ParseRepoURL(raw, defaultHost string, forceProvider Provider) (provider Provider, host, owner, repo string, err error) {
 	input := raw
 
-	// Handle shorthand "owner/repo" (no dots, no scheme) — treat as defaultHost/owner/repo.
-	if !strings.Contains(raw, "://") && !strings.Contains(raw, ".") {
-		input = "https://" + defaultHost + "/" + raw
-	} else if !strings.Contains(raw, "://") {
-		input = "https://" + raw
+	// Normalise scheme-less input. The first path segment decides whether this is
+	// shorthand ("owner/repo") or a host-prefixed URL ("github.com/owner/repo").
+	// A host segment contains a "." (domain) or ":" (port); an owner segment does
+	// not. Checking only the first segment — rather than the whole string — means
+	// a repo name with a dot (e.g. "ggml-org/llama.cpp") is still treated as
+	// shorthand instead of being mistaken for a hostname.
+	if !strings.Contains(raw, "://") {
+		firstSeg := raw
+		if i := strings.IndexByte(raw, '/'); i >= 0 {
+			firstSeg = raw[:i]
+		}
+		if strings.ContainsAny(firstSeg, ".:") {
+			input = "https://" + raw
+		} else {
+			input = "https://" + defaultHost + "/" + raw
+		}
 	}
 
 	u, parseErr := url.Parse(input)
@@ -67,12 +78,5 @@ func ParseRepoURL(raw, defaultHost string, forceProvider Provider) (provider Pro
 		)
 	}
 
-	slog.Info("parsed repo URL",
-		"raw", raw,
-		"provider", provider.String(),
-		"host", host,
-		"owner", owner,
-		"repo", repo,
-	)
 	return provider, host, owner, repo, nil
 }

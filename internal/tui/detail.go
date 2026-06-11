@@ -2,7 +2,9 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
 
@@ -41,36 +43,24 @@ func (m Model) viewDetail() string {
 	// Why it's hot
 	b.WriteString("│ 🔥 Why it's hot:" + pad(boxWidth-20, " ") + " │\n")
 
-	// Component breakdown
-	if len(sf.Heat.Components) > 0 {
-		for _, c := range sf.Heat.Components {
-			if c.Points < 0.5 {
-				continue
-			}
-			pct := c.Points / c.Max
-			arrow := "→"
-			if pct > 0.75 {
-				arrow = "↑"
-			} else if pct < 0.25 {
-				arrow = "↓"
-			}
-			desc := componentDescription(c.Name, c.Raw, c.Points, c.Max)
-			line := fmt.Sprintf("│  %s %-48s │", arrow, desc)
-			if len(line) > boxWidth+2 {
-				line = line[:boxWidth+1] + "│"
-			}
-			b.WriteString(line + "\n")
+	// Component breakdown (v2)
+	for _, c := range sf.Heat.Components {
+		if c.Points < 0.5 {
+			continue
 		}
-	} else if len(sf.Heat.Signals) > 0 {
-		// Legacy signal breakdown
-		for _, sig := range sf.Heat.Signals {
-			contribution := sig.Value * sig.Weight * 100
-			if contribution < 0.5 {
-				continue
-			}
-			desc := fmt.Sprintf("%-15s +%.0f", sig.Name, contribution)
-			b.WriteString(fmt.Sprintf("│  → %-48s │\n", desc))
+		pct := c.Points / c.Max
+		arrow := "→"
+		if pct > 0.75 {
+			arrow = "↑"
+		} else if pct < 0.25 {
+			arrow = "↓"
 		}
+		desc := componentDescription(c.Name, c.Raw, c.Points, c.Max)
+		line := fmt.Sprintf("│  %s %-48s │", arrow, desc)
+		if len(line) > boxWidth+2 {
+			line = line[:boxWidth+1] + "│"
+		}
+		b.WriteString(line + "\n")
 	}
 
 	// Penalties
@@ -81,30 +71,23 @@ func (m Model) viewDetail() string {
 		}
 	}
 
-	// Lone wolf section
+	// Lone wolf section (v2)
 	lwV2 := sf.Heat.LoneWolfV2
-	lwV1 := sf.Heat.LoneWolf
-	if (lwV2 != nil && lwV2.Detected) || (lwV1 != nil && lwV1.Detected) {
+	if lwV2 != nil && lwV2.Detected {
 		b.WriteString("├" + hr + "┤\n")
 
-		if lwV2 != nil && lwV2.Detected {
-			archLabel := lwV2.Label
-			if lwV2.Archetype.String() != "" {
-				archLabel = lwV2.Archetype.String()
-			}
-			wolfStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Bold(true)
-			b.WriteString(fmt.Sprintf("│ %s", wolfStyle.Render("🐺 The "+archLabel)))
-			b.WriteString(pad(boxWidth-8-len(archLabel), " ") + " │\n")
-			b.WriteString(fmt.Sprintf("│  Solo dev, active over %.0f days%s │\n",
-				lwV2.CommitSpanDays, pad(boxWidth-32-len(fmt.Sprintf("%.0f", lwV2.CommitSpanDays)), " ")))
-			b.WriteString(fmt.Sprintf("│  %d commits · MNA %d%s │\n",
-				lwV2.MeaningfulCommits, lwV2.MNA,
-				pad(boxWidth-22-len(fmt.Sprintf("%d", lwV2.MeaningfulCommits))-len(fmt.Sprintf("%d", lwV2.MNA)), " ")))
-		} else if lwV1 != nil && lwV1.Detected {
-			wolfStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Bold(true)
-			b.WriteString(fmt.Sprintf("│ %s (strength %.0f%%)\n",
-				wolfStyle.Render("["+lwV1.Label+"]"), lwV1.Strength*100))
+		archLabel := lwV2.Label
+		if lwV2.Archetype.String() != "" {
+			archLabel = lwV2.Archetype.String()
 		}
+		wolfStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Bold(true)
+		b.WriteString(fmt.Sprintf("│ %s", wolfStyle.Render("🐺 The "+archLabel)))
+		b.WriteString(pad(boxWidth-8-len(archLabel), " ") + " │\n")
+		b.WriteString(fmt.Sprintf("│  Solo dev, active over %.0f days%s │\n",
+			lwV2.CommitSpanDays, pad(boxWidth-32-len(fmt.Sprintf("%.0f", lwV2.CommitSpanDays)), " ")))
+		b.WriteString(fmt.Sprintf("│  %d commits · MNA %d%s │\n",
+			lwV2.MeaningfulCommits, lwV2.MNA,
+			pad(boxWidth-22-len(fmt.Sprintf("%d", lwV2.MeaningfulCommits))-len(fmt.Sprintf("%d", lwV2.MNA)), " ")))
 	}
 
 	// Branch info
@@ -112,6 +95,55 @@ func (m Model) viewDetail() string {
 		b.WriteString("├" + hr + "┤\n")
 		b.WriteString(fmt.Sprintf("│ ⚠  Work is on branch: %-28s │\n", sf.T2.ActiveBranch))
 		b.WriteString(fmt.Sprintf("│    [y] Yank clone & checkout command%-14s │\n", ""))
+	}
+
+	// Cluster info (only present after a successful cluster pipeline run).
+	if sf.Heat.ClusterID != "" {
+		b.WriteString("├" + hr + "┤\n")
+		label := sf.Heat.ClusterLabel
+		if label == "" {
+			label = sf.Heat.ClusterID
+		}
+		// "noise" gets a minimal block — no label noise, no siblings.
+		isNoise := sf.Heat.ClusterID == "noise"
+
+		line := fmt.Sprintf("│ Cluster: %s", label)
+		if !isNoise && sf.Heat.ClusterMemberCount > 0 {
+			line += fmt.Sprintf(" (%d members)", sf.Heat.ClusterMemberCount)
+		}
+		b.WriteString(fitBoxLine(line, boxWidth) + "\n")
+
+		if sf.Heat.NoveltyScore > 0 {
+			nl := fmt.Sprintf("│  Novelty: %.2f", sf.Heat.NoveltyScore)
+			b.WriteString(fitBoxLine(nl, boxWidth) + "\n")
+		}
+		if sf.Heat.ChangeImpact > 0 {
+			ci := fmt.Sprintf("│  ChangeImpact: %.2f", sf.Heat.ChangeImpact)
+			b.WriteString(fitBoxLine(ci, boxWidth) + "\n")
+		}
+
+		if !isNoise {
+			siblings := m.collectSiblings(sf.Heat.ClusterID, sf.Fork.ID)
+			if len(siblings) > 0 {
+				const maxShown = 5
+				header := fmt.Sprintf("│  Siblings (%d):", len(siblings))
+				b.WriteString(fitBoxLine(header, boxWidth) + "\n")
+				shown := siblings
+				extra := 0
+				if len(shown) > maxShown {
+					extra = len(shown) - maxShown
+					shown = shown[:maxShown]
+				}
+				for _, sib := range shown {
+					row := "│    " + sib
+					b.WriteString(fitBoxLine(row, boxWidth) + "\n")
+				}
+				if extra > 0 {
+					more := fmt.Sprintf("│    ... and %d more", extra)
+					b.WriteString(fitBoxLine(more, boxWidth) + "\n")
+				}
+			}
+		}
 	}
 
 	// Metadata
@@ -213,4 +245,78 @@ func pad(n int, ch string) string {
 		return ""
 	}
 	return strings.Repeat(ch, n)
+}
+
+// collectSiblings returns the fork IDs of other members of the given
+// cluster, sorted by Heat.Score descending. The caller's own fork (by
+// ID) is excluded.
+func (m Model) collectSiblings(clusterID, selfID string) []string {
+	type sib struct {
+		id    string
+		score float64
+	}
+	var sibs []sib
+	for i := range m.forks {
+		if m.forks[i].Heat.ClusterID != clusterID {
+			continue
+		}
+		if m.forks[i].Fork.ID == selfID {
+			continue
+		}
+		sibs = append(sibs, sib{
+			id:    m.forks[i].Fork.ID,
+			score: m.forks[i].Heat.Score,
+		})
+	}
+	sort.SliceStable(sibs, func(i, j int) bool {
+		return sibs[i].score > sibs[j].score
+	})
+	out := make([]string, 0, len(sibs))
+	for _, s := range sibs {
+		out = append(out, s.id)
+	}
+	return out
+}
+
+// fitBoxLine pads or truncates a line so it fits inside the detail box
+// of width boxWidth, and appends the closing "│". The input string is
+// expected to start with the opening "│ ".
+//
+// Width is computed in runes via utf8.RuneCountInString, and truncation
+// happens on rune boundaries, so multi-byte box-drawing characters
+// (e.g. "│") and other non-ASCII runes are handled correctly. Note that
+// "rune count" is not the same as terminal display width — CJK and wide
+// emoji will under-count, but the detail view does not contain such
+// content, so rune count is sufficient here.
+func fitBoxLine(line string, boxWidth int) string {
+	// boxWidth is the total width of the box including borders, so the
+	// content area between the two "│" characters is boxWidth-2 wide.
+	// The closing "│" is appended at column boxWidth-1 (0-indexed) so
+	// the line as-is must occupy boxWidth-1 columns (runes) before the
+	// trailing "│" is added.
+	target := boxWidth - 1
+	width := utf8.RuneCountInString(line)
+	if width > target {
+		// Truncate at a rune boundary, leaving room for the closing border.
+		line = runeTruncate(line, target)
+	} else {
+		line += pad(target-width, " ")
+	}
+	return line + "│"
+}
+
+// runeTruncate returns the longest prefix of s that contains at most
+// target runes. Truncation always happens on a rune boundary.
+func runeTruncate(s string, target int) string {
+	if target <= 0 {
+		return ""
+	}
+	r := 0
+	for j := range s {
+		if r >= target {
+			return s[:j]
+		}
+		r++
+	}
+	return s
 }
