@@ -244,11 +244,14 @@ func main() {
 	if cfg, cerr := config.LoadDefault(); cerr != nil {
 		fmt.Fprintf(os.Stderr, "warning: ignoring spoon config: %v\n", cerr)
 	} else if cfg != nil {
-		embedderBackend = strings.ToLower(config.Coalesce(embedderBackend, os.Getenv("SPOON_EMBEDDER_BACKEND"), cfg.Embedder.Backend))
-		embedderURL = config.Coalesce(embedderURL, os.Getenv("SPOON_EMBEDDER_URL"), cfg.Embedder.Endpoint)
-		embedderModel = config.Coalesce(embedderModel, cfg.Embedder.Model)
-		sidecarEndpoint = config.Coalesce(sidecarEndpoint, os.Getenv("SPOON_SIDECAR_ENDPOINT"), cfg.Embedder.SidecarEndpoint)
-		labelerModel = config.Coalesce(labelerModel, cfg.Embedder.LabelerModel)
+		// Resolve flag > env first, then layer the config backend-aware (a saved
+		// backend's endpoint/model is not inherited when a different backend is
+		// selected).
+		be := strings.ToLower(config.Coalesce(embedderBackend, os.Getenv("SPOON_EMBEDDER_BACKEND")))
+		eu := config.Coalesce(embedderURL, os.Getenv("SPOON_EMBEDDER_URL"))
+		se := config.Coalesce(sidecarEndpoint, os.Getenv("SPOON_SIDECAR_ENDPOINT"))
+		embedderBackend, embedderURL, embedderModel, sidecarEndpoint, labelerModel =
+			cfg.LayerEmbedder(be, eu, embedderModel, se, labelerModel)
 	}
 
 	_ = concurrency // TODO: pass to auth overrides

@@ -269,11 +269,13 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 	if cfg, cerr := config.LoadDefault(); cerr != nil {
 		emitConfigWarning(stderr, cerr)
 	} else if cfg != nil {
-		opts.Cluster.Backend = strings.ToLower(config.Coalesce(opts.Cluster.Backend, os.Getenv("SPOON_EMBEDDER_BACKEND"), cfg.Embedder.Backend))
-		opts.Cluster.Endpoint = config.Coalesce(opts.Cluster.Endpoint, os.Getenv("SPOON_EMBEDDER_URL"), cfg.Embedder.Endpoint)
-		opts.Cluster.ModelOverride = config.Coalesce(opts.Cluster.ModelOverride, cfg.Embedder.Model)
-		opts.Cluster.SidecarEndpoint = config.Coalesce(opts.Cluster.SidecarEndpoint, os.Getenv("SPOON_SIDECAR_ENDPOINT"), cfg.Embedder.SidecarEndpoint)
-		opts.Cluster.LabelerModel = config.Coalesce(opts.Cluster.LabelerModel, cfg.Embedder.LabelerModel)
+		// flag > env, then layer config backend-aware (see config.LayerEmbedder):
+		// a saved backend's endpoint/model isn't inherited under a different backend.
+		be := strings.ToLower(config.Coalesce(opts.Cluster.Backend, os.Getenv("SPOON_EMBEDDER_BACKEND")))
+		eu := config.Coalesce(opts.Cluster.Endpoint, os.Getenv("SPOON_EMBEDDER_URL"))
+		se := config.Coalesce(opts.Cluster.SidecarEndpoint, os.Getenv("SPOON_SIDECAR_ENDPOINT"))
+		opts.Cluster.Backend, opts.Cluster.Endpoint, opts.Cluster.ModelOverride, opts.Cluster.SidecarEndpoint, opts.Cluster.LabelerModel =
+			cfg.LayerEmbedder(be, eu, opts.Cluster.ModelOverride, se, opts.Cluster.LabelerModel)
 	}
 
 	ctx := context.Background()

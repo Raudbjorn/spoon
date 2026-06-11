@@ -133,6 +133,29 @@ func Coalesce(vals ...string) string {
 	return ""
 }
 
+// LayerEmbedder applies this config as a defaults layer beneath the given
+// already-resolved (flag > env) embedder values, backend-aware. The backend is
+// adopted from the config only when none was supplied. The backend-specific
+// fields — endpoint, model, sidecar endpoint — are inherited from the config
+// ONLY when the effective backend matches the config's saved backend, so a
+// saved setup for one backend (e.g. openai/OVMS) never leaks its endpoint/model
+// into a run that selects a different backend (e.g. ollama). The labeler model
+// is backend-agnostic and always layered.
+func (c *Config) LayerEmbedder(backend, endpoint, model, sidecarEndpoint, labelerModel string) (rBackend, rEndpoint, rModel, rSidecar, rLabeler string) {
+	rBackend = backend
+	if rBackend == "" {
+		rBackend = strings.ToLower(c.Embedder.Backend)
+	}
+	rEndpoint, rModel, rSidecar = endpoint, model, sidecarEndpoint
+	if c.Embedder.Backend != "" && strings.EqualFold(rBackend, c.Embedder.Backend) {
+		rEndpoint = Coalesce(rEndpoint, c.Embedder.Endpoint)
+		rModel = Coalesce(rModel, c.Embedder.Model)
+		rSidecar = Coalesce(rSidecar, c.Embedder.SidecarEndpoint)
+	}
+	rLabeler = Coalesce(labelerModel, c.Embedder.LabelerModel)
+	return rBackend, rEndpoint, rModel, rSidecar, rLabeler
+}
+
 var (
 	validBackends  = map[string]bool{"": true, "ollama": true, "sidecar": true, "openai": true}
 	validProviders = map[string]bool{"": true, "github": true, "gitlab": true}

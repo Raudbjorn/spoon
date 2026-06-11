@@ -242,21 +242,11 @@ func mergeConfigDefaults(f *setupFlags, c *config.Config) {
 	if f.forgeHost == "" {
 		f.forgeHost = c.Forge.Host
 	}
-	if f.backend == "" {
-		f.backend = strings.ToLower(c.Embedder.Backend)
-	}
-	if f.embedderURL == "" {
-		f.embedderURL = c.Embedder.Endpoint
-	}
-	if f.embedderModel == "" {
-		f.embedderModel = c.Embedder.Model
-	}
-	if f.sidecarEndpoint == "" {
-		f.sidecarEndpoint = c.Embedder.SidecarEndpoint
-	}
-	if f.labelerModel == "" {
-		f.labelerModel = c.Embedder.LabelerModel
-	}
+	// Backend-aware: don't inherit a saved backend's endpoint/model when the
+	// user (flag/env) selected a different backend — so `setup --embedder-backend
+	// ollama` over a saved openai config "just works".
+	f.backend, f.embedderURL, f.embedderModel, f.sidecarEndpoint, f.labelerModel =
+		c.LayerEmbedder(f.backend, f.embedderURL, f.embedderModel, f.sidecarEndpoint, f.labelerModel)
 }
 
 // writeSetupConfig updates (or creates) the config file. The forge provider is
