@@ -1,6 +1,6 @@
 # Future Work: Behavioral / Execution-Pattern Embeddings for Fork Clustering
 
-**Status:** Deferred from v1 of the fork novelty + cluster subsystem.
+**Status:** Phase B in progress with `Snowflake/snowflake-arctic-embed-l-v2.0`. Originally deferred from v1; Phase A rejected the CodeExecutor proposal on 2026-05-11 (Δ = −0.0826); the 4-model panel re-test on 2026-05-13 cleared the +0.05 gate with Snowflake/snowflake-arctic-embed-l-v2.0 (Δ = +0.1196). The SFR-2B escalation prescribed by the decision matrix did not cross the +0.15 acceptance threshold, so the panel winner (a general-purpose long-context encoder, not a code-specific one) takes the Phase B slot. Full write-up: `experiments/started/behavioral-embeddings/RESULTS_PANEL.md`. Phase B sidecar plan: `docs/superpowers/plans/2026-05-13-behavioral-embeddings-sidecar.md`.
 **Parent plan:** `plan-integrating-this-research-declarative-puddle.md`
 **Estimated effort:** 2–3 weeks engineering + evaluation.
 

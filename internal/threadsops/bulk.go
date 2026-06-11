@@ -9,11 +9,51 @@ import (
 
 const defaultBulkWorkers = 4
 
+// ResolveAllOptions configures the bulk-resolve flow.
+type ResolveAllOptions struct {
+	// SkipHumanThreads is the spn policy: threads where RequiresBody=true are
+	// added to Skipped with reason "requires_body" instead of being resolved.
+	// Legacy spoon behavior corresponds to SkipHumanThreads=false.
+	SkipHumanThreads bool
+	// OutdatedOnly limits the operation to threads with IsOutdated=true. Non-
+	// outdated threads land in Skipped with reason "not_outdated". When false,
+	// every unresolved thread is considered.
+	OutdatedOnly bool
+	// DryRun previews the bulk mutation. When true, the BulkResult.Succeeded
+	// slice lists thread IDs that WOULD have been resolved, the per-thread
+	// resolveReviewThread mutation is NOT issued, and BulkResult.DryRun is
+	// set so JSON consumers can distinguish a preview from a real run.
+	// Skipped is unaffected — policy/filter decisions still run.
+	DryRun bool
+}
+
+// UnresolveAllOptions configures the bulk-unresolve flow.
+type UnresolveAllOptions struct {
+	// DryRun previews the operation: BulkResult.Succeeded lists thread IDs that
+	// WOULD have been unresolved, but the unresolveReviewThread mutation is NOT
+	// issued. BulkResult.DryRun is set on output.
+	DryRun bool
+}
+
 // ResolveAll resolves every unresolved thread on the PR. When skipHumanThreads
 // is true (the spn policy), threads where RequiresBody=true are added to
 // res.Skipped with reason "requires_body" instead of being resolved. The
 // legacy spoon behavior is preserved by passing skipHumanThreads=false.
+//
+// This is a thin wrapper over ResolveAllWithOptions retained for callers that
+// don't need the --outdated filter.
 func ResolveAll(ctx context.Context, api API, owner, repo string, number int, skipHumanThreads bool) (*BulkResult, *OpError) {
+	return ResolveAllWithOptions(ctx, api, owner, repo, number, ResolveAllOptions{SkipHumanThreads: skipHumanThreads})
+}
+
+// ResolveAllWithOptions is the options-bearing form of ResolveAll. It supports
+// the OutdatedOnly modifier from gh-pr-resolve, which filters the bulk
+// operation to only threads where IsOutdated=true. The human-commenter policy
+// (SkipHumanThreads) is applied on top of that filter.
+//
+// Skip-reason precedence: a thread that is both not outdated and human-only
+// records reason "not_outdated" (the filter check runs first).
+func ResolveAllWithOptions(ctx context.Context, api API, owner, repo string, number int, opts ResolveAllOptions) (*BulkResult, *OpError) {
 	_, raw, err := api.FetchPR(ctx, owner, repo, number, github.ThreadStateUnresolved)
 	if err != nil {
 		if op := rateLimitedOpError(err); op != nil {
@@ -21,21 +61,31 @@ func ResolveAll(ctx context.Context, api API, owner, repo string, number int, sk
 		}
 		return nil, &OpError{Code: OpCodeUpstream, Message: err.Error(), Retryable: true}
 	}
-	res := &BulkResult{Succeeded: []string{}, Failed: []BulkFailure{}, Skipped: []BulkSkip{}}
+	res := &BulkResult{Succeeded: []string{}, Failed: []BulkFailure{}, Skipped: []BulkSkip{}, DryRun: opts.DryRun}
 	var toResolve []string
 	for _, t := range raw {
-		if skipHumanThreads && t.RequiresBody() {
+		if opts.OutdatedOnly && !t.IsOutdated {
+			res.Skipped = append(res.Skipped, BulkSkip{ID: t.ID, Reason: "not_outdated"})
+			continue
+		}
+		if opts.SkipHumanThreads && t.RequiresBody() {
 			res.Skipped = append(res.Skipped, BulkSkip{ID: t.ID, Reason: "requires_body"})
 			continue
 		}
 		toResolve = append(toResolve, t.ID)
 	}
-	runBulk(ctx, api, toResolve, true, res)
+	runBulk(ctx, api, toResolve, true, res, opts.DryRun)
 	return res, nil
 }
 
 // UnresolveAll unresolves every resolved thread on the PR. Skipped is always empty.
 func UnresolveAll(ctx context.Context, api API, owner, repo string, number int) (*BulkResult, *OpError) {
+	return UnresolveAllWithOptions(ctx, api, owner, repo, number, UnresolveAllOptions{})
+}
+
+// UnresolveAllWithOptions is the options-bearing form of UnresolveAll. Honors
+// UnresolveAllOptions.DryRun.
+func UnresolveAllWithOptions(ctx context.Context, api API, owner, repo string, number int, opts UnresolveAllOptions) (*BulkResult, *OpError) {
 	_, raw, err := api.FetchPR(ctx, owner, repo, number, github.ThreadStateResolved)
 	if err != nil {
 		if op := rateLimitedOpError(err); op != nil {
@@ -43,16 +93,16 @@ func UnresolveAll(ctx context.Context, api API, owner, repo string, number int) 
 		}
 		return nil, &OpError{Code: OpCodeUpstream, Message: err.Error(), Retryable: true}
 	}
-	res := &BulkResult{Succeeded: []string{}, Failed: []BulkFailure{}, Skipped: []BulkSkip{}}
+	res := &BulkResult{Succeeded: []string{}, Failed: []BulkFailure{}, Skipped: []BulkSkip{}, DryRun: opts.DryRun}
 	ids := make([]string, len(raw))
 	for i, t := range raw {
 		ids[i] = t.ID
 	}
-	runBulk(ctx, api, ids, false, res)
+	runBulk(ctx, api, ids, false, res, opts.DryRun)
 	return res, nil
 }
 
-func runBulk(ctx context.Context, api API, ids []string, resolve bool, res *BulkResult) {
+func runBulk(ctx context.Context, api API, ids []string, resolve bool, res *BulkResult, dryRun bool) {
 	var mu sync.Mutex
 	jobs := make(chan string)
 	var wg sync.WaitGroup
@@ -69,10 +119,12 @@ func runBulk(ctx context.Context, api API, ids []string, resolve bool, res *Bulk
 						return
 					}
 					var err error
-					if resolve {
-						err = api.ResolveThread(ctx, id)
-					} else {
-						err = api.UnresolveThread(ctx, id)
+					if !dryRun {
+						if resolve {
+							err = api.ResolveThread(ctx, id)
+						} else {
+							err = api.UnresolveThread(ctx, id)
+						}
 					}
 					mu.Lock()
 					if err != nil {

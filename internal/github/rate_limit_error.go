@@ -78,11 +78,6 @@ func detectRateLimitFromHTTPError(err error) *RateLimitError {
 				rl.ResetAt = time.Unix(epoch, 0)
 			}
 		}
-		if v := h.Get("X-RateLimit-Remaining"); v != "" {
-			if rem, perr := strconv.Atoi(v); perr == nil {
-				rl.Remaining = rem
-			}
-		}
 		return rl
 	}
 

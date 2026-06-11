@@ -10,6 +10,7 @@ import (
 	"io"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/svnbjrn/spoon/internal/cluster"
@@ -26,6 +27,26 @@ type Options struct {
 	TopN         int
 	BotAllowlist map[string]bool
 	HeatWeights  map[string]float64
+
+	// Budget caps how many forks get the expensive compare (T2) / contributors
+	// (T3) calls. When > 0, the forks to spend on are chosen by an
+	// optimal-stopping ("secretary problem") gate over a cheap divergence
+	// signal, instead of the top-TopN-by-surface-score slice — so the budget
+	// lands on forks that likely diverged, not the most popular ones. 0 = no
+	// cap (the TopN / full-tier behavior applies).
+	Budget int
+
+	// ShortlistN, when > 0, buffers all results, computes each fork's Robbins
+	// expected rank (with confidence) over the enriched set, and emits only the
+	// top-N by expected rank. Forces collect-then-emit semantics.
+	ShortlistN int
+
+	// ReserveDisabled turns off the automatic rate-limit reserve floor
+	// (ReserveHeadroom). By default the pipeline stops enriching when the forge's
+	// headroom drops below the reserve and marks the remaining forks degraded
+	// (Result.BudgetSkip), so a scan can't drain the rate window to zero. Set
+	// this (e.g. from SPOON_NO_RESERVE=1) to drain the full budget in one pass.
+	ReserveDisabled bool
 
 	// Cluster configures the optional post-T2 cluster pipeline. When
 	// Cluster.Enabled is true and at least one fork is eligible, Stream will
@@ -60,10 +81,22 @@ type ClusterOptions struct {
 	NonInteractive  bool
 	Refresh         bool
 
+	// Backend selects the Embedder implementation. Empty defaults to "ollama".
+	Backend string
+
+	// SidecarEndpoint is the http://host:port of the Python sidecar process,
+	// used when Backend=="sidecar".
+	SidecarEndpoint string
+
 	// Labeler, when non-nil, overrides automatic construction from
 	// LabelerEndpoint + LabelerModel. Tests inject a stub directly via this
 	// field; production callers usually pass LabelerEndpoint instead.
 	Labeler cluster.Labeler
+
+	// CentralityBackend is forwarded to cluster.PipelineOptions. "" or
+	// "directory" → directory-centrality proxy. "mdg" → Module Dependency
+	// Graph. See `--full-mdg` on `spn forks list`.
+	CentralityBackend string
 
 	// embedderForTest is the test seam for cluster integration tests. Tests
 	// inject a stub embed.Embedder via SetEmbedderForTest; the field is
@@ -89,11 +122,41 @@ type Result struct {
 	Heat heat.HeatResult
 	Err  *Error
 
+	// ExpectedRank / RankConfidence are set only when ShortlistN > 0 (Robbins
+	// expected-rank shortlist). Lower ExpectedRank ≈ more likely the best fork;
+	// RankConfidence mirrors Heat.Confidence (tier reached).
+	ExpectedRank   float64
+	RankConfidence float64
+
 	// ClusterSkip is set when the cluster pipeline was enabled but skipped
 	// for a non-fatal reason (embedder unreachable, no model, etc.). Only the
 	// first Result in the batch carries it; downstream consumers fan out a
 	// single user-facing warning. Nil when clustering ran or was disabled.
 	ClusterSkip *ClusterSkip
+
+	// T3Skip is set when the contributors (T3) enrichment was skipped for a
+	// non-fatal reason — most commonly GitHub's stats endpoint returning 202
+	// (stats not yet computed). The fork is still emitted with its T1+T2 data
+	// and heat; consumers surface a warning rather than dropping the fork.
+	// Nil when T3 ran, was not requested, or failed fatally (rate limit).
+	T3Skip *StageSkip
+
+	// BudgetSkip is set when a fork that WOULD have been enriched was skipped
+	// because the rate-limit reserve floor (ReserveHeadroom) was reached. The
+	// fork is emitted with T1 data only; consumers should mark it un-enriched /
+	// the run degraded rather than reporting its (absent) divergence as zero.
+	// Re-running after the rate window resets backfills it from cache. Nil when
+	// the fork was enriched, or was never eligible for enrichment by design.
+	BudgetSkip *StageSkip
+}
+
+// StageSkip describes a non-fatal, per-fork enrichment skip. Unlike Error it
+// does not drop the fork from output — the fork is emitted with whatever data
+// did resolve, and the skip is surfaced as a warning.
+type StageSkip struct {
+	Stage  string // enrichment stage, e.g. "contributors"
+	ForkID string
+	Reason string
 }
 
 // ClusterSkip describes why the cluster pipeline was skipped for this run.
@@ -176,65 +239,136 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 		scorer := heat.NewScorer(stats)
 
 		type scored struct {
-			fork forge.T1Data
-			res  heat.HeatResult
+			fork    forge.T1Data
+			res     heat.HeatResult
+			promise float64 // cheap divergence signal (ComparePromise), survives the sort
 		}
 		all := make([]scored, len(t1Forks))
 		now := time.Now()
 		for i, f := range t1Forks {
 			input := buildScoreInput(f, parent, now)
-			all[i] = scored{fork: f, res: scorer.ScoreRaw(input)}
+			all[i] = scored{
+				fork:    f,
+				res:     scorer.ScoreRaw(input),
+				promise: ComparePromise(f, parent.PushedAt),
+			}
 		}
+
+		// Optimal-stopping ("secretary") compare gate (see secretary.go): when a
+		// Budget is set, decide which forks earn the expensive T2/T3 calls by the
+		// cheap divergence signal, in enumeration (arrival) order — before the
+		// surface-score sort below, which only governs output rank.
+		compareByID := make(map[string]bool)
+		if opts.Budget > 0 {
+			promises := make([]float64, len(all))
+			for i, s := range all {
+				promises[i] = s.promise
+			}
+			for i, keep := range SelectByOptimalStopping(promises, opts.Budget) {
+				if keep {
+					compareByID[all[i].fork.ID] = true
+				}
+			}
+		}
+
 		sort.Slice(all, func(i, j int) bool { return all[i].res.Score > all[j].res.Score })
 
 		topN := opts.TopN
 		if topN <= 0 || topN > len(all) {
 			topN = len(all)
 		}
+		// eligible reports whether a fork should get the expensive compare /
+		// contributors calls: the secretary-selected set when a Budget is set,
+		// otherwise the top-N-by-surface-score slice.
+		eligible := func(forkID string, i int) bool {
+			if opts.Budget > 0 {
+				return compareByID[forkID]
+			}
+			return i < topN
+		}
 		tier := opts.Tier
 		if tier == 0 {
 			tier = 3
 		}
+
+		// Up-front request estimate + headroom heads-up, so the user sees the
+		// scope without having to count forks. The live reserve floor below, not
+		// this estimate, governs when enrichment actually stops.
+		if tier >= 2 && len(all) > 0 {
+			fmt.Fprintf(logger, "[triage] %d forks; ~%d+ API requests to enrich at tier %d; rate headroom %.0f%%\n",
+				len(all), EstimateRequests(len(all), tier), tier, provider.Headroom()*100)
+		}
+
 		concurrency := 4
 		if a, _ := provider.Auth(ctx); a.Concurrency > 0 {
 			concurrency = a.Concurrency
 		}
 
-		type rank struct {
-			idx int
-			s   scored
+		// EVPR best-first dispatch (see secretary.go DispatchPriority): workers
+		// claim forks in descending expected-value-per-request order, so the
+		// expensive compare/contributors budget — and any rate window — is spent
+		// on the most-divergent forks first. This is decoupled from `all`'s
+		// surface-score order: dispatchOrder is a separate permutation, so the
+		// eligible() index `i` (and thus the top-N path) is unchanged. A lock-free
+		// atomic cursor hands each position to exactly one worker.
+		priorities := make([]float64, len(all))
+		for i, s := range all {
+			priorities[i] = DispatchPriority(s.fork, parent.PushedAt, s.res.Score)
 		}
-		jobs := make(chan rank)
-		go func() {
-			defer close(jobs)
-			for i, s := range all {
-				select {
-				case <-ctx.Done():
-					return
-				case jobs <- rank{idx: i, s: s}:
-				}
-			}
-		}()
+		dispatchOrder := make([]int, len(all))
+		for i := range dispatchOrder {
+			dispatchOrder[i] = i
+		}
+		sort.SliceStable(dispatchOrder, func(a, b int) bool {
+			return priorities[dispatchOrder[a]] > priorities[dispatchOrder[b]]
+		})
+		var cursor atomic.Int64
 
 		// In streaming mode (no clustering) we forward results to `out` as
 		// they finish. In batch mode (clustering enabled) we instead collect
 		// them into `collected` (mu-guarded) and emit at the end.
-		batchMode := opts.Cluster.Enabled
+		// Clustering and the expected-rank shortlist both require all enriched
+		// results in hand, so either forces collect-then-emit.
+		batchMode := opts.Cluster.Enabled || opts.ShortlistN > 0
 		var (
 			collectedMu sync.Mutex
 			collected   []Result
 		)
 
 		var wg sync.WaitGroup
+		var budgetSkipped atomic.Int64
 		for w := 0; w < concurrency; w++ {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				for j := range jobs {
-					i := j.idx
-					s := j.s
+				for {
+					if ctx.Err() != nil {
+						return
+					}
+					pos := int(cursor.Add(1) - 1)
+					if pos >= len(dispatchOrder) {
+						return
+					}
+					i := dispatchOrder[pos]
+					s := all[i]
 					r := Result{Fork: s.fork, Heat: s.res}
-					if tier >= 2 && i < topN {
+
+					// Auto-budget: an eligible fork is enriched only while the
+					// rate-limit reserve holds. Because dispatch is best-first
+					// (DispatchPriority), the forks enriched before the floor is
+					// reached are the most promising; the rest are flagged
+					// degraded (BudgetSkip), not silently zeroed.
+					enrich := eligible(s.fork.ID, i)
+					if enrich && tier >= 2 && !opts.ReserveDisabled && provider.Headroom() < ReserveHeadroom {
+						enrich = false
+						r.BudgetSkip = &StageSkip{
+							Stage:  "compare",
+							ForkID: s.fork.ID,
+							Reason: "rate-limit reserve reached; re-run after the window resets to enrich (cached results resume)",
+						}
+						budgetSkipped.Add(1)
+					}
+					if tier >= 2 && enrich {
 						t2, terr := provider.Compare(ctx, s.fork, s.fork.DefaultBranch)
 						if terr != nil {
 							var rl *gh.RateLimitError
@@ -256,7 +390,7 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 							r.T2 = &t2
 						}
 					}
-					if tier >= 3 && i < topN && r.Err == nil {
+					if tier >= 3 && enrich && r.Err == nil {
 						t3, terr := provider.Contributors(ctx, s.fork)
 						if terr != nil {
 							var rl *gh.RateLimitError
@@ -272,7 +406,16 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 									},
 								}
 							} else {
-								r.Err = &Error{Code: "upstream_error", Message: terr.Error(), Details: map[string]any{"fork": s.fork.ID, "stage": "contributors"}}
+								// Contributors is optional enrichment (it only feeds
+								// CommitSpanDays into scoring). A failure here —
+								// notably GitHub's 202 "still computing stats" — must
+								// not drop an otherwise-good fork from the output.
+								// Degrade gracefully: skip T3, flag it, keep the fork.
+								r.T3Skip = &StageSkip{
+									Stage:  "contributors",
+									ForkID: s.fork.ID,
+									Reason: terr.Error(),
+								}
 							}
 						} else {
 							r.T3 = &t3
@@ -295,6 +438,11 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 		}
 		wg.Wait()
 
+		if n := budgetSkipped.Load(); n > 0 {
+			fmt.Fprintf(logger, "[triage] degraded: %d/%d forks left un-enriched at the rate-limit reserve; re-run after the window resets to backfill (cached results resume)\n",
+				n, len(all))
+		}
+
 		if !batchMode {
 			return
 		}
@@ -302,12 +450,48 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 		// Cluster pass: build EnrichedFork pointers over `collected`, run the
 		// shared pipeline, then emit each Result. Heat is mutated in place via
 		// the EnrichedFork pointer back into collected[i].Heat.
-		skip := runForksClusterPipeline(ctx, provider, &parent, owner, repo, collected, opts.Cluster, logger)
+		var skip *ClusterSkip
+		if opts.Cluster.Enabled {
+			skip = runForksClusterPipeline(ctx, provider, &parent, owner, repo, collected, opts.Cluster, logger)
+		}
 
-		// Re-sort emitted output by heat desc to match dump's ordering.
-		sort.SliceStable(collected, func(i, j int) bool {
-			return collected[i].Heat.Score > collected[j].Heat.Score
-		})
+		if opts.ShortlistN > 0 {
+			// Robbins expected-rank shortlist: compute over the final heat (after
+			// clustering, so novelty is included). Bound the O(n^2) rank pass to
+			// the strongest rankPoolCap candidates by heat — a fork outside that
+			// pool would not make a small shortlist anyway — so it stays cheap on
+			// huge fork networks.
+			sort.SliceStable(collected, func(i, j int) bool {
+				return collected[i].Heat.Score > collected[j].Heat.Score
+			})
+			pool := len(collected)
+			if pool > rankPoolCap {
+				pool = rankPoolCap
+			}
+			mu := make([]float64, pool)
+			sigma := make([]float64, pool)
+			for i := 0; i < pool; i++ {
+				mu[i] = collected[i].Heat.Score
+				sigma[i] = rankSigma(collected[i].Heat.Confidence)
+			}
+			ranks := expectedRanks(mu, sigma)
+			collected = collected[:pool]
+			for i := range collected {
+				collected[i].ExpectedRank = ranks[i]
+				collected[i].RankConfidence = collected[i].Heat.Confidence
+			}
+			sort.SliceStable(collected, func(i, j int) bool {
+				return collected[i].ExpectedRank < collected[j].ExpectedRank
+			})
+			if len(collected) > opts.ShortlistN {
+				collected = collected[:opts.ShortlistN]
+			}
+		} else {
+			// Re-sort emitted output by heat desc to match dump's ordering.
+			sort.SliceStable(collected, func(i, j int) bool {
+				return collected[i].Heat.Score > collected[j].Heat.Score
+			})
+		}
 
 		for i, r := range collected {
 			if i == 0 && skip != nil {
@@ -374,18 +558,21 @@ func runForksClusterPipeline(
 	}
 
 	pipelineOpts := cluster.PipelineOptions{
-		Enabled:         opts.Enabled,
-		TopN:            opts.TopN,
-		Endpoint:        opts.Endpoint,
-		ModelOverride:   opts.ModelOverride,
-		LabelerEndpoint: opts.LabelerEndpoint,
-		Epsilon:         opts.Epsilon,
-		MinClusterSize:  opts.MinClusterSize,
-		AutoPull:        opts.AutoPull,
-		NoPrompt:        opts.NoPrompt,
-		NonInteractive:  opts.NonInteractive,
-		Refresh:         opts.Refresh,
-		Labeler:         labeler,
+		Enabled:           opts.Enabled,
+		TopN:              opts.TopN,
+		Endpoint:          opts.Endpoint,
+		ModelOverride:     opts.ModelOverride,
+		LabelerEndpoint:   opts.LabelerEndpoint,
+		Epsilon:           opts.Epsilon,
+		MinClusterSize:    opts.MinClusterSize,
+		AutoPull:          opts.AutoPull,
+		NoPrompt:          opts.NoPrompt,
+		NonInteractive:    opts.NonInteractive,
+		Refresh:           opts.Refresh,
+		Labeler:           labeler,
+		CentralityBackend: opts.CentralityBackend,
+		Backend:           opts.Backend,
+		SidecarEndpoint:   opts.SidecarEndpoint,
 	}
 	if opts.embedderForTest != nil {
 		pipelineOpts.EmbedderForTest = opts.embedderForTest

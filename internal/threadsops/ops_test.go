@@ -122,3 +122,50 @@ func TestList_routesRateLimited(t *testing.T) {
 		t.Errorf("expected retry_after_seconds ~90, got %v", opErr.Details["retry_after_seconds"])
 	}
 }
+
+// countingFetcher records every FetchFileContent call so tests can assert
+// that the caching wrapper collapses duplicates.
+type countingFetcher struct {
+	content string
+	calls   int
+	keys    []string
+}
+
+func (c *countingFetcher) FetchFileContent(_ context.Context, owner, repo, path, ref string) (string, error) {
+	c.calls++
+	c.keys = append(c.keys, owner+"/"+repo+"@"+ref+":"+path)
+	return c.content, nil
+}
+
+func TestAttachCodeContext_CachesByPath(t *testing.T) {
+	// Three threads, all anchored to the same file at the same ref: the
+	// caching wrapper should hit the upstream fetcher exactly once.
+	fetch := &countingFetcher{content: "L1\nL2\nL3\nL4\nL5\n"}
+	threads := []ReviewThreadWithPolicy{
+		{ReviewThread: github.ReviewThread{ID: "T1", Path: "a.go", Line: 2}},
+		{ReviewThread: github.ReviewThread{ID: "T2", Path: "a.go", Line: 3}},
+		{ReviewThread: github.ReviewThread{ID: "T3", Path: "a.go", Line: 4}},
+	}
+	attachCodeContext(context.Background(), threads, fetch, "deadbeef", "o", "r", 1)
+	if fetch.calls != 1 {
+		t.Fatalf("FetchFileContent called %d times, want 1 (cache miss expected once)", fetch.calls)
+	}
+	for i, th := range threads {
+		if th.CodeContext == nil {
+			t.Errorf("thread %d has nil CodeContext", i)
+		}
+	}
+}
+
+func TestAttachCodeContext_DistinctPathsNotCollapsed(t *testing.T) {
+	// Sanity: two threads on different files must yield two upstream calls.
+	fetch := &countingFetcher{content: "L1\nL2\nL3\n"}
+	threads := []ReviewThreadWithPolicy{
+		{ReviewThread: github.ReviewThread{ID: "T1", Path: "a.go", Line: 2}},
+		{ReviewThread: github.ReviewThread{ID: "T2", Path: "b.go", Line: 2}},
+	}
+	attachCodeContext(context.Background(), threads, fetch, "deadbeef", "o", "r", 1)
+	if fetch.calls != 2 {
+		t.Fatalf("FetchFileContent called %d times, want 2", fetch.calls)
+	}
+}

@@ -17,6 +17,7 @@ const (
 type ReviewThread struct {
 	ID            string          `json:"id"`
 	IsResolved    bool            `json:"isResolved"`
+	IsOutdated    bool            `json:"isOutdated"` // true if the line this thread anchors to has shifted since the thread was created
 	Path          string          `json:"path"`
 	Line          int             `json:"line"`
 	StartLine     *int            `json:"startLine"`
@@ -27,12 +28,19 @@ type ReviewThread struct {
 }
 
 // ThreadComment is one comment on a review thread.
+//
+// Verbose-only fields (CreatedAt, UpdatedAt, AuthorURL) carry the JSON
+// `omitempty` tag so the compact JSON output stays unchanged when callers clear
+// them via threadsops.StripVerboseFields. The fields are always populated
+// server-side; clearing them at the CLI layer is what gates verbose output.
 type ThreadComment struct {
 	ID         string `json:"id"`
 	Author     string `json:"author"`
 	AuthorType string `json:"authorType"`
 	Body       string `json:"body"`
-	CreatedAt  string `json:"createdAt"`
+	CreatedAt  string `json:"createdAt,omitempty"`
+	UpdatedAt  string `json:"updatedAt,omitempty"`
+	AuthorURL  string `json:"authorUrl,omitempty"`
 }
 
 // PullRequestStatus carries the top-of-output mergeability summary.
@@ -46,6 +54,8 @@ type PullRequestStatus struct {
 	ReviewDecision    string `json:"reviewDecision"`   // APPROVED | REVIEW_REQUIRED | CHANGES_REQUESTED | ""
 	ChecksState       string `json:"checksState"`      // SUCCESS | FAILURE | PENDING | ERROR | EXPECTED | ""
 	UnresolvedThreads int    `json:"unresolvedThreads"`
+	OutdatedThreads   int    `json:"outdatedThreads"` // count of threads whose anchor lines have shifted (across the whole PR)
+	HeadSHA           string `json:"headSHA,omitempty"` // PR head commit SHA, used by code-context lookups
 }
 
 // listThreadsData mirrors the GraphQL response under data.
@@ -58,6 +68,7 @@ type listThreadsData struct {
 			Mergeable        string `json:"mergeable"`
 			MergeStateStatus string `json:"mergeStateStatus"`
 			ReviewDecision   string `json:"reviewDecision"`
+			HeadRefOid       string `json:"headRefOid"`
 			Commits          struct {
 				Nodes []struct {
 					Commit struct {
@@ -81,6 +92,7 @@ type listThreadsData struct {
 type rawThread struct {
 	ID         string `json:"id"`
 	IsResolved bool   `json:"isResolved"`
+	IsOutdated bool   `json:"isOutdated"`
 	Path       string `json:"path"`
 	Line       int    `json:"line"`
 	StartLine  *int   `json:"startLine"`
@@ -94,9 +106,11 @@ type rawComment struct {
 	ID        string `json:"id"`
 	Body      string `json:"body"`
 	CreatedAt string `json:"createdAt"`
+	UpdatedAt string `json:"updatedAt"`
 	Author    struct {
 		Typename string `json:"__typename"`
 		Login    string `json:"login"`
+		URL      string `json:"url"`
 	} `json:"author"`
 }
 
@@ -107,6 +121,7 @@ func parseListThreadsResponse(data listThreadsData) []ReviewThread {
 		t := ReviewThread{
 			ID:         n.ID,
 			IsResolved: n.IsResolved,
+			IsOutdated: n.IsOutdated,
 			Path:       n.Path,
 			Line:       n.Line,
 			StartLine:  n.StartLine,
@@ -119,6 +134,8 @@ func parseListThreadsResponse(data listThreadsData) []ReviewThread {
 				AuthorType: c.Author.Typename,
 				Body:       c.Body,
 				CreatedAt:  c.CreatedAt,
+				UpdatedAt:  c.UpdatedAt,
+				AuthorURL:  c.Author.URL,
 			})
 		}
 		if len(t.Comments) > 0 {
@@ -142,6 +159,7 @@ func parseFetchPRResponse(data listThreadsData) (PullRequestStatus, []ReviewThre
 		Mergeable:        pr.Mergeable,
 		MergeStateStatus: pr.MergeStateStatus,
 		ReviewDecision:   pr.ReviewDecision,
+		HeadSHA:          pr.HeadRefOid,
 	}
 	if len(pr.Commits.Nodes) > 0 && pr.Commits.Nodes[0].Commit.StatusCheckRollup != nil {
 		status.ChecksState = pr.Commits.Nodes[0].Commit.StatusCheckRollup.State
@@ -150,6 +168,9 @@ func parseFetchPRResponse(data listThreadsData) (PullRequestStatus, []ReviewThre
 	for _, t := range threads {
 		if !t.IsResolved {
 			status.UnresolvedThreads++
+		}
+		if t.IsOutdated {
+			status.OutdatedThreads++
 		}
 	}
 	return status, threads
@@ -182,7 +203,8 @@ mutation($threadId: ID!, $body: String!) {
       id
       body
       createdAt
-      author { __typename login }
+      updatedAt
+      author { __typename login url }
     }
   }
 }`
@@ -195,9 +217,11 @@ mutation($threadId: ID!, $body: String!) {
 				ID        string `json:"id"`
 				Body      string `json:"body"`
 				CreatedAt string `json:"createdAt"`
+				UpdatedAt string `json:"updatedAt"`
 				Author    struct {
 					Typename string `json:"__typename"`
 					Login    string `json:"login"`
+					URL      string `json:"url"`
 				} `json:"author"`
 			} `json:"comment"`
 		} `json:"addPullRequestReviewThreadReply"`
@@ -211,8 +235,10 @@ mutation($threadId: ID!, $body: String!) {
 		ID:         c2.ID,
 		Body:       c2.Body,
 		CreatedAt:  c2.CreatedAt,
+		UpdatedAt:  c2.UpdatedAt,
 		Author:     c2.Author.Login,
 		AuthorType: c2.Author.Typename,
+		AuthorURL:  c2.Author.URL,
 	}, nil
 }
 
@@ -348,6 +374,7 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
       mergeable
       mergeStateStatus
       reviewDecision
+      headRefOid
       commits(last: 1) {
         nodes {
           commit {
@@ -360,6 +387,7 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
         nodes {
           id
           isResolved
+          isOutdated
           path
           line
           startLine
@@ -369,7 +397,8 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
               id
               body
               createdAt
-              author { __typename login }
+              updatedAt
+              author { __typename login url }
             }
           }
         }
@@ -396,6 +425,11 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
 		if firstPage {
 			status = pageStatus
 			firstPage = false
+		} else {
+			// Accumulate per-page thread counts across pagination (other status
+			// fields like Title/Mergeable are PR-level and stable across pages).
+			status.UnresolvedThreads += pageStatus.UnresolvedThreads
+			status.OutdatedThreads += pageStatus.OutdatedThreads
 		}
 		all = append(all, pageThreads...)
 		page := resp.Repository.PullRequest.ReviewThreads.PageInfo

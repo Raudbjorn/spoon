@@ -24,6 +24,7 @@ func TestRenderStatusBlock(t *testing.T) {
 		ReviewDecision:    "REVIEW_REQUIRED",
 		ChecksState:       "FAILURE",
 		UnresolvedThreads: 3,
+		OutdatedThreads:   2,
 	}
 	missing := gh.PullRequestStatus{
 		Title:             "WIP",
@@ -49,7 +50,7 @@ func TestRenderStatusBlock(t *testing.T) {
 		{
 			"all red ASCII",
 			allRed, 42, true,
-			[]string{"PR #42", "[X]", "DIRTY", "REVIEW_REQUIRED", "FAILURE", "3 unresolved"},
+			[]string{"PR #42", "[X]", "DIRTY", "REVIEW_REQUIRED", "FAILURE", "3 unresolved", "2 outdated"},
 		},
 		{
 			"missing review and checks shown as dash",

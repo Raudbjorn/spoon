@@ -391,3 +391,50 @@ func TestStdinPrompter_ProgressFunc_Done(t *testing.T) {
 		t.Errorf("stderr = %q; want suffix 'spoon: pulled my-model\\n'", out)
 	}
 }
+
+func TestSelectEmbedder_SidecarHealthy(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/health" {
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok","dim":1024}`))
+	}))
+	defer srv.Close()
+	e, model, reason := SelectEmbedder(context.Background(), SelectOptions{
+		Backend:         "sidecar",
+		SidecarEndpoint: srv.URL,
+		NonInteractive:  true,
+		NoPrompt:        true,
+	}, nil)
+	if reason != nil {
+		t.Fatalf("unexpected SkipReason: %+v", reason)
+	}
+	if _, ok := e.(*SidecarEmbedder); !ok {
+		t.Fatalf("want *SidecarEmbedder, got %T", e)
+	}
+	if !strings.HasPrefix(model, "sidecar:") {
+		t.Errorf("want sidecar: prefix in model name, got %q", model)
+	}
+}
+
+func TestSelectEmbedder_SidecarUnhealthy_FallsBack(t *testing.T) {
+	// Sidecar refuses connections; SelectEmbedder should fall through to
+	// the existing Ollama path. Here Ollama is also unreachable, so we
+	// expect a SkipReason from the Ollama path (not from the sidecar one).
+	_, _, reason := SelectEmbedder(context.Background(), SelectOptions{
+		Endpoint:        "http://127.0.0.1:1", // guaranteed-unreachable Ollama
+		Backend:         "sidecar",
+		SidecarEndpoint: "http://127.0.0.1:2", // guaranteed-unreachable sidecar
+		NonInteractive:  true,
+		NoPrompt:        true,
+	}, nil)
+	if reason == nil {
+		t.Fatal("want SkipReason from fallback path, got nil")
+	}
+	// The SkipReason code should describe the Ollama failure, not the
+	// sidecar failure — falling through implies Ollama is the new authority.
+	if !strings.Contains(reason.Code, "ollama") && !strings.Contains(reason.Code, "no_model") {
+		t.Errorf("expected Ollama-flavored SkipReason; got %q", reason.Code)
+	}
+}
