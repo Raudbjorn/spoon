@@ -66,6 +66,15 @@ func TestValidateHeatWeights_RejectsOutOfRange(t *testing.T) {
 	}
 }
 
+func TestBackendFor(t *testing.T) {
+	if got := backendFor(true); got != "mdg" {
+		t.Fatalf("backendFor(true) = %q, want %q", got, "mdg")
+	}
+	if got := backendFor(false); got != "" {
+		t.Fatalf("backendFor(false) = %q, want %q", got, "")
+	}
+}
+
 func TestSpoonRejectsRemovedJSONFlag(t *testing.T) {
 	cmd := exec.Command("go", "run", ".")
 	cmd.Args = append(cmd.Args, "--help")

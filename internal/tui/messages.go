@@ -22,12 +22,20 @@ type parentFetchedMsg struct {
 type forksFetchedMsg struct {
 	forks []forge.T1Data
 	err   error
+	// warn is a non-fatal warning to surface alongside a populated fork list —
+	// e.g. the stream was cut short by an error after some forks arrived, so the
+	// displayed list is partial. Distinct from err, which suppresses the list.
+	warn error
 }
 
 type tier2ResultMsg struct {
 	forkID string
 	t2     forge.T2Data
 	err    error
+	// budgetSkipped is true when the compare was not attempted because the
+	// rate-limit reserve floor was reached. Distinct from err: the fork is
+	// kept, just marked un-enriched rather than failed.
+	budgetSkipped bool
 }
 
 type startFetchMsg struct{}

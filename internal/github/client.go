@@ -27,6 +27,64 @@ type Client struct {
 
 	mu        sync.Mutex
 	rateLimit RateLimit
+
+	// Rate controls (Feature: rate-limit hardening). lim paces requests; the
+	// bounded Retry-After retry uses maxRateWait + sleepFn (injectable in tests).
+	lim         *limiter
+	maxRateWait time.Duration
+	sleepFn     func(context.Context, time.Duration) error
+}
+
+// Rate-control tuning.
+const (
+	minRefillRate   = 0.05             // never fully stall
+	refillBurst     = 8.0              // allow short parallelism spikes
+	lowHeadroom     = 0.20             // matches branches.go's gate
+	lowHeadroomSlow = 0.25             // multiplicative slowdown under pressure
+	defaultMaxWait  = 30 * time.Second // cap on Retry-After sleep before failing fast
+)
+
+// initRateControls sets up the token bucket + retry knobs. Called by NewClient
+// after `authenticated` is set (the default rate depends on it).
+func (c *Client) initRateControls() {
+	c.maxRateWait = defaultMaxWait
+	c.sleepFn = ctxSleep
+	c.lim = newLimiter(c.refillRate(), refillBurst)
+}
+
+// refillRate computes the token-bucket rate (req/sec): pace Remaining over the
+// time until Reset, clamped to [minRefillRate, refillBurst]. Before the first
+// response (Limit==0) — and while headroom is healthy — it runs at refillBurst
+// so small scans aren't slowed. Slows hard when headroom is low to avoid
+// tripping secondary limits.
+func (c *Client) refillRate() float64 {
+	c.mu.Lock()
+	limit, remaining, reset := c.rateLimit.Limit, c.rateLimit.Remaining, c.rateLimit.Reset
+	c.mu.Unlock()
+
+	// Unknown budget, or plenty of headroom: run at the burst cap (fast) so
+	// small scans aren't needlessly slowed. Only pace down as the window nears
+	// exhaustion — that's when throttling actually prevents hitting the limit.
+	if limit == 0 || float64(remaining)/float64(limit) >= 0.5 {
+		return refillBurst
+	}
+	secs := time.Until(reset).Seconds()
+	var rate float64
+	if secs < 1 || remaining <= 0 {
+		rate = minRefillRate
+	} else {
+		rate = float64(remaining) / secs // pace to land near the reset boundary
+	}
+	if float64(remaining)/float64(limit) < lowHeadroom {
+		rate *= lowHeadroomSlow // extra slowdown when very low, dodge secondary limits
+	}
+	if rate < minRefillRate {
+		rate = minRefillRate
+	}
+	if rate > refillBurst {
+		rate = refillBurst
+	}
+	return rate
 }
 
 // NewClient creates a new GitHub client. It tries go-gh's default client first
@@ -40,6 +98,7 @@ func NewClient() (*Client, error) {
 		if gql, gqlErr := ghAPI.DefaultGraphQLClient(); gqlErr == nil {
 			client.gql = gql
 		}
+		client.initRateControls()
 		return client, nil
 	}
 
@@ -54,7 +113,9 @@ func NewClient() (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("creating unauthenticated client: %w", err)
 	}
-	return &Client{rest: rest, authenticated: false}, nil
+	c := &Client{rest: rest, authenticated: false}
+	c.initRateControls()
+	return c, nil
 }
 
 // unauthTransport strips the Authorization header so requests are unauthenticated.
@@ -110,19 +171,45 @@ func (c *Client) HasBudget() bool {
 	return c.rateLimit.Remaining > threshold
 }
 
+// doGet runs a throttled GET (token bucket + bounded Retry-After retry),
+// returning the raw response on success and updating rate-limit state/pacing.
+func (c *Client) doGet(ctx context.Context, path string) (*http.Response, error) {
+	// lim is nil for Client literals constructed in tests (no NewClient); the
+	// throttle is simply absent there.
+	if c.lim != nil {
+		if err := c.lim.Wait(ctx); err != nil {
+			return nil, err
+		}
+	}
+	var resp *http.Response
+	err := c.doWithRetry(ctx, func() error {
+		r, e := c.rest.RequestWithContext(ctx, http.MethodGet, path, nil)
+		if e != nil {
+			if rl := detectRateLimitFromHTTPError(e); rl != nil {
+				return rl
+			}
+			return e
+		}
+		resp = r
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	c.updateRateLimit(resp)
+	if c.lim != nil {
+		c.lim.SetRate(c.refillRate()) // two sequential statements: never nest c.mu and lim.mu
+	}
+	return resp, nil
+}
+
 // Get performs a GET request and unmarshals the JSON response.
 func (c *Client) Get(ctx context.Context, path string, result interface{}) error {
-	resp, err := c.rest.RequestWithContext(ctx, http.MethodGet, path, nil)
+	resp, err := c.doGet(ctx, path)
 	if err != nil {
-		if rl := detectRateLimitFromHTTPError(err); rl != nil {
-			return rl
-		}
 		return err
 	}
 	defer resp.Body.Close()
-
-	c.updateRateLimit(resp)
-
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return fmt.Errorf("reading response: %w", err)
@@ -132,15 +219,7 @@ func (c *Client) Get(ctx context.Context, path string, result interface{}) error
 
 // GetRaw performs a GET request and returns the raw response for header inspection.
 func (c *Client) GetRaw(ctx context.Context, path string) (*http.Response, error) {
-	resp, err := c.rest.RequestWithContext(ctx, http.MethodGet, path, nil)
-	if err != nil {
-		if rl := detectRateLimitFromHTTPError(err); rl != nil {
-			return nil, rl
-		}
-		return nil, err
-	}
-	c.updateRateLimit(resp)
-	return resp, nil
+	return c.doGet(ctx, path)
 }
 
 // GetPaginated fetches all pages of a paginated endpoint.
@@ -149,14 +228,10 @@ func (c *Client) GetRaw(ctx context.Context, path string) (*http.Response, error
 func (c *Client) GetPaginated(ctx context.Context, path string, onPage func(json.RawMessage) error) error {
 	url := path
 	for url != "" {
-		resp, err := c.rest.RequestWithContext(ctx, http.MethodGet, url, nil)
+		resp, err := c.doGet(ctx, url)
 		if err != nil {
-			if rl := detectRateLimitFromHTTPError(err); rl != nil {
-				return rl
-			}
 			return err
 		}
-		c.updateRateLimit(resp)
 
 		body, err := io.ReadAll(resp.Body)
 		resp.Body.Close()

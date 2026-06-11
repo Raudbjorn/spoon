@@ -154,10 +154,10 @@ func TestCompute_TopK(t *testing.T) {
 func TestScoreFork_Empty(t *testing.T) {
 	dc := DirectoryCentrality{DirScore: map[string]float64{"a/": 0.5}}
 	if got := dc.ScoreFork(nil); got != 0.0 {
-		t.Errorf("nil touchedDirs: expected 0.0, got %v", got)
+		t.Errorf("nil touchedFiles: expected 0.0, got %v", got)
 	}
 	if got := dc.ScoreFork([]string{}); got != 0.0 {
-		t.Errorf("empty touchedDirs: expected 0.0, got %v", got)
+		t.Errorf("empty touchedFiles: expected 0.0, got %v", got)
 	}
 }
 
@@ -184,11 +184,31 @@ func TestScoreFork_All(t *testing.T) {
 	}
 }
 
-// Bonus: a touched-dir without a trailing slash is normalized internally.
-func TestScoreFork_NormalizesTrailingSlash(t *testing.T) {
-	dc := DirectoryCentrality{DirScore: map[string]float64{"foo/": 1.0}}
-	got := dc.ScoreFork([]string{"foo"})
-	if got != 1.0 {
-		t.Errorf("expected 1.0 with auto-slash, got %v", got)
+func TestScoreFork_AcceptsFilePaths(t *testing.T) {
+	dc := DirectoryCentrality{DirScore: map[string]float64{
+		"internal/auth/": 0.9,
+		"cmd/":           0.5,
+	}}
+	// Pass file paths; ScoreFork should derive directories internally.
+	got := dc.ScoreFork([]string{
+		"internal/auth/oauth.go",
+		"cmd/main.go",
+	})
+	want := (0.9 + 0.5) / 2.0
+	if got < want-1e-9 || got > want+1e-9 {
+		t.Fatalf("ScoreFork(file paths) = %v, want %v", got, want)
+	}
+}
+
+func TestScoreFork_DedupesDirectoriesFromPaths(t *testing.T) {
+	dc := DirectoryCentrality{DirScore: map[string]float64{
+		"internal/auth/": 0.9,
+	}}
+	got := dc.ScoreFork([]string{
+		"internal/auth/oauth.go",
+		"internal/auth/saml.go",
+	})
+	if got < 0.9-1e-9 || got > 0.9+1e-9 {
+		t.Fatalf("two files in same dir → one dir contribution; got %v", got)
 	}
 }

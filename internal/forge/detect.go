@@ -21,11 +21,22 @@ import (
 func ParseRepoURL(raw, defaultHost string, forceProvider Provider) (provider Provider, host, owner, repo string, err error) {
 	input := raw
 
-	// Handle shorthand "owner/repo" (no dots, no scheme) — treat as defaultHost/owner/repo.
-	if !strings.Contains(raw, "://") && !strings.Contains(raw, ".") {
-		input = "https://" + defaultHost + "/" + raw
-	} else if !strings.Contains(raw, "://") {
-		input = "https://" + raw
+	// Normalise scheme-less input. The first path segment decides whether this is
+	// shorthand ("owner/repo") or a host-prefixed URL ("github.com/owner/repo").
+	// A host segment contains a "." (domain) or ":" (port); an owner segment does
+	// not. Checking only the first segment — rather than the whole string — means
+	// a repo name with a dot (e.g. "ggml-org/llama.cpp") is still treated as
+	// shorthand instead of being mistaken for a hostname.
+	if !strings.Contains(raw, "://") {
+		firstSeg := raw
+		if i := strings.IndexByte(raw, '/'); i >= 0 {
+			firstSeg = raw[:i]
+		}
+		if strings.ContainsAny(firstSeg, ".:") {
+			input = "https://" + raw
+		} else {
+			input = "https://" + defaultHost + "/" + raw
+		}
 	}
 
 	u, parseErr := url.Parse(input)
@@ -58,11 +69,15 @@ func ParseRepoURL(raw, defaultHost string, forceProvider Provider) (provider Pro
 		provider = ProviderGitHub
 	case host == "gitlab.com":
 		provider = ProviderGitLab
+	case host == "codeberg.org":
+		provider = ProviderGitea
 	case strings.Contains(host, "gitlab"):
 		provider = ProviderGitLab
+	case strings.Contains(host, "gitea") || strings.Contains(host, "forgejo") || strings.Contains(host, "codeberg"):
+		provider = ProviderGitea
 	default:
 		provider = ProviderGitHub
-		slog.Warn("forge provider ambiguous for custom host; defaulting to GitHub -- use --forge gitlab to override",
+		slog.Warn("forge provider ambiguous for custom host; defaulting to GitHub -- use --forge gitea (or gitlab) to override",
 			"host", host,
 		)
 	}

@@ -7,12 +7,14 @@ _post() {
       gh auth login        (GitHub)
       glab auth login      (GitLab, optional)
 
-==> The using-spn agent skill ships at:
-      /usr/share/spoon/skills/using-spn/SKILL.md
+==> spn agent skills installed to:
+      /usr/share/spoon/skills/using-spn/SKILL.md         (PR review threads)
+      /usr/share/spoon/skills/using-spn-forks/SKILL.md   (fork discovery + clustering)
 
-    To enable for Claude Code (per user), symlink it into your skills dir:
+    To enable for Claude Code (per user), symlink each into your skills dir:
       mkdir -p ~/.claude/skills
-      ln -s /usr/share/spoon/skills/using-spn ~/.claude/skills/using-spn
+      ln -s /usr/share/spoon/skills/using-spn       ~/.claude/skills/using-spn
+      ln -s /usr/share/spoon/skills/using-spn-forks ~/.claude/skills/using-spn-forks
 
 EOF
 }

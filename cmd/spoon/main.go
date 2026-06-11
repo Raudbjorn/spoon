@@ -10,7 +10,10 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/svnbjrn/spoon/internal/config"
+	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/forge"
+	"github.com/svnbjrn/spoon/internal/gitea"
 	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/gitlab"
 	"github.com/svnbjrn/spoon/internal/tui"
@@ -22,6 +25,21 @@ func main() {
 	// Subcommand dispatch: "spoon threads <pr-ref> ..."
 	if len(os.Args) >= 2 && os.Args[1] == "threads" {
 		os.Exit(runThreads(os.Args[2:]))
+	}
+
+	// Subcommand dispatch: "spoon embed <verb> ..."
+	if len(os.Args) >= 2 && os.Args[1] == "embed" {
+		os.Exit(runSpoonEmbed(os.Args[2:]))
+	}
+
+	// Subcommand dispatch: "spoon setup ..."
+	if len(os.Args) >= 2 && os.Args[1] == "setup" {
+		os.Exit(runSetup(os.Args[2:]))
+	}
+
+	// Subcommand dispatch: "spoon sidecar <verb> ..."
+	if len(os.Args) >= 2 && os.Args[1] == "sidecar" {
+		os.Exit(runSidecar(os.Args[2:]))
 	}
 
 	var repo string
@@ -38,12 +56,18 @@ func main() {
 	clusterTop := 50
 	embedderURL := ""
 	embedderModel := ""
+	embedderBackend := ""
+	sidecarEndpoint := ""
 	labelerURL := ""
 	labelerModel := ""
 	clusterEpsilon := 0.35
 	clusterMinSize := 3
 	autoPull := os.Getenv("SPOON_AUTO_PULL") == "1"
 	noPrompt := false
+
+	// MDG centrality backend. Off by default; --full-mdg opts in. --no-mdg
+	// reverts to off (useful for users who set the env var elsewhere).
+	fullMDG := false
 
 	args := os.Args[1:]
 	for i := 0; i < len(args); i++ {
@@ -65,8 +89,10 @@ func main() {
 			}
 			i++
 			forgeFlag = strings.ToLower(args[i])
-			if forgeFlag != "github" && forgeFlag != "gitlab" {
-				fmt.Fprintln(os.Stderr, "Error: --forge must be 'github' or 'gitlab'")
+			switch forgeFlag {
+			case "github", "gitlab", "gitea", "forgejo", "codeberg":
+			default:
+				fmt.Fprintln(os.Stderr, "Error: --forge must be 'github', 'gitlab', or 'gitea' (forgejo/codeberg)")
 				os.Exit(1)
 			}
 		case "--forge-host":
@@ -126,6 +152,25 @@ func main() {
 			}
 			i++
 			embedderModel = args[i]
+		case "--embedder-backend":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "Error: --embedder-backend requires a value")
+				os.Exit(1)
+			}
+			i++
+			val := strings.ToLower(args[i])
+			if val != "ollama" && val != "sidecar" && val != "openai" {
+				fmt.Fprintln(os.Stderr, "Error: --embedder-backend must be 'ollama', 'sidecar', or 'openai'")
+				os.Exit(1)
+			}
+			embedderBackend = val
+		case "--sidecar-endpoint":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "Error: --sidecar-endpoint requires a value")
+				os.Exit(1)
+			}
+			i++
+			sidecarEndpoint = args[i]
 		case "--labeler":
 			if i+1 >= len(args) {
 				fmt.Fprintln(os.Stderr, "Error: --labeler requires a value")
@@ -168,6 +213,10 @@ func main() {
 			autoPull = true
 		case "--no-prompt":
 			noPrompt = true
+		case "--full-mdg":
+			fullMDG = true
+		case "--no-mdg":
+			fullMDG = false
 		default:
 			if !strings.HasPrefix(args[i], "-") && strings.Contains(args[i], "/") {
 				repo = args[i]
@@ -183,10 +232,52 @@ func main() {
 		os.Setenv("NO_COLOR", "1")
 	}
 
+	// An explicit --sidecar-endpoint expresses intent to use the sidecar, so it
+	// implies --embedder-backend sidecar — even when a saved config selects
+	// another backend. (Only the flag sets these vars at this point; env/config
+	// are layered below.) Without this, a saved openai/ollama config would
+	// silently override the flag and ignore the sidecar.
+	if sidecarEndpoint != "" && embedderBackend == "" {
+		embedderBackend = "sidecar"
+	}
+
+	// Layer saved embedder defaults under flags/env (flags > env > config >
+	// built-in). Provider/host are intentionally NOT layered — the repo URL
+	// determines the forge. A bad config warns but never blocks a run.
+	if cfg, cerr := config.LoadDefault(); cerr != nil {
+		fmt.Fprintf(os.Stderr, "warning: ignoring spoon config: %v\n", cerr)
+	} else if cfg != nil {
+		// Resolve flag > env first, then layer the config backend-aware (a saved
+		// backend's endpoint/model is not inherited when a different backend is
+		// selected).
+		be := strings.ToLower(config.Coalesce(embedderBackend, os.Getenv("SPOON_EMBEDDER_BACKEND")))
+		eu := config.Coalesce(embedderURL, os.Getenv("SPOON_EMBEDDER_URL"))
+		se := config.Coalesce(sidecarEndpoint, os.Getenv("SPOON_SIDECAR_ENDPOINT"))
+		embedderBackend, embedderURL, embedderModel, sidecarEndpoint, labelerModel =
+			cfg.LayerEmbedder(be, eu, embedderModel, se, labelerModel)
+	}
+
 	_ = concurrency // TODO: pass to auth overrides
 
-	// Detect provider from repo URL and flags
 	ctx := context.Background()
+
+	// Validate any explicitly-configured embedder endpoint before launching, so
+	// a bad URL fails fast instead of silently disabling clustering. --no-cluster
+	// skips this.
+	if perr := embed.Preflight(ctx, embed.PreflightOptions{
+		Enabled:         !noCluster,
+		Backend:         embedderBackend,
+		Endpoint:        embedderURL,
+		Model:           embedderModel,
+		SidecarEndpoint: sidecarEndpoint,
+		LabelerEndpoint: labelerURL,
+	}); perr != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", perr)
+		fmt.Fprintln(os.Stderr, "Start the embedder or fix the endpoint, run 'spoon setup' to configure one, or pass --no-cluster to skip clustering.")
+		os.Exit(1)
+	}
+
+	// Detect provider from repo URL and flags
 	provider, auth, repoArg, err := createProvider(ctx, repo, forgeFlag, forgeHost)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -194,17 +285,20 @@ func main() {
 	}
 
 	tuiClusterOpts := tui.ClusterOptions{
-		Enabled:         !noCluster,
-		TopN:            clusterTop,
-		Endpoint:        embedderURL,
-		ModelOverride:   embedderModel,
-		LabelerEndpoint: labelerURL,
-		LabelerModel:    labelerModel,
-		Epsilon:         clusterEpsilon,
-		MinClusterSize:  clusterMinSize,
-		AutoPull:        autoPull,
-		NoPrompt:        noPrompt,
-		Refresh:         refresh,
+		Enabled:           !noCluster,
+		TopN:              clusterTop,
+		Endpoint:          embedderURL,
+		ModelOverride:     embedderModel,
+		Backend:           embedderBackend,
+		SidecarEndpoint:   sidecarEndpoint,
+		LabelerEndpoint:   labelerURL,
+		LabelerModel:      labelerModel,
+		Epsilon:           clusterEpsilon,
+		MinClusterSize:    clusterMinSize,
+		AutoPull:          autoPull,
+		NoPrompt:          noPrompt,
+		Refresh:           refresh,
+		CentralityBackend: backendFor(fullMDG),
 	}
 	m := tui.NewModelWithCluster(provider, auth, repoArg, refresh, tuiClusterOpts)
 	p := tea.NewProgram(m, tea.WithAltScreen())
@@ -213,6 +307,15 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// backendFor maps the --full-mdg flag to the cluster.PipelineOptions
+// CentralityBackend string. Off (default) → "" (directory proxy). On → "mdg".
+func backendFor(fullMDG bool) string {
+	if fullMDG {
+		return "mdg"
+	}
+	return ""
 }
 
 // createProvider detects the forge provider from the repo URL and flags,
@@ -226,10 +329,20 @@ func createProvider(ctx context.Context, repo, forgeFlag, forgeHost string) (for
 		forceProvider = forge.ProviderGitLab
 	case "github":
 		forceProvider = forge.ProviderGitHub
+	case "gitea", "forgejo", "codeberg":
+		forceProvider = forge.ProviderGitea
 	}
 
 	// If no repo given, default to GitHub provider for interactive mode
 	if repo == "" {
+		if forceProvider == forge.ProviderGitea {
+			host := forgeHost
+			if host == "" {
+				host = "codeberg.org"
+			}
+			auth, client := gitea.DetectAuth(ctx, host)
+			return gitea.NewProvider(client, auth, host), auth, "", nil
+		}
 		if forceProvider == forge.ProviderGitLab || forgeHost != "" {
 			host := forgeHost
 			if host == "" {
@@ -284,6 +397,10 @@ func createProvider(ctx context.Context, repo, forgeFlag, forgeHost string) (for
 		auth, _ := provider.Auth(ctx)
 		return provider, auth, repoArg, nil
 
+	case forge.ProviderGitea:
+		auth, client := gitea.DetectAuth(ctx, parsed.Host)
+		return gitea.NewProvider(client, auth, parsed.Host), auth, repoArg, nil
+
 	default:
 		return nil, forge.AuthInfo{}, "", forge.ErrUnsupportedProvider
 	}
@@ -333,12 +450,24 @@ Flags:
   --cluster-top N          Max forks fed to the embedder (default 50)
   --embedder URL           Embedding endpoint (default $SPOON_EMBEDDER_URL)
   --embedder-model NAME    Explicit embedding model (default: auto-pick)
+  --embedder-backend NAME  Embedder backend: 'ollama' (default), 'sidecar', or
+                           'openai' (any OpenAI-compatible endpoint, e.g. OVMS)
+  --sidecar-endpoint URL   Python sidecar endpoint (default http://localhost:8766)
   --labeler URL            Optional LLM polish endpoint (default: heuristic)
   --labeler-model NAME     LLM polish model (default: llama3.2:3b)
   --cluster-epsilon F      Cosine distance cutoff (default 0.35)
   --cluster-min-size N     Minimum cluster size (default 3)
   --auto-pull              Pull missing embedding model without prompting
   --no-prompt              Skip pull prompt when no embedding model is installed
+  --full-mdg               Build a real Module Dependency Graph for the upstream
+                           using personalized PageRank centrality. Phase A
+                           supports Go repositories; other languages silently
+                           fall back to the directory-centrality proxy. Requires
+                           'git' (and 'gh' for GitHub) on PATH. Adds 10-60 s and
+                           up to ~1 GB peak disk on first run; cached for 24 h
+                           under ~/.cache/spoon/mdg/. Default: off.
+  --no-mdg                 Force the directory-centrality proxy even if an
+                           earlier flag enabled --full-mdg.
   --no-color               Disable colors
   -h, --help               Show help
   -v, --version            Show version
@@ -368,7 +497,33 @@ Keybindings (TUI mode):
   q             Quit
 
 Subcommands:
+  spoon setup              Check provider credentials + embedder, pull/install fixes
+  spoon sidecar <verb>     Install/status/uninstall the embedding sidecar service
   spoon threads <pr-ref>   Operate on PR review threads (see 'spoon threads --help')
+  spoon embed status       Human-readable Ollama embedder status
+
+Concepts:
+  Provider (forge)   The Git host spoon queries for forks: GitHub or GitLab.
+                     It is auto-detected from the repo URL (e.g. a gitlab.com
+                     link forces GitLab); override detection with --forge and
+                     point at a self-hosted GitLab/GHES instance with
+                     --forge-host. Auth is per-provider: the gh CLI / a GitHub
+                     token, or the glab CLI / GITLAB_TOKEN.
+
+  Embedder backend   How spoon turns each fork into a vector so it can cluster
+                     similar forks (--embedder-backend). Three choices:
+                       ollama  (default) zero-setup, serves nomic-embed-text
+                               locally via Ollama. Good enough, nothing to run.
+                       sidecar a separate Python HTTP service you start
+                               yourself (--sidecar-endpoint, default
+                               http://localhost:8766) that serves a stronger
+                               model (arctic-embed-l-v2). Sharper similarity
+                               rankings at the cost of ~2 GB RAM and managing a
+                               process. Setup: 'spoon sidecar install'.
+                       openai  any OpenAI-compatible embeddings endpoint
+                               (--embedder URL, --embedder-model NAME). Use this
+                               to run embeddings on a GPU via OpenVINO Model
+                               Server (OVMS) or to point at vLLM / the OpenAI API.
 
 Tip: Run 'gh auth login' (GitHub) or set GITLAB_TOKEN (GitLab) for higher rate limits.
 `)

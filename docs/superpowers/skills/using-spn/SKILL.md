@@ -1,6 +1,6 @@
 ---
 name: using-spn
-description: Use when addressing PR review threads on a GitHub PR — replying to review comments, resolving threads after fixes, looping through reviewer feedback, or checking PR mergeability. Applies when the `spn` CLI is on PATH (`command -v spn`). Prefer spn over hand-rolled `gh api graphql` for review-thread work.
+description: Use when addressing PR review threads on a GitHub PR — replying to review comments, resolving threads after fixes, looping through reviewer feedback, applying or counter-proposing suggestion blocks, sweeping outdated threads, checking PR mergeability, or discovering which PRs are open on a repository. Applies when the `spn` CLI is on PATH (`command -v spn`). Prefer spn over hand-rolled `gh api graphql` for review-thread work.
 ---
 
 # Using `spn` for PR Review Threads
@@ -45,6 +45,8 @@ done
 
 `spn threads next` returns the **oldest unresolved thread**, sorted by `(firstCommentCreatedAt, threadID)` for determinism, or `null` when none remain.
 
+For richer per-iteration context, add `--show-code N` and `--verbose` to the `spn threads next` call (see Code context and verbose mode).
+
 ## Bulk Sweep for Bot Threads
 
 After you've fixed all the issues in subsequent commits and just need to clear the noise:
@@ -62,10 +64,15 @@ spn threads resolve-all owner/repo#42
 | --- | --- | --- |
 | Success — single | stdout | one JSON object (or `null` for `threads next` empty) |
 | Success — collection | stdout | JSON array |
-| Success — streaming (`forks list`) | stdout | NDJSON, one object per line |
 | Failure | stderr | `{"error": {"code", "message", "remediation", "retryable", "details"}}` |
 
 Stdout is exclusively success data. A failing command writes nothing to stdout.
+
+Threads may carry these optional fields when the corresponding flag is set:
+- `isOutdated` (always present after PR #7) — true when the anchored code has shifted
+- `suggestions` — non-empty when the thread contains `suggestion` fenced blocks
+- `codeContext` — populated by `--show-code N`
+- `createdAt`, `updatedAt`, `authorUrl` — populated by `--verbose`
 
 **Exit codes:**
 - `0` — success
@@ -100,17 +107,152 @@ out=$(spn pr status "$PR" 2>/tmp/err.json) || {
 }
 ```
 
-Note: detection works on REST API paths. GitHub's GraphQL endpoint (used internally by `spn threads list/next/reply/resolve` and the forks-list GraphQL fast path) returns rate-limit hits as the generic `upstream_error` code instead. The error remains `retryable: true` in both cases; the difference is whether `retry_after_seconds` is populated.
+Note: detection works on REST API paths. GitHub's GraphQL endpoint (used internally by `spn threads list/next/reply/resolve`) returns rate-limit hits as the generic `upstream_error` code instead. The error remains `retryable: true` in both cases; the difference is whether `retry_after_seconds` is populated.
 
-### CSV mode
+## Filter modes
 
-`spn forks list <repo> --csv` collects all enriched forks and emits a single CSV blob on stdout with a fixed header (`id,owner,name,url,stars,pushed_at,is_archived,sub_forks,releases,heat,tier,t2_ahead,t2_behind,t2_mna,t3_contributors,t3_commit_span_days,cluster_name,cluster_score`). Per-fork enrichment errors still go to stderr as compact JSON. Use this when downstream tooling expects tabular data; use the default NDJSON when streaming or jq pipelines fit better.
+`spn threads list <pr> --filter <mode>` selects which threads to surface.
+
+| Mode | Includes |
+| --- | --- |
+| `all` | every thread, resolved + unresolved, active + outdated |
+| `unresolved` (default) | every unresolved thread |
+| `current-unresolved` | unresolved AND not outdated — the most urgent set |
+| `resolved-active` | resolved threads whose anchored code is still active |
+| `unresolved-outdated` | unresolved threads whose anchored code has shifted (sweep candidates) |
+
+Rule of thumb: `unresolved` (default) for active review work; `current-unresolved` to exclude stale threads; `unresolved-outdated` to find sweep candidates before bulk-resolving.
 
 ## Body-Required Policy
 
 The thread JSON has a `requiresBody` boolean. When `true` (any human commenter is present), `spn threads resolve` refuses with `policy_violation` exit 2 unless `--body` is supplied. Bot-only threads (`requiresBody: false`) resolve without a body.
 
 The rule the agent should internalize: **a thread raised by a human gets an explanation when resolved**. Either what was fixed, or why no change was needed.
+
+## Stale-thread sweep
+
+`spn threads resolve-all <pr> --outdated` resolves only threads where `isOutdated: true`. Combined with the body-required policy:
+
+- Bot threads with outdated anchors → resolved into `succeeded`
+- Bot threads with active anchors → `skipped` with `reason: "not_outdated"`
+- Human-raised threads (any state) → `skipped` with `reason: "requires_body"`
+
+Two-step pattern: preview, then act.
+
+```bash
+spn threads list "$PR" --filter unresolved-outdated  # what would be swept
+spn threads resolve-all "$PR" --outdated              # do it
+```
+
+The thread JSON has an `isOutdated` boolean. An outdated thread anchors to code that has since shifted; the comment may be moot. Agents reviewing a thread should check `isOutdated` before deciding whether a fix is still relevant.
+
+### `BulkSkip.Reason` values
+
+| Reason | Meaning |
+| --- | --- |
+| `requires_body` | Bulk-resolve refused because the thread has a human commenter — resolve individually with `--body` |
+| `not_outdated` | Bulk-resolve with `--outdated` refused because the anchor is still active |
+
+## Code context and verbose mode
+
+Two opt-in flags add detail to the thread JSON without changing the default shape.
+
+`--show-code N` adds a `codeContext` block per thread, containing N lines on either side of the anchor:
+
+```json
+{
+  "id": "PRRT_...",
+  "path": "internal/foo.go",
+  "line": 42,
+  "codeContext": {
+    "ref": "deadbeef",
+    "startLine": 36,
+    "endLine": 48,
+    "lines": ["...", "...", "..."]
+  }
+}
+```
+
+Cost: one extra `FetchFileContent` call per unique `(path, ref)` pair — the caching wrapper collapses duplicates across threads anchored to the same file.
+
+`--verbose` adds `createdAt`, `updatedAt`, and `authorUrl` to each thread. Useful when grounding a reply in commit history or building per-author dashboards.
+
+Combined call for a grounded review loop:
+
+```bash
+spn threads next "$PR" --show-code 6 --verbose
+```
+
+Returns enough context to write a referenced reply without a separate `gh api` call.
+
+## Suggestions
+
+GitHub review threads can embed `suggestion` fenced blocks (```suggestion … ```) that propose replacement code. spn parses them into a per-thread `suggestions` array:
+
+```json
+{
+  "suggestions": [
+    {"commentId": "PRC_...", "body": "newCode()", "applicable": true}
+  ]
+}
+```
+
+`applicable` is true when the thread has a path + line range so `apply-suggestion` can write to the file. Suggestions appear in document order within a comment; pick by position via `--suggestion-index N`.
+
+### Applying a suggestion locally
+
+```bash
+spn threads apply-suggestion "$PR" "$id"
+```
+
+Writes the replacement to the local file at the thread's anchor. Flags:
+
+| Flag | Effect |
+| --- | --- |
+| `--suggestion-index N` | Pick the N-th suggestion when the thread has multiple (default 0) |
+| `--dry-run` | Print what would change as JSON; do not write the file |
+| `--force` | Apply even when the target file has uncommitted changes (default refuses) |
+| `--repo-root PATH` | Anchor for relative path resolution (default `pwd`) |
+
+The verb refuses if the path traverses outside the repo root.
+
+### Counter-proposing
+
+`spn threads reply --suggest BODY` (or `--suggest-file PATH`) wraps the body in a suggestion fenced block before posting:
+
+```bash
+spn threads reply "$PR" "$id" \
+  --intro "Narrower scope here:" \
+  --suggest "return ctx.Err()"
+```
+
+`--intro TEXT` prefixes a leading line of prose before the suggestion block.
+
+### TUI parity
+
+When working interactively in the spoon TUI, press `[c]` to open `$EDITOR` for a counter-proposal. The wrapper applies `WrapSuggestionBody` and posts via the same path.
+
+### Spoon flag parallel
+
+`spoon --apply-suggestion <id>` (flag) calls into the same `threadsops.ApplySuggestion` that `spn threads apply-suggestion` (verb) uses. The flag/verb difference is the human/agent bifurcation; both produce identical results.
+
+## Dry-run previews
+
+`--dry-run` is available on `resolve`, `resolve-all`, `unresolve-all`, and `apply-suggestion`. Output shape matches the non-dry-run path with an added `dryRun: true` field:
+
+```json
+{"succeeded": ["PRRT_..."], "failed": [], "skipped": [], "dryRun": true}
+```
+
+Gating pattern:
+
+```bash
+preview=$(spn threads resolve-all "$PR" --outdated --dry-run)
+count=$(jq -r '.succeeded | length' <<<"$preview")
+if [ "$count" -gt 0 ]; then
+  spn threads resolve-all "$PR" --outdated
+fi
+```
 
 ## Partial-Failure Dedup (Critical for Retry Loops)
 
@@ -139,6 +281,31 @@ fi
 
 `spn` recognizes when the most recent comment is the agent's own resolution comment and skips the body-required gate on the retry.
 
+## Embedding & Centrality
+
+`spn forks list` enriches forks with cluster labels when an Ollama embedder is reachable. Three sibling verbs let an agent set that up or query the underlying data:
+
+```sh
+spn embed status                   # JSON: running, endpoint, installed[], recommended[]
+spn embed models                   # JSON: known-good models (name, dim, size, codeAware)
+spn embed pull <model>             # NDJSON progress: one {model,phase,pct} per line until phase=="done"
+spn repo centrality owner/repo     # JSON: per-directory centrality + top-K core dirs
+```
+
+Preflight pattern before clustering:
+
+```bash
+status=$(spn embed status)
+running=$(jq -r .running <<<"$status")
+if [ "$running" != "true" ]; then
+  echo "Ollama not reachable; clustering will be skipped" >&2
+fi
+installed=$(jq -r '.installed | join(",")' <<<"$status")
+if ! grep -q nomic <<<"$installed"; then
+  spn embed pull nomic-embed-text | jq -c .   # streaming progress
+fi
+```
+
 ## Mergeability Gate
 
 Resolving threads doesn't merge a PR. Check the gate:
@@ -156,6 +323,8 @@ All commands accept any of:
 - `https://github.com/owner/repo/pull/42`
 - `#42` (resolves owner/repo from the `origin` remote of the current git checkout)
 
+(`list-prs` takes `<owner/repo>` without the `#N` suffix, since the whole point is *discovering* PR numbers.)
+
 ## Common Mistakes
 
 | Mistake | What to do instead |
@@ -167,6 +336,9 @@ All commands accept any of:
 | Reading PR thread state via `gh pr view --comments` (HTML/scraped) | `spn threads list` is JSON with stable IDs and the policy flag baked in. |
 | Trusting `unresolvedThreads: 0` as "ready to merge" | `spn pr status` also returns `mergeStateStatus` and `checksState` — both must be green. |
 | Treating `rate_limited` as `upstream_error` | Check `code` explicitly — `rate_limited` has a known `retry_after_seconds`. Sleeping that long is reliable; blind retry on `upstream_error` may keep hitting the limit. |
+| Resolving outdated threads individually | Use `spn threads resolve-all <pr> --outdated` to sweep them in one call. Preview with `--dry-run` first. |
+| Ignoring `isOutdated` when deciding to reply | Outdated threads anchor to code that has since shifted; the comment may no longer be relevant. Check the field. |
+| Calling `gh pr list` then `spn` | Use `spn threads list-prs <owner/repo>` for one round trip in the agent's preferred JSON shape. |
 
 ## Quick Reference
 
@@ -179,5 +351,8 @@ All commands accept any of:
 | `spn threads resolve-all <pr>` | Bulk-resolve bot threads; human threads land in `skipped` |
 | `spn threads unresolve-all <pr>` | Re-open every resolved thread |
 | `spn pr status <pr>` | Mergeability snapshot |
-| `spn forks list <repo>` | NDJSON fork enrichment (separate use case, not for PR review) |
-| `spn forks list <repo> --csv` | Batched CSV with fixed header; switches off NDJSON streaming. Use for spreadsheet/tabular consumers. |
+| `spn threads list-prs <owner/repo>` | JSON array of open PRs on a repo. Programmatic alternative to spoon's --interactive picker. |
+| `spn threads list <pr> --filter MODE` | Filter modes: all, unresolved, current-unresolved, resolved-active, unresolved-outdated. |
+| `spn threads apply-suggestion <pr> <id>` | Apply a thread's suggestion block to the local file. Use --dry-run first. |
+| `spn threads reply <pr> <id> --suggest T` | Reply that wraps T in a suggestion fenced block. Optional --intro for context. |
+| `spn threads * --dry-run` / `--show-code N` / `--verbose` | Cross-cutting modifiers for mutations / context-aware reads / extra metadata. |

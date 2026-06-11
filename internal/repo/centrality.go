@@ -24,6 +24,16 @@ type CommitSource interface {
 	CommitMessages(ctx context.Context, owner, repo string, limit int) ([]string, error)
 }
 
+// Centrality is the interface implemented by every centrality backend
+// (directory proxy + future MDG-based). It maps a list of touched file paths
+// to a 0..1 ChangeImpact score and exposes the top "core" units (directories
+// for the proxy, module paths for MDG) for the labeler.
+type Centrality interface {
+	ScoreFork(touchedFiles []string) float64
+	Core() []string
+	When() time.Time
+}
+
 // DirectoryCentrality holds per-directory scores reflecting how "core" each
 // directory is in the upstream repository.
 type DirectoryCentrality struct {
@@ -34,6 +44,9 @@ type DirectoryCentrality struct {
 	Owner      string             `json:"owner"`
 	Repo       string             `json:"repo"`
 }
+
+// Compile-time check.
+var _ Centrality = DirectoryCentrality{}
 
 const (
 	// defaultCommitSampleSize is used when callers pass 0 for dirCommitSampleSize.
@@ -137,28 +150,40 @@ func Compute(
 	}, nil
 }
 
-// ScoreFork returns a 0..1 ChangeImpact score for a fork given the directories
-// it touched.
+// ScoreFork returns a 0..1 ChangeImpact score for a fork given the file paths
+// it touched. The implementation maps each path to its trailing-slash parent
+// directory key (e.g., "internal/auth/oauth.go" → "internal/auth/"), de-dupes
+// directories, and returns the mean DirScore across those directories.
 //
-//	mean(DirScore[d]) for d in touchedDirs after normalization.
-//
-// If touchedDirs is empty, returns 0.0. If a touched dir is not in DirScore
-// (perhaps the fork added a new directory), it contributes 0 to the sum.
-// The mean is then clipped to [0, 1].
-func (dc DirectoryCentrality) ScoreFork(touchedDirs []string) float64 {
-	if len(touchedDirs) == 0 {
+// A top-level file (no parent directory) contributes nothing to the mean —
+// these files are not represented in DirScore by design.
+func (dc DirectoryCentrality) ScoreFork(touchedFiles []string) float64 {
+	if len(touchedFiles) == 0 {
+		return 0.0
+	}
+	seen := make(map[string]struct{}, len(touchedFiles))
+	dirs := make([]string, 0, len(touchedFiles))
+	for _, p := range touchedFiles {
+		d := dirKeyOf(p)
+		if d == "" {
+			continue
+		}
+		if _, dup := seen[d]; dup {
+			continue
+		}
+		seen[d] = struct{}{}
+		dirs = append(dirs, d)
+	}
+	if len(dirs) == 0 {
 		return 0.0
 	}
 	var sum float64
-	for _, d := range touchedDirs {
-		if !strings.HasSuffix(d, "/") {
-			d += "/"
-		}
+	for _, d := range dirs {
 		if v, ok := dc.DirScore[d]; ok {
 			sum += v
 		}
 	}
-	mean := sum / float64(len(touchedDirs))
+	mean := sum / float64(len(dirs))
 	if mean < 0 {
 		return 0
 	}
@@ -166,6 +191,27 @@ func (dc DirectoryCentrality) ScoreFork(touchedDirs []string) float64 {
 		return 1
 	}
 	return mean
+}
+
+// Core implements Centrality. Returns the top scoring directory keys.
+func (dc DirectoryCentrality) Core() []string { return dc.CoreDirs }
+
+// When implements Centrality.
+func (dc DirectoryCentrality) When() time.Time { return dc.ComputedAt }
+
+// dirKeyOf returns "internal/auth/" for "internal/auth/oauth.go", and "" for
+// a top-level file (no '/' in the path). For a path that already ends in '/',
+// the result is the same string.
+func dirKeyOf(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	idx := strings.LastIndexByte(path, '/')
+	if idx <= 0 {
+		return ""
+	}
+	return path[:idx+1]
 }
 
 // countDirs walks the directory ancestors of every meaningful file path and

@@ -458,8 +458,9 @@ func WrapSuggestionBody(intro, body string) string {
 		intro = "How about this?"
 	}
 	// Trim a single trailing newline off body so the closing fence sits on
-	// its own line. Internal newlines are kept as-is.
-	body = strings.TrimRight(body, "\n")
+	// its own line. Internal newlines (and additional trailing blank lines)
+	// are kept as-is.
+	body = strings.TrimSuffix(body, "\n")
 	var b strings.Builder
 	b.WriteString(intro)
 	b.WriteString("\n\n```suggestion\n")

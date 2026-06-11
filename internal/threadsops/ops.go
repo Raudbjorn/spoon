@@ -87,7 +87,11 @@ type cachingContentFetcher struct {
 	owner string
 	repo  string
 	ref   string
-	cache map[string]string
+	cache map[fetchKey]string
+}
+
+type fetchKey struct {
+	owner, repo, ref, path string
 }
 
 func newCachingFetcher(inner ContentFetcher, owner, repo, ref string) *cachingContentFetcher {
@@ -96,12 +100,12 @@ func newCachingFetcher(inner ContentFetcher, owner, repo, ref string) *cachingCo
 		owner: owner,
 		repo:  repo,
 		ref:   ref,
-		cache: map[string]string{},
+		cache: map[fetchKey]string{},
 	}
 }
 
 func (c *cachingContentFetcher) FetchFileContent(ctx context.Context, owner, repo, path, ref string) (string, error) {
-	key := owner + "/" + repo + "@" + ref + ":" + path
+	key := fetchKey{owner: owner, repo: repo, ref: ref, path: path}
 	if v, ok := c.cache[key]; ok {
 		return v, nil
 	}
