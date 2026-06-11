@@ -6,6 +6,7 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/svnbjrn/spoon/internal/agentio"
+	"github.com/svnbjrn/spoon/internal/config"
 	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/forge"
 	"github.com/svnbjrn/spoon/internal/forksops"
@@ -112,6 +114,26 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 				return agentio.NewError(agentio.CodeBadInput, "--top must be a positive integer", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
 			}
 			opts.TopN = n
+		case "--budget":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--budget requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n < 1 {
+				return agentio.NewError(agentio.CodeBadInput, "--budget must be a positive integer", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			opts.Budget = n
+		case "--shortlist":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--shortlist requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n < 1 {
+				return agentio.NewError(agentio.CodeBadInput, "--shortlist must be a positive integer", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			opts.ShortlistN = n
 		case "--bot-allowlist":
 			if i+1 >= len(args) {
 				return agentio.NewError(agentio.CodeBadInput, "--bot-allowlist requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
@@ -157,6 +179,22 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 			}
 			i++
 			opts.Cluster.ModelOverride = args[i]
+		case "--embedder-backend":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--embedder-backend requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			val := strings.ToLower(args[i])
+			if val != "ollama" && val != "sidecar" && val != "openai" {
+				return agentio.NewError(agentio.CodeBadInput, "--embedder-backend must be 'ollama', 'sidecar', or 'openai'", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			opts.Cluster.Backend = val
+		case "--sidecar-endpoint":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--sidecar-endpoint requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			opts.Cluster.SidecarEndpoint = args[i]
 		case "--labeler":
 			if i+1 >= len(args) {
 				return agentio.NewError(agentio.CodeBadInput, "--labeler requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
@@ -220,7 +258,47 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	// An explicit --sidecar-endpoint implies the sidecar backend, overriding a
+	// saved openai/ollama config so the flag isn't silently ignored.
+	if opts.Cluster.SidecarEndpoint != "" && opts.Cluster.Backend == "" {
+		opts.Cluster.Backend = "sidecar"
+	}
+
+	// Layer saved embedder defaults under flags/env (flags > env > config >
+	// built-in). Provider/host are not layered — the repo arg determines the
+	// forge. A bad config emits a warning but never blocks the run.
+	if cfg, cerr := config.LoadDefault(); cerr != nil {
+		emitConfigWarning(stderr, cerr)
+	} else if cfg != nil {
+		// flag > env, then layer config backend-aware (see config.LayerEmbedder):
+		// a saved backend's endpoint/model isn't inherited under a different backend.
+		be := strings.ToLower(config.Coalesce(opts.Cluster.Backend, os.Getenv("SPOON_EMBEDDER_BACKEND")))
+		eu := config.Coalesce(opts.Cluster.Endpoint, os.Getenv("SPOON_EMBEDDER_URL"))
+		se := config.Coalesce(opts.Cluster.SidecarEndpoint, os.Getenv("SPOON_SIDECAR_ENDPOINT"))
+		opts.Cluster.Backend, opts.Cluster.Endpoint, opts.Cluster.ModelOverride, opts.Cluster.SidecarEndpoint, opts.Cluster.LabelerModel =
+			cfg.LayerEmbedder(be, eu, opts.Cluster.ModelOverride, se, opts.Cluster.LabelerModel)
+	}
+
 	ctx := context.Background()
+
+	// Validate the embedder endpoint up front so a bad URL fails fast (before
+	// enumerating forks) instead of silently disabling clustering. --no-cluster
+	// skips this. Skipped when a test embedder is injected (it bypasses
+	// SelectEmbedder, so there's no real endpoint to probe).
+	if embedderHookForTest == nil {
+		if perr := embed.Preflight(ctx, embed.PreflightOptions{
+			Enabled:         opts.Cluster.Enabled,
+			Backend:         opts.Cluster.Backend,
+			Endpoint:        opts.Cluster.Endpoint,
+			Model:           opts.Cluster.ModelOverride,
+			SidecarEndpoint: opts.Cluster.SidecarEndpoint,
+			LabelerEndpoint: opts.Cluster.LabelerEndpoint,
+		}); perr != nil {
+			return agentio.NewError(agentio.CodeBadInput, perr.Error(),
+				"Start the embedder or fix the endpoint (--embedder/--sidecar-endpoint), run 'spoon setup' to configure one, or pass --no-cluster to skip clustering.").Emit(stderr)
+		}
+	}
+
 	provider, repoArg, e := providerFactory(ctx, repo, forgeFlag, forgeHost)
 	if e != nil {
 		return e.Emit(stderr)
@@ -234,6 +312,10 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 	// emitClusterWarning. The discard is intentional — do not wire stderr
 	// here, prose log lines would interleave with the agent envelopes.
 	opts.Logger = io.Discard
+	// Auto-budget reserve is on by default (stop enriching before the rate
+	// window is drained, marking the rest degraded). SPOON_NO_RESERVE=1 opts out
+	// to drain the full budget in one pass.
+	opts.ReserveDisabled = os.Getenv("SPOON_NO_RESERVE") == "1"
 	if embedderHookForTest != nil {
 		opts.Cluster.SetEmbedderForTest(embedderHookForTest)
 	}
@@ -255,9 +337,13 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 		return emitForksCSV(stdout, stderr, ch)
 	}
 	// NDJSON streaming path.
+	degraded, total := 0, 0
 	for r := range ch {
 		if r.ClusterSkip != nil {
 			emitClusterWarning(stderr, r.ClusterSkip)
+		}
+		if r.T3Skip != nil {
+			emitStageSkipWarning(stderr, r.T3Skip)
 		}
 		if r.Err != nil {
 			// Compact one-line stderr error per failing fork.
@@ -270,11 +356,36 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 			})
 			continue
 		}
+		total++
+		if r.BudgetSkip != nil {
+			degraded++
+		}
 		if err := agentio.WriteNDJSON(stdout, forkToJSON(r)); err != nil {
 			return agentio.NewError(agentio.CodeInternal, err.Error(), agentio.RemediationInternal()).Emit(stderr)
 		}
 	}
+	if degraded > 0 {
+		_ = json.NewEncoder(stderr).Encode(map[string]any{
+			"warning": map[string]any{
+				"code":        "degraded_rate_reserve",
+				"message":     fmt.Sprintf("%d/%d forks left un-enriched at the rate-limit reserve; their divergence is absent, not zero", degraded, total),
+				"remediation": "Re-run after the rate window resets to backfill (cached compares resume), or set SPOON_NO_RESERVE=1 to drain the full budget.",
+			},
+		})
+	}
 	return 0
+}
+
+// emitConfigWarning writes a structured, non-fatal warning when the saved
+// config could not be read. The run continues with flags/env/defaults.
+func emitConfigWarning(stderr io.Writer, err error) {
+	_ = json.NewEncoder(stderr).Encode(map[string]any{
+		"warning": map[string]any{
+			"code":        "config_ignored",
+			"message":     "ignoring spoon config: " + err.Error(),
+			"remediation": "Fix or remove the config file, or set SPOON_NO_CONFIG=1.",
+		},
+	})
 }
 
 func splitRepoArg(s string) (owner, repo string) {
@@ -305,12 +416,20 @@ func forkToJSON(r forksops.Result) map[string]any {
 			"behind": r.T2.BehindCount,
 			"mna":    r.T2.MNA,
 		}
+	} else if r.BudgetSkip != nil {
+		// Compare was skipped at the rate-limit reserve. Flag it so the absence
+		// of "t2" reads as "not computed" (re-run to backfill), not "no divergence".
+		out["budget_skipped"] = true
 	}
 	if r.T3 != nil {
 		out["t3"] = map[string]any{
 			"contributors":     len(r.T3.Contributors),
 			"commit_span_days": r.T3.CommitSpanDays,
 		}
+	} else if r.T3Skip != nil {
+		// T3 was requested but skipped (e.g. GitHub stats 202). Flag it so the
+		// absence of "t3" reads as "unavailable", not "computed and empty".
+		out["t3_skipped"] = true
 	}
 	// Cluster fields are emitted as a unit, gated on ClusterID. Per the plan:
 	// omission means "not computed"; a clustered fork with genuine zero
@@ -328,6 +447,12 @@ func forkToJSON(r forksops.Result) map[string]any {
 	}
 	if r.Heat.ChangeImpact != 0 {
 		out["changeImpact"] = r.Heat.ChangeImpact
+	}
+	// Robbins expected-rank shortlist fields (set only with --shortlist). Rank
+	// is always >= 1 when computed, so >0 distinguishes "computed" from "unset".
+	if r.ExpectedRank > 0 {
+		out["expectedRank"] = r.ExpectedRank
+		out["rankConfidence"] = r.RankConfidence
 	}
 	// Components is populated by the v2 scoring path (forksops uses
 	// Scorer.ScoreRaw). Emit when present so downstream agents can inspect
@@ -363,6 +488,9 @@ func emitForksCSV(stdout, stderr io.Writer, ch <-chan forksops.Result) int {
 	for r := range ch {
 		if r.ClusterSkip != nil {
 			emitClusterWarning(stderr, r.ClusterSkip)
+		}
+		if r.T3Skip != nil {
+			emitStageSkipWarning(stderr, r.T3Skip)
 		}
 		if r.Err != nil {
 			_ = agentio.WriteNDJSON(stderr, map[string]any{
@@ -459,6 +587,30 @@ func remediationForMissingModel() string {
 	}
 	return "Install an embedding model: e.g. 'ollama pull " + models[0] +
 		"' (also supported: " + strings.Join(models[1:], ", ") + ")"
+}
+
+// emitStageSkipWarning writes a structured, non-fatal warning to stderr when a
+// per-fork enrichment stage was skipped (e.g. contributors stats unavailable).
+// The fork itself is still emitted on stdout — this only flags the missing
+// enrichment so agents can tell "skipped" apart from "computed and empty".
+func emitStageSkipWarning(stderr io.Writer, skip *forksops.StageSkip) {
+	remediation := ""
+	if skip.Stage == "contributors" {
+		remediation = "GitHub computes contributor stats asynchronously; retry later to populate t3"
+	}
+	envelope := map[string]any{
+		"warning": map[string]any{
+			"code":        "stage_skipped",
+			"message":     skip.Stage + " enrichment skipped: " + skip.Reason,
+			"remediation": remediation,
+			"details": map[string]any{
+				"stage": skip.Stage,
+				"fork":  skip.ForkID,
+			},
+		},
+	}
+	enc := json.NewEncoder(stderr)
+	_ = enc.Encode(envelope)
 }
 
 // emitClusterWarning writes a structured warning to stderr (one JSON object

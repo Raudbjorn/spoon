@@ -89,8 +89,16 @@ func (g *Graph) PageRank(teleport []float64, damping float64, iterations int) ma
 			tp[i] = 1.0 / float64(n)
 		}
 	} else {
+		// Clamp negative entries to 0 before normalizing — a malformed teleport
+		// like [-0.5, 1.5] sums to a positive value but would yield negative
+		// probabilities under naive normalization.
 		var sum float64
-		for _, v := range teleport {
+		clamped := make([]float64, n)
+		for i, v := range teleport {
+			if v < 0 {
+				v = 0
+			}
+			clamped[i] = v
 			sum += v
 		}
 		if sum <= 0 {
@@ -98,7 +106,7 @@ func (g *Graph) PageRank(teleport []float64, damping float64, iterations int) ma
 				tp[i] = 1.0 / float64(n)
 			}
 		} else {
-			for i, v := range teleport {
+			for i, v := range clamped {
 				tp[i] = v / sum
 			}
 		}

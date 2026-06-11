@@ -30,6 +30,8 @@ func main() {
 		os.Exit(runEmbed(os.Args[2:]))
 	case "repo":
 		os.Exit(runRepo(os.Args[2:]))
+	case "sidecar":
+		os.Exit(runSidecar(os.Args[2:]))
 	default:
 		fmt.Fprintf(os.Stderr, "spn: unknown subcommand %q\n", os.Args[1])
 		printHelp()
@@ -60,13 +62,31 @@ Nouns and verbs:
             the fetch + policy gates run, but no GraphQL resolveReviewThread
             (or unresolveReviewThread) is issued. Output is marked dryRun=true.
   pr status <pr-ref>
-  forks list <repo> [--tier 1|2|3] [--top N] [--bot-allowlist L] [--refresh] [--csv] [--forge github|gitlab] [--forge-host H]
+  forks list <repo> [--tier 1|2|3] [--top N] [--budget N] [--shortlist N] [--bot-allowlist L] [--refresh] [--csv] [--forge github|gitlab] [--forge-host H]
                     [--no-cluster] [--cluster-top N] [--embedder URL] [--embedder-model NAME]
+                    [--embedder-backend ollama|sidecar|openai] [--sidecar-endpoint URL]
                     [--labeler URL] [--labeler-model NAME] [--cluster-epsilon F] [--cluster-min-size N] [--auto-pull]
+                    [--full-mdg] [--no-mdg]
+        --budget N caps the expensive per-fork compare/contributors calls to N,
+        choosing which forks to spend them on by an optimal-stopping ("secretary
+        problem") gate over a cheap divergence signal — so a rate-limited scan of
+        a huge fork network spends its budget on forks that likely diverged
+        rather than the most popular ones. Re-running resumes via the 24h compare
+        cache. --top N instead deep-scans the top N by surface score.
+        --shortlist N emits only the top N forks by Robbins expected rank (lower
+        = more likely best), adding expectedRank + rankConfidence to each.
+        Flags go AFTER 'forks list <repo>'. --embedder URL is an Ollama API
+        endpoint; the Python sidecar is selected with --embedder-backend sidecar
+        --sidecar-endpoint URL (different protocol — not --embedder). For an
+        OpenAI-compatible endpoint (e.g. OVMS on a GPU): --embedder-backend
+        openai --embedder URL --embedder-model NAME.
   embed status [--endpoint URL]
   embed pull <model> [--endpoint URL]
   embed models
   repo centrality <owner/repo> [--forge github] [--forge-host H]
+  sidecar install [--runtime uv|python|docker] [--port N] [--device cpu|cuda] [--no-enable]
+  sidecar status
+  sidecar uninstall [--purge]
 
 PR refs accept:
   owner/repo#42

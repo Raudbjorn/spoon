@@ -111,7 +111,10 @@ func TestParsePythonPackages_MainFileMarked(t *testing.T) {
 	if !main.IsMain {
 		t.Errorf("app.__main__ should be IsMain")
 	}
-	lib := byPath["app.lib"]
+	lib, ok := byPath["app.lib"]
+	if !ok {
+		t.Fatalf("missing app.lib; got %v", pyKeys(byPath))
+	}
 	if lib.IsMain {
 		t.Errorf("app.lib should not be IsMain")
 	}
@@ -137,11 +140,13 @@ from . import sibling
 	}
 	imports := pkgs[0].Imports
 	sort.Strings(imports)
-	// Parenthesized `from pkg.sub import (a,b,c)` produces a single edge
-	// "pkg.sub". `import x, y` produces edges "x" and "y". Relative
-	// `from . import sibling` is recorded as the literal text ".sibling"
-	// (we do not resolve relative imports in Phase B; see plan notes).
-	want := []string{".sibling", "pkg.sub", "x", "y"}
+	// `from pkg.sub import (a,b,c)` emits qualified raw imports `pkg.sub.a`,
+	// `pkg.sub.b`, `pkg.sub.c`. Since pkg.sub does not exist in this fixture,
+	// neither the qualified forms nor the parent are known modules; they
+	// remain as opaque qualified external references. `import x, y` produces
+	// edges "x" and "y". Relative `from . import sibling` is recorded as
+	// ".sibling" (we do not resolve relative imports in Phase B).
+	want := []string{".sibling", "pkg.sub.a", "pkg.sub.b", "pkg.sub.c", "x", "y"}
 	if !equalStrSlices(imports, want) {
 		t.Errorf("imports: want %v, got %v", want, imports)
 	}

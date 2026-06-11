@@ -3,8 +3,8 @@ package tui
 import (
 	"context"
 	"fmt"
-	"math/rand"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -12,6 +12,7 @@ import (
 	"github.com/cli/go-gh/v2/pkg/browser"
 
 	"github.com/svnbjrn/spoon/internal/forge"
+	"github.com/svnbjrn/spoon/internal/forksops"
 	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/heat"
 )
@@ -35,6 +36,14 @@ type ScoredFork struct {
 	T2        *forge.T2Data
 	Marked    bool
 	Enriching bool
+
+	// Enriched is true once a real T2 compare has settled for this fork (cache
+	// hit or live call). BudgetSkipped is true when enrichment was skipped at
+	// the rate-limit reserve floor. The two distinguish "compared, genuinely no
+	// divergence" from "never compared" — so the export reports an un-enriched
+	// fork as such instead of as zero divergence.
+	Enriched      bool
+	BudgetSkipped bool
 }
 
 // Model is the top-level Bubble Tea model.
@@ -272,6 +281,7 @@ func (m *Model) applyCachedCompares(cache *gh.CacheEntry) {
 		// Convert gh.CompareResult to forge.T2Data via the adapter helper
 		t2 := ghCompareToForgeT2(ghCompare)
 		m.forks[i].T2 = &t2
+		m.forks[i].Enriched = true
 
 		m.recomputeT2Score(i)
 	}
@@ -334,7 +344,26 @@ func (m *Model) processPendingUpdates() (tea.Model, tea.Cmd) {
 	for _, update := range m.pendingUpdates {
 		m.enrichDone++
 
+		// Rate-reserve skip: keep the fork, mark it un-enriched/degraded (not
+		// failed, not zero divergence) so the export can distinguish it.
+		if update.budgetSkipped {
+			for i := range m.forks {
+				if m.forks[i].Fork.ID == update.forkID {
+					m.forks[i].Enriching = false
+					m.forks[i].BudgetSkipped = true
+					break
+				}
+			}
+			continue
+		}
+
 		if update.err != nil {
+			for i := range m.forks {
+				if m.forks[i].Fork.ID == update.forkID {
+					m.forks[i].Enriching = false
+					break
+				}
+			}
 			continue
 		}
 
@@ -343,6 +372,7 @@ func (m *Model) processPendingUpdates() (tea.Model, tea.Cmd) {
 				t2 := update.t2
 				m.forks[i].T2 = &t2
 				m.forks[i].Enriching = false
+				m.forks[i].Enriched = true
 
 				m.recomputeT2Score(i)
 
@@ -694,11 +724,21 @@ func (m *Model) fetchForks() tea.Cmd {
 		}
 
 		var forks []forge.T1Data
+		var streamErr error
 		for msg := range ch {
 			if msg.Err != nil {
-				continue // skip error items
+				streamErr = msg.Err // remember; per-fork errors are tolerated below
+				continue
 			}
 			forks = append(forks, msg.Fork)
+		}
+
+		// A fatal fetch failure (e.g. the GraphQL forks query erroring out)
+		// arrives as a stream error and would otherwise leave us silently
+		// showing zero forks. Surface it instead — but only when nothing came
+		// through, so partial results from per-fork failures are still kept.
+		if len(forks) == 0 && streamErr != nil {
+			return forksFetchedMsg{err: streamErr}
 		}
 
 		// Save to GitHub cache if applicable
@@ -829,9 +869,9 @@ func (m *Model) startEnrichment() tea.Cmd {
 	if m.parent == nil || len(m.forks) == 0 {
 		return nil
 	}
-	if m.provider.Headroom() < 0.05 {
-		return nil
-	}
+	// No early headroom return: cached compares still serve for free below, and
+	// uncached forks are marked degraded per-fork at the reserve floor rather
+	// than silently skipped.
 
 	ctx, cancel := context.WithCancel(context.Background())
 	m.enrichCtx = ctx
@@ -839,35 +879,25 @@ func (m *Model) startEnrichment() tea.Cmd {
 	m.enriching = true
 	m.enrichDone = 0
 
-	maxEnrich := len(m.forks)
-	if maxEnrich <= 0 {
+	if len(m.forks) == 0 {
 		m.enriching = false
 		return nil
 	}
 
-	// Split: top 70% by heat (exploit), random 30% (explore)
-	exploitCount := maxEnrich * 7 / 10
-	if exploitCount > len(m.forks) {
-		exploitCount = len(m.forks)
+	// Enrich best-first: order by EVPR (DispatchPriority over the cheap
+	// divergence signal), so when the rate-limit reserve floor cuts the pass
+	// short, the forks that DID get compared are the ones most likely to have
+	// real divergence — not the most popular or a random sample.
+	parentPushed := m.parent.PushedAt
+	toEnrich := make([]int, len(m.forks))
+	for i := range toEnrich {
+		toEnrich[i] = i
 	}
-	exploreCount := maxEnrich - exploitCount
-
-	var toEnrich []int
-	for i := 0; i < exploitCount && i < len(m.forks); i++ {
-		toEnrich = append(toEnrich, i)
-	}
-	if exploreCount > 0 && exploitCount < len(m.forks) {
-		remaining := make([]int, 0, len(m.forks)-exploitCount)
-		for i := exploitCount; i < len(m.forks); i++ {
-			remaining = append(remaining, i)
-		}
-		rand.Shuffle(len(remaining), func(i, j int) {
-			remaining[i], remaining[j] = remaining[j], remaining[i]
-		})
-		for i := 0; i < exploreCount && i < len(remaining); i++ {
-			toEnrich = append(toEnrich, remaining[i])
-		}
-	}
+	sort.SliceStable(toEnrich, func(a, b int) bool {
+		fa, fb := m.forks[toEnrich[a]], m.forks[toEnrich[b]]
+		return forksops.DispatchPriority(fa.Fork, parentPushed, fa.Heat.Score) >
+			forksops.DispatchPriority(fb.Fork, parentPushed, fb.Heat.Score)
+	})
 
 	m.enrichTotal = len(toEnrich)
 	for _, idx := range toEnrich {
@@ -911,8 +941,12 @@ func (m *Model) startEnrichment() tea.Cmd {
 			}
 			defer func() { <-sem }()
 
-			if provider.Headroom() < 0.05 {
-				return tier2ResultMsg{forkID: forkID, err: fmt.Errorf("rate limit exhausted")}
+			// Auto-budget reserve: stop spending the rate window once headroom
+			// hits the floor. Best-first ordering means the forks already
+			// compared are the most promising; this one is marked degraded
+			// (not failed, not zeroed) so the export can say so.
+			if provider.Headroom() < forksops.ReserveHeadroom {
+				return tier2ResultMsg{forkID: forkID, budgetSkipped: true}
 			}
 
 			t2, err := provider.Compare(ctx, f, f.DefaultBranch)

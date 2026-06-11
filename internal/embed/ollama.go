@@ -83,7 +83,33 @@ func (c *OllamaClient) Embed(ctx context.Context, texts []string) ([]Vector, err
 	return out, nil
 }
 
+// embedOne embeds a single text, adaptively shrinking it on a context-length
+// error so any model's window is respected without a per-model constant (a
+// generous cap is already applied upstream in MultiModalEmbed). This keeps one
+// oversized fork document from aborting the whole clustering batch.
 func (c *OllamaClient) embedOne(ctx context.Context, text string) (Vector, error) {
+	for {
+		v, err := c.embedOnce(ctx, text)
+		if err == nil {
+			return v, nil
+		}
+		if len([]rune(text)) > 256 && isContextLengthError(err) {
+			r := []rune(text)
+			text = string(r[:len(r)/2]) // halve and retry
+			continue
+		}
+		return nil, err
+	}
+}
+
+// isContextLengthError reports whether err is Ollama's "input length exceeds
+// the context length" 500.
+func isContextLengthError(err error) bool {
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "context length") || strings.Contains(s, "exceeds the context")
+}
+
+func (c *OllamaClient) embedOnce(ctx context.Context, text string) (Vector, error) {
 	body, err := json.Marshal(ollamaSingleReq{Model: c.model(), Prompt: text})
 	if err != nil {
 		return nil, err

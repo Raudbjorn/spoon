@@ -16,7 +16,17 @@ import (
 type ExportData struct {
 	Parent     ExportParent `json:"parent"`
 	ExportedAt string       `json:"exported_at"`
-	Forks      []ExportFork `json:"forks"`
+
+	// Degraded is true when one or more forks could not be enriched (compare)
+	// because the rate-limit reserve was reached — so their divergence is
+	// absent, not zero. EnrichedCount/TotalCount quantify it. Consumers should
+	// treat a degraded export as partial and re-run after the rate window
+	// resets (cached compares resume) for complete data.
+	Degraded      bool `json:"degraded"`
+	EnrichedCount int  `json:"enriched_count"`
+	TotalCount    int  `json:"total_count"`
+
+	Forks []ExportFork `json:"forks"`
 }
 
 // ExportParent describes the parent repository.
@@ -29,16 +39,22 @@ type ExportParent struct {
 
 // ExportFork is the per-fork export data.
 type ExportFork struct {
-	FullName    string            `json:"full_name"`
-	URL         string            `json:"url"`
-	CompareURL  string            `json:"compare_url"`
-	Owner       string            `json:"owner"`
-	Stars       int               `json:"stars"`
-	Forks       int               `json:"forks"`
-	OpenIssues  int               `json:"open_issues"`
-	Language    string            `json:"language,omitempty"`
-	PushedAt    string            `json:"pushed_at"`
-	CreatedAt   string            `json:"created_at"`
+	FullName   string `json:"full_name"`
+	URL        string `json:"url"`
+	CompareURL string `json:"compare_url"`
+	Owner      string `json:"owner"`
+	Stars      int    `json:"stars"`
+	Forks      int    `json:"forks"`
+	OpenIssues int    `json:"open_issues"`
+	Language   string `json:"language,omitempty"`
+	PushedAt   string `json:"pushed_at"`
+	CreatedAt  string `json:"created_at"`
+
+	// Enriched is true when this fork's compare (divergence) actually ran. When
+	// false, Divergence is absent (omitted) rather than reported as zero — the
+	// fork was skipped at the rate-limit reserve, not found inert.
+	Enriched bool `json:"enriched"`
+
 	Heat        ExportHeat        `json:"heat"`
 	Components  []ExportComponent `json:"components,omitempty"`
 	Divergence  *ExportDiv        `json:"divergence,omitempty"`
@@ -76,12 +92,12 @@ type ExportLoneWolf struct {
 
 // ExportHeat is the heat score section.
 type ExportHeat struct {
-	Score      float64  `json:"score"`
-	Tier       int      `json:"tier"`
-	Confidence float64  `json:"confidence"`
-	Trust      float64  `json:"trust,omitempty"`
+	Score      float64   `json:"score"`
+	Tier       int       `json:"tier"`
+	Confidence float64   `json:"confidence"`
+	Trust      float64   `json:"trust,omitempty"`
 	TierScores []float64 `json:"tier_scores,omitempty"`
-	Penalties  []string `json:"penalties,omitempty"`
+	Penalties  []string  `json:"penalties,omitempty"`
 }
 
 // ExportComponent is one entry in the per-fork component breakdown.
@@ -232,12 +248,16 @@ func (m *Model) doExport(toExport []ScoredFork, filename string) tea.Cmd {
 				Language:   sf.Fork.Language,
 				PushedAt:   sf.Fork.PushedAt.Format(time.RFC3339),
 				CreatedAt:  sf.Fork.CreatedAt.Format(time.RFC3339),
+				Enriched:   sf.Enriched,
 				Heat:       efHeat,
 				CompareURL: forge.CompareURL(auth.Provider, auth.Host,
 					parent.FullName, parent.DefaultBranch, sf.Fork.Owner, sf.Fork.DefaultBranch),
 			}
 
 			ef.Divergence = forgeT2ToExportDiv(sf.T2)
+			if sf.Enriched {
+				data.EnrichedCount++
+			}
 
 			// Components (v2 point budget breakdown).
 			if len(sf.Heat.Components) > 0 {
@@ -282,6 +302,9 @@ func (m *Model) doExport(toExport []ScoredFork, filename string) tea.Cmd {
 			ef.WhyDistinct = GenerateWhyDistinct(sf, parent)
 			data.Forks = append(data.Forks, ef)
 		}
+
+		data.TotalCount = len(data.Forks)
+		data.Degraded = data.EnrichedCount < data.TotalCount
 
 		jsonData, err := json.MarshalIndent(data, "", "  ")
 		if err != nil {

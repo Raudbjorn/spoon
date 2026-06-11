@@ -8,6 +8,7 @@ package mdg
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -70,7 +71,19 @@ func BuildCentrality(
 	fileToModule := make(map[string]string)
 	dirToModule := make(map[string]string)
 
-	goPkgs, _ := parseGoPackages(repoPath)
+	// Honor cancellation between Build and the second-pass parser walk —
+	// the latter touches the filesystem again and would otherwise run to
+	// completion even after the caller's context is canceled.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	goPkgs, err := parseGoPackages(repoPath)
+	if err != nil {
+		return nil, fmt.Errorf("parseGoPackages: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	for _, p := range goPkgs {
 		for _, f := range p.Files {
 			fileToModule[f] = p.ImportPath
@@ -83,7 +96,10 @@ func BuildCentrality(
 		}
 	}
 
-	pyPkgs, _ := parsePythonPackages(repoPath)
+	pyPkgs, err := parsePythonPackages(repoPath)
+	if err != nil {
+		return nil, fmt.Errorf("parsePythonPackages: %w", err)
+	}
 	for _, p := range pyPkgs {
 		fileToModule[p.File] = p.ImportPath
 	}

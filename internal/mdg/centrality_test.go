@@ -50,12 +50,15 @@ func TestCentrality_When(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "go.mod", "module example.com/m\n")
 	writeFile(t, root, "main.go", "package main\nfunc main() {}\n")
+	start := time.Now()
 	c, err := BuildCentrality(context.Background(), root, "github", "o", "r", "h", BuildOptions{})
 	if err != nil {
 		t.Fatalf("BuildCentrality: %v", err)
 	}
-	if c.When().IsZero() || time.Since(c.When()) > time.Minute {
-		t.Fatalf("When() unexpected: %v", c.When())
+	// When() must be at or after start, and within a wide-enough window to
+	// tolerate slow CI runners.
+	if c.When().IsZero() || c.When().Before(start) || time.Since(start) > 5*time.Minute {
+		t.Fatalf("When() unexpected: %v (start=%v)", c.When(), start)
 	}
 }
 

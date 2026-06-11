@@ -28,6 +28,10 @@ type tier2ResultMsg struct {
 	forkID string
 	t2     forge.T2Data
 	err    error
+	// budgetSkipped is true when the compare was not attempted because the
+	// rate-limit reserve floor was reached. Distinct from err: the fork is
+	// kept, just marked un-enriched rather than failed.
+	budgetSkipped bool
 }
 
 type startFetchMsg struct{}

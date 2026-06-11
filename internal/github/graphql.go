@@ -3,10 +3,14 @@ package github
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"net/http"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	ghAPI "github.com/cli/go-gh/v2/pkg/api"
 )
 
 const forksGraphQLQuery = `
@@ -119,7 +123,7 @@ func (c *Client) FetchForksGraphQL(ctx context.Context, owner, repo string, onPa
 		}
 
 		var resp gqlResponse
-		err := c.gql.DoWithContext(ctx, forksGraphQLQuery, variables, &resp)
+		err := c.doGraphQLWithRetry(ctx, forksGraphQLQuery, variables, &resp)
 		if err != nil {
 			return allForks, allExtras, fmt.Errorf("GraphQL query: %w", err)
 		}
@@ -149,6 +153,62 @@ func (c *Client) FetchForksGraphQL(ctx context.Context, owner, repo string, onPa
 	}
 
 	return allForks, allExtras, nil
+}
+
+// gqlMaxAttempts bounds retries for transient GraphQL failures. GitHub returns
+// HTTP 502/503/504 intermittently for the expensive batched forks query when a
+// repository has a very large fork network (tens of thousands of forks).
+const gqlMaxAttempts = 3
+
+// gqlRetryBackoff is the base linear backoff between GraphQL retry attempts.
+const gqlRetryBackoff = 500 * time.Millisecond
+
+// doGraphQLWithRetry runs a GraphQL query, retrying on transient server errors
+// (HTTP 502/503/504) with linear backoff. Context cancellation aborts early.
+// Non-transient errors (auth, rate limit, malformed query) are returned
+// immediately without retrying.
+func (c *Client) doGraphQLWithRetry(ctx context.Context, query string, variables map[string]interface{}, out interface{}) error {
+	var err error
+	for attempt := 1; attempt <= gqlMaxAttempts; attempt++ {
+		err = c.gql.DoWithContext(ctx, query, variables, out)
+		if err == nil || !isTransientServerError(err) {
+			return err
+		}
+		if attempt == gqlMaxAttempts {
+			break
+		}
+		slog.Warn("forks: transient GraphQL error, retrying",
+			"attempt", attempt, "max", gqlMaxAttempts, "err", err)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Duration(attempt) * gqlRetryBackoff):
+		}
+	}
+	return err
+}
+
+// isTransientServerError reports whether err is a retryable upstream failure
+// (HTTP 502 Bad Gateway, 503 Service Unavailable, or 504 Gateway Timeout).
+func isTransientServerError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var httpErr *ghAPI.HTTPError
+	if asHTTPError(err, &httpErr) {
+		switch httpErr.StatusCode {
+		case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+			return true
+		default:
+			return false
+		}
+	}
+	// go-gh does not always surface the GraphQL HTTP status as a typed error;
+	// fall back to matching the status code in the message.
+	msg := err.Error()
+	return strings.Contains(msg, "502") ||
+		strings.Contains(msg, "503") ||
+		strings.Contains(msg, "504")
 }
 
 // gqlForkToForkInfo converts a GraphQL fork node to ForkInfo + T1Extra.
@@ -243,7 +303,17 @@ func (c *Client) FetchForksAuto(ctx context.Context, owner, repo string, onPage 
 			}
 		})
 		if err != nil {
-			return nil, nil, err
+			// The batched GraphQL query can still fail on very large fork
+			// networks even after retries (GitHub 502/timeout). Fall back to the
+			// REST forks endpoint so the user gets the fork list — just without
+			// the T1 extras (open PRs, releases, top branches).
+			slog.Warn("forks: GraphQL failed, falling back to REST",
+				"owner", owner, "repo", repo, "err", err)
+			forks, restErr := c.FetchForks(ctx, owner, repo, onPage)
+			if restErr != nil {
+				return nil, nil, fmt.Errorf("graphql failed (%v); rest fallback failed: %w", err, restErr)
+			}
+			return forks, nil, nil
 		}
 
 		// Build extras map

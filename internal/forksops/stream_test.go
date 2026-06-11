@@ -15,16 +15,26 @@ import (
 )
 
 type fakeForge struct {
-	parent     forge.ParentData
-	parentErr  error
-	forks      []forge.T1Data
-	forkErrors map[string]error
-	t2         map[string]forge.T2Data
-	t3         map[string]forge.T3Data
+	parent        forge.ParentData
+	parentErr     error
+	forks         []forge.T1Data
+	forkErrors    map[string]error
+	t2            map[string]forge.T2Data
+	t3            map[string]forge.T3Data
+	contribErrors map[string]error
+
+	// Test seams (optional; zero values preserve prior behavior):
+	concurrency  int       // 0 → default 2
+	compareOrder *[]string // when non-nil, Compare appends fk.ID (dispatch order)
+	headroom     *float64  // nil → 1.0 (full); set below ReserveHeadroom to trip the floor
 }
 
 func (f *fakeForge) Auth(_ context.Context) (forge.AuthInfo, error) {
-	return forge.AuthInfo{Tier: forge.AuthCLI, Concurrency: 2}, nil
+	conc := 2
+	if f.concurrency > 0 {
+		conc = f.concurrency
+	}
+	return forge.AuthInfo{Tier: forge.AuthCLI, Concurrency: conc}, nil
 }
 func (f *fakeForge) Parent(_ context.Context, _, _ string) (forge.ParentData, error) {
 	return f.parent, f.parentErr
@@ -41,15 +51,187 @@ func (f *fakeForge) Branches(_ context.Context, fk forge.T1Data, _ int) ([]forge
 	return []forge.BranchRef{{Name: fk.DefaultBranch}}, nil
 }
 func (f *fakeForge) Compare(_ context.Context, fk forge.T1Data, _ string) (forge.T2Data, error) {
+	if f.compareOrder != nil {
+		*f.compareOrder = append(*f.compareOrder, fk.ID)
+	}
 	if err, ok := f.forkErrors[fk.ID]; ok {
 		return forge.T2Data{}, err
 	}
 	return f.t2[fk.ID], nil
 }
 func (f *fakeForge) Contributors(_ context.Context, fk forge.T1Data) (forge.T3Data, error) {
+	if err, ok := f.contribErrors[fk.ID]; ok {
+		return forge.T3Data{}, err
+	}
 	return f.t3[fk.ID], nil
 }
-func (f *fakeForge) Headroom() float64 { return 1.0 }
+func (f *fakeForge) Headroom() float64 {
+	if f.headroom != nil {
+		return *f.headroom
+	}
+	return 1.0
+}
+
+func TestStream_dispatchesByPriorityNotSurfaceScore(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	now := time.Now()
+	parentPushed := now.Add(-30 * 24 * time.Hour)
+	var order []string
+	ff := &fakeForge{
+		parent:       forge.ParentData{DefaultBranch: "main", PushedAt: parentPushed},
+		concurrency:  1, // serialize so compareOrder == dispatch order
+		compareOrder: &order,
+		// Listed popular-stale first to prove dispatch reorders by promise:
+		forks: []forge.T1Data{
+			// many stars, but newest branch predates upstream → low promise
+			{ID: "o/b", Owner: "o", Name: "b", DefaultBranch: "main", Stars: 9000, PushedAt: now.Add(-24 * time.Hour),
+				Branches: []forge.BranchRef{{Name: "main", CommittedDate: parentPushed.Add(-10 * 24 * time.Hour)}}},
+			// no stars, but a branch with commits 29d after upstream → highest promise
+			{ID: "o/a", Owner: "o", Name: "a", DefaultBranch: "main", Stars: 0, PushedAt: now.Add(-24 * time.Hour),
+				Branches: []forge.BranchRef{{Name: "feat", CommittedDate: now.Add(-1 * 24 * time.Hour)}}},
+			// no stars, branch 25d after upstream → second
+			{ID: "o/c", Owner: "o", Name: "c", DefaultBranch: "main", Stars: 0, PushedAt: now.Add(-24 * time.Hour),
+				Branches: []forge.BranchRef{{Name: "feat", CommittedDate: now.Add(-5 * 24 * time.Hour)}}},
+		},
+		t2: map[string]forge.T2Data{"o/a": {AheadCount: 1}, "o/b": {AheadCount: 1}, "o/c": {AheadCount: 1}},
+	}
+	ch, err := Stream(context.Background(), ff, "o", "r", Options{Tier: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range ch {
+	}
+	if len(order) != 3 {
+		t.Fatalf("expected 3 compares, got %v", order)
+	}
+	pos := map[string]int{}
+	for i, id := range order {
+		pos[id] = i
+	}
+	// The divergent (post-upstream-branch) forks must be compared before the
+	// popular-but-stale one — best-first by promise, not by stars/surface score.
+	if pos["o/a"] > pos["o/b"] || pos["o/c"] > pos["o/b"] {
+		t.Errorf("popular-stale fork o/b should be dispatched after the divergent ones; order=%v", order)
+	}
+	if order[0] != "o/a" {
+		t.Errorf("highest-promise fork o/a should be compared first; order=%v", order)
+	}
+}
+
+func TestStream_reserveFloor_marksBudgetSkipNotZero(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	now := time.Now()
+	low := 0.05 // below ReserveHeadroom (0.10) → floor trips
+	var order []string
+	ff := &fakeForge{
+		parent:       forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
+		concurrency:  1,
+		compareOrder: &order,
+		headroom:     &low,
+		forks: []forge.T1Data{
+			{ID: "o/a", Owner: "o", Name: "a", DefaultBranch: "main", PushedAt: now},
+			{ID: "o/b", Owner: "o", Name: "b", DefaultBranch: "main", PushedAt: now},
+		},
+		t2: map[string]forge.T2Data{"o/a": {AheadCount: 7}, "o/b": {AheadCount: 3}},
+	}
+	ch, err := Stream(context.Background(), ff, "o", "r", Options{Tier: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for r := range ch {
+		n++
+		if r.T2 != nil {
+			t.Errorf("%s enriched despite reserve floor", r.Fork.ID)
+		}
+		if r.BudgetSkip == nil {
+			t.Errorf("%s should be marked BudgetSkip when below the reserve", r.Fork.ID)
+		}
+	}
+	if n != 2 {
+		t.Fatalf("expected 2 forks emitted, got %d", n)
+	}
+	if len(order) != 0 {
+		t.Errorf("no Compare call should happen below the reserve; got %v", order)
+	}
+}
+
+func TestStream_reserveDisabled_drainsBelowFloor(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	now := time.Now()
+	low := 0.02
+	ff := &fakeForge{
+		parent:   forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
+		headroom: &low,
+		forks: []forge.T1Data{
+			{ID: "o/a", Owner: "o", Name: "a", DefaultBranch: "main", PushedAt: now},
+		},
+		t2: map[string]forge.T2Data{"o/a": {AheadCount: 7}},
+	}
+	ch, err := Stream(context.Background(), ff, "o", "r", Options{Tier: 2, ReserveDisabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for r := range ch {
+		if r.BudgetSkip != nil {
+			t.Errorf("ReserveDisabled must bypass the floor; %s was skipped", r.Fork.ID)
+		}
+		if r.T2 == nil {
+			t.Errorf("%s should be enriched when the reserve is disabled", r.Fork.ID)
+		}
+	}
+}
+
+func TestEstimateRequests(t *testing.T) {
+	if got := EstimateRequests(10, 2); got != 30 {
+		t.Errorf("tier2: got %d want 30", got)
+	}
+	if got := EstimateRequests(10, 3); got != 50 {
+		t.Errorf("tier3: got %d want 50", got)
+	}
+	if got := EstimateRequests(10, 1); got != 0 {
+		t.Errorf("tier1 needs no enrichment requests: got %d", got)
+	}
+}
+
+func TestStream_shortlistTruncatesAndRanks(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	now := time.Now()
+	ff := &fakeForge{
+		parent: forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
+		forks: []forge.T1Data{
+			{ID: "o/a", Owner: "o", Name: "a", DefaultBranch: "main", PushedAt: now},
+			{ID: "o/b", Owner: "o", Name: "b", DefaultBranch: "main", PushedAt: now},
+			{ID: "o/c", Owner: "o", Name: "c", DefaultBranch: "main", PushedAt: now},
+			{ID: "o/d", Owner: "o", Name: "d", DefaultBranch: "main", PushedAt: now},
+		},
+		t2: map[string]forge.T2Data{
+			"o/a": {AheadCount: 1, MNA: 500, Diffs: []forge.FileDiff{{Path: "a.go", Additions: 500}}},
+			"o/b": {AheadCount: 1, MNA: 5},
+			"o/c": {AheadCount: 1, MNA: 50},
+			"o/d": {AheadCount: 1, MNA: 1},
+		},
+	}
+	ch, err := Stream(context.Background(), ff, "o", "r", Options{Tier: 2, ShortlistN: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []Result
+	for r := range ch {
+		got = append(got, r)
+	}
+	if len(got) != 2 {
+		t.Fatalf("shortlist should emit 2, got %d", len(got))
+	}
+	for i, r := range got {
+		if r.ExpectedRank <= 0 {
+			t.Errorf("result %d missing expectedRank", i)
+		}
+	}
+	if got[0].ExpectedRank > got[1].ExpectedRank {
+		t.Errorf("shortlist not sorted by expected rank ascending: %v, %v", got[0].ExpectedRank, got[1].ExpectedRank)
+	}
+}
 
 func TestStream_emitsAllForks(t *testing.T) {
 	ff := &fakeForge{
@@ -247,6 +429,9 @@ func TestStream_clusterDisabled_emitsImmediately(t *testing.T) {
 }
 
 func TestStream_clusterEmbedderUnreachable_emitsSkip(t *testing.T) {
+	// Isolate the on-disk cluster cache, or a prior run's cached result would
+	// short-circuit the embed step and no ClusterSkip would be surfaced.
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	now := time.Now()
 	ff := &fakeForge{
 		parent: forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
@@ -367,6 +552,41 @@ func TestStream_loneWolfV2Wired(t *testing.T) {
 	}
 	if !r.Heat.LoneWolfV2.Detected {
 		t.Errorf("expected LoneWolfV2.Detected=true for single-author high-MNA fork, got Detected=%v Strength=%v", r.Heat.LoneWolfV2.Detected, r.Heat.LoneWolfV2.Strength)
+	}
+}
+
+func TestStream_contributorsTimeout_gracefulSkip(t *testing.T) {
+	// A 202 timeout on the optional contributors stage must NOT drop the fork
+	// or set Err — it should skip T3, flag it, and keep the fork in output.
+	parentPushedAt := time.Now().Add(-1 * time.Hour)
+	forkPushedAt := time.Now()
+	ff := &fakeForge{
+		parent: forge.ParentData{DefaultBranch: "main", PushedAt: parentPushedAt},
+		forks: []forge.T1Data{
+			{ID: "o/a", Owner: "o", Name: "a", PushedAt: forkPushedAt, DefaultBranch: "main"},
+		},
+		t2: map[string]forge.T2Data{"o/a": {AheadCount: 2, MNA: 100}},
+		contribErrors: map[string]error{
+			"o/a": fmt.Errorf("contributors o/a: %w", github.ErrContributorsTimeout),
+		},
+	}
+	ch, _ := Stream(context.Background(), ff, "o", "r", Options{Tier: 3, TopN: 1})
+	r := <-ch
+	if r.Err != nil {
+		t.Fatalf("contributors timeout must not set Err, got %+v", r.Err)
+	}
+	if r.T3 != nil {
+		t.Errorf("expected T3 nil after skip, got %+v", r.T3)
+	}
+	if r.T3Skip == nil {
+		t.Fatal("expected T3Skip to be set")
+	}
+	if r.T3Skip.Stage != "contributors" || r.T3Skip.ForkID != "o/a" {
+		t.Errorf("unexpected T3Skip: %+v", r.T3Skip)
+	}
+	// The fork's T2 data must survive — it was not dropped.
+	if r.T2 == nil || r.T2.AheadCount != 2 {
+		t.Errorf("expected T2 preserved, got %+v", r.T2)
 	}
 }
 
