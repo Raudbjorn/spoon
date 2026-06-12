@@ -6,6 +6,7 @@ import (
 	"math"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // BuiltinModelName identifies the in-process lexical embedder in cluster
@@ -132,7 +133,7 @@ func splitAlnum(s string) []string {
 		}
 		run := s[start:end]
 		start = -1
-		if len(run) < 2 || allDigits(run) {
+		if utf8.RuneCountInString(run) < 2 || allDigits(run) {
 			return
 		}
 		out = append(out, run)

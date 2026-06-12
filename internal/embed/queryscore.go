@@ -37,6 +37,10 @@ func (LexicalQueryScorer) Rerank(ctx context.Context, query string, docs []strin
 		}
 		if dot < 0 {
 			dot = 0
+		} else if dot > 1 {
+			// Cosine of near-identical normalized vectors can drift just past
+			// 1.0 from float rounding; clamp so scores stay in [0,1] as documented.
+			dot = 1
 		}
 		out[i] = dot
 	}

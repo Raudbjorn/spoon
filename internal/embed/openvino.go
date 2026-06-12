@@ -214,6 +214,10 @@ func (e *OpenVINOEmbedder) tokenize(texts []string) (ids, mask []int64, seq int,
 // ovTokenize runs a compiled openvino_tokenizer model on a batch of strings
 // and returns row-major input_ids and attention_mask of shape [batch, seq].
 func ovTokenize(tokReq *C.ov_infer_request_t, texts []string) (ids, mask []int64, seq int, err error) {
+	if len(texts) == 0 {
+		// Guard the &cstrs[0] pointer below — indexing a zero-length slice panics.
+		return nil, nil, 0, nil
+	}
 	cstrs := make([]*C.char, len(texts))
 	for i, t := range texts {
 		cstrs[i] = C.CString(t)

@@ -176,7 +176,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("forge.provider %q must be 'github' or 'gitlab'", c.Forge.Provider)
 	}
 	if !validBackends[strings.ToLower(c.Embedder.Backend)] {
-		return fmt.Errorf("embedder.backend %q must be 'builtin' or 'openvino'", c.Embedder.Backend)
+		return fmt.Errorf("embedder.backend %q must be 'builtin', 'lexical', or 'openvino'", c.Embedder.Backend)
 	}
 	if !validPoolings[strings.ToLower(c.Embedder.Pooling)] {
 		return fmt.Errorf("embedder.pooling %q must be 'cls', 'mean', or 'last'", c.Embedder.Pooling)

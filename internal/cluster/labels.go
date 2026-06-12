@@ -311,7 +311,7 @@ func pathTokens(paths string) []string {
 				}
 			}
 			seg = strings.ToLower(seg)
-			if len(seg) < 3 {
+			if len([]rune(seg)) < 3 {
 				continue
 			}
 			if _, stop := pathStopSegments[seg]; stop {
@@ -372,7 +372,7 @@ func tokenize(text string) []string {
 		var kept []string
 		for _, f := range strings.Fields(line) {
 			tok := strings.ToLower(strings.Trim(f, tokenTrimCutset))
-			if len(tok) < 4 {
+			if len([]rune(tok)) < 4 {
 				continue
 			}
 			if _, stop := stopwords[tok]; stop {

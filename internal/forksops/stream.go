@@ -747,8 +747,12 @@ func scoreQuery(ctx context.Context, opts Options, collected []Result, logger io
 		return
 	}
 	scores, err := scorer.Rerank(ctx, opts.Query, docs)
-	if err != nil || len(scores) != len(docs) {
+	if err != nil {
 		fmt.Fprintf(logger, "[query] scoring failed: %v (emitting unscored)\n", err)
+		return
+	}
+	if len(scores) != len(docs) {
+		fmt.Fprintf(logger, "[query] scoring failed: returned %d scores, want %d (emitting unscored)\n", len(scores), len(docs))
 		return
 	}
 	for j, i := range idx {
@@ -778,8 +782,8 @@ func queryDigest(t2 *forge.T2Data) string {
 		b.WriteString(f.Paths)
 	}
 	d := b.String()
-	if len(d) > queryDigestMaxChars {
-		d = d[:queryDigestMaxChars]
+	if runes := []rune(d); len(runes) > queryDigestMaxChars {
+		d = string(runes[:queryDigestMaxChars])
 	}
 	return d
 }

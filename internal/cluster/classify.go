@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/svnbjrn/spoon/internal/embed"
@@ -59,7 +60,7 @@ func ClassifyForks(ctx context.Context, e embed.Embedder, features []embed.ForkF
 		return nil, nil, err
 	}
 	if len(vecs) != len(texts) {
-		return nil, nil, nil
+		return nil, nil, fmt.Errorf("classify: embedder returned %d vectors, want %d", len(vecs), len(texts))
 	}
 	anchors := vecs[:len(DefaultCategories)]
 	digests := vecs[len(DefaultCategories):]
@@ -92,8 +93,8 @@ func classifyDigest(f embed.ForkFeatures) string {
 		b.WriteString(f.Paths)
 	}
 	d := b.String()
-	if len(d) > classifyDigestMaxChars {
-		d = d[:classifyDigestMaxChars]
+	if runes := []rune(d); len(runes) > classifyDigestMaxChars {
+		d = string(runes[:classifyDigestMaxChars])
 	}
 	return d
 }

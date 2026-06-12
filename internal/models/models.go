@@ -182,7 +182,8 @@ func fetchFile(ctx context.Context, repo, path, dest string, total int64, progre
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("HTTP %d", resp.StatusCode)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return 0, fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	if total == 0 && resp.ContentLength > 0 {
 		total = resp.ContentLength
