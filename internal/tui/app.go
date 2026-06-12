@@ -26,7 +26,6 @@ const (
 	viewDetail
 	viewHelp
 	viewExportPath
-	viewEmbedderBootstrap
 )
 
 // ScoredFork holds a fork with its computed heat score.
@@ -101,12 +100,11 @@ type Model struct {
 	exportForks []ScoredFork // forks staged for export (nil = export all)
 
 	// Cluster pipeline
-	clusterOpts          ClusterOptions
-	clusterRan           bool              // true after the pipeline has been kicked off
-	clusterStatus        string            // "pending", "running", "skipped: <reason>", "done"
-	clusterSkipReason    string            // human-readable skip reason when clusters were skipped
-	clusterPendingPrompt *clusterPromptMsg // active prompt waiting for user answer
-	clusterMsgs          chan tea.Msg      // shared message channel cluster goroutines push onto
+	clusterOpts       ClusterOptions
+	clusterRan        bool         // true after the pipeline has been kicked off
+	clusterStatus     string       // "pending", "running", "skipped: <reason>", "done"
+	clusterSkipReason string       // human-readable skip reason when clusters were skipped
+	clusterMsgs       chan tea.Msg // shared message channel cluster goroutines push onto
 
 	// lifecycleCtx is cancelled when the TUI quits; the cluster message
 	// pump (waitForClusterMsg) honors it so its blocked goroutine exits
@@ -200,23 +198,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case clusterResultMsg:
 		return m.handleClusterResult(msg)
-
-	case clusterPromptMsg:
-		return m.handleClusterPrompt(msg)
-
-	case clusterPromptResponseMsg:
-		// User's answer goes back to the SelectEmbedder goroutine. Reply
-		// is a buffered channel (capacity 1) created by AskPull, so a
-		// blocking send won't deadlock and we won't silently drop the
-		// user's choice on a full select fallthrough.
-		if msg.Reply != nil {
-			msg.Reply <- msg.Yes
-		}
-		m.clusterPendingPrompt = nil
-		if m.view == viewEmbedderBootstrap {
-			m.view = viewTable
-		}
-		return m, nil
 
 	case clipboardMsg:
 		if msg.success {
@@ -476,8 +457,6 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleDetailKey(key)
 	case viewExportPath:
 		return m.handleExportPathKey(key)
-	case viewEmbedderBootstrap:
-		return m.handleEmbedderBootstrapKey(key)
 	case viewHelp:
 		if key == "?" || key == "esc" || key == "q" {
 			m.view = viewTable
@@ -1035,8 +1014,6 @@ func (m Model) View() string {
 		return m.viewDetail()
 	case viewExportPath:
 		return m.viewExportPath()
-	case viewEmbedderBootstrap:
-		return m.viewEmbedderBootstrap()
 	case viewHelp:
 		return m.viewHelp()
 	}

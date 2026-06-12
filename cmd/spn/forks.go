@@ -14,10 +14,12 @@ import (
 	"time"
 
 	"github.com/svnbjrn/spoon/internal/agentio"
+	"github.com/svnbjrn/spoon/internal/cluster"
 	"github.com/svnbjrn/spoon/internal/config"
 	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/forge"
 	"github.com/svnbjrn/spoon/internal/forksops"
+	"github.com/svnbjrn/spoon/internal/genai"
 	"github.com/svnbjrn/spoon/internal/gitea"
 	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/gitlab"
@@ -25,8 +27,8 @@ import (
 
 // embedderHookForTest, when non-nil, installs the given embedder onto the
 // forksops cluster options before Stream runs. Tests use it to drive the
-// cluster pipeline deterministically without a live Ollama. Production code
-// leaves this nil so SelectEmbedder runs as usual.
+// cluster pipeline deterministically. Production code leaves this nil so the
+// built-in embedder runs as usual.
 var embedderHookForTest embed.Embedder
 
 // providerFactory creates the forge provider for the given repo. Overridable in tests.
@@ -85,19 +87,17 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 	var repo, forgeFlag, forgeHost, botList string
 	csvMode := false
 	opts := forksops.Options{
-		// Default: clustering enabled. Spn is always non-interactive, so the
-		// pipeline will silently skip when no embedder is available and surface
-		// a structured warning on stderr.
+		// Default: clustering enabled — the built-in embedder is always
+		// available, so this never blocks on external services.
 		Cluster: forksops.ClusterOptions{
 			Enabled:        true,
 			TopN:           50,
-			Epsilon:        0.35,
+			Epsilon:        0, // resolved per embedder backend below
 			MinClusterSize: 3,
-			NonInteractive: true,
-			AutoPull:       os.Getenv("SPOON_AUTO_PULL") == "1",
-			NoPrompt:       true,
 		},
 	}
+	var embedderBackend, openvinoModel, openvinoDevice, openvinoPooling string
+	query := ""
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--tier":
@@ -173,46 +173,6 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 				return agentio.NewError(agentio.CodeBadInput, "--cluster-top requires a positive integer", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
 			}
 			opts.Cluster.TopN = n
-		case "--embedder":
-			if i+1 >= len(args) {
-				return agentio.NewError(agentio.CodeBadInput, "--embedder requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
-			}
-			i++
-			opts.Cluster.Endpoint = args[i]
-		case "--embedder-model":
-			if i+1 >= len(args) {
-				return agentio.NewError(agentio.CodeBadInput, "--embedder-model requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
-			}
-			i++
-			opts.Cluster.ModelOverride = args[i]
-		case "--embedder-backend":
-			if i+1 >= len(args) {
-				return agentio.NewError(agentio.CodeBadInput, "--embedder-backend requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
-			}
-			i++
-			val := strings.ToLower(args[i])
-			if val != "ollama" && val != "sidecar" && val != "openai" {
-				return agentio.NewError(agentio.CodeBadInput, "--embedder-backend must be 'ollama', 'sidecar', or 'openai'", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
-			}
-			opts.Cluster.Backend = val
-		case "--sidecar-endpoint":
-			if i+1 >= len(args) {
-				return agentio.NewError(agentio.CodeBadInput, "--sidecar-endpoint requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
-			}
-			i++
-			opts.Cluster.SidecarEndpoint = args[i]
-		case "--labeler":
-			if i+1 >= len(args) {
-				return agentio.NewError(agentio.CodeBadInput, "--labeler requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
-			}
-			i++
-			opts.Cluster.LabelerEndpoint = args[i]
-		case "--labeler-model":
-			if i+1 >= len(args) {
-				return agentio.NewError(agentio.CodeBadInput, "--labeler-model requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
-			}
-			i++
-			opts.Cluster.LabelerModel = args[i]
 		case "--cluster-epsilon":
 			if i+1 >= len(args) {
 				return agentio.NewError(agentio.CodeBadInput, "--cluster-epsilon requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
@@ -233,8 +193,39 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 				return agentio.NewError(agentio.CodeBadInput, "--cluster-min-size requires a positive integer", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
 			}
 			opts.Cluster.MinClusterSize = n
-		case "--auto-pull":
-			opts.Cluster.AutoPull = true
+		case "--query":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--query requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			query = args[i]
+		case "--embedder-backend":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--embedder-backend requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			embedderBackend = strings.ToLower(args[i])
+		case "--openvino-model":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--openvino-model requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			openvinoModel = args[i]
+		case "--openvino-device":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--openvino-device requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			openvinoDevice = args[i]
+		case "--openvino-pooling":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--openvino-pooling requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			openvinoPooling = strings.ToLower(args[i])
+			if _, ok := embed.ParsePooling(openvinoPooling); !ok {
+				return agentio.NewError(agentio.CodeBadInput, "--openvino-pooling must be 'cls', 'mean', or 'last'", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
 		case "--full-mdg":
 			opts.Cluster.CentralityBackend = "mdg"
 		case "--no-mdg":
@@ -264,46 +255,57 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	// An explicit --sidecar-endpoint implies the sidecar backend, overriding a
-	// saved openai/ollama config so the flag isn't silently ignored.
-	if opts.Cluster.SidecarEndpoint != "" && opts.Cluster.Backend == "" {
-		opts.Cluster.Backend = "sidecar"
+	// Resolve and construct the embedder backend (flag > env > config) so a
+	// misconfigured openvino setup fails fast with a structured error.
+	embedderBackend, ovCfg := resolveSpnEmbedderConfig(embedderBackend, openvinoModel, openvinoDevice, openvinoPooling, stderr)
+	if embedderHookForTest == nil {
+		embedder, embedderID, closeEmbedder, err := embed.SelectBackend(embedderBackend, ovCfg)
+		if err != nil {
+			return agentio.NewError(agentio.CodeBadInput, err.Error(),
+				"Check --embedder-backend/--openvino-model (or $SPOON_EMBEDDER_BACKEND/$SPOON_OPENVINO_MODEL), or omit them to use the built-in embedder.").Emit(stderr)
+		}
+		defer closeEmbedder()
+		if embedderBackend != "" && embedderBackend != embed.BackendBuiltin {
+			opts.Cluster.Embedder = embedder
+			opts.Cluster.EmbedderID = embedderID
+			// Zero-shot categories need a semantic embedder.
+			opts.Cluster.Categorize = embedderBackend == embed.BackendOpenVINO
+		}
+	}
+	if opts.Cluster.Epsilon == 0 {
+		if embedderBackend == embed.BackendOpenVINO {
+			opts.Cluster.Epsilon = 0.35
+		} else {
+			opts.Cluster.Epsilon = 0.55
+		}
+	}
+	// Label polishing: only when a labeler model is configured and this
+	// binary carries GenAI support. Like the reranker, a configured but
+	// unloadable labeler is a hard error.
+	if opts.Cluster.Enabled {
+		polisher, closePolisher, lerr := newLabelPolisher()
+		if lerr != nil {
+			return agentio.NewError(agentio.CodeBadInput, lerr.Error(),
+				"Run 'spoon setup' to download the default labeler, rebuild with -tags \"openvino genai\", or unset the labeler config.").Emit(stderr)
+		}
+		if polisher != nil {
+			opts.Cluster.LabelPolisher = polisher
+			defer closePolisher()
+		}
 	}
 
-	// Layer saved embedder defaults under flags/env (flags > env > config >
-	// built-in). Provider/host are not layered — the repo arg determines the
-	// forge. A bad config emits a warning but never blocks the run.
-	if cfg, cerr := config.LoadDefault(); cerr != nil {
-		emitConfigWarning(stderr, cerr)
-	} else if cfg != nil {
-		// flag > env, then layer config backend-aware (see config.LayerEmbedder):
-		// a saved backend's endpoint/model isn't inherited under a different backend.
-		be := strings.ToLower(config.Coalesce(opts.Cluster.Backend, os.Getenv("SPOON_EMBEDDER_BACKEND")))
-		eu := config.Coalesce(opts.Cluster.Endpoint, os.Getenv("SPOON_EMBEDDER_URL"))
-		se := config.Coalesce(opts.Cluster.SidecarEndpoint, os.Getenv("SPOON_SIDECAR_ENDPOINT"))
-		opts.Cluster.Backend, opts.Cluster.Endpoint, opts.Cluster.ModelOverride, opts.Cluster.SidecarEndpoint, opts.Cluster.LabelerModel =
-			cfg.LayerEmbedder(be, eu, opts.Cluster.ModelOverride, se, opts.Cluster.LabelerModel)
+	opts.Query = query
+	if query != "" {
+		scorer, closeScorer, qerr := newQueryScorer(stderr)
+		if qerr != nil {
+			return agentio.NewError(agentio.CodeBadInput, qerr.Error(),
+				"Run 'spoon setup' to download the default reranker, or unset the reranker config to fall back to lexical query scoring.").Emit(stderr)
+		}
+		opts.QueryScorer = scorer
+		defer closeScorer()
 	}
 
 	ctx := context.Background()
-
-	// Validate the embedder endpoint up front so a bad URL fails fast (before
-	// enumerating forks) instead of silently disabling clustering. --no-cluster
-	// skips this. Skipped when a test embedder is injected (it bypasses
-	// SelectEmbedder, so there's no real endpoint to probe).
-	if embedderHookForTest == nil {
-		if perr := embed.Preflight(ctx, embed.PreflightOptions{
-			Enabled:         opts.Cluster.Enabled,
-			Backend:         opts.Cluster.Backend,
-			Endpoint:        opts.Cluster.Endpoint,
-			Model:           opts.Cluster.ModelOverride,
-			SidecarEndpoint: opts.Cluster.SidecarEndpoint,
-			LabelerEndpoint: opts.Cluster.LabelerEndpoint,
-		}); perr != nil {
-			return agentio.NewError(agentio.CodeBadInput, perr.Error(),
-				"Start the embedder or fix the endpoint (--embedder/--sidecar-endpoint), run 'spoon setup' to configure one, or pass --no-cluster to skip clustering.").Emit(stderr)
-		}
-	}
 
 	provider, repoArg, e := providerFactory(ctx, repo, forgeFlag, forgeHost)
 	if e != nil {
@@ -317,7 +319,11 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 	// only structured ClusterSkip warnings are emitted on stderr via
 	// emitClusterWarning. The discard is intentional — do not wire stderr
 	// here, prose log lines would interleave with the agent envelopes.
+	// SPOON_DEBUG=1 overrides for troubleshooting.
 	opts.Logger = io.Discard
+	if os.Getenv("SPOON_DEBUG") == "1" {
+		opts.Logger = stderr
+	}
 	// Auto-budget reserve is on by default (stop enriching before the rate
 	// window is drained, marking the rest degraded). SPOON_NO_RESERVE=1 opts out
 	// to drain the full budget in one pass.
@@ -382,18 +388,6 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// emitConfigWarning writes a structured, non-fatal warning when the saved
-// config could not be read. The run continues with flags/env/defaults.
-func emitConfigWarning(stderr io.Writer, err error) {
-	_ = json.NewEncoder(stderr).Encode(map[string]any{
-		"warning": map[string]any{
-			"code":        "config_ignored",
-			"message":     "ignoring spoon config: " + err.Error(),
-			"remediation": "Fix or remove the config file, or set SPOON_NO_CONFIG=1.",
-		},
-	})
-}
-
 func splitRepoArg(s string) (owner, repo string) {
 	parts := strings.SplitN(s, "/", 2)
 	if len(parts) != 2 {
@@ -415,6 +409,14 @@ func forkToJSON(r forksops.Result) map[string]any {
 		"releases":    r.Fork.ReleaseCount,
 		"heat":        r.Heat.Score,
 		"tier":        r.Heat.Tier,
+	}
+	if r.QueryMethod != "" {
+		out["queryScore"] = r.QueryScore
+		out["queryMethod"] = r.QueryMethod
+	}
+	if r.Heat.Category != "" {
+		out["category"] = r.Heat.Category
+		out["categoryScore"] = r.Heat.CategoryScore
 	}
 	if r.T2 != nil {
 		out["t2"] = map[string]any{
@@ -558,43 +560,6 @@ func forkToCSVRow(r forksops.Result) []string {
 	}
 }
 
-// preferredOllamaEmbeddingModels returns the ranked list of Ollama-native
-// preferred embedding model names — sourced dynamically from the embed
-// package's PreferredEmbeddingModelsCopy() so that the remediation hint stays
-// in lockstep when the embed package's list changes.
-func preferredOllamaEmbeddingModels() []string {
-	all := embed.PreferredEmbeddingModelsCopy()
-	out := make([]string, 0, len(all))
-	for _, m := range all {
-		if !m.OnOllama {
-			continue
-		}
-		out = append(out, m.Name)
-	}
-	return out
-}
-
-// preferredEmbeddingModels is retained for backwards compatibility with the
-// existing structured-warning envelope's details.preferred field. Mirrors
-// embed.PreferredEmbeddingModels' Ollama-native subset.
-var preferredEmbeddingModels = preferredOllamaEmbeddingModels()
-
-// remediationForMissingModel returns the user-facing remediation string for
-// a missing-embedding-model warning. The first preferred model is named in
-// the `ollama pull` example; the rest are listed as also-supported so users
-// know they have choices.
-func remediationForMissingModel() string {
-	models := preferredOllamaEmbeddingModels()
-	if len(models) == 0 {
-		return "Install an embedding model on the configured Ollama endpoint"
-	}
-	if len(models) == 1 {
-		return "Install an embedding model: e.g. 'ollama pull " + models[0] + "'"
-	}
-	return "Install an embedding model: e.g. 'ollama pull " + models[0] +
-		"' (also supported: " + strings.Join(models[1:], ", ") + ")"
-}
-
 // emitStageSkipWarning writes a structured, non-fatal warning to stderr when a
 // per-fork enrichment stage was skipped (e.g. contributors stats unavailable).
 // The fork itself is still emitted on stdout — this only flags the missing
@@ -624,31 +589,79 @@ func emitStageSkipWarning(stderr io.Writer, skip *forksops.StageSkip) {
 // intentionally distinct from agentio.Error: this is non-fatal information,
 // not an error envelope.
 func emitClusterWarning(stderr io.Writer, skip *forksops.ClusterSkip) {
-	code := skip.Code
-	message := skip.Message
-	remediation := remediationForMissingModel()
-	switch code {
-	case "ollama_unreachable":
-		// Embedder host unreachable — same remediation: start Ollama.
-		remediation = "ensure Ollama is running and reachable at the configured endpoint"
-	case "no_model_installed", "explicit_model_unavailable":
-		// Normalize to the agreed-upon code for the agent contract.
-		code = "embedder_model_missing"
-		if skip.Endpoint != "" {
-			message = "no embedding model installed on Ollama at " + skip.Endpoint
-		}
-	}
 	envelope := map[string]any{
 		"warning": map[string]any{
-			"code":        code,
-			"message":     message,
-			"remediation": remediation,
-			"details": map[string]any{
-				"endpoint":  skip.Endpoint,
-				"preferred": preferredEmbeddingModels,
-			},
+			"code":        skip.Code,
+			"message":     skip.Message,
+			"remediation": "re-run with --no-cluster to skip clustering, or report this if it persists",
 		},
 	}
 	enc := json.NewEncoder(stderr)
 	_ = enc.Encode(envelope)
+}
+
+// resolveSpnEmbedderConfig layers the embedder backend settings: flag > env >
+// config file. A bad config file warns (structured) and is otherwise ignored.
+func resolveSpnEmbedderConfig(backend, model, device, pooling string, stderr io.Writer) (string, embed.OpenVINOConfig) {
+	var fileCfg config.EmbedderConfig
+	if cfg, cerr := config.LoadDefault(); cerr != nil {
+		envelope := map[string]any{"warning": map[string]any{
+			"code":    "config_invalid",
+			"message": cerr.Error(),
+		}}
+		_ = json.NewEncoder(stderr).Encode(envelope)
+	} else if cfg != nil {
+		fileCfg = cfg.Embedder
+	}
+	backend = strings.ToLower(config.Coalesce(backend, os.Getenv("SPOON_EMBEDDER_BACKEND"), fileCfg.Backend))
+	model = config.Coalesce(model, os.Getenv("SPOON_OPENVINO_MODEL"), fileCfg.ModelPath)
+	device = config.Coalesce(device, os.Getenv("SPOON_OPENVINO_DEVICE"), fileCfg.Device)
+	pooling = strings.ToLower(config.Coalesce(pooling, fileCfg.Pooling))
+	var p embed.Pooling
+	if pooling != "" {
+		p, _ = embed.ParsePooling(pooling)
+	}
+	return backend, embed.OpenVINOConfig{ModelPath: model, Device: device, Pooling: p}
+}
+
+// newQueryScorer builds the query relevance scorer: the OpenVINO
+// cross-encoder when a reranker model is configured (config file or
+// $SPOON_OPENVINO_RERANKER) and this binary supports it; otherwise nil so
+// the stream falls back to the built-in lexical scorer. A configured but
+// unloadable reranker is a hard error — never a silent quality downgrade.
+func newQueryScorer(stderr io.Writer) (embed.QueryScorer, func(), error) {
+	modelPath := os.Getenv("SPOON_OPENVINO_RERANKER")
+	device := os.Getenv("SPOON_OPENVINO_DEVICE")
+	if cfg, cerr := config.LoadDefault(); cerr == nil && cfg != nil {
+		modelPath = config.Coalesce(modelPath, cfg.Reranker.ModelPath)
+		device = config.Coalesce(device, cfg.Reranker.Device)
+	}
+	if modelPath == "" {
+		return nil, func() {}, nil // lexical fallback
+	}
+	r, err := embed.NewReranker(embed.RerankConfig{ModelPath: modelPath, Device: device})
+	if err != nil {
+		return nil, nil, err
+	}
+	return r, r.Close, nil
+}
+
+// newLabelPolisher builds the cluster label polisher from config/env
+// (labeler.modelPath or $SPOON_OPENVINO_LABELER). Returns (nil, nil, nil)
+// when no labeler is configured.
+func newLabelPolisher() (cluster.LabelPolisher, func(), error) {
+	modelPath := os.Getenv("SPOON_OPENVINO_LABELER")
+	device := ""
+	if cfg, cerr := config.LoadDefault(); cerr == nil && cfg != nil {
+		modelPath = config.Coalesce(modelPath, cfg.Labeler.ModelPath)
+		device = cfg.Labeler.Device
+	}
+	if modelPath == "" {
+		return nil, nil, nil
+	}
+	p, err := genai.NewLabelPolisher(genai.Config{ModelPath: modelPath, Device: device})
+	if err != nil {
+		return nil, nil, err
+	}
+	return p, p.Close, nil
 }

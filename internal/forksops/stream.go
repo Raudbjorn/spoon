@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -41,6 +42,17 @@ type Options struct {
 	// top-N by expected rank. Forces collect-then-emit semantics.
 	ShortlistN int
 
+	// Query, when non-empty, scores every enriched fork's change digest
+	// (commit messages + touched paths) against this free-text intent and
+	// sorts the output by that relevance instead of heat. Scoring uses
+	// QueryScorer; forces collect-then-emit semantics.
+	Query string
+
+	// QueryScorer performs the relevance scoring for Query. Nil → the
+	// built-in lexical scorer. The CLI passes the OpenVINO cross-encoder
+	// here when one is configured.
+	QueryScorer embed.QueryScorer
+
 	// ReserveDisabled turns off the automatic rate-limit reserve floor
 	// (ReserveHeadroom). By default the pipeline stops enriching when the forge's
 	// headroom drops below the reserve and marks the remaining forks degraded
@@ -68,50 +80,32 @@ type Options struct {
 // ClusterOptions is the spn-side options struct for the cluster pipeline.
 // Mirrors cluster.PipelineOptions but keeps the test seam unexported.
 type ClusterOptions struct {
-	Enabled         bool
-	TopN            int
-	Endpoint        string
-	ModelOverride   string
-	LabelerEndpoint string
-	LabelerModel    string
-	Epsilon         float64
-	MinClusterSize  int
-	AutoPull        bool
-	NoPrompt        bool
-	NonInteractive  bool
-	Refresh         bool
-
-	// Backend selects the Embedder implementation. Empty defaults to "ollama".
-	Backend string
-
-	// SidecarEndpoint is the http://host:port of the Python sidecar process,
-	// used when Backend=="sidecar".
-	SidecarEndpoint string
-
-	// Labeler, when non-nil, overrides automatic construction from
-	// LabelerEndpoint + LabelerModel. Tests inject a stub directly via this
-	// field; production callers usually pass LabelerEndpoint instead.
-	Labeler cluster.Labeler
+	Enabled        bool
+	TopN           int
+	Epsilon        float64
+	MinClusterSize int
+	Refresh        bool
 
 	// CentralityBackend is forwarded to cluster.PipelineOptions. "" or
 	// "directory" → directory-centrality proxy. "mdg" → Module Dependency
 	// Graph. See `--full-mdg` on `spn forks list`.
 	CentralityBackend string
 
-	// embedderForTest is the test seam for cluster integration tests. Tests
-	// inject a stub embed.Embedder via SetEmbedderForTest; the field is
-	// unexported so production callers cannot bypass SelectEmbedder.
-	embedderForTest embed.Embedder
+	// Categorize enables zero-shot category assignment for embedded forks.
+	Categorize bool
+
+	// LabelPolisher, when non-nil, rewrites cluster labels (in-process LLM).
+	LabelPolisher cluster.LabelPolisher
+
+	// Embedder, when non-nil, replaces the built-in lexical embedder
+	// (openvino backend, constructed by the CLI which owns its lifecycle;
+	// also the test seam). EmbedderID must identify it for cache keying.
+	Embedder   embed.Embedder
+	EmbedderID string
 }
 
-// defaultLabelerModel is used when --labeler is set but --labeler-model is not.
-// Aliases cluster.DefaultLabelerModel so the literal lives in exactly one
-// place — see n4 in the round-3 review.
-const defaultLabelerModel = cluster.DefaultLabelerModel
-
 // SetEmbedderForTest installs an embedder stub on ClusterOptions for tests.
-// Production callers must not use this — they should go through SelectEmbedder.
-func (o *ClusterOptions) SetEmbedderForTest(e embed.Embedder) { o.embedderForTest = e }
+func (o *ClusterOptions) SetEmbedderForTest(e embed.Embedder) { o.Embedder = e }
 
 // Result is a single fork's outcome. Fork is always populated; Err and the
 // T2/T3 pointers may be nil depending on tier and per-fork errors.
@@ -127,6 +121,12 @@ type Result struct {
 	// RankConfidence mirrors Heat.Confidence (tier reached).
 	ExpectedRank   float64
 	RankConfidence float64
+
+	// QueryScore is the fork's relevance to Options.Query in [0,1];
+	// QueryMethod records how it was computed ("openvino" cross-encoder or
+	// "lexical" cosine fallback). Both zero when no query was given.
+	QueryScore  float64
+	QueryMethod string
 
 	// ClusterSkip is set when the cluster pipeline was enabled but skipped
 	// for a non-fatal reason (embedder unreachable, no model, etc.). Only the
@@ -329,7 +329,7 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 		// them into `collected` (mu-guarded) and emit at the end.
 		// Clustering and the expected-rank shortlist both require all enriched
 		// results in hand, so either forces collect-then-emit.
-		batchMode := opts.Cluster.Enabled || opts.ShortlistN > 0
+		batchMode := opts.Cluster.Enabled || opts.ShortlistN > 0 || opts.Query != ""
 		var (
 			collectedMu sync.Mutex
 			collected   []Result
@@ -455,6 +455,13 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 			skip = runForksClusterPipeline(ctx, provider, &parent, owner, repo, collected, opts.Cluster, logger)
 		}
 
+		// Query relevance pass: one batched scoring call over every enriched
+		// fork's digest. Failures degrade to unscored output with a log line —
+		// a broken scorer should not kill the listing.
+		if opts.Query != "" {
+			scoreQuery(ctx, opts, collected, logger)
+		}
+
 		if opts.ShortlistN > 0 {
 			// Robbins expected-rank shortlist: compute over the final heat (after
 			// clustering, so novelty is included). Bound the O(n^2) rank pass to
@@ -486,6 +493,14 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 			if len(collected) > opts.ShortlistN {
 				collected = collected[:opts.ShortlistN]
 			}
+		} else if opts.Query != "" {
+			// Query mode: most relevant first; heat breaks ties.
+			sort.SliceStable(collected, func(i, j int) bool {
+				if collected[i].QueryScore != collected[j].QueryScore {
+					return collected[i].QueryScore > collected[j].QueryScore
+				}
+				return collected[i].Heat.Score > collected[j].Heat.Score
+			})
 		} else {
 			// Re-sort emitted output by heat desc to match dump's ordering.
 			sort.SliceStable(collected, func(i, j int) bool {
@@ -545,38 +560,18 @@ func runForksClusterPipeline(
 		}
 	}
 
-	labeler := opts.Labeler
-	if labeler == nil && opts.LabelerEndpoint != "" {
-		model := opts.LabelerModel
-		if model == "" {
-			model = defaultLabelerModel
-		}
-		labeler = &cluster.OllamaChatLabeler{
-			Endpoint: opts.LabelerEndpoint,
-			Model:    model,
-		}
-	}
-
 	pipelineOpts := cluster.PipelineOptions{
 		Enabled:           opts.Enabled,
 		TopN:              opts.TopN,
-		Endpoint:          opts.Endpoint,
-		ModelOverride:     opts.ModelOverride,
-		LabelerEndpoint:   opts.LabelerEndpoint,
 		Epsilon:           opts.Epsilon,
 		MinClusterSize:    opts.MinClusterSize,
-		AutoPull:          opts.AutoPull,
-		NoPrompt:          opts.NoPrompt,
-		NonInteractive:    opts.NonInteractive,
 		Refresh:           opts.Refresh,
-		Labeler:           labeler,
 		CentralityBackend: opts.CentralityBackend,
-		Backend:           opts.Backend,
-		SidecarEndpoint:   opts.SidecarEndpoint,
 	}
-	if opts.embedderForTest != nil {
-		pipelineOpts.EmbedderForTest = opts.embedderForTest
-	}
+	pipelineOpts.Embedder = opts.Embedder
+	pipelineOpts.EmbedderID = opts.EmbedderID
+	pipelineOpts.Categorize = opts.Categorize
+	pipelineOpts.LabelPolisher = opts.LabelPolisher
 
 	skip, err := cluster.RunPipeline(ctx, pipelineOpts, inputs, logger)
 	if err != nil {
@@ -717,4 +712,64 @@ func buildLoneWolfInput(f forge.T1Data, now time.Time, t2 *forge.T2Data) heat.Lo
 		AheadBy:       t2.AheadCount,
 		DaysSincePush: now.Sub(f.PushedAt).Hours() / 24,
 	}
+}
+
+// scoreQuery computes Result.QueryScore for every collected fork in one
+// batched scorer call. Forks without T2 data score 0 (nothing to judge).
+func scoreQuery(ctx context.Context, opts Options, collected []Result, logger io.Writer) {
+	scorer := opts.QueryScorer
+	method := "openvino"
+	if scorer == nil {
+		scorer = embed.LexicalQueryScorer{}
+		method = "lexical"
+	}
+	idx := make([]int, 0, len(collected))
+	docs := make([]string, 0, len(collected))
+	for i := range collected {
+		d := queryDigest(collected[i].T2)
+		if d == "" {
+			continue
+		}
+		idx = append(idx, i)
+		docs = append(docs, d)
+	}
+	if len(docs) == 0 {
+		return
+	}
+	scores, err := scorer.Rerank(ctx, opts.Query, docs)
+	if err != nil || len(scores) != len(docs) {
+		fmt.Fprintf(logger, "[query] scoring failed: %v (emitting unscored)\n", err)
+		return
+	}
+	for j, i := range idx {
+		collected[i].QueryScore = scores[j]
+		collected[i].QueryMethod = method
+	}
+}
+
+// queryDigestMaxChars bounds the digest handed to the scorer; cross-encoder
+// rows are capped at the model context anyway, the leading chunk carries
+// the signal.
+const queryDigestMaxChars = 2000
+
+// queryDigest renders a fork's change digest for query scoring: commit
+// subjects first (the strongest intent signal), then touched paths.
+func queryDigest(t2 *forge.T2Data) string {
+	if t2 == nil {
+		return ""
+	}
+	f := embed.BuildFeatures(*t2, "", 0)
+	var b strings.Builder
+	b.WriteString(f.Commits)
+	if f.Paths != "" {
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(f.Paths)
+	}
+	d := b.String()
+	if len(d) > queryDigestMaxChars {
+		d = d[:queryDigestMaxChars]
+	}
+	return d
 }

@@ -51,6 +51,7 @@ func (f *fakeForge) Contributors(_ context.Context, _ forge.T1Data) (forge.T3Dat
 func (f *fakeForge) Headroom() float64 { return 1.0 }
 
 func TestSpnForksList_emitsNDJSON(t *testing.T) {
+	t.Setenv("SPOON_NO_CONFIG", "1") // isolate from the host's spoon config
 	prev := providerFactory
 	defer func() { providerFactory = prev }()
 	providerFactory = func(_ context.Context, _, _, _ string) (forge.Forge, string, *agentio.Error) {
@@ -153,6 +154,7 @@ func makeClusterForks(now time.Time, parentPushed time.Time) *fakeForge {
 }
 
 func TestSpnForksList_clusterFieldsPopulated(t *testing.T) {
+	t.Setenv("SPOON_NO_CONFIG", "1") // isolate from the host's spoon config
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	prev := providerFactory
 	defer func() { providerFactory = prev }()
@@ -205,6 +207,7 @@ func TestSpnForksList_clusterFieldsPopulated(t *testing.T) {
 }
 
 func TestSpnForksList_noCluster_omitsClusterFields(t *testing.T) {
+	t.Setenv("SPOON_NO_CONFIG", "1") // isolate from the host's spoon config
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	prev := providerFactory
 	defer func() { providerFactory = prev }()
@@ -367,6 +370,7 @@ func TestForkToJSON_NoComponents(t *testing.T) {
 }
 
 func TestSpnForksList_csv_emitsHeaderAndRows(t *testing.T) {
+	t.Setenv("SPOON_NO_CONFIG", "1")         // isolate from the host's spoon config
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // don't read the real embedder config
 	prev := providerFactory
 	defer func() { providerFactory = prev }()
@@ -395,6 +399,7 @@ func TestSpnForksList_csv_emitsHeaderAndRows(t *testing.T) {
 }
 
 func TestSpnForksList_csv_noNDJSONLeak(t *testing.T) {
+	t.Setenv("SPOON_NO_CONFIG", "1") // isolate from the host's spoon config
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	prev := providerFactory
 	defer func() { providerFactory = prev }()
@@ -412,33 +417,18 @@ func TestSpnForksList_csv_noNDJSONLeak(t *testing.T) {
 	}
 }
 
-func TestSpnForksList_embedderUnreachable_failsFast(t *testing.T) {
-	// Isolate config so the real ~/.config/spoon/config.json can't change the
-	// resolved backend; the default (ollama) backend + bad --embedder is the case.
+func TestSpnForksList_unknownEmbedderFlag_rejected(t *testing.T) {
+	// The external-embedder flags were removed along with the external
+	// services; passing one must fail fast with a structured bad_input error.
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	prev := providerFactory
-	defer func() { providerFactory = prev }()
-	// providerFactory must NOT be called: preflight should fail before enumeration.
-	providerFactory = func(_ context.Context, _, _, _ string) (forge.Forge, string, *agentio.Error) {
-		t.Fatal("providerFactory should not be reached when the embedder endpoint is unreachable")
-		return nil, "", nil
-	}
-
 	var stdout, stderr bytes.Buffer
 	exit := runForksWith([]string{
 		"list", "up/stream",
-		"--tier", "2",
 		"--embedder", "http://127.0.0.1:1",
 	}, &stdout, &stderr)
-
-	// New contract: an unreachable embedder endpoint fails fast (exit 2),
-	// emitting a structured error and no stdout — not a warning-and-continue.
 	if exit != 2 {
 		t.Fatalf("exit=%d want 2\nstderr=%s", exit, stderr.String())
-	}
-	if stdout.Len() != 0 {
-		t.Errorf("expected no stdout on preflight failure, got: %s", stdout.String())
 	}
 	var env map[string]any
 	if err := json.Unmarshal(stderr.Bytes(), &env); err != nil {
@@ -447,28 +437,5 @@ func TestSpnForksList_embedderUnreachable_failsFast(t *testing.T) {
 	e, _ := env["error"].(map[string]any)
 	if e == nil || e["code"] != "bad_input" {
 		t.Errorf("expected bad_input error, got: %s", stderr.String())
-	}
-	if !strings.Contains(stderr.String(), "not reachable") {
-		t.Errorf("error should explain the endpoint is unreachable: %s", stderr.String())
-	}
-}
-
-func TestSpnForksList_noClusterSkipsPreflight(t *testing.T) {
-	// --no-cluster bypasses the embedder preflight entirely.
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	prev := providerFactory
-	defer func() { providerFactory = prev }()
-	now := time.Now()
-	providerFactory = func(_ context.Context, _, _, _ string) (forge.Forge, string, *agentio.Error) {
-		return makeClusterForks(now, now.Add(-7*24*time.Hour)), "up/stream", nil
-	}
-	var stdout, stderr bytes.Buffer
-	exit := runForksWith([]string{
-		"list", "up/stream", "--tier", "1", "--no-cluster",
-		"--embedder", "http://127.0.0.1:1", // unreachable, but ignored
-	}, &stdout, &stderr)
-	if exit != 0 {
-		t.Fatalf("exit=%d want 0 (--no-cluster should skip preflight)\nstderr=%s", exit, stderr.String())
 	}
 }

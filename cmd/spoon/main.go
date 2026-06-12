@@ -10,9 +10,11 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/svnbjrn/spoon/internal/cluster"
 	"github.com/svnbjrn/spoon/internal/config"
 	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/forge"
+	"github.com/svnbjrn/spoon/internal/genai"
 	"github.com/svnbjrn/spoon/internal/gitea"
 	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/gitlab"
@@ -27,19 +29,9 @@ func main() {
 		os.Exit(runThreads(os.Args[2:]))
 	}
 
-	// Subcommand dispatch: "spoon embed <verb> ..."
-	if len(os.Args) >= 2 && os.Args[1] == "embed" {
-		os.Exit(runSpoonEmbed(os.Args[2:]))
-	}
-
 	// Subcommand dispatch: "spoon setup ..."
 	if len(os.Args) >= 2 && os.Args[1] == "setup" {
 		os.Exit(runSetup(os.Args[2:]))
-	}
-
-	// Subcommand dispatch: "spoon sidecar <verb> ..."
-	if len(os.Args) >= 2 && os.Args[1] == "sidecar" {
-		os.Exit(runSidecar(os.Args[2:]))
 	}
 
 	var repo string
@@ -50,20 +42,15 @@ func main() {
 	forgeHost := ""
 
 	// Cluster pipeline flags (T9). Clustering is ON by default; --no-cluster
-	// turns it off. When enabled, the pipeline still degrades silently if the
-	// embedder is unreachable or no embedding model is installed.
+	// turns it off. Embedding runs in-process — no external services involved.
 	noCluster := false
 	clusterTop := 50
-	embedderURL := ""
-	embedderModel := ""
-	embedderBackend := ""
-	sidecarEndpoint := ""
-	labelerURL := ""
-	labelerModel := ""
-	clusterEpsilon := 0.35
+	clusterEpsilon := 0.0 // resolved per backend below unless set explicitly
 	clusterMinSize := 3
-	autoPull := os.Getenv("SPOON_AUTO_PULL") == "1"
-	noPrompt := false
+	embedderBackend := ""
+	openvinoModel := ""
+	openvinoDevice := ""
+	openvinoPooling := ""
 
 	// MDG centrality backend. Off by default; --full-mdg opts in. --no-mdg
 	// reverts to off (useful for users who set the env var elsewhere).
@@ -138,53 +125,6 @@ func main() {
 				os.Exit(1)
 			}
 			clusterTop = n
-		case "--embedder":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "Error: --embedder requires a value")
-				os.Exit(1)
-			}
-			i++
-			embedderURL = args[i]
-		case "--embedder-model":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "Error: --embedder-model requires a value")
-				os.Exit(1)
-			}
-			i++
-			embedderModel = args[i]
-		case "--embedder-backend":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "Error: --embedder-backend requires a value")
-				os.Exit(1)
-			}
-			i++
-			val := strings.ToLower(args[i])
-			if val != "ollama" && val != "sidecar" && val != "openai" {
-				fmt.Fprintln(os.Stderr, "Error: --embedder-backend must be 'ollama', 'sidecar', or 'openai'")
-				os.Exit(1)
-			}
-			embedderBackend = val
-		case "--sidecar-endpoint":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "Error: --sidecar-endpoint requires a value")
-				os.Exit(1)
-			}
-			i++
-			sidecarEndpoint = args[i]
-		case "--labeler":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "Error: --labeler requires a value")
-				os.Exit(1)
-			}
-			i++
-			labelerURL = args[i]
-		case "--labeler-model":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "Error: --labeler-model requires a value")
-				os.Exit(1)
-			}
-			i++
-			labelerModel = args[i]
 		case "--cluster-epsilon":
 			if i+1 >= len(args) {
 				fmt.Fprintln(os.Stderr, "Error: --cluster-epsilon requires a value")
@@ -209,10 +149,38 @@ func main() {
 				os.Exit(1)
 			}
 			clusterMinSize = n
-		case "--auto-pull":
-			autoPull = true
-		case "--no-prompt":
-			noPrompt = true
+		case "--embedder-backend":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "Error: --embedder-backend requires a value")
+				os.Exit(1)
+			}
+			i++
+			embedderBackend = strings.ToLower(args[i])
+		case "--openvino-model":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "Error: --openvino-model requires a value")
+				os.Exit(1)
+			}
+			i++
+			openvinoModel = args[i]
+		case "--openvino-device":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "Error: --openvino-device requires a value")
+				os.Exit(1)
+			}
+			i++
+			openvinoDevice = args[i]
+		case "--openvino-pooling":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "Error: --openvino-pooling requires a value")
+				os.Exit(1)
+			}
+			i++
+			openvinoPooling = strings.ToLower(args[i])
+			if _, ok := embed.ParsePooling(openvinoPooling); !ok {
+				fmt.Fprintln(os.Stderr, "Error: --openvino-pooling must be 'cls', 'mean', or 'last'")
+				os.Exit(1)
+			}
 		case "--full-mdg":
 			fullMDG = true
 		case "--no-mdg":
@@ -232,49 +200,22 @@ func main() {
 		os.Setenv("NO_COLOR", "1")
 	}
 
-	// An explicit --sidecar-endpoint expresses intent to use the sidecar, so it
-	// implies --embedder-backend sidecar — even when a saved config selects
-	// another backend. (Only the flag sets these vars at this point; env/config
-	// are layered below.) Without this, a saved openai/ollama config would
-	// silently override the flag and ignore the sidecar.
-	if sidecarEndpoint != "" && embedderBackend == "" {
-		embedderBackend = "sidecar"
-	}
-
-	// Layer saved embedder defaults under flags/env (flags > env > config >
-	// built-in). Provider/host are intentionally NOT layered — the repo URL
-	// determines the forge. A bad config warns but never blocks a run.
-	if cfg, cerr := config.LoadDefault(); cerr != nil {
-		fmt.Fprintf(os.Stderr, "warning: ignoring spoon config: %v\n", cerr)
-	} else if cfg != nil {
-		// Resolve flag > env first, then layer the config backend-aware (a saved
-		// backend's endpoint/model is not inherited when a different backend is
-		// selected).
-		be := strings.ToLower(config.Coalesce(embedderBackend, os.Getenv("SPOON_EMBEDDER_BACKEND")))
-		eu := config.Coalesce(embedderURL, os.Getenv("SPOON_EMBEDDER_URL"))
-		se := config.Coalesce(sidecarEndpoint, os.Getenv("SPOON_SIDECAR_ENDPOINT"))
-		embedderBackend, embedderURL, embedderModel, sidecarEndpoint, labelerModel =
-			cfg.LayerEmbedder(be, eu, embedderModel, se, labelerModel)
-	}
-
 	_ = concurrency // TODO: pass to auth overrides
 
 	ctx := context.Background()
 
-	// Validate any explicitly-configured embedder endpoint before launching, so
-	// a bad URL fails fast instead of silently disabling clustering. --no-cluster
-	// skips this.
-	if perr := embed.Preflight(ctx, embed.PreflightOptions{
-		Enabled:         !noCluster,
-		Backend:         embedderBackend,
-		Endpoint:        embedderURL,
-		Model:           embedderModel,
-		SidecarEndpoint: sidecarEndpoint,
-		LabelerEndpoint: labelerURL,
-	}); perr != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", perr)
-		fmt.Fprintln(os.Stderr, "Start the embedder or fix the endpoint, run 'spoon setup' to configure one, or pass --no-cluster to skip clustering.")
+	// Resolve the embedder backend (flag > env > config > builtin) and
+	// construct it up front so a misconfigured openvino setup fails fast
+	// instead of silently degrading clustering mid-run.
+	embedderBackend, ovCfg := resolveEmbedderConfig(embedderBackend, openvinoModel, openvinoDevice, openvinoPooling)
+	embedder, embedderID, closeEmbedder, err := embed.SelectBackend(embedderBackend, ovCfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
+	}
+	defer closeEmbedder()
+	if clusterEpsilon == 0 {
+		clusterEpsilon = defaultEpsilonFor(embedderBackend)
 	}
 
 	// Detect provider from repo URL and flags
@@ -287,18 +228,27 @@ func main() {
 	tuiClusterOpts := tui.ClusterOptions{
 		Enabled:           !noCluster,
 		TopN:              clusterTop,
-		Endpoint:          embedderURL,
-		ModelOverride:     embedderModel,
-		Backend:           embedderBackend,
-		SidecarEndpoint:   sidecarEndpoint,
-		LabelerEndpoint:   labelerURL,
-		LabelerModel:      labelerModel,
 		Epsilon:           clusterEpsilon,
 		MinClusterSize:    clusterMinSize,
-		AutoPull:          autoPull,
-		NoPrompt:          noPrompt,
 		Refresh:           refresh,
 		CentralityBackend: backendFor(fullMDG),
+	}
+	if embedderBackend != "" && embedderBackend != embed.BackendBuiltin {
+		tuiClusterOpts.Embedder = embedder
+		tuiClusterOpts.EmbedderID = embedderID
+		// Zero-shot categories need a semantic embedder.
+		tuiClusterOpts.Categorize = embedderBackend == embed.BackendOpenVINO
+	}
+	if !noCluster {
+		polisher, closePolisher, lerr := newLabelPolisher()
+		if lerr != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", lerr)
+			os.Exit(1)
+		}
+		if polisher != nil {
+			tuiClusterOpts.LabelPolisher = polisher
+			defer closePolisher()
+		}
 	}
 	m := tui.NewModelWithCluster(provider, auth, repoArg, refresh, tuiClusterOpts)
 	p := tea.NewProgram(m, tea.WithAltScreen())
@@ -316,6 +266,56 @@ func backendFor(fullMDG bool) string {
 		return "mdg"
 	}
 	return ""
+}
+
+// newLabelPolisher builds the cluster label polisher from config/env
+// (labeler.modelPath or $SPOON_OPENVINO_LABELER). Returns (nil, nil, nil)
+// when no labeler is configured.
+func newLabelPolisher() (cluster.LabelPolisher, func(), error) {
+	modelPath := os.Getenv("SPOON_OPENVINO_LABELER")
+	device := ""
+	if cfg, cerr := config.LoadDefault(); cerr == nil && cfg != nil {
+		modelPath = config.Coalesce(modelPath, cfg.Labeler.ModelPath)
+		device = cfg.Labeler.Device
+	}
+	if modelPath == "" {
+		return nil, nil, nil
+	}
+	p, err := genai.NewLabelPolisher(genai.Config{ModelPath: modelPath, Device: device})
+	if err != nil {
+		return nil, nil, err
+	}
+	return p, p.Close, nil
+}
+
+// resolveEmbedderConfig layers the embedder backend settings: flag > env >
+// config file. Returns the resolved backend name and OpenVINO config.
+func resolveEmbedderConfig(backend, model, device, pooling string) (string, embed.OpenVINOConfig) {
+	var fileCfg config.EmbedderConfig
+	if cfg, cerr := config.LoadDefault(); cerr != nil {
+		fmt.Fprintf(os.Stderr, "warning: ignoring spoon config: %v\n", cerr)
+	} else if cfg != nil {
+		fileCfg = cfg.Embedder
+	}
+	backend = strings.ToLower(config.Coalesce(backend, os.Getenv("SPOON_EMBEDDER_BACKEND"), fileCfg.Backend))
+	model = config.Coalesce(model, os.Getenv("SPOON_OPENVINO_MODEL"), fileCfg.ModelPath)
+	device = config.Coalesce(device, os.Getenv("SPOON_OPENVINO_DEVICE"), fileCfg.Device)
+	pooling = strings.ToLower(config.Coalesce(pooling, fileCfg.Pooling))
+	var p embed.Pooling
+	if pooling != "" {
+		p, _ = embed.ParsePooling(pooling)
+	}
+	return backend, embed.OpenVINOConfig{ModelPath: model, Device: device, Pooling: p}
+}
+
+// defaultEpsilonFor returns the per-backend default cosine-distance cutoff:
+// neural embeddings (openvino) separate at a tighter scale than the lexical
+// embedder.
+func defaultEpsilonFor(backend string) float64 {
+	if backend == embed.BackendOpenVINO {
+		return 0.35
+	}
+	return 0.55
 }
 
 // createProvider detects the forge provider from the repo URL and flags,
@@ -448,17 +448,21 @@ Flags:
   --heat-weights path      Path to JSON weight override file
   --no-cluster             Disable the embedding + clustering pass
   --cluster-top N          Max forks fed to the embedder (default 50)
-  --embedder URL           Embedding endpoint (default $SPOON_EMBEDDER_URL)
-  --embedder-model NAME    Explicit embedding model (default: auto-pick)
-  --embedder-backend NAME  Embedder backend: 'ollama' (default), 'sidecar', or
-                           'openai' (any OpenAI-compatible endpoint, e.g. OVMS)
-  --sidecar-endpoint URL   Python sidecar endpoint (default http://localhost:8766)
-  --labeler URL            Optional LLM polish endpoint (default: heuristic)
-  --labeler-model NAME     LLM polish model (default: llama3.2:3b)
-  --cluster-epsilon F      Cosine distance cutoff (default 0.35)
+  --cluster-epsilon F      Cosine distance cutoff (default 0.55 builtin,
+                           0.35 openvino)
   --cluster-min-size N     Minimum cluster size (default 3)
-  --auto-pull              Pull missing embedding model without prompting
-  --no-prompt              Skip pull prompt when no embedding model is installed
+  --embedder-backend NAME  'builtin' (default; zero-setup lexical embedder)
+                           or 'openvino' (in-process transformer encoder on
+                           an Intel GPU; needs a binary built with
+                           -tags openvino). Env: $SPOON_EMBEDDER_BACKEND
+  --openvino-model PATH    Model dir with openvino_model.xml +
+                           openvino_tokenizer.xml (export via
+                           'ovms --pull --task embeddings' or optimum-cli).
+                           Env: $SPOON_OPENVINO_MODEL
+  --openvino-device DEV    OpenVINO device for the encoder (default GPU).
+                           Env: $SPOON_OPENVINO_DEVICE
+  --openvino-pooling MODE  cls|mean|last (default: the model dir's
+                           graph.pbtxt, else cls)
   --full-mdg               Build a real Module Dependency Graph for the upstream
                            using personalized PageRank centrality. Phase A
                            supports Go repositories; other languages silently
@@ -497,10 +501,8 @@ Keybindings (TUI mode):
   q             Quit
 
 Subcommands:
-  spoon setup              Check provider credentials + embedder, pull/install fixes
-  spoon sidecar <verb>     Install/status/uninstall the embedding sidecar service
+  spoon setup              Check credentials + provision OpenVINO models
   spoon threads <pr-ref>   Operate on PR review threads (see 'spoon threads --help')
-  spoon embed status       Human-readable Ollama embedder status
 
 Concepts:
   Provider (forge)   The Git host spoon queries for forks: GitHub or GitLab.
@@ -510,20 +512,17 @@ Concepts:
                      --forge-host. Auth is per-provider: the gh CLI / a GitHub
                      token, or the glab CLI / GITLAB_TOKEN.
 
-  Embedder backend   How spoon turns each fork into a vector so it can cluster
-                     similar forks (--embedder-backend). Three choices:
-                       ollama  (default) zero-setup, serves nomic-embed-text
-                               locally via Ollama. Good enough, nothing to run.
-                       sidecar a separate Python HTTP service you start
-                               yourself (--sidecar-endpoint, default
-                               http://localhost:8766) that serves a stronger
-                               model (arctic-embed-l-v2). Sharper similarity
-                               rankings at the cost of ~2 GB RAM and managing a
-                               process. Setup: 'spoon sidecar install'.
-                       openai  any OpenAI-compatible embeddings endpoint
-                               (--embedder URL, --embedder-model NAME). Use this
-                               to run embeddings on a GPU via OpenVINO Model
-                               Server (OVMS) or to point at vLLM / the OpenAI API.
+  Clustering         spoon turns each fork into a vector and groups similar
+                     forks. Two in-process backends (no external services):
+                       builtin   (default) deterministic lexical embedder
+                                 over paths/commits/README/diff. Zero setup.
+                       openvino  a transformer encoder (e.g. arctic-embed)
+                                 run via the OpenVINO runtime on an Intel
+                                 GPU. Needs 'go build -tags openvino', an
+                                 exported model dir (--openvino-model), and
+                                 the OpenVINO + tokenizers runtime libs.
+                     Tune with --cluster-epsilon / --cluster-min-size;
+                     disable with --no-cluster.
 
 Tip: Run 'gh auth login' (GitHub) or set GITLAB_TOKEN (GitLab) for higher rate limits.
 `)

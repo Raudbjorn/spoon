@@ -23,7 +23,7 @@ func TestHandleClusterResult_Skip(t *testing.T) {
 	m := newTestModel()
 	m.clusterOpts.Enabled = true
 
-	skip := &cluster.SkipReason{Code: "ollama_unreachable", Message: "ollama down"}
+	skip := &cluster.SkipReason{Code: "embedder_failed", Message: "embedder failed"}
 	mAfter, _ := m.handleClusterResult(clusterResultMsg{Skip: skip})
 	mm, ok := mAfter.(*Model)
 	if !ok {
@@ -32,8 +32,8 @@ func TestHandleClusterResult_Skip(t *testing.T) {
 	if mm.clusterStatus != "skipped" {
 		t.Fatalf("clusterStatus = %q; want %q", mm.clusterStatus, "skipped")
 	}
-	if mm.clusterSkipReason != "ollama down" {
-		t.Fatalf("clusterSkipReason = %q; want %q", mm.clusterSkipReason, "ollama down")
+	if mm.clusterSkipReason != "embedder failed" {
+		t.Fatalf("clusterSkipReason = %q; want %q", mm.clusterSkipReason, "embedder failed")
 	}
 }
 
@@ -60,102 +60,6 @@ func TestHandleClusterResult_Done(t *testing.T) {
 	mm := mAfter.(*Model)
 	if mm.clusterStatus != "done" {
 		t.Fatalf("clusterStatus = %q; want done", mm.clusterStatus)
-	}
-}
-
-func TestHandleClusterPrompt_TransitionsView(t *testing.T) {
-	m := newTestModel()
-	reply := make(chan bool, 1)
-	prompt := clusterPromptMsg{Model: "nomic-embed-text", SizeMB: 274, Reply: reply}
-
-	mAfter, _ := m.handleClusterPrompt(prompt)
-	mm := mAfter.(*Model)
-	if mm.view != viewEmbedderBootstrap {
-		t.Fatalf("view = %v; want viewEmbedderBootstrap", mm.view)
-	}
-	if mm.clusterPendingPrompt == nil {
-		t.Fatalf("clusterPendingPrompt should be set")
-	}
-	if mm.clusterPendingPrompt.Model != "nomic-embed-text" {
-		t.Fatalf("prompt model = %q", mm.clusterPendingPrompt.Model)
-	}
-}
-
-func TestHandleEmbedderBootstrapKey_Yes(t *testing.T) {
-	m := newTestModel()
-	reply := make(chan bool, 1)
-	m.clusterPendingPrompt = &clusterPromptMsg{Model: "x", SizeMB: 1, Reply: reply}
-	m.view = viewEmbedderBootstrap
-
-	_, cmd := m.handleEmbedderBootstrapKey("y")
-	if cmd == nil {
-		t.Fatal("expected a Cmd")
-	}
-	msg := cmd()
-	resp, ok := msg.(clusterPromptResponseMsg)
-	if !ok {
-		t.Fatalf("expected clusterPromptResponseMsg, got %T", msg)
-	}
-	if !resp.Yes {
-		t.Fatal("expected Yes=true")
-	}
-	if resp.Reply != reply {
-		t.Fatal("reply channel must be passed through")
-	}
-}
-
-func TestHandleEmbedderBootstrapKey_No(t *testing.T) {
-	m := newTestModel()
-	reply := make(chan bool, 1)
-	m.clusterPendingPrompt = &clusterPromptMsg{Model: "x", SizeMB: 1, Reply: reply}
-	m.view = viewEmbedderBootstrap
-
-	_, cmd := m.handleEmbedderBootstrapKey("n")
-	if cmd == nil {
-		t.Fatal("expected a Cmd")
-	}
-	resp := cmd().(clusterPromptResponseMsg)
-	if resp.Yes {
-		t.Fatal("expected Yes=false")
-	}
-}
-
-func TestHandleEmbedderBootstrapKey_NoPendingPrompt(t *testing.T) {
-	m := newTestModel()
-	m.view = viewEmbedderBootstrap
-
-	mAfter, cmd := m.handleEmbedderBootstrapKey("y")
-	if cmd != nil {
-		t.Fatal("no pending prompt → no Cmd")
-	}
-	if mAfter.(*Model).view != viewTable {
-		t.Fatal("should fall back to viewTable when prompt is absent")
-	}
-}
-
-func TestClusterPromptResponse_ReplyAndClear(t *testing.T) {
-	m := newTestModel()
-	reply := make(chan bool, 1)
-	m.clusterPendingPrompt = &clusterPromptMsg{Model: "x", SizeMB: 1, Reply: reply}
-	m.view = viewEmbedderBootstrap
-
-	// Simulate the full Update path for clusterPromptResponseMsg.
-	// Update has a value receiver, so it returns a Model value.
-	mAfter, _ := m.Update(clusterPromptResponseMsg{Reply: reply, Yes: true})
-	mm := mAfter.(Model)
-	if mm.clusterPendingPrompt != nil {
-		t.Fatal("pending prompt should be cleared")
-	}
-	if mm.view != viewTable {
-		t.Fatalf("view = %v; want viewTable", mm.view)
-	}
-	select {
-	case got := <-reply:
-		if !got {
-			t.Fatal("answer routed to reply channel was wrong")
-		}
-	default:
-		t.Fatal("reply channel never received")
 	}
 }
 

@@ -151,15 +151,39 @@ Forks are ranked by a weighted "heat" score combining several signals:
 
 Override the defaults with `--heat-weights path/to/weights.json` (each value in `[0.0, 2.0]`).
 
+## Clustering
+
+Forks are also grouped by what they changed. Two in-process backends — no
+external services either way:
+
+- **builtin** (default): a deterministic lexical embedder over each fork's
+  touched paths, commit messages, README, and diff shape. No model
+  downloads, no setup.
+- **openvino**: a transformer encoder run inside the binary via the
+  OpenVINO runtime, on an Intel GPU or CPU. Build with
+  `go build -tags "openvino genai"` and run `spoon setup` — it downloads
+  default models for every OpenVINO feature (semantic embedder, `--query`
+  reranker, LLM cluster-label polish) and persists the config. The same
+  backend also gives each fork a zero-shot `category` facet.
+
+Clusters get deterministic heuristic labels (dominant directory prefix +
+the most discriminative commit/path tokens). Tune with `--cluster-epsilon`
+/ `--cluster-min-size`, cap the embedded set with `--cluster-top`, or
+disable with `--no-cluster`. See [`docs/embedders.md`](docs/embedders.md)
+for both algorithms and the OpenVINO setup.
+
 ## Project layout
 
 ```
-cmd/spoon/         CLI entry point
-internal/forge/    Provider abstraction (GitHub + GitLab)
+cmd/spoon/         Interactive CLI entry point
+cmd/spn/           Agent-shaped CLI (JSON/NDJSON)
+internal/forge/    Provider abstraction (GitHub + GitLab + Gitea)
 internal/github/   GitHub client (REST + GraphQL via gh CLI)
 internal/gitlab/   GitLab client
 internal/heat/     Scoring, percentiles, filters
-internal/dump/     JSON/CSV exporters
+internal/embed/    Built-in lexical embedder + per-fork features
+internal/cluster/  Clustering, novelty, heuristic labels
+internal/forksops/ Streaming fork enumeration/enrichment
 internal/tui/      Bubbletea TUI
 ```
 
