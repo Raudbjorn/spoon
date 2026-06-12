@@ -705,7 +705,12 @@ func buildLoneWolfInput(f forge.T1Data, now time.Time, t2 *forge.T2Data) heat.Lo
 			Message:     c.Message,
 			Date:        c.Timestamp,
 		})
-		authors = append(authors, login)
+		// Only count a real identifier as a contributor. An empty login would be
+		// treated as a distinct human by heat.filterBots, producing false-positive
+		// lone-wolf detections; the commit still feeds message analysis above.
+		if login != "" {
+			authors = append(authors, login)
+		}
 	}
 	files := make([]heat.FileChange, 0, len(t2.Diffs))
 	for _, d := range t2.Diffs {

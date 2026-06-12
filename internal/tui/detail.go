@@ -48,7 +48,10 @@ func (m Model) viewDetail() string {
 		if c.Points < 0.5 {
 			continue
 		}
-		pct := c.Points / c.Max
+		pct := 0.0
+		if c.Max > 0 {
+			pct = c.Points / c.Max
+		}
 		arrow := "→"
 		if pct > 0.75 {
 			arrow = "↑"
@@ -56,11 +59,8 @@ func (m Model) viewDetail() string {
 			arrow = "↓"
 		}
 		desc := componentDescription(c.Name, c.Raw, c.Points, c.Max)
-		line := fmt.Sprintf("│  %s %-48s │", arrow, desc)
-		if len(line) > boxWidth+2 {
-			line = line[:boxWidth+1] + "│"
-		}
-		b.WriteString(line + "\n")
+		line := fmt.Sprintf("│  %s %s", arrow, desc)
+		b.WriteString(fitBoxLine(line, boxWidth) + "\n")
 	}
 
 	// Penalties
