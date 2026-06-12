@@ -1,21 +1,33 @@
 package heat
 
-// Scorer is the shared scoring orchestrator used by both TUI and dump modes.
-// It holds the percentile table (built after T1 completes) and fork count.
+// Scorer is the shared scoring orchestrator used by both the TUI and spn
+// paths. It holds the percentile table (built after T1 completes), the fork
+// count, and the user's component weights.
 type Scorer struct {
 	pctTable  *PercentileTable
 	forkCount int
+	weights   map[string]float64
 }
 
-// NewScorer creates a Scorer from fork stats.
+// NewScorer creates a Scorer from fork stats with default weights.
 func NewScorer(stats []ForkStats) *Scorer {
+	return NewScorerWeighted(stats, nil)
+}
+
+// NewScorerWeighted creates a Scorer with per-component weight overrides
+// (see RawScoreWeighted). nil/empty weights means defaults.
+func NewScorerWeighted(stats []ForkStats, weights map[string]float64) *Scorer {
 	return &Scorer{
 		pctTable:  NewPercentileTable(stats),
 		forkCount: len(stats),
+		weights:   weights,
 	}
 }
 
 // IsTinySet returns true if the fork count is below the percentile threshold.
+// Tiny sets score on the same additive tiers as everyone else; they only
+// skip the percentile-based trust multiplier in Finalize (percentiles over
+// <10 samples are noise).
 func (s *Scorer) IsTinySet() bool {
 	return s.forkCount < 10
 }
@@ -27,25 +39,32 @@ func (s *Scorer) ForkCount() int {
 
 // ScoreRaw computes the raw additive score (no trust, no penalties).
 func (s *Scorer) ScoreRaw(input ScoreInput) HeatResult {
-	if s.IsTinySet() {
-		return TinySetScore(input.T1.Stars, input.T1.DaysSincePush)
-	}
-	return RawScore(input)
+	result := RawScoreWeighted(input, s.weights)
+	result.IsTinySet = s.IsTinySet()
+	return result
 }
 
-// Finalize applies trust and penalties to a raw result.
+// Finalize applies trust and penalties to a raw result. Trust requires
+// meaningful percentiles and is skipped for tiny sets; penalties (no-ahead
+// zeroing, archived cap, low-recency dampening) always apply.
 func (s *Scorer) Finalize(result *HeatResult, forkID int64, penalty PenaltyInput) {
-	if s.IsTinySet() {
-		// Tiny set: only apply the no-ahead penalty, skip trust/percentile
-		if penalty.AheadAllBranches == 0 && !result.IsTinySet {
-			result.Score = 0
-			result.Penalties = append(result.Penalties, "no_ahead")
-		}
-		return
+	if !s.IsTinySet() {
+		starsPct := s.pctTable.StarsPercentile(forkID)
+		subForksPct := s.pctTable.SubForksPercentile(forkID)
+		ApplyTrust(result, starsPct, subForksPct)
+		penalty.RecencyPct = s.pctTable.RecencyPercentile(forkID)
+	} else {
+		// Percentile recency is noise on tiny sets; exempt them from the
+		// low-recency penalty rather than feed it garbage.
+		penalty.RecencyPct = 1
 	}
-
-	starsPct := s.pctTable.StarsPercentile(forkID)
-	subForksPct := s.pctTable.SubForksPercentile(forkID)
-	ApplyTrust(result, starsPct, subForksPct)
 	ApplyPenalties(result, penalty)
+}
+
+// LoadWeights reads a heat-weights JSON file ({"component": factor, ...})
+// and validates keys and ranges. Factors must be in [0, 2]; valid keys are
+// the component names: recency, stars, sub_forks, releases, mna,
+// sync_ratio, feature_ratio, lone_wolf, span, novelty.
+func LoadWeights(path string) (map[string]float64, error) {
+	return loadWeightsFile(path)
 }

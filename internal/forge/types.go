@@ -188,3 +188,15 @@ type Forge interface {
 	// Headroom returns the current rate-limit headroom in [0.0, 1.0].
 	Headroom() float64
 }
+
+// TopicRepo is a repository carrying a forge topic, as returned by a
+// provider's topic search (see topics.TopicSearcher).
+type TopicRepo struct {
+	FullName    string
+	Description string
+	Language    string
+	Stars       int
+	ForkCount   int
+	PushedAt    time.Time
+	Archived    bool
+}

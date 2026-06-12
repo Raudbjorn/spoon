@@ -9,10 +9,10 @@ import (
 
 func TestComputeTier1V2_MaxCap(t *testing.T) {
 	p := Tier1ParamsV2{
-		Stars:            100000,
-		SubForks:         100,
-		ReleaseCount:     100,
-		DaysSincePush:    0,
+		Stars:             100000,
+		SubForks:          100,
+		ReleaseCount:      100,
+		DaysSincePush:     0,
 		DaysSinceUpstream: 0,
 	}
 	score, comps := ComputeTier1V2(p)
@@ -339,7 +339,7 @@ func TestApplyTrust_NoLoneWolfBoostBelowThreshold(t *testing.T) {
 
 func TestApplyPenalties_NoAhead(t *testing.T) {
 	result := HeatResult{Score: 75}
-	ApplyPenalties(&result, PenaltyInput{AheadAllBranches: 0})
+	ApplyPenalties(&result, PenaltyInput{AheadKnown: true, AheadAllBranches: 0})
 
 	if result.Score != 0 {
 		t.Errorf("ahead=0 should zero score, got %v", result.Score)
@@ -351,7 +351,7 @@ func TestApplyPenalties_NoAhead(t *testing.T) {
 
 func TestApplyPenalties_Archived(t *testing.T) {
 	result := HeatResult{Score: 75}
-	ApplyPenalties(&result, PenaltyInput{AheadAllBranches: 10, Archived: true})
+	ApplyPenalties(&result, PenaltyInput{AheadKnown: true, AheadAllBranches: 10, Archived: true})
 
 	if result.Score > 30 {
 		t.Errorf("Archived should cap at 30, got %v", result.Score)
@@ -360,7 +360,7 @@ func TestApplyPenalties_Archived(t *testing.T) {
 
 func TestApplyPenalties_ArchivedAlreadyLow(t *testing.T) {
 	result := HeatResult{Score: 20}
-	ApplyPenalties(&result, PenaltyInput{AheadAllBranches: 10, Archived: true, RecencyPct: 0.5})
+	ApplyPenalties(&result, PenaltyInput{AheadKnown: true, AheadAllBranches: 10, Archived: true, RecencyPct: 0.5})
 
 	if result.Score != 20 {
 		t.Errorf("Archived with score 20 should stay at 20, got %v", result.Score)
@@ -369,7 +369,7 @@ func TestApplyPenalties_ArchivedAlreadyLow(t *testing.T) {
 
 func TestApplyPenalties_LowRecency(t *testing.T) {
 	result := HeatResult{Score: 60}
-	ApplyPenalties(&result, PenaltyInput{AheadAllBranches: 10, RecencyPct: 0.1})
+	ApplyPenalties(&result, PenaltyInput{AheadKnown: true, AheadAllBranches: 10, RecencyPct: 0.1})
 
 	expected := 60 * 0.7
 	if !approxEqual(result.Score, expected, 0.1) {
@@ -380,7 +380,7 @@ func TestApplyPenalties_LowRecency(t *testing.T) {
 func TestApplyPenalties_Stacking(t *testing.T) {
 	// Archived + low recency stack
 	result := HeatResult{Score: 80}
-	ApplyPenalties(&result, PenaltyInput{AheadAllBranches: 5, Archived: true, RecencyPct: 0.1})
+	ApplyPenalties(&result, PenaltyInput{AheadKnown: true, AheadAllBranches: 5, Archived: true, RecencyPct: 0.1})
 
 	// Archived caps at 30, then low recency: 30 * 0.7 = 21
 	if !approxEqual(result.Score, 21, 0.1) {
@@ -388,33 +388,40 @@ func TestApplyPenalties_Stacking(t *testing.T) {
 	}
 }
 
-func TestTinySetScore(t *testing.T) {
-	result := TinySetScore(10, 5)
-
-	if !result.IsTinySet {
-		t.Error("TinySetScore should set IsTinySet=true")
+func TestTinySet_ScoresOnFullTiers(t *testing.T) {
+	// Tiny sets now use the same additive tiers, so enrichment data moves
+	// the score (the old TinySetScore ignored T2/T3 entirely).
+	stats := []ForkStats{{ForkID: 0, Stars: 10, PushedDays: 5}, {ForkID: 1, Stars: 0, PushedDays: 400}}
+	s := NewScorer(stats)
+	if !s.IsTinySet() {
+		t.Fatal("2 forks should be a tiny set")
 	}
-	if result.Score <= 0 || result.Score > 100 {
-		t.Errorf("TinySetScore out of range: %v", result.Score)
+	bare := s.ScoreRaw(ScoreInput{T1: Tier1ParamsV2{Stars: 10, DaysSincePush: 5}})
+	enriched := s.ScoreRaw(ScoreInput{
+		T1: Tier1ParamsV2{Stars: 10, DaysSincePush: 5},
+		T2: &Tier2ParamsV2{MNA: 2000, AheadBy: 20, BehindBy: 3, FeatureCommitRatio: 0.8},
+	})
+	if !bare.IsTinySet || !enriched.IsTinySet {
+		t.Error("tiny-set results should carry IsTinySet")
 	}
-	if len(result.Components) != 2 {
-		t.Errorf("Expected 2 components, got %d", len(result.Components))
+	if enriched.Score <= bare.Score {
+		t.Errorf("T2 enrichment must raise a tiny-set score: %v <= %v", enriched.Score, bare.Score)
 	}
 }
 
-func TestTinySetScore_ZeroStars(t *testing.T) {
-	result := TinySetScore(0, 365)
-	// Zero stars + old push → low score
-	if result.Score > 30 {
-		t.Errorf("Zero stars + old push should be low score, got %v", result.Score)
+func TestTinySet_FinalizeAppliesPenaltiesNotTrust(t *testing.T) {
+	stats := []ForkStats{{ForkID: 0, Stars: 10, PushedDays: 5}, {ForkID: 1, Stars: 5, PushedDays: 50}}
+	s := NewScorer(stats)
+	r := s.ScoreRaw(ScoreInput{
+		T1: Tier1ParamsV2{Stars: 10, DaysSincePush: 5},
+		T2: &Tier2ParamsV2{MNA: 100, AheadBy: 0, BehindBy: 10},
+	})
+	s.Finalize(&r, 0, PenaltyInput{AheadKnown: true, AheadAllBranches: 0})
+	if r.Score != 0 {
+		t.Errorf("no-ahead must zero tiny-set scores too, got %v", r.Score)
 	}
-}
-
-func TestTinySetScore_HighStars(t *testing.T) {
-	result := TinySetScore(1000, 1)
-	// High stars + very recent → high score
-	if result.Score < 50 {
-		t.Errorf("High stars + recent push should be high score, got %v", result.Score)
+	if r.Trust != 0 {
+		t.Errorf("tiny sets must not apply percentile trust, got %v", r.Trust)
 	}
 }
 
@@ -430,5 +437,70 @@ func TestIsGhostFork(t *testing.T) {
 	}
 	if IsGhostFork(t2, t1, false) {
 		t.Error("Different push time, not archived, should NOT be ghost")
+	}
+}
+
+func TestApplyPenalties_UnknownAheadNotZeroed(t *testing.T) {
+	// A fork whose divergence was never measured (T2 skipped) must keep its
+	// T1 score — "unknown" is not "no work".
+	result := HeatResult{Score: 30}
+	ApplyPenalties(&result, PenaltyInput{AheadKnown: false, AheadAllBranches: 0, RecencyPct: 0.9})
+	if result.Score != 30 {
+		t.Errorf("unknown ahead must not zero the score, got %v", result.Score)
+	}
+}
+
+func TestRawScoreWeighted_AppliesWeights(t *testing.T) {
+	input := ScoreInput{T1: Tier1ParamsV2{Stars: 1000, DaysSincePush: 2, SubForks: 2, ReleaseCount: 3}}
+	base := RawScore(input)
+	starless := RawScoreWeighted(input, map[string]float64{"stars": 0})
+	boosted := RawScoreWeighted(input, map[string]float64{"stars": 2})
+	if !(starless.Score < base.Score && base.Score < boosted.Score) {
+		t.Errorf("weights must reorder: starless=%v base=%v boosted=%v", starless.Score, base.Score, boosted.Score)
+	}
+	for _, c := range starless.Components {
+		if c.Name == "stars" && c.Points != 0 {
+			t.Errorf("stars weight 0 should zero the component, got %v", c.Points)
+		}
+	}
+}
+
+func TestApplyNoveltyToScore_HonorsWeight(t *testing.T) {
+	base := RawScoreWeighted(ScoreInput{T1: Tier1ParamsV2{Stars: 10, DaysSincePush: 5}}, map[string]float64{"novelty": 0})
+	before := base.Score
+	base.NoveltyScore = 1.0
+	ApplyNoveltyToScore(&base)
+	if base.Score != before {
+		t.Errorf("novelty weight 0 must suppress the post-cluster bonus: %v -> %v", before, base.Score)
+	}
+
+	weighted := RawScoreWeighted(ScoreInput{T1: Tier1ParamsV2{Stars: 10, DaysSincePush: 5}}, map[string]float64{"novelty": 2})
+	before = weighted.Score
+	weighted.NoveltyScore = 1.0
+	ApplyNoveltyToScore(&weighted)
+	if got := weighted.Score - before; got < 9.9 || got > 10.1 {
+		t.Errorf("novelty weight 2 should add ~10 points, added %v", got)
+	}
+}
+
+func TestSyncRatio_DampsBehind(t *testing.T) {
+	// 50 ahead / 200 behind (active upstream) must outscore 1 ahead / 0
+	// behind (trivial fork of a dead repo).
+	active, _ := ComputeTier2V2(Tier2ParamsV2{AheadBy: 50, BehindBy: 200})
+	trivial, _ := ComputeTier2V2(Tier2ParamsV2{AheadBy: 1, BehindBy: 0})
+	if active <= trivial {
+		t.Errorf("behind-damping failed: active=%v <= trivial=%v", active, trivial)
+	}
+}
+
+func TestRecencyPercentile(t *testing.T) {
+	stats := []ForkStats{
+		{ForkID: 0, PushedDays: 1},
+		{ForkID: 1, PushedDays: 100},
+		{ForkID: 2, PushedDays: 400},
+	}
+	pt := NewPercentileTable(stats)
+	if r0, r2 := pt.RecencyPercentile(0), pt.RecencyPercentile(2); r0 <= r2 {
+		t.Errorf("most recent fork must rank highest: %v <= %v", r0, r2)
 	}
 }

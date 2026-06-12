@@ -34,6 +34,11 @@ type Assignment struct {
 	ForkID  string
 	Cluster string
 	Novelty float64
+
+	// Category / CategoryScore carry the zero-shot classification (when the
+	// pipeline ran it) so cache hits restore it. Empty when unclassified.
+	Category      string  `json:"category,omitempty"`
+	CategoryScore float64 `json:"categoryScore,omitempty"`
 }
 
 // Options tunes the clustering. Zero-value fields fall back to defaults.
@@ -43,7 +48,11 @@ type Options struct {
 }
 
 const (
-	defaultEpsilon        = 0.35
+	// defaultEpsilon is tuned for the built-in lexical embedder, whose
+	// cosine similarities run lower than dense neural embeddings: same-intent
+	// fork pairs typically land at 0.45–0.7 cosine distance, unrelated pairs
+	// at ≥0.8.
+	defaultEpsilon        = 0.55
 	defaultMinClusterSize = 3
 	noiseID               = "noise"
 )

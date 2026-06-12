@@ -11,12 +11,12 @@ import (
 
 // LoneWolfInput holds all data needed for 9-step lone wolf detection.
 type LoneWolfInput struct {
-	Commits        []LWCommitInfo
-	Files          []FileChange
-	AuthorLogins   []string
-	AheadBy        int
-	DaysSincePush  float64
-	BotAllowlist   map[string]bool
+	Commits       []LWCommitInfo
+	Files         []FileChange
+	AuthorLogins  []string
+	AheadBy       int
+	DaysSincePush float64
+	BotAllowlist  map[string]bool
 }
 
 // LWCommitInfo describes a single commit for lone wolf analysis.
@@ -429,4 +429,3 @@ func isFeatureCommit(msg string) bool {
 	}
 	return false
 }
-
