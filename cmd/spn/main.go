@@ -58,7 +58,7 @@ Nouns and verbs:
             the fetch + policy gates run, but no GraphQL resolveReviewThread
             (or unresolveReviewThread) is issued. Output is marked dryRun=true.
   pr status <pr-ref>
-  forks list <repo> [--tier 1|2|3] [--top N] [--budget N] [--shortlist N] [--bot-allowlist L] [--refresh] [--csv] [--forge github|gitlab] [--forge-host H]
+  forks list <repo|topic:NAME> [--tier 1|2|3] [--top N] [--budget N] [--shortlist N] [--bot-allowlist L] [--refresh] [--csv] [--forge github|gitlab] [--forge-host H]
                     [--no-cluster] [--cluster-top N] [--cluster-epsilon F] [--cluster-min-size N]
                     [--embedder-backend builtin|openvino] [--openvino-model PATH]
                     [--openvino-device DEV] [--openvino-pooling cls|mean|last]
@@ -77,6 +77,10 @@ Nouns and verbs:
         transformer encoder on an Intel GPU (binary must be built with
         -tags openvino). Run 'spoon setup' once to download default models
         and persist the configuration.
+        topic:NAME evaluates the fork networks of the best repositories
+        representing a GitHub topic (selection by stars + fork-network size +
+        recency; cap with --topic-repos N, default 5). Each record gains an
+        "upstream" field; selections are reported as info envelopes on stderr.
         --query "intent" scores every enriched fork against a free-text
         intent (cross-encoder reranker when configured, lexical fallback
         otherwise), sorts by relevance, and adds queryScore/queryMethod to

@@ -65,7 +65,7 @@ func TestScorer_Finalize(t *testing.T) {
 	s := NewScorer(stats)
 
 	result := HeatResult{Score: 50}
-	s.Finalize(&result, 15, PenaltyInput{AheadAllBranches: 10, RecencyPct: 0.5})
+	s.Finalize(&result, 15, PenaltyInput{AheadKnown: true, AheadAllBranches: 10, RecencyPct: 0.5})
 
 	// Fork 15 has Stars=140, SubForks=14 — should be high percentile
 	// Trust should be > 0.5
@@ -85,7 +85,7 @@ func TestScorer_Finalize_NoAheadPenalty(t *testing.T) {
 	s := NewScorer(stats)
 
 	result := HeatResult{Score: 60}
-	s.Finalize(&result, 5, PenaltyInput{AheadAllBranches: 0})
+	s.Finalize(&result, 5, PenaltyInput{AheadKnown: true, AheadAllBranches: 0})
 
 	if result.Score != 0 {
 		t.Errorf("No ahead should zero score, got %v", result.Score)
@@ -100,7 +100,7 @@ func TestScorer_Finalize_TinySetSkipsTrust(t *testing.T) {
 	s := NewScorer(stats)
 
 	result := HeatResult{Score: 40, IsTinySet: true}
-	s.Finalize(&result, 1, PenaltyInput{AheadAllBranches: 5, RecencyPct: 0.5})
+	s.Finalize(&result, 1, PenaltyInput{AheadKnown: true, AheadAllBranches: 5, RecencyPct: 0.5})
 
 	// Tiny set should skip trust, score unchanged
 	if result.Score != 40 {

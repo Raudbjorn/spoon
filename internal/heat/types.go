@@ -33,6 +33,11 @@ type HeatResult struct {
 	ChangeImpact       float64 // 0..1; centrality-weighted impact of touched directories; 0 when centrality unavailable
 	Category           string  // zero-shot change category ("feature", "ci-build", ...); "" when classification didn't run
 	CategoryScore      float64 // anchor cosine behind Category; 0 when unclassified
+
+	// noveltyWeight carries the user's "novelty" heat weight from scoring
+	// time to ApplyNoveltyToScore (which runs later, after clustering).
+	noveltyWeight    float64
+	noveltyWeightSet bool
 }
 
 // Archetype classifies the lone wolf behavior pattern.

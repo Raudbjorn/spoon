@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
@@ -18,6 +17,7 @@ import (
 	"github.com/svnbjrn/spoon/internal/gitea"
 	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/gitlab"
+	"github.com/svnbjrn/spoon/internal/heat"
 	"github.com/svnbjrn/spoon/internal/tui"
 )
 
@@ -44,6 +44,7 @@ func main() {
 	// Cluster pipeline flags (T9). Clustering is ON by default; --no-cluster
 	// turns it off. Embedding runs in-process — no external services involved.
 	noCluster := false
+	var heatWeights map[string]float64
 	clusterTop := 50
 	clusterEpsilon := 0.0 // resolved per backend below unless set explicitly
 	clusterMinSize := 3
@@ -107,10 +108,12 @@ func main() {
 				os.Exit(1)
 			}
 			i++
-			if err := validateHeatWeights(args[i]); err != nil {
+			w, err := heat.LoadWeights(args[i])
+			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: --heat-weights: %v\n", err)
 				os.Exit(1)
 			}
+			heatWeights = w
 		case "--no-cluster":
 			noCluster = true
 		case "--cluster-top":
@@ -186,7 +189,7 @@ func main() {
 		case "--no-mdg":
 			fullMDG = false
 		default:
-			if !strings.HasPrefix(args[i], "-") && strings.Contains(args[i], "/") {
+			if !strings.HasPrefix(args[i], "-") && (strings.Contains(args[i], "/") || strings.HasPrefix(args[i], "topic:")) {
 				repo = args[i]
 			} else {
 				fmt.Fprintf(os.Stderr, "Unknown flag: %s\n", args[i])
@@ -250,7 +253,7 @@ func main() {
 			defer closePolisher()
 		}
 	}
-	m := tui.NewModelWithCluster(provider, auth, repoArg, refresh, tuiClusterOpts)
+	m := tui.NewModelWithCluster(provider, auth, repoArg, refresh, tuiClusterOpts).WithHeatWeights(heatWeights)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 
 	if _, err := p.Run(); err != nil {
@@ -406,39 +409,11 @@ func createProvider(ctx context.Context, repo, forgeFlag, forgeHost string) (for
 	}
 }
 
-var validHeatWeightKeys = map[string]bool{
-	"recency": true, "stars": true, "sub_forks": true, "releases": true,
-	"mna": true, "sync_ratio": true, "feature_ratio": true,
-	"lone_wolf": true, "span": true, "novelty": true,
-}
-
-func validateHeatWeights(path string) error {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("reading file: %w", err)
-	}
-
-	var weights map[string]float64
-	if err := json.Unmarshal(data, &weights); err != nil {
-		return fmt.Errorf("parsing JSON: %w", err)
-	}
-
-	for key, val := range weights {
-		if !validHeatWeightKeys[key] {
-			return fmt.Errorf("unknown key %q", key)
-		}
-		if val < 0 || val > 2.0 {
-			return fmt.Errorf("value for %q must be in [0.0, 2.0], got %v", key, val)
-		}
-	}
-	return nil
-}
-
 func printHelp() {
 	fmt.Print(`spoon - find useful forks
 
 Usage:
-  spoon [flags] [owner/repo | https://gitlab.com/group/repo]
+  spoon [flags] [owner/repo | https://gitlab.com/group/repo | topic:NAME]
 
 Flags:
   --forge github|gitlab    Override provider detection
@@ -479,6 +454,9 @@ Flags:
 Examples:
   spoon                                          Interactive mode (GitHub)
   spoon golang/go                                Search forks of golang/go
+  spoon topic:terminal                           Pick from the best repos of a
+                                                 GitHub topic, then prospect the
+                                                 chosen repo's forks
   spoon gitlab.com/inkscape/inkscape             GitLab (auto-detected)
   spoon --forge gitlab group/repo                Force GitLab provider
   spoon --forge-host gitlab.example.com g/repo   Self-hosted GitLab

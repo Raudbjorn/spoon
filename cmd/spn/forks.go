@@ -23,6 +23,8 @@ import (
 	"github.com/svnbjrn/spoon/internal/gitea"
 	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/gitlab"
+	"github.com/svnbjrn/spoon/internal/heat"
+	"github.com/svnbjrn/spoon/internal/topics"
 )
 
 // embedderHookForTest, when non-nil, installs the given embedder onto the
@@ -98,6 +100,7 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 	}
 	var embedderBackend, openvinoModel, openvinoDevice, openvinoPooling string
 	query := ""
+	topicRepos := 0
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--tier":
@@ -193,6 +196,26 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 				return agentio.NewError(agentio.CodeBadInput, "--cluster-min-size requires a positive integer", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
 			}
 			opts.Cluster.MinClusterSize = n
+		case "--topic-repos":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--topic-repos requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n < 1 || n > 25 {
+				return agentio.NewError(agentio.CodeBadInput, "--topic-repos must be in [1, 25]", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			topicRepos = n
+		case "--heat-weights":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--heat-weights requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			w, werr := heat.LoadWeights(args[i])
+			if werr != nil {
+				return agentio.NewError(agentio.CodeBadInput, "--heat-weights: "+werr.Error(), agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			opts.HeatWeights = w
 		case "--query":
 			if i+1 >= len(args) {
 				return agentio.NewError(agentio.CodeBadInput, "--query requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
@@ -307,14 +330,6 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 
 	ctx := context.Background()
 
-	provider, repoArg, e := providerFactory(ctx, repo, forgeFlag, forgeHost)
-	if e != nil {
-		return e.Emit(stderr)
-	}
-	owner, name := splitRepoArg(repoArg)
-	if owner == "" || name == "" {
-		return agentio.NewError(agentio.CodeBadInput, "invalid repo: "+repo, agentio.RemediationBadInput("forks", "list")).Emit(stderr)
-	}
 	// Cluster-pipeline progress logs are silenced to keep NDJSON stable;
 	// only structured ClusterSkip warnings are emitted on stderr via
 	// emitClusterWarning. The discard is intentional — do not wire stderr
@@ -330,6 +345,62 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 	opts.ReserveDisabled = os.Getenv("SPOON_NO_RESERVE") == "1"
 	if embedderHookForTest != nil {
 		opts.Cluster.SetEmbedderForTest(embedderHookForTest)
+	}
+
+	// Topic mode: "topic:NAME" selects the best repos representing the
+	// GitHub topic and evaluates each one's fork network in sequence. Every
+	// record carries an "upstream" field so consumers can tell the networks
+	// apart.
+	if topicName, isTopic := strings.CutPrefix(repo, "topic:"); isTopic {
+		if csvMode {
+			return agentio.NewError(agentio.CodeBadInput, "topic mode emits NDJSON only (records span multiple upstreams)",
+				"Drop --csv, or run per-repo CSV exports against the repos topic mode reports on stderr.").Emit(stderr)
+		}
+		// Provider construction needs no repo in topic mode; the placeholder
+		// is parsed for its host only.
+		provider, _, e := providerFactory(ctx, "topic/placeholder", forgeFlag, forgeHost)
+		if e != nil {
+			return e.Emit(stderr)
+		}
+		selections, terr := topics.Resolve(ctx, provider, topicName, topicRepos)
+		if terr != nil {
+			return agentio.NewError(agentio.CodeBadInput, terr.Error(),
+				"Topic mode needs a GitHub topic with forkable repositories, e.g. `spn forks list topic:terminal`.").Emit(stderr)
+		}
+		for _, sel := range selections {
+			_ = json.NewEncoder(stderr).Encode(map[string]any{
+				"info": map[string]any{
+					"code":    "topic_repo_selected",
+					"message": fmt.Sprintf("evaluating %s (score %.1f)", sel.FullName, sel.Score),
+					"details": map[string]any{
+						"repo":       sel.FullName,
+						"score":      sel.Score,
+						"components": sel.Components,
+						"stars":      sel.Stars,
+						"forks":      sel.ForkCount,
+					},
+				},
+			})
+		}
+		for _, sel := range selections {
+			owner, name := splitRepoArg(sel.FullName)
+			if owner == "" || name == "" {
+				continue
+			}
+			if code := streamAndEmit(ctx, provider, owner, name, sel.FullName, opts, stdout, stderr); code != 0 {
+				return code
+			}
+		}
+		return 0
+	}
+
+	provider, repoArg, e := providerFactory(ctx, repo, forgeFlag, forgeHost)
+	if e != nil {
+		return e.Emit(stderr)
+	}
+	owner, name := splitRepoArg(repoArg)
+	if owner == "" || name == "" {
+		return agentio.NewError(agentio.CodeBadInput, "invalid repo: "+repo, agentio.RemediationBadInput("forks", "list")).Emit(stderr)
 	}
 	ch, streamErr := forksops.Stream(ctx, provider, owner, name, opts)
 	if streamErr != nil {
@@ -372,7 +443,7 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 		if r.BudgetSkip != nil {
 			degraded++
 		}
-		if err := agentio.WriteNDJSON(stdout, forkToJSON(r)); err != nil {
+		if err := agentio.WriteNDJSON(stdout, forkToJSONUpstream(r, "")); err != nil {
 			return agentio.NewError(agentio.CodeInternal, err.Error(), agentio.RemediationInternal()).Emit(stderr)
 		}
 	}
@@ -664,4 +735,77 @@ func newLabelPolisher() (cluster.LabelPolisher, func(), error) {
 		return nil, nil, err
 	}
 	return p, p.Close, nil
+}
+
+// streamAndEmit runs the fork pipeline for one upstream and emits NDJSON
+// records tagged with the upstream's full name. Used by topic mode, where
+// several upstreams share one output stream.
+func streamAndEmit(ctx context.Context, provider forge.Forge, owner, name, upstream string, opts forksops.Options, stdout, stderr io.Writer) int {
+	ch, streamErr := forksops.Stream(ctx, provider, owner, name, opts)
+	if streamErr != nil {
+		var rl *gh.RateLimitError
+		if errors.As(streamErr, &rl) {
+			resetAt := rl.ResetAt.UTC().Format("2006-01-02T15:04:05Z07:00")
+			secs := rl.RetryAfterSeconds()
+			e := agentio.NewError(agentio.CodeRateLimited, streamErr.Error(), agentio.RemediationRateLimited(resetAt, secs))
+			if secs > 0 {
+				e = e.WithRetryAfter(secs)
+			}
+			return e.Emit(stderr)
+		}
+		// A failing repo in a topic set degrades to a structured warning so
+		// the remaining repos still get evaluated.
+		_ = json.NewEncoder(stderr).Encode(map[string]any{
+			"warning": map[string]any{
+				"code":    "topic_repo_failed",
+				"message": upstream + ": " + streamErr.Error(),
+			},
+		})
+		return 0
+	}
+	degraded, total := 0, 0
+	for r := range ch {
+		if r.ClusterSkip != nil {
+			emitClusterWarning(stderr, r.ClusterSkip)
+		}
+		if r.T3Skip != nil {
+			emitStageSkipWarning(stderr, r.T3Skip)
+		}
+		if r.Err != nil {
+			_ = agentio.WriteNDJSON(stderr, map[string]any{
+				"error": map[string]any{
+					"code":    r.Err.Code,
+					"message": r.Err.Message,
+					"details": r.Err.Details,
+				},
+			})
+			continue
+		}
+		total++
+		if r.BudgetSkip != nil {
+			degraded++
+		}
+		if err := agentio.WriteNDJSON(stdout, forkToJSONUpstream(r, upstream)); err != nil {
+			return agentio.NewError(agentio.CodeInternal, err.Error(), agentio.RemediationInternal()).Emit(stderr)
+		}
+	}
+	if degraded > 0 {
+		_ = json.NewEncoder(stderr).Encode(map[string]any{
+			"warning": map[string]any{
+				"code":        "degraded_rate_reserve",
+				"message":     fmt.Sprintf("%s: %d/%d forks left un-enriched at the rate-limit reserve", upstream, degraded, total),
+				"remediation": "Re-run after the rate window resets to backfill (cached compares resume), or set SPOON_NO_RESERVE=1.",
+			},
+		})
+	}
+	return 0
+}
+
+// forkToJSONUpstream is forkToJSON plus an optional upstream tag (topic mode).
+func forkToJSONUpstream(r forksops.Result, upstream string) map[string]any {
+	out := forkToJSON(r)
+	if upstream != "" {
+		out["upstream"] = upstream
+	}
+	return out
 }

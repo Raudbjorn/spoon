@@ -15,6 +15,7 @@ import (
 	"github.com/svnbjrn/spoon/internal/forksops"
 	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/heat"
+	"github.com/svnbjrn/spoon/internal/topics"
 )
 
 // View state
@@ -26,6 +27,7 @@ const (
 	viewDetail
 	viewHelp
 	viewExportPath
+	viewTopicPicker
 )
 
 // ScoredFork holds a fork with its computed heat score.
@@ -35,6 +37,10 @@ type ScoredFork struct {
 	T2        *forge.T2Data
 	Marked    bool
 	Enriching bool
+
+	// statID is the fork's key in the scorer's percentile table. Assigned at
+	// initial scoring; stable across re-sorts of m.forks.
+	statID int64
 
 	// Enriched is true once a real T2 compare has settled for this fork (cache
 	// hit or live call). BudgetSkipped is true when enrichment was skipped at
@@ -65,12 +71,13 @@ type Model struct {
 	authMsg  string
 
 	// Data
-	parent  *forge.ParentData
-	forks   []ScoredFork
-	scorer  *heat.Scorer // v2 scorer, created in scoreForks and reused for T2 rescoring
-	loading bool
-	loadMsg string
-	errMsg  string
+	parent      *forge.ParentData
+	forks       []ScoredFork
+	scorer      *heat.Scorer // v2 scorer, created in scoreForks and reused for T2 rescoring
+	heatWeights map[string]float64
+	loading     bool
+	loadMsg     string
+	errMsg      string
 
 	// Table state
 	cursor  int
@@ -100,6 +107,11 @@ type Model struct {
 	exportForks []ScoredFork // forks staged for export (nil = export all)
 
 	// Cluster pipeline
+	// Topic picker state (topic mode).
+	topicName       string
+	topicSelections []topics.Selection
+	topicCursor     int
+
 	clusterOpts       ClusterOptions
 	clusterRan        bool         // true after the pipeline has been kicked off
 	clusterStatus     string       // "pending", "running", "skipped: <reason>", "done"
@@ -144,6 +156,13 @@ func NewModelWithCluster(provider forge.Forge, auth forge.AuthInfo, repo string,
 	return m
 }
 
+// WithHeatWeights returns a copy of the model using the given per-component
+// heat weights (see heat.LoadWeights).
+func (m Model) WithHeatWeights(w map[string]float64) Model {
+	m.heatWeights = w
+	return m
+}
+
 func (m Model) Init() tea.Cmd {
 	if m.auth.Authenticated() {
 		m.authMsg = fmt.Sprintf("Authenticated (%s, %d req/%s)",
@@ -175,6 +194,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case startFetchMsg:
 		cmd := m.startFetch()
 		return m, cmd
+
+	case topicResolvedMsg:
+		return m.handleTopicResolved(msg)
 
 	case parentFetchedMsg:
 		return m.handleParentFetched(msg)
@@ -425,6 +447,11 @@ func (m *Model) recomputeT2Score(i int) {
 	if input.T3 != nil && input.T3.LoneWolf != nil {
 		result.LoneWolfV2 = input.T3.LoneWolf
 	}
+	m.scorer.Finalize(&result, m.forks[i].statID, heat.PenaltyInput{
+		AheadKnown:       true,
+		AheadAllBranches: t2.AheadCount,
+		Archived:         f.IsArchived,
+	})
 	m.forks[i].Heat = result
 }
 
@@ -457,6 +484,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleDetailKey(key)
 	case viewExportPath:
 		return m.handleExportPathKey(key)
+	case viewTopicPicker:
+		return m.handleTopicPickerKey(key)
 	case viewHelp:
 		if key == "?" || key == "esc" || key == "q" {
 			m.view = viewTable
@@ -653,6 +682,12 @@ func (m *Model) startFetch() tea.Cmd {
 		m.initRepo = ""
 	}
 
+	// Topic mode: resolve the best repos for the topic and show the picker.
+	if topicName, isTopic := strings.CutPrefix(repo, "topic:"); isTopic {
+		m.loadMsg = fmt.Sprintf("Resolving topic %q...", topicName)
+		return m.resolveTopicCmd(topicName)
+	}
+
 	parts := strings.SplitN(repo, "/", 2)
 	if len(parts) != 2 {
 		m.loading = false
@@ -780,27 +815,29 @@ func (m *Model) scoreForks(forks []forge.T1Data) {
 		}
 	}
 
-	stats := makeTUIStats(live)
-	m.scorer = heat.NewScorer(stats)
+	stats := makeTUIStats(live, now)
+	m.scorer = heat.NewScorerWeighted(stats, m.heatWeights)
 
 	m.forks = make([]ScoredFork, 0, len(live))
-	for _, f := range live {
+	for i, f := range live {
 		input := buildTUIScoreInput(f, *m.parent, now)
 		result := m.scorer.ScoreRaw(input)
-		sf := ScoredFork{Fork: f, Heat: result}
+		m.scorer.Finalize(&result, int64(i), heat.PenaltyInput{Archived: f.IsArchived})
+		sf := ScoredFork{Fork: f, Heat: result, statID: int64(i)}
 		m.forks = append(m.forks, sf)
 	}
 	m.sortForks()
 }
 
 // makeTUIStats builds ForkStats for heat.NewScorer from a slice of T1 forks.
-func makeTUIStats(forks []forge.T1Data) []heat.ForkStats {
+func makeTUIStats(forks []forge.T1Data, now time.Time) []heat.ForkStats {
 	stats := make([]heat.ForkStats, len(forks))
 	for i, f := range forks {
 		stats[i] = heat.ForkStats{
-			ForkID:   int64(i),
-			Stars:    f.Stars,
-			SubForks: f.SubForkCount,
+			ForkID:     int64(i),
+			Stars:      f.Stars,
+			SubForks:   f.SubForkCount,
+			PushedDays: now.Sub(f.PushedAt).Hours() / 24,
 		}
 	}
 	return stats
@@ -815,8 +852,6 @@ func buildTUIScoreInput(f forge.T1Data, parent forge.ParentData, now time.Time) 
 			ReleaseCount:      f.ReleaseCount,
 			DaysSincePush:     now.Sub(f.PushedAt).Hours() / 24,
 			DaysSinceUpstream: now.Sub(parent.PushedAt).Hours() / 24,
-			Archived:          f.IsArchived,
-			Now:               now,
 		},
 	}
 }
@@ -1014,6 +1049,8 @@ func (m Model) View() string {
 		return m.viewDetail()
 	case viewExportPath:
 		return m.viewExportPath()
+	case viewTopicPicker:
+		return m.viewTopicPicker()
 	case viewHelp:
 		return m.viewHelp()
 	}

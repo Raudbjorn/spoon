@@ -42,6 +42,7 @@ spoon --json charmbracelet/bubbletea            # JSON to stdout
 spoon --csv charmbracelet/bubbletea -o forks.csv
 spoon --tier 1 golang/go                        # T1 only (skip compare calls)
 spoon --top 5 golang/go                         # only enrich top 5 by T1 score
+spoon topic:terminal                            # GitHub topic → repo picker → forks
 ```
 
 Run `spoon --help` for the full flag list.
@@ -125,6 +126,7 @@ spn threads resolve-all <pr-ref>     # skips human-raised threads (returned in `
 spn threads unresolve-all <pr-ref>
 spn pr status <pr-ref>
 spn forks list <repo> [--tier N] [--top N] [...]   # NDJSON
+spn forks list topic:zig [--topic-repos 5] [...]   # whole-topic prospecting
 ```
 
 Success: bare JSON to stdout. Failure: structured envelope to stderr:
@@ -137,19 +139,43 @@ See [`docs/superpowers/specs/2026-05-10-spn-bifurcation-design.md`](docs/superpo
 
 ## Heat scoring
 
-Forks are ranked by a weighted "heat" score combining several signals:
+Forks are ranked by a 0–100 "heat" score built from additive tiers (T1
+surface signals up to 40 pts, T2 divergence up to 40, T3 behavior up to 20):
 
-- `recency` — how recently the fork was pushed to
-- `stars` — independent star count
+- `recency` — exp-decay since last push, half-life adapted to upstream pace
+- `stars` — independent star count (log-scaled)
 - `sub_forks` — fork-of-fork activity
 - `releases` — tagged releases
 - `mna` — meaningful net additions (lines added beyond upstream)
-- `sync_ratio` — how in-sync the fork is with upstream
-- `feature_ratio` — divergence from upstream
-- `lone_wolf` — solo-developer signal
+- `sync_ratio` — how much of the divergence is the fork's own work
+  (behind-counts are √-damped so forks of fast upstreams aren't drowned)
+- `feature_ratio` — fraction of non-merge/non-sync commits
+- `lone_wolf` — solo-developer signal (Sniper / Feature Builder / Drifter)
 - `span` — duration of activity
+- `novelty` — distance from the fork's cluster (set by the cluster pipeline)
 
-Override the defaults with `--heat-weights path/to/weights.json` (each value in `[0.0, 2.0]`).
+The raw score is then finalized: a trust multiplier (stars/sub-fork
+percentile within the fork set), a hard zero for forks with no commits
+ahead, a 30-point cap for archived forks, and a dampener for
+bottom-quintile recency. Repos with <10 forks score on the same tiers but
+skip the percentile trust (too few samples).
+
+Override component weights with `--heat-weights path/to/weights.json`
+(each value in `[0.0, 2.0]`; works on both `spoon` and `spn forks list`).
+
+## Topic mode
+
+Point spoon at a [GitHub topic](https://github.com/topics) instead of a
+repo and it selects the repositories that best represent the topic —
+scored by stars, fork-network size, and recency (archived repos are damped,
+fork-less repos excluded; the selection breakdown is reported) — then runs
+its normal fork evaluation over each.
+
+- `spoon topic:NAME` shows the selection as a picker; Enter prospects the
+  chosen repo's forks.
+- `spn forks list topic:NAME` streams fork records for every selected repo,
+  each tagged with an `upstream` field; selections are emitted as structured
+  info envelopes on stderr. Cap the set with `--topic-repos N` (default 5).
 
 ## Clustering
 

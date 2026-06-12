@@ -151,6 +151,23 @@ models never serves stale clusters.
 On Intel Arc the first GPU load JIT-compiles kernels; spoon caches them
 under `~/.cache/spoon/openvino` so subsequent loads take ~1 s.
 
+## Choosing models
+
+The defaults were re-validated on 2026-06-12 against pre-converted
+alternatives from the OpenVINO HF org, on the hand-labeled
+behavioral-embeddings dataset (53 same/different-intent pairs over real PR
+feature sets; harnesses: `TestEval*_Manual` in internal/embed and
+internal/genai):
+
+| Feature | Default (kept) | Challenger | Result |
+|---|---|---|---|
+| Embedder | bge-base-en-v1.5-fp16 | Qwen3-Embedding-0.6B-int8 (last-pool) | AUC 0.51 vs 0.45, and 27× faster (1.5 s vs 42 s / 78 texts) |
+| Reranker | bge-reranker-base-fp16 | Qwen3-Reranker-0.6B-seq-cls-fp16 | acc@1 0.63 / MRR 0.77 in 1.7 s — see below |
+| Labeler | Qwen2.5-1.5B-Instruct-int4 | Qwen3-0.6B-int4 | 3/3 good labels @109 ms warm vs 0/3 (thinking mode eats the token budget) |
+
+The dataset is small (CI ≈ ±0.16 on AUC), so only clear wins justify a
+default switch; none of the challengers produced one.
+
 ## History
 
 Earlier versions delegated embedding to external services (Ollama, a Python

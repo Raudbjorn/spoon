@@ -335,3 +335,29 @@ func isMergeOrSyncMsg(msg string) bool {
 	}
 	return false
 }
+
+// SearchTopicRepos implements the optional topics.TopicSearcher capability:
+// it returns repositories carrying the GitHub topic, mapped to forge types.
+func (p *GHProvider) SearchTopicRepos(ctx context.Context, topic string, limit int) ([]forge.TopicRepo, error) {
+	repos, err := p.client.SearchTopicRepos(ctx, topic, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]forge.TopicRepo, 0, len(repos))
+	for _, r := range repos {
+		if r.IsFork {
+			continue // belt and braces; the query already excludes forks
+		}
+		pushed, _ := time.Parse(time.RFC3339, r.PushedAt)
+		out = append(out, forge.TopicRepo{
+			FullName:    r.FullName,
+			Description: r.Description,
+			Language:    r.Language,
+			Stars:       r.Stars,
+			ForkCount:   r.Forks,
+			PushedAt:    pushed,
+			Archived:    r.Archived,
+		})
+	}
+	return out, nil
+}

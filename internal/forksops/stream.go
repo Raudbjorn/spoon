@@ -235,8 +235,9 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 			}
 		}
 
-		stats := makeStats(t1Forks)
-		scorer := heat.NewScorer(stats)
+		now := time.Now()
+		stats := makeStats(t1Forks, now)
+		scorer := heat.NewScorerWeighted(stats, opts.HeatWeights)
 
 		type scored struct {
 			fork    forge.T1Data
@@ -244,12 +245,15 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 			promise float64 // cheap divergence signal (ComparePromise), survives the sort
 		}
 		all := make([]scored, len(t1Forks))
-		now := time.Now()
 		for i, f := range t1Forks {
 			input := buildScoreInput(f, parent, now)
+			res := scorer.ScoreRaw(input)
+			// T1-only finalize: trust + archived/recency penalties. Divergence
+			// is unknown at this point, so no-ahead zeroing cannot apply yet.
+			scorer.Finalize(&res, int64(i), heat.PenaltyInput{Archived: f.IsArchived})
 			all[i] = scored{
 				fork:    f,
-				res:     scorer.ScoreRaw(input),
+				res:     res,
 				promise: ComparePromise(f, parent.PushedAt),
 			}
 		}
@@ -421,7 +425,7 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 							r.T3 = &t3
 						}
 					}
-					r.Heat = rescore(scorer, s.fork, parent, now, r.T2, r.T3)
+					r.Heat = rescore(scorer, int64(i), s.fork, parent, now, r.T2, r.T3)
 					if batchMode {
 						collectedMu.Lock()
 						collected = append(collected, r)
@@ -620,13 +624,14 @@ func providerName(ctx context.Context, p forge.Forge) string {
 // ForkStats only needs ForkID, Stars, and SubForks for percentile ranking.
 // ForkID is the slice index (int64) — a synthetic stable key used solely
 // within this scorer instance; it is not a forge-level identifier.
-func makeStats(forks []forge.T1Data) []heat.ForkStats {
+func makeStats(forks []forge.T1Data, now time.Time) []heat.ForkStats {
 	stats := make([]heat.ForkStats, len(forks))
 	for i, f := range forks {
 		stats[i] = heat.ForkStats{
-			ForkID:   int64(i),
-			Stars:    f.Stars,
-			SubForks: f.SubForkCount,
+			ForkID:     int64(i),
+			Stars:      f.Stars,
+			SubForks:   f.SubForkCount,
+			PushedDays: now.Sub(f.PushedAt).Hours() / 24,
 		}
 	}
 	return stats
@@ -641,15 +646,13 @@ func buildScoreInput(f forge.T1Data, parent forge.ParentData, now time.Time) hea
 			ReleaseCount:      f.ReleaseCount,
 			DaysSincePush:     now.Sub(f.PushedAt).Hours() / 24,
 			DaysSinceUpstream: now.Sub(parent.PushedAt).Hours() / 24,
-			Archived:          f.IsArchived,
-			Now:               now,
 		},
 	}
 }
 
 // rescore rebuilds a ScoreInput including T2/T3 data and returns the
 // updated HeatResult. Used to refresh Heat after enrichment.
-func rescore(scorer *heat.Scorer, f forge.T1Data, parent forge.ParentData, now time.Time, t2 *forge.T2Data, t3 *forge.T3Data) heat.HeatResult {
+func rescore(scorer *heat.Scorer, forkID int64, f forge.T1Data, parent forge.ParentData, now time.Time, t2 *forge.T2Data, t3 *forge.T3Data) heat.HeatResult {
 	input := buildScoreInput(f, parent, now)
 	if t2 != nil {
 		input.T2 = &heat.Tier2ParamsV2{
@@ -674,10 +677,17 @@ func rescore(scorer *heat.Scorer, f forge.T1Data, parent forge.ParentData, now t
 	}
 	result := scorer.ScoreRaw(input)
 	// Propagate the lone wolf result to the top-level HeatResult field so
-	// callers (TUI, dump, JSON) can access it without digging into T3 params.
+	// callers (TUI, dump, JSON) can access it without digging into T3 params
+	// — and so ApplyTrust's lone-wolf boost can see it.
 	if input.T3 != nil && input.T3.LoneWolf != nil {
 		result.LoneWolfV2 = input.T3.LoneWolf
 	}
+	penalty := heat.PenaltyInput{Archived: f.IsArchived}
+	if t2 != nil {
+		penalty.AheadKnown = true
+		penalty.AheadAllBranches = t2.AheadCount
+	}
+	scorer.Finalize(&result, forkID, penalty)
 	return result
 }
 
