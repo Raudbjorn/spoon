@@ -19,8 +19,8 @@ intent-similarity between fork-equivalent code changes more like a human does?
    forks of `cli/cli`, `bubbletea`, `astral-sh/uv` each had only 1–3 forks
    ahead. PRs are the canonical signal of "fork-with-intent" and produce a
    data set where every record carries divergence on purpose.
-2. `judgments.json` records 40 hand-curated PR pairs: 20 labeled `1`
-   (functionally same intent) and 20 labeled `0` (functionally different).
+2. `judgments.json` records 53 hand-curated PR pairs: 27 labeled `1`
+   (functionally same intent) and 26 labeled `0` (functionally different).
    See [Curating judgments.json](#curating-judgmentsjson) below.
 
    `pr_states.json` is a sibling fixture: `{pr-N: "OPEN"|"MERGED"|"CLOSED"}`
@@ -30,11 +30,12 @@ intent-similarity between fork-equivalent code changes more like a human does?
    scripts read it directly.
 3. `embed_nomic.py` hits the local Ollama `/api/embeddings` endpoint once per
    PR record and writes `nomic_vectors.json`.
-4. `embed_codeexecutor.py` loads `microsoft/codeexecutor` via the HuggingFace
+4. `embed_hf.py` loads `microsoft/codeexecutor` via the HuggingFace
    transformers library and writes `codeexecutor_vectors.json`.
 5. `analyze.py` computes pair-wise cosine similarity for each embedder,
    computes Kendall's tau against the hand judgments, prints both taus and
-   the delta, and writes `RESULTS.md`.
+   the delta, and writes `RESULTS_RUN.md` (the committed `RESULTS.md`
+   narrative is left untouched).
 
 ## Gate
 
@@ -47,6 +48,9 @@ cd experiments/started/behavioral-embeddings
 ./run.sh
 ```
 
+The run writes its analyzer output to `RESULTS_RUN.md` (gitignored); the
+committed `RESULTS.md` is the frozen narrative and is never overwritten.
+
 Requires:
 - Ollama running on `http://localhost:11434` with `nomic-embed-text` pulled.
 - `gh auth status` showing an authenticated user (for `dump_features`).
@@ -56,7 +60,7 @@ Requires:
 ## Curating judgments.json
 
 Each row of `features.json` is one PR from `IBM/mcp-context-forge`. The
-goal of curation is to pick 40 *pairs* of these PRs, labeled by whether
+goal of curation is to pick *pairs* of these PRs, labeled by whether
 they represent the same or different *intent*:
 
 - **`"label": 1` (functionally same intent)** — both PRs are doing the
@@ -68,7 +72,8 @@ they represent the same or different *intent*:
   other adds OAuth). Surface clues: zero file-path overlap, distinct title
   themes.
 
-Pick **20 of each** for a total of 40 pairs.
+Aim for a roughly even split — the committed set is **27 same / 26 different**
+for a total of 53 pairs.
 
 ### Workflow
 

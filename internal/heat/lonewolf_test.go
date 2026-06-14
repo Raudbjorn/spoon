@@ -385,11 +385,11 @@ func TestSpanMultiplier(t *testing.T) {
 
 func TestClassifyArchetype(t *testing.T) {
 	tests := []struct {
-		name           string
-		commits, mna   int
-		files          int
-		spanDays       float64
-		want           Archetype
+		name         string
+		commits, mna int
+		files        int
+		spanDays     float64
+		want         Archetype
 	}{
 		{"sniper", 1, 500, 3, 0, ArchetypeSniper},
 		{"sniper 2 commits", 2, 800, 5, 1, ArchetypeSniper},

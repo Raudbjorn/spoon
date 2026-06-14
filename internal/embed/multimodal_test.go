@@ -3,7 +3,6 @@ package embed
 import (
 	"context"
 	"math"
-	"strings"
 	"testing"
 )
 
@@ -39,7 +38,7 @@ func TestMultiModalEmbed_BlendsAllModalities(t *testing.T) {
 		ReadmeDoc: "r",
 		DiffChunk: "d",
 	}}
-	got, err := MultiModalEmbed(context.Background(), st, "nomic-embed-text", fs)
+	got, err := MultiModalEmbed(context.Background(), st, fs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +76,7 @@ func TestMultiModalEmbed_BlendsAllModalities(t *testing.T) {
 func TestMultiModalEmbed_MissingModalitiesZeroBlock(t *testing.T) {
 	st := &stubEmbedder{dim: 3}
 	fs := []ForkFeatures{{Paths: "p", DiffChunk: "d"}} // commits + readme missing
-	got, err := MultiModalEmbed(context.Background(), st, "nomic-embed-text", fs)
+	got, err := MultiModalEmbed(context.Background(), st, fs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +106,7 @@ func TestMultiModalEmbed_MissingModalitiesZeroBlock(t *testing.T) {
 func TestMultiModalEmbed_AllEmpty(t *testing.T) {
 	st := &stubEmbedder{dim: 4}
 	fs := []ForkFeatures{{}}
-	got, err := MultiModalEmbed(context.Background(), st, "nomic-embed-text", fs)
+	got, err := MultiModalEmbed(context.Background(), st, fs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +127,7 @@ func TestMultiModalEmbed_AllEmptyAndDimZero(t *testing.T) {
 	// modalities). It must not panic and must not change shape.
 	st := &stubEmbedder{dim: 0}
 	fs := []ForkFeatures{{}}
-	got, err := MultiModalEmbed(context.Background(), st, "nomic-embed-text", fs)
+	got, err := MultiModalEmbed(context.Background(), st, fs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,59 +147,8 @@ func TestMultiModalEmbed_AllEmptyAndDimZero(t *testing.T) {
 	}
 }
 
-func TestMultiModalEmbed_CodeAwareSingleCall(t *testing.T) {
-	st := &stubEmbedder{dim: 4}
-	fs := []ForkFeatures{
-		{Paths: "p1", Commits: "c1", ReadmeDoc: "r1", DiffChunk: "d1"},
-		{Paths: "p2", Commits: "c2", ReadmeDoc: "r2", DiffChunk: "d2"},
-	}
-	got, err := MultiModalEmbed(context.Background(), st, "jina-embeddings-v2-base-code", fs)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if st.calls != 1 {
-		t.Errorf("CodeAware should make exactly 1 batch call, got %d", st.calls)
-	}
-	if len(st.seen) != 1 || len(st.seen[0]) != 2 {
-		t.Errorf("expected 1 batch with 2 prompts, got %v", st.seen)
-	}
-	// Prompts should contain the structural tags.
-	for _, p := range st.seen[0] {
-		for _, tag := range []string{"<paths>", "</paths>", "<commits>", "</commits>", "<readme>", "</readme>", "<diff>", "</diff>"} {
-			if !strings.Contains(p, tag) {
-				t.Errorf("prompt missing %q: %s", tag, p)
-			}
-		}
-	}
-	if len(got) != 2 || len(got[0]) != 4 {
-		t.Errorf("unexpected output shape: %d vectors, first len %d", len(got), len(got[0]))
-	}
-	// CodeAware path returns L2-normalized vectors of dim (not 4*dim).
-	for _, v := range got {
-		var s float64
-		for _, x := range v {
-			s += float64(x) * float64(x)
-		}
-		if math.Abs(s-1.0) > 1e-5 {
-			t.Errorf("CodeAware vector not L2-normalized: %v", s)
-		}
-	}
-}
-
-func TestMultiModalEmbed_CodeAwareDetectsTaggedModel(t *testing.T) {
-	st := &stubEmbedder{dim: 4}
-	fs := []ForkFeatures{{Paths: "p"}}
-	_, err := MultiModalEmbed(context.Background(), st, "jina-embeddings-v2-base-code:latest", fs)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if st.calls != 1 {
-		t.Errorf("CodeAware (tagged) should make 1 call, got %d", st.calls)
-	}
-}
-
 func TestMultiModalEmbed_NilEmbedder(t *testing.T) {
-	_, err := MultiModalEmbed(context.Background(), nil, "nomic", []ForkFeatures{{}})
+	_, err := MultiModalEmbed(context.Background(), nil, []ForkFeatures{{}})
 	if err == nil {
 		t.Fatal("want error for nil embedder")
 	}
@@ -208,7 +156,7 @@ func TestMultiModalEmbed_NilEmbedder(t *testing.T) {
 
 func TestMultiModalEmbed_EmptyInput(t *testing.T) {
 	st := &stubEmbedder{dim: 4}
-	got, err := MultiModalEmbed(context.Background(), st, "nomic", nil)
+	got, err := MultiModalEmbed(context.Background(), st, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,4 +167,3 @@ func TestMultiModalEmbed_EmptyInput(t *testing.T) {
 		t.Errorf("want 0 calls, got %d", st.calls)
 	}
 }
-

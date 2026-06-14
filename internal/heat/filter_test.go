@@ -89,10 +89,10 @@ func TestFileWeightV2(t *testing.T) {
 
 func TestComputeMNA(t *testing.T) {
 	files := []FileChange{
-		{Filename: "main.go", Additions: 500, Deletions: 100},     // source: +400 * 1.0
-		{Filename: "README.md", Additions: 200, Deletions: 50},    // docs: +150 * 0.5
-		{Filename: "go.sum", Additions: 1000, Deletions: 0},       // junk: 0
-		{Filename: "api.pb.go", Additions: 800, Deletions: 0},     // generated: 0
+		{Filename: "main.go", Additions: 500, Deletions: 100},  // source: +400 * 1.0
+		{Filename: "README.md", Additions: 200, Deletions: 50}, // docs: +150 * 0.5
+		{Filename: "go.sum", Additions: 1000, Deletions: 0},    // junk: 0
+		{Filename: "api.pb.go", Additions: 800, Deletions: 0},  // generated: 0
 	}
 
 	mna, junkRatio := ComputeMNA(files)

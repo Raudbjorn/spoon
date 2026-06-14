@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
 )
 
@@ -26,7 +27,12 @@ func main() {
 		os.Exit(2)
 	}
 
-	records, err := dumpFeatures(context.Background(), owner, name, *topN)
+	// Interrupt (Ctrl-C) cancels the context so dumpFeatures stops paginating
+	// and returns whatever it has collected, saving time and API rate limit.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	records, err := dumpFeatures(ctx, owner, name, *topN)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "dump:", err)
 		os.Exit(1)
