@@ -304,16 +304,8 @@ func sortBranches(refs []gqlRefNode, defaultBranch string) []BranchInfo {
 // Returns forks and T1Extras (nil for REST path).
 func (c *Client) FetchForksAuto(ctx context.Context, owner, repo string, onPage func(forks []ForkInfo, page int)) ([]ForkInfo, map[int64]T1Extra, error) {
 	if c.HasGraphQL() {
-		// Track fork IDs already streamed via the GraphQL onPage callback. If the
-		// GraphQL query fails partway through (after emitting some pages) and we
-		// fall back to REST below, REST restarts from page 1 and would otherwise
-		// re-emit those same forks to onPage — duplicating them in the TUI/output.
-		streamed := make(map[int64]struct{})
 		forks, extras, err := c.FetchForksGraphQL(ctx, owner, repo, func(forks []ForkInfo, extras []T1Extra, page int) {
 			if onPage != nil {
-				for _, f := range forks {
-					streamed[f.ID] = struct{}{}
-				}
 				onPage(forks, page)
 			}
 		})
@@ -328,13 +320,20 @@ func (c *Client) FetchForksAuto(ctx context.Context, owner, repo string, onPage 
 			// degraded-run warning instead.
 			slog.Debug("forks: GraphQL failed, falling back to REST",
 				"owner", owner, "repo", repo, "err", err)
-			// Filter already-streamed forks out of the fallback's per-page
-			// callback so callers don't see duplicates, while still returning the
-			// complete REST fork list.
+			// FetchForksGraphQL returns the forks it accumulated before failing —
+			// the same set it streamed via onPage above. Build the already-streamed
+			// ID set from that partial result (only here, on the failure path, so
+			// the common success path pays nothing) and filter those IDs out of the
+			// REST fallback's per-page callback so callers don't see duplicates,
+			// while still returning the complete REST fork list.
+			streamed := make(map[int64]struct{}, len(forks))
+			for _, f := range forks {
+				streamed[f.ID] = struct{}{}
+			}
 			dedupOnPage := onPage
 			if onPage != nil && len(streamed) > 0 {
 				dedupOnPage = func(forks []ForkInfo, page int) {
-					fresh := forks[:0:0]
+					fresh := make([]ForkInfo, 0, len(forks))
 					for _, f := range forks {
 						if _, seen := streamed[f.ID]; seen {
 							continue
