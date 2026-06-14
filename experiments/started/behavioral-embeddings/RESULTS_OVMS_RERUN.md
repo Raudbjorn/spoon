@@ -69,15 +69,17 @@ This run used OVMS **2026.0.0** with a **release-candidate backend** (`2026.0.0.
 cd experiments/started/behavioral-embeddings
 # 1. OVMS must serve the three embedding models (see setup_ovms_models.sh).
 #    Patch truncate:true into each model's graph.pbtxt, then restart ovms.
-# 2. Embed candidates via OVMS + the HF-served baseline via embed_hf.py:
+# 2. Embed candidates via OVMS (creates the slim .venv-ovms from requirements.txt):
 OVMS_SKIP_PULL=1 ./run_panel_supplement_ovms.sh
+# 3. Build the HF-served nomic baseline in a torch+XPU venv (requirements-hf.txt):
+uv venv .venv-hf && uv pip install --python .venv-hf/bin/python -r requirements-hf.txt
 LD_LIBRARY_PATH="$PWD/.venv-hf/lib:$LD_LIBRARY_PATH" .venv-hf/bin/python embed_hf.py \
   --model nomic-ai/nomic-embed-text-v1 --features features.json \
   --out nomic_hf_vectors.json --cache-dir hf_cache --batch-size 4 --pooling mean
-# 3. Score both candidates against both baselines:
+# 4. Score both candidates against both baselines (analyze.py needs only .venv-ovms):
 for cand in qwen3_06b granite_311m_r2 ; do
   for base in nomic nomic_hf ; do
-    .venv/bin/python analyze.py --nomic ${base}_vectors.json \
+    .venv-ovms/bin/python analyze.py --nomic ${base}_vectors.json \
       --codeexecutor ${cand}_vectors.json --out ${cand}_vs_${base}_ovms.md
   done
 done
