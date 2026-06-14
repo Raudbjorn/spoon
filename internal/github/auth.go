@@ -29,10 +29,10 @@ func CheckAuth() (*Client, AuthStatus, error) {
 	var rl struct {
 		Resources struct {
 			Core struct {
-				Limit     int `json:"limit"`
-				Remaining int `json:"remaining"`
+				Limit     int   `json:"limit"`
+				Remaining int   `json:"remaining"`
 				Reset     int64 `json:"reset"`
-				Used      int `json:"used"`
+				Used      int   `json:"used"`
 			} `json:"core"`
 		} `json:"resources"`
 	}

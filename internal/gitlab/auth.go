@@ -16,7 +16,7 @@ import (
 
 const (
 	concurrencyAuthed   = 10
-	concurrencyUnauthed = 3  // 500 req/min unauthed is more forgiving than GitHub's 60/hr
+	concurrencyUnauthed = 3 // 500 req/min unauthed is more forgiving than GitHub's 60/hr
 
 	rateLimitAuthed   = 2000 // req/min on gitlab.com (authenticated)
 	rateLimitUnauthed = 500  // req/min on gitlab.com (unauthenticated)

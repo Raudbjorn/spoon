@@ -154,11 +154,11 @@ func TestIntegration_StripVerboseFieldsDoesntAffectCodeContext(t *testing.T) {
 			ReviewThread: github.ReviewThread{
 				ID: "T_x", Path: "a.go", Line: 5,
 				Comments: []github.ThreadComment{{
-					ID:        "PRC_1",
+					ID:         "PRC_1",
 					AuthorType: "Bot",
-					CreatedAt: "2026-05-10T09:01:23Z",
-					UpdatedAt: "2026-05-10T09:05:00Z",
-					AuthorURL: "https://github.com/apps/bot",
+					CreatedAt:  "2026-05-10T09:01:23Z",
+					UpdatedAt:  "2026-05-10T09:05:00Z",
+					AuthorURL:  "https://github.com/apps/bot",
 				}},
 			},
 			CodeContext: &CodeContext{

@@ -54,7 +54,7 @@ type PullRequestStatus struct {
 	ReviewDecision    string `json:"reviewDecision"`   // APPROVED | REVIEW_REQUIRED | CHANGES_REQUESTED | ""
 	ChecksState       string `json:"checksState"`      // SUCCESS | FAILURE | PENDING | ERROR | EXPECTED | ""
 	UnresolvedThreads int    `json:"unresolvedThreads"`
-	OutdatedThreads   int    `json:"outdatedThreads"` // count of threads whose anchor lines have shifted (across the whole PR)
+	OutdatedThreads   int    `json:"outdatedThreads"`   // count of threads whose anchor lines have shifted (across the whole PR)
 	HeadSHA           string `json:"headSHA,omitempty"` // PR head commit SHA, used by code-context lookups
 }
 

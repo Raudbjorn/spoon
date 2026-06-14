@@ -17,9 +17,9 @@ type CacheEntry struct {
 	RepoKey   string `json:"repo_key"`
 
 	// Tier 1: fork list + parent
-	Parent   *RepoInfo          `json:"parent,omitempty"`
-	Forks    []ForkInfo         `json:"forks,omitempty"`
-	T1Extras map[int64]T1Extra  `json:"t1_extras,omitempty"`
+	Parent   *RepoInfo         `json:"parent,omitempty"`
+	Forks    []ForkInfo        `json:"forks,omitempty"`
+	T1Extras map[int64]T1Extra `json:"t1_extras,omitempty"`
 
 	// Tier 2: compare results keyed by fork ID
 	Compares map[int64]CompareResult `json:"compares,omitempty"`

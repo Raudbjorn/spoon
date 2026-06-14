@@ -7,18 +7,18 @@ import (
 
 // glProject represents a GitLab project from the REST API.
 type glProject struct {
-	ID                int64        `json:"id"`
-	PathWithNamespace string       `json:"path_with_namespace"`
-	Name              string       `json:"name"`
-	Description       string       `json:"description"`
-	DefaultBranch     string       `json:"default_branch"`
-	StarCount         int          `json:"star_count"`
-	ForksCount        int          `json:"forks_count"`
-	OpenIssuesCount   int          `json:"open_issues_count"`
-	LastActivityAt    time.Time    `json:"last_activity_at"`
-	CreatedAt         time.Time    `json:"created_at"`
-	Archived          bool         `json:"archived"`
-	WebURL            string       `json:"web_url"`
+	ID                int64         `json:"id"`
+	PathWithNamespace string        `json:"path_with_namespace"`
+	Name              string        `json:"name"`
+	Description       string        `json:"description"`
+	DefaultBranch     string        `json:"default_branch"`
+	StarCount         int           `json:"star_count"`
+	ForksCount        int           `json:"forks_count"`
+	OpenIssuesCount   int           `json:"open_issues_count"`
+	LastActivityAt    time.Time     `json:"last_activity_at"`
+	CreatedAt         time.Time     `json:"created_at"`
+	Archived          bool          `json:"archived"`
+	WebURL            string        `json:"web_url"`
 	ForkedFromProject *glProjectRef `json:"forked_from_project"`
 }
 

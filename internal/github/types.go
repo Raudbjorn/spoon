@@ -93,9 +93,9 @@ type CommitAuthor struct {
 
 // ContributorStats represents a contributor from the stats endpoint.
 type ContributorStats struct {
-	Author OwnerInfo          `json:"author"`
-	Total  int                `json:"total"`
-	Weeks  []ContributorWeek  `json:"weeks"`
+	Author OwnerInfo         `json:"author"`
+	Total  int               `json:"total"`
+	Weeks  []ContributorWeek `json:"weeks"`
 }
 
 // ContributorWeek is weekly contribution data.

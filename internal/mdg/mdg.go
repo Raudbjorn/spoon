@@ -1,4 +1,3 @@
-//
 // Package mdg builds a Module Dependency Graph (MDG) for a repository and
 // scores modules by personalized PageRank. The graph nodes are modules
 // (e.g., Go packages), the edges are explicit import statements parsed from
