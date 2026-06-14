@@ -1,5 +1,3 @@
-//go:build openvino
-
 package embed
 
 import (
@@ -16,6 +14,9 @@ func TestReranker_RealModel(t *testing.T) {
 	modelDir := os.Getenv("SPOON_OPENVINO_TEST_RERANKER")
 	if modelDir == "" {
 		t.Skip("SPOON_OPENVINO_TEST_RERANKER not set; skipping real-model test")
+	}
+	if !OpenVINOAvailable() {
+		t.Skip("OpenVINO runtime not loadable; skipping real-model test")
 	}
 	r, err := NewReranker(RerankConfig{
 		ModelPath: modelDir,

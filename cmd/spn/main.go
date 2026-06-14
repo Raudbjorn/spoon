@@ -74,8 +74,9 @@ Nouns and verbs:
         Flags go AFTER 'forks list <repo>'. Clustering runs in-process:
         the default 'builtin' lexical embedder needs nothing installed;
         '--embedder-backend openvino --openvino-model DIR' runs a
-        transformer encoder on an Intel GPU (binary must be built with
-        -tags openvino). Run 'spoon setup' once to download default models
+        transformer encoder on an Intel GPU (requires the OpenVINO runtime
+        at run time; set SPOON_OPENVINO_LIB if it is not on the default
+        path). Run 'spoon setup' once to download default models
         and persist the configuration.
         topic:NAME evaluates the fork networks of the best repositories
         representing a GitHub topic (selection by stars + fork-network size +

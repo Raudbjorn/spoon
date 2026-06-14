@@ -1,5 +1,3 @@
-//go:build openvino
-
 package embed
 
 // In-process OpenVINO cross-encoder reranker. Reimplements OVMS's /v3/rerank
@@ -10,10 +8,13 @@ package embed
 // and squashed with a sigmoid. Long documents are truncated to fit the
 // model context (OVMS chunks + max-aggregates instead; spoon's fork digests
 // are bounded, so truncation loses nothing in practice).
+//
+// Shares the dlopen-loaded OpenVINO C runtime with openvino.go (ovffi.c /
+// ovload.go); no build tag, no build-time OpenVINO SDK.
 
 /*
 #include <stdlib.h>
-#include <openvino/c/openvino.h>
+#include "ovffi.h"
 */
 import "C"
 
@@ -46,6 +47,9 @@ type Reranker struct {
 // NewReranker loads and compiles the tokenizer (CPU) and cross-encoder
 // (cfg.Device) from cfg.ModelPath.
 func NewReranker(cfg RerankConfig) (*Reranker, error) {
+	if !ovEnsureLoaded() {
+		return nil, errOpenVINOUnavailable()
+	}
 	cfg, err := cfg.withDefaults()
 	if err != nil {
 		return nil, err

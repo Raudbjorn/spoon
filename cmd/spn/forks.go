@@ -302,14 +302,14 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 			opts.Cluster.Epsilon = 0.55
 		}
 	}
-	// Label polishing: only when a labeler model is configured and this
-	// binary carries GenAI support. Like the reranker, a configured but
+	// Label polishing: only when a labeler model is configured and the
+	// openvino-genai runtime loads. Like the reranker, a configured but
 	// unloadable labeler is a hard error.
 	if opts.Cluster.Enabled {
 		polisher, closePolisher, lerr := newLabelPolisher()
 		if lerr != nil {
 			return agentio.NewError(agentio.CodeBadInput, lerr.Error(),
-				"Run 'spoon setup' to download the default labeler, rebuild with -tags \"openvino genai\", or unset the labeler config.").Emit(stderr)
+				"Run 'spoon setup' to download the default labeler, install openvino-genai (or set SPOON_OPENVINO_GENAI_LIB), or unset the labeler config.").Emit(stderr)
 		}
 		if polisher != nil {
 			opts.Cluster.LabelPolisher = polisher
