@@ -1,6 +1,10 @@
 package gitea
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/svnbjrn/spoon/internal/forge"
+)
 
 func TestParseUnifiedDiff(t *testing.T) {
 	diff := `diff --git a/main.go b/main.go
@@ -79,6 +83,34 @@ func TestParseUnifiedDiff_crlf(t *testing.T) {
 func TestGitDiffPath(t *testing.T) {
 	if got := gitDiffPath("diff --git a/src/x.go b/src/x.go"); got != "src/x.go" {
 		t.Errorf("got %q", got)
+	}
+}
+
+func TestGitDiffPath_quoted(t *testing.T) {
+	// Git C-quotes paths with special chars. Both an octal-escaped non-ASCII
+	// path and a quoted space path must decode to the real b-side path.
+	cases := map[string]string{
+		`diff --git "a/wei\303\237.txt" "b/wei\303\237.txt"`: "weiß.txt",
+		`diff --git "a/a b.txt" "b/a b.txt"`:                 "a b.txt",
+		`diff --git "a/dir/q\"x.go" "b/dir/q\"x.go"`:         `dir/q"x.go`,
+	}
+	for header, want := range cases {
+		if got := gitDiffPath(header); got != want {
+			t.Errorf("gitDiffPath(%q) = %q, want %q", header, got, want)
+		}
+	}
+}
+
+func TestComputeMNA_perFileTruncation(t *testing.T) {
+	// Two docs files (weight 0.5) each with net +1 contribute 0.5 apiece.
+	// Truncating per file yields int(0.5)+int(0.5)=0 (matching the
+	// GitHub/GitLab providers), not int(0.5+0.5)=1 from a single end-truncate.
+	diffs := []forge.FileDiff{
+		{Path: "a.md", Additions: 1, Deletions: 0},
+		{Path: "b.md", Additions: 1, Deletions: 0},
+	}
+	if got := computeMNA(diffs); got != 0 {
+		t.Errorf("computeMNA = %d, want 0 (per-file truncation)", got)
 	}
 }
 

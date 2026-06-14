@@ -220,6 +220,20 @@ func gitDiffPath(header string) string {
 		return ""
 	}
 	line := header[len(prefix):]
+	// Git C-quotes a path when it contains a space-with-specials, a quote, a
+	// control char, or (with core.quotePath) non-ASCII bytes, e.g.
+	//   diff --git "a/wei\303\237.txt" "b/wei\303\237.txt"
+	// The b-side is the trailing quoted token; strconv.Unquote decodes git's
+	// C-style escapes (including octal bytes) back to the real path.
+	if idx := strings.LastIndex(line, `"b/`); idx != -1 {
+		if end := strings.LastIndexByte(line, '"'); end > idx {
+			token := line[idx : end+1]
+			if unq, uerr := strconv.Unquote(token); uerr == nil {
+				return strings.TrimPrefix(unq, "b/")
+			}
+			return strings.TrimPrefix(strings.Trim(token, `"`), "b/")
+		}
+	}
 	if idx := strings.LastIndex(line, " b/"); idx != -1 {
 		return strings.Trim(line[idx+3:], `"`)
 	}
@@ -229,15 +243,17 @@ func gitDiffPath(header string) string {
 // computeMNA weights net additions per file by heat.FileWeight (junk/generated
 // stripped), matching the GitHub/GitLab providers.
 func computeMNA(diffs []forge.FileDiff) int {
-	var total float64
+	total := 0
 	for _, d := range diffs {
 		net := d.Additions - d.Deletions
 		if net < 0 {
 			net = 0
 		}
-		total += float64(net) * heat.FileWeight(d.Path)
+		// Truncate per file (matching the GitHub/GitLab providers) so the same
+		// diff yields the same MNA regardless of provider.
+		total += int(float64(net) * heat.FileWeight(d.Path))
 	}
-	return int(total)
+	return total
 }
 
 func featureCommitRatio(commits []forge.AheadCommit) float64 {

@@ -22,9 +22,20 @@ type ParsedRepo struct {
 
 // Parse runs URL detection and returns a ParsedRepo.
 func Parse(cfg Config) (ParsedRepo, error) {
+	// Resolve the default host used for scheme-less shorthand ("owner/repo").
+	// When the provider is forced but no host is given, pick that provider's
+	// canonical public host — otherwise `--forge gitea owner/repo` would
+	// default to github.com and point the Gitea client at GitHub's API.
 	defaultHost := cfg.ForgeHost
 	if defaultHost == "" {
-		defaultHost = "github.com"
+		switch cfg.ForceProvider {
+		case ProviderGitea:
+			defaultHost = "codeberg.org"
+		case ProviderGitLab:
+			defaultHost = "gitlab.com"
+		default:
+			defaultHost = "github.com"
+		}
 	}
 	provider, host, owner, repo, err := ParseRepoURL(cfg.RepoURL, defaultHost, cfg.ForceProvider)
 	if err != nil {
