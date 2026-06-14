@@ -340,6 +340,51 @@ func TestApplySuggestion_PathTraversal_SymlinkInRepo(t *testing.T) {
 	}
 }
 
+func TestApplySuggestion_PathTraversal_SymlinkedDir(t *testing.T) {
+	// An *intermediate* symlinked directory (e.g. `sub` -> /etc) passes the
+	// textual `..` check and the final-element Lstat, yet still escapes the
+	// repo. ApplySuggestion must resolve symlinks on the parent dir and refuse
+	// to write when it lands outside the repo root.
+	outside := t.TempDir()
+	target := filepath.Join(outside, "passwd")
+	if err := os.WriteFile(target, []byte("DO NOT TOUCH\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	// `sub` inside the repo points at the outside directory.
+	if err := os.Symlink(outside, filepath.Join(dir, "sub")); err != nil {
+		t.Skipf("symlink creation not supported: %v", err)
+	}
+	thr := threadAt("sub/passwd", 1, nil)
+	sug := Suggestion{CommentID: "C", Body: "PWNED"}
+	_, opErr := ApplySuggestion(context.Background(), thr, sug, ApplyOptions{RepoRoot: dir})
+	if opErr == nil || opErr.Code != OpCodeBadInput {
+		t.Fatalf("expected bad_input for symlinked-dir escape, got %+v", opErr)
+	}
+	if !strings.Contains(opErr.Message, "symlinked directory") {
+		t.Errorf("error message should mention symlinked directory: %q", opErr.Message)
+	}
+	// And the outside file must be untouched.
+	if got := readFile(t, target); got != "DO NOT TOUCH\n" {
+		t.Fatalf("symlink target was clobbered: %q", got)
+	}
+}
+
+func TestApplySuggestion_BadRepoRoot(t *testing.T) {
+	// A non-existent --repo-root is a user-input error, surfaced as bad_input
+	// (not internal) for consistent error-code semantics.
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	thr := threadAt("a.go", 1, nil)
+	sug := Suggestion{CommentID: "C", Body: "X"}
+	_, opErr := ApplySuggestion(context.Background(), thr, sug, ApplyOptions{RepoRoot: missing})
+	if opErr == nil || opErr.Code != OpCodeBadInput {
+		t.Fatalf("expected bad_input for missing repo root, got %+v", opErr)
+	}
+	if !strings.Contains(opErr.Message, "repo root does not exist") {
+		t.Errorf("error message should mention missing repo root: %q", opErr.Message)
+	}
+}
+
 func TestApplySuggestion_NormalSubdir(t *testing.T) {
 	// Sanity check: a legitimate nested subpath still works after the
 	// traversal guards.
