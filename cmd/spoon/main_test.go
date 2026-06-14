@@ -25,10 +25,17 @@ func TestSpoonRejectsRemovedJSONFlag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("os.Pipe: %v", err)
 	}
+	// Always restore Stdout and close both pipe ends, even if printHelp panics
+	// or a later assertion fails, so the redirect and pipe fds never leak into
+	// subsequent tests.
+	t.Cleanup(func() {
+		os.Stdout = old
+		_ = r.Close()
+		_ = w.Close()
+	})
 	os.Stdout = w
 	printHelp()
-	_ = w.Close()
-	os.Stdout = old
+	_ = w.Close() // flush EOF to the reader before copying
 
 	var buf bytes.Buffer
 	if _, err := io.Copy(&buf, r); err != nil {
