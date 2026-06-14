@@ -75,6 +75,18 @@ def test_embed_batch_out_of_range_index_raises(monkeypatch):
         embed_batch("http://x", "m", ["a", "b"], timeout=1.0)
 
 
+def test_embed_batch_bool_index_raises(monkeypatch):
+    # bool is a subclass of int; a JSON `true`/`false` index must be rejected
+    # rather than coerced to slot 1/0 via bool's int-ness.
+    payload = {"data": [
+        {"index": True, "embedding": [1.0, 2.0]},
+        {"index": 1, "embedding": [3.0, 4.0]},
+    ]}
+    _patch_post(monkeypatch, payload)
+    with pytest.raises(RuntimeError, match="out-of-bounds or missing index"):
+        embed_batch("http://x", "m", ["a", "b"], timeout=1.0)
+
+
 def test_embed_batch_duplicate_index_raises(monkeypatch):
     payload = {"data": [
         {"index": 0, "embedding": [1.0, 2.0]},

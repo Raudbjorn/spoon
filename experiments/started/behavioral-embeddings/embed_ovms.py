@@ -61,9 +61,10 @@ def embed_batch(endpoint: str, model: str, texts: list[str], timeout: float) -> 
         # missing/out-of-range value (or a duplicate clobbering an earlier
         # slot) means we can't trust the ordering, so fail loudly instead
         # of silently writing to slot 0 or raising a bare IndexError.
-        # bool is a subclass of int, so reject it explicitly.
+        # `type(idx) is int` (rather than isinstance) also rejects bool, which
+        # is a subclass of int.
         idx = item.get("index")
-        if not isinstance(idx, int) or isinstance(idx, bool) or not (0 <= idx < len(texts)):
+        if type(idx) is not int or not (0 <= idx < len(texts)):
             raise RuntimeError(f"ovms returned out-of-bounds or missing index {idx!r}")
         if out[idx] is not None:
             raise RuntimeError(f"ovms returned duplicate index {idx}")
