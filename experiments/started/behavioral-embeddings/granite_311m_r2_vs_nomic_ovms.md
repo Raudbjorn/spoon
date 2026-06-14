@@ -17,5 +17,12 @@
 
 ```sh
 cd experiments/started/behavioral-embeddings
-./run.sh
+# Embed the OVMS candidates (writes granite_311m_r2_vectors.json);
+# nomic_vectors.json is the Ollama/panel baseline:
+OVMS_SKIP_PULL=1 ./run_panel_supplement_ovms.sh
+# Score this pairing:
+.venv-ovms/bin/python analyze.py \
+  --nomic nomic_vectors.json \
+  --codeexecutor granite_311m_r2_vectors.json \
+  --out granite_311m_r2_vs_nomic_ovms.md
 ```

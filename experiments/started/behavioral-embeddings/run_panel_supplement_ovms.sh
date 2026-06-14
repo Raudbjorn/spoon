@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
-# OVMS-served re-run of the bias-corrected supplement. Drops the in-process
-# torch+XPU path of run_panel_supplement.sh and routes embeddings through
-# OpenVINO Model Server's /v3/embeddings on the Arc A770. Goal: answer
-# "does the bias-corrected verdict (Qwen3 thin pass, granite FAIL) survive
-# the change of serving backend?" — i.e. is the supplement's conclusion
-# robust against torch+XPU vs OVMS int8/GPU drift on the same fixture?
+# Fair n=53 dual-baseline re-run of the post-panel supplement. Where
+# run_panel_supplement.sh scores the OVMS candidates against the single
+# Ollama/panel nomic baseline (nomic_vectors.json, ~n=35 after skips), this
+# variant adds the HF-served nomic baseline (nomic_hf_vectors.json, built
+# with embed_hf.py, full n=53) and scores both candidates against *both*
+# baselines — the bias-corrected methodology from ab0c8ed. Goal: confirm
+# the supplement's verdict (Qwen3 thin pass, granite FAIL) holds on the
+# fair n=53 fixture, not just the smaller Ollama-baseline intersection.
+#
+# Like run_panel_supplement.sh, the candidate embeddings route through
+# OpenVINO Model Server's /v3/embeddings on the Arc A770; the only added
+# moving part here is the HF-served baseline used for the n=53 scoring row.
 #
 # Methodology is the bias-corrected one from ab0c8ed:
 #   * full n=53 against the *HF-served* nomic baseline
@@ -23,16 +29,19 @@ set -uo pipefail
 cd "$(dirname "$0")"
 
 OVMS_ENDPOINT="${OVMS_ENDPOINT:-http://localhost:8978}"
+# Strip any trailing slash so path joins below don't produce "//", which some
+# strict reverse proxies in front of OVMS reject.
+OVMS_ENDPOINT="${OVMS_ENDPOINT%/}"
 
-# --- 1. Slim runtime venv (no torch). Re-uses requirements.txt's full
-# torch+XPU stack only when the operator opts in via .venv being already
-# present from an embed_hf.py run; the OVMS path itself only needs
-# numpy/scipy/requests/pytest.
+# --- 1. Slim runtime venv (no torch). requirements.txt is already the slim
+# OVMS-client manifest (numpy/scipy/requests/pytest); install straight from it
+# so this script and the manifest can't drift. The torch+XPU stack for the
+# embed_hf.py baseline lives in requirements-hf.txt and is built separately
+# into .venv-hf (see the nomic_hf_vectors.json note below).
 if [ ! -d .venv-ovms ]; then
   echo "== creating .venv-ovms (slim, no torch) =="
   uv venv .venv-ovms
-  uv pip install --python .venv-ovms/bin/python \
-    numpy==2.4.4 scipy==1.16.3 'requests>=2.33.0' 'pytest>=9.0.3'
+  uv pip install --python .venv-ovms/bin/python -r requirements.txt
 fi
 
 # --- 2. OVMS health probe + lazy bootstrap.
@@ -65,8 +74,12 @@ if [ "${OVMS_SKIP_PULL:-0}" != "1" ]; then
     deadline=$(( $(date +%s) + 600 ))
     ready=0
     while [ "$(date +%s)" -lt "$deadline" ]; do
+      # Wait on all three models the bootstrap gate above requires, including
+      # nomic-v1.5 — it's loaded for the downstream within-OVMS sanity check,
+      # so returning before it finishes compiling would race that consumer.
       if ovms_has_model "Qwen/Qwen3-Embedding-0.6B" \
-         && ovms_has_model "ibm-granite/granite-embedding-311m-multilingual-r2"; then
+         && ovms_has_model "ibm-granite/granite-embedding-311m-multilingual-r2" \
+         && ovms_has_model "nomic-ai/nomic-embed-text-v1.5"; then
         ready=1
         break
       fi
@@ -101,7 +114,7 @@ for entry in "${models[@]}"; do
       --out "$out" \
       --endpoint "$OVMS_ENDPOINT" \
       --batch-size 4 2>"$log" ; then
-    echo "  -> $(jq 'length' "$out") vectors in $out"
+    echo "  -> $(.venv-ovms/bin/python -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$out") vectors in $out"
   else
     echo "  -> FAILED (see $log); continuing"
   fi
@@ -115,13 +128,14 @@ if [ ! -f nomic_hf_vectors.json ]; then
   cat <<EOF >&2
 warning: nomic_hf_vectors.json missing. Build it for the fair n=53 score with:
 
-  LD_LIBRARY_PATH="\$PWD/.venv/lib:\$LD_LIBRARY_PATH" .venv/bin/python embed_hf.py \\
+  uv venv .venv-hf && uv pip install --python .venv-hf/bin/python -r requirements-hf.txt
+  LD_LIBRARY_PATH="\$PWD/.venv-hf/lib:\$LD_LIBRARY_PATH" .venv-hf/bin/python embed_hf.py \\
     --model nomic-ai/nomic-embed-text-v1 \\
     --features features.json --out nomic_hf_vectors.json \\
     --cache-dir hf_cache --batch-size 4 --pooling mean
 
-(requires the torch+XPU venv from requirements.txt — keep that .venv alongside
-.venv-ovms for the baseline generation step.)
+(embed_hf.py needs the torch+XPU stack from requirements-hf.txt, built into a
+separate .venv-hf kept alongside the slim .venv-ovms used for the OVMS path.)
 EOF
 fi
 
