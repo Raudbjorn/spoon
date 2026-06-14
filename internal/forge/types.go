@@ -138,6 +138,8 @@ type T2Data struct {
 	FeatureCommitRatio float64 // fraction of non-merge, non-sync commits
 	IsBranchWork       bool    // true when significant work is on a non-default branch
 	ActiveBranch       string  // non-empty when IsBranchWork == true
+	Upstreamed         bool    // true when the active branch tip heads a merged upstream PR (work already integrated)
+	UpstreamedPR       int     // the merged upstream PR number when Upstreamed == true
 	Diffs              []FileDiff
 	Commits            []AheadCommit // used by the T3 lone-wolf gate
 }
