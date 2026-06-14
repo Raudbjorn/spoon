@@ -15,17 +15,17 @@ import (
 
 // Model is the bubbletea model for the threads view.
 type Model struct {
-	client  *gh.Client
-	owner   string
-	repo    string
-	number  int
+	client   *gh.Client
+	owner    string
+	repo     string
+	number   int
 	prStatus gh.PullRequestStatus
 	threads  []gh.ReviewThread
 	loaded   bool
-	cursor  int
-	err     error
-	width   int
-	height  int
+	cursor   int
+	err      error
+	width    int
+	height   int
 
 	composing  bool
 	composeBuf []rune
