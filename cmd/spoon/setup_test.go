@@ -5,15 +5,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/svnbjrn/spoon/internal/config"
-	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/forge"
-	"github.com/svnbjrn/spoon/internal/sidecar"
+	"github.com/svnbjrn/spoon/internal/models"
 )
 
 func TestProviderStatusLines(t *testing.T) {
@@ -44,58 +43,9 @@ func TestProviderStatusLines(t *testing.T) {
 	}
 }
 
-func TestInstalledHas(t *testing.T) {
-	installed := []string{"nomic-embed-text:latest", "mxbai-embed-large:latest"}
-	cases := map[string]bool{
-		"nomic-embed-text":        true,  // base match against :latest
-		"nomic-embed-text:latest": true,  // exact
-		"mxbai-embed-large":       true,  // base match
-		"llama3.2:3b":             false, // absent
-		"snowflake-arctic-embed2": false, // absent
-	}
-	for model, want := range cases {
-		if got := installedHas(installed, model); got != want {
-			t.Errorf("installedHas(%q)=%v want %v", model, got, want)
-		}
-	}
-}
-
-func TestSidecarStatusLines(t *testing.T) {
-	t.Run("error suggests install", func(t *testing.T) {
-		ok, lines := sidecarStatusLines("http://localhost:8766", 0, errors.New("conn refused"))
-		if ok {
-			t.Error("want not ok")
-		}
-		if !strings.Contains(strings.Join(lines, "\n"), "spoon sidecar install") {
-			t.Errorf("missing install guidance:\n%s", strings.Join(lines, "\n"))
-		}
-	})
-	t.Run("healthy reports dim", func(t *testing.T) {
-		ok, lines := sidecarStatusLines("http://localhost:8766", 1024, nil)
-		if !ok {
-			t.Error("want ok")
-		}
-		if !strings.Contains(strings.Join(lines, "\n"), "dim 1024") {
-			t.Errorf("missing dim:\n%s", strings.Join(lines, "\n"))
-		}
-	})
-}
-
-func TestEmbedModelSizeHint(t *testing.T) {
-	if got := embedModelSizeHint("snowflake-arctic-embed2"); !strings.Contains(got, "MB") {
-		t.Errorf("size hint=%q want a MB figure", got)
-	}
-	if got := embedModelSizeHint("does-not-exist"); got != "" {
-		t.Errorf("unknown model hint=%q want empty", got)
-	}
-}
-
-// --- run wiring -------------------------------------------------------------
-
+// stubProvider isolates the config file and replaces the provider probe.
 func stubProvider(t *testing.T, auth forge.AuthInfo, err error) {
 	t.Helper()
-	// Isolate the config file so setup's read/write doesn't touch the real
-	// ~/.config/spoon/config.json during tests.
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	prev := setupProviderFn
 	t.Cleanup(func() { setupProviderFn = prev })
@@ -104,145 +54,29 @@ func stubProvider(t *testing.T, auth forge.AuthInfo, err error) {
 	}
 }
 
-func stubOllama(t *testing.T, running bool, installed []string) {
-	t.Helper()
-	prev := setupOllamaDetectFn
-	t.Cleanup(func() { setupOllamaDetectFn = prev })
-	setupOllamaDetectFn = func(_ context.Context, _ string) (bool, string, []string) {
-		return running, "http://localhost:11434", installed
-	}
-}
-
-func stubSidecar(t *testing.T, dim int, err error) {
-	t.Helper()
-	prev := setupSidecarFn
-	t.Cleanup(func() { setupSidecarFn = prev })
-	setupSidecarFn = func(_ context.Context, _ string) (int, error) { return dim, err }
-}
-
 func TestRunSetup_allGreenExitsZero(t *testing.T) {
 	stubProvider(t, forge.AuthInfo{Tier: forge.AuthCLI, RateLimit: 5000, RateUnit: "hour"}, nil)
-	// Both a suitable embedding model and the labeler model present.
-	stubOllama(t, true, []string{"nomic-embed-text:latest", setupLabelerModel})
 
 	var stdout, stderr bytes.Buffer
 	exit := runSetupWith(context.Background(), []string{"--no-color"}, strings.NewReader(""), false, &stdout, &stderr)
 	if exit != 0 {
-		t.Fatalf("exit=%d want 0\nstdout=%s", exit, stdout.String())
+		t.Fatalf("exit=%d\n%s\n%s", exit, stdout.String(), stderr.String())
 	}
 	if !strings.Contains(stdout.String(), "All set") {
 		t.Errorf("missing success summary:\n%s", stdout.String())
 	}
 }
 
-func TestRunSetup_ollamaDownTriesSidecar(t *testing.T) {
-	stubProvider(t, forge.AuthInfo{Tier: forge.AuthCLI, RateLimit: 5000, RateUnit: "hour"}, nil)
-	stubOllama(t, false, nil)
-	stubSidecar(t, 1024, nil) // sidecar healthy
+func TestRunSetup_unauthedExitsOne(t *testing.T) {
+	stubProvider(t, forge.AuthInfo{Tier: forge.AuthNone, RateLimit: 60, RateUnit: "hour"}, nil)
 
 	var stdout, stderr bytes.Buffer
 	exit := runSetupWith(context.Background(), []string{"--no-color"}, strings.NewReader(""), false, &stdout, &stderr)
-	if exit != 0 {
-		t.Fatalf("exit=%d want 0\nstdout=%s", exit, stdout.String())
-	}
-	out := stdout.String()
-	if !strings.Contains(out, "using the Python sidecar") || !strings.Contains(out, "dim 1024") {
-		t.Errorf("expected sidecar fallback:\n%s", out)
-	}
-}
-
-func TestRunSetup_nonInteractiveNoModelReportsPull(t *testing.T) {
-	stubProvider(t, forge.AuthInfo{Tier: forge.AuthCLI, RateLimit: 5000, RateUnit: "hour"}, nil)
-	stubOllama(t, true, nil) // running, no models installed
-
-	var stdout, stderr bytes.Buffer
-	// Non-interactive, no --auto-pull: must NOT pull, just report the command.
-	exit := runSetupWith(context.Background(), []string{"--no-color"}, strings.NewReader(""), false, &stdout, &stderr)
 	if exit != 1 {
-		t.Fatalf("exit=%d want 1", exit)
+		t.Fatalf("exit=%d want 1\n%s", exit, stdout.String())
 	}
-	out := stdout.String()
-	if !strings.Contains(out, "ollama pull "+setupEmbedPullModel) {
-		t.Errorf("expected embed pull hint:\n%s", out)
-	}
-	if !strings.Contains(out, "ollama pull "+setupLabelerModel) {
-		t.Errorf("expected labeler pull hint:\n%s", out)
-	}
-}
-
-func TestRunSetup_autoPullInvokesPull(t *testing.T) {
-	stubProvider(t, forge.AuthInfo{Tier: forge.AuthCLI, RateLimit: 5000, RateUnit: "hour"}, nil)
-	stubOllama(t, true, nil) // running, nothing installed
-
-	prevPull := setupPullFn
-	t.Cleanup(func() { setupPullFn = prevPull })
-	pulled := []string{}
-	setupPullFn = func(_ context.Context, _ string, model string, progress func(string, float64)) error {
-		pulled = append(pulled, model)
-		if progress != nil {
-			progress("done", 1.0)
-		}
-		return nil
-	}
-
-	var stdout, stderr bytes.Buffer
-	exit := runSetupWith(context.Background(), []string{"--no-color", "--auto-pull"}, strings.NewReader(""), false, &stdout, &stderr)
-	if exit != 0 {
-		t.Fatalf("exit=%d want 0\nstdout=%s", exit, stdout.String())
-	}
-	// Both the embedding model and the labeler model should have been pulled.
-	joined := strings.Join(pulled, ",")
-	if !strings.Contains(joined, setupEmbedPullModel) || !strings.Contains(joined, setupLabelerModel) {
-		t.Errorf("pulled=%v want both embed+labeler", pulled)
-	}
-}
-
-func TestRunSetup_interactiveDeclineDoesNotPull(t *testing.T) {
-	stubProvider(t, forge.AuthInfo{Tier: forge.AuthCLI, RateLimit: 5000, RateUnit: "hour"}, nil)
-	stubOllama(t, true, nil)
-
-	prevPull := setupPullFn
-	t.Cleanup(func() { setupPullFn = prevPull })
-	called := false
-	setupPullFn = func(_ context.Context, _, _ string, _ func(string, float64)) error {
-		called = true
-		return nil
-	}
-
-	var stdout, stderr bytes.Buffer
-	// Interactive, answer "n" to both prompts.
-	exit := runSetupWith(context.Background(), []string{"--no-color"}, strings.NewReader("n\nn\n"), true, &stdout, &stderr)
-	if called {
-		t.Error("pull must not be called when user declines")
-	}
-	if exit != 1 {
-		t.Fatalf("exit=%d want 1", exit)
-	}
-}
-
-func TestRunSetup_sidecarBackendDownOffersInstall(t *testing.T) {
-	stubProvider(t, forge.AuthInfo{Tier: forge.AuthCLI, RateLimit: 5000, RateUnit: "hour"}, nil)
-	stubSidecar(t, 0, errors.New("refused"))
-
-	prevInstall := setupSidecarInstallFn
-	t.Cleanup(func() { setupSidecarInstallFn = prevInstall })
-	installed := false
-	setupSidecarInstallFn = func(_ context.Context, _ sidecar.Options, _ io.Writer) error {
-		installed = true
-		return nil
-	}
-
-	var stdout, stderr bytes.Buffer
-	// Non-interactive: should NOT install, just print guidance.
-	exit := runSetupWith(context.Background(), []string{"--no-color", "--embedder-backend", "sidecar"}, strings.NewReader(""), false, &stdout, &stderr)
-	if installed {
-		t.Error("must not auto-install when non-interactive without --auto-pull")
-	}
-	if exit != 1 {
-		t.Fatalf("exit=%d want 1", exit)
-	}
-	if !strings.Contains(stdout.String(), "spoon sidecar install") {
-		t.Errorf("expected install guidance:\n%s", stdout.String())
+	if !strings.Contains(stdout.String(), "gh auth login") {
+		t.Errorf("missing fix guidance:\n%s", stdout.String())
 	}
 }
 
@@ -256,7 +90,6 @@ func TestRunSetup_badFlag(t *testing.T) {
 
 func TestRunSetup_writesConfig(t *testing.T) {
 	stubProvider(t, forge.AuthInfo{Tier: forge.AuthCLI, RateLimit: 5000, RateUnit: "hour"}, nil)
-	stubOllama(t, true, []string{"nomic-embed-text:latest", setupLabelerModel})
 
 	var stdout, stderr bytes.Buffer
 	exit := runSetupWith(context.Background(), []string{"--no-color"}, strings.NewReader(""), false, &stdout, &stderr)
@@ -271,9 +104,6 @@ func TestRunSetup_writesConfig(t *testing.T) {
 	if c.Forge.Provider != "github" {
 		t.Errorf("forge.provider=%q", c.Forge.Provider)
 	}
-	if c.Embedder.Backend != "ollama" || c.Embedder.Model != "nomic-embed-text" {
-		t.Errorf("embedder=%+v", c.Embedder)
-	}
 	if !strings.Contains(stdout.String(), "Wrote config at") {
 		t.Errorf("missing write notice:\n%s", stdout.String())
 	}
@@ -281,7 +111,6 @@ func TestRunSetup_writesConfig(t *testing.T) {
 
 func TestRunSetup_noConfigSkipsWrite(t *testing.T) {
 	stubProvider(t, forge.AuthInfo{Tier: forge.AuthCLI, RateLimit: 5000, RateUnit: "hour"}, nil)
-	stubOllama(t, true, []string{"nomic-embed-text:latest"})
 
 	var stdout, stderr bytes.Buffer
 	runSetupWith(context.Background(), []string{"--no-color", "--no-config"}, strings.NewReader(""), false, &stdout, &stderr)
@@ -294,35 +123,119 @@ func TestRunSetup_noConfigSkipsWrite(t *testing.T) {
 func TestRunSetup_loadsConfigAsDefaults(t *testing.T) {
 	stubProvider(t, forge.AuthInfo{Tier: forge.AuthCLI, RateLimit: 5000, RateUnit: "hour"}, nil)
 
-	// Pre-write a config selecting the openai backend; setup with no backend
-	// flag should pick it up, validate, and keep it.
+	// Pre-write a config selecting gitlab; setup with no --forge flag should
+	// pick it up and report the gitlab provider.
 	path, _ := config.DefaultPath()
 	if err := config.Save(path, &config.Config{
-		Embedder: config.EmbedderConfig{Backend: "openai", Endpoint: "http://ovms:8978", Model: "m"},
+		Forge: config.ForgeConfig{Provider: "gitlab"},
 	}); err != nil {
 		t.Fatal(err)
 	}
-
-	prev := setupOpenAIServedFn
-	t.Cleanup(func() { setupOpenAIServedFn = prev })
-	var gotEndpoint string
-	setupOpenAIServedFn = func(_ context.Context, endpoint, _ string) ([]string, error) {
-		gotEndpoint = endpoint
-		return []string{"m"}, nil
-	}
-	prevProbe := setupEmbedProbeFn
-	t.Cleanup(func() { setupEmbedProbeFn = prevProbe })
-	setupEmbedProbeFn = func(_ context.Context, _ embed.PreflightOptions) error { return nil } // embeds OK
 
 	var stdout, stderr bytes.Buffer
 	exit := runSetupWith(context.Background(), []string{"--no-color"}, strings.NewReader(""), false, &stdout, &stderr)
 	if exit != 0 {
 		t.Fatalf("exit=%d\n%s", exit, stdout.String())
 	}
-	if gotEndpoint != "http://ovms:8978" {
-		t.Errorf("config endpoint not used as default: %q", gotEndpoint)
-	}
 	if !strings.Contains(stdout.String(), "Loaded config from") {
 		t.Errorf("missing load notice:\n%s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "Provider (gitlab)") {
+		t.Errorf("config provider not used as default:\n%s", stdout.String())
+	}
+}
+
+func stubEnsure(t *testing.T, called *bool) {
+	t.Helper()
+	prev := setupEnsureFn
+	t.Cleanup(func() { setupEnsureFn = prev })
+	setupEnsureFn = func(_ context.Context, f models.Feature, _ models.Progress) (string, error) {
+		*called = true
+		dir, err := models.LocalDir(models.DefaultRepo(f))
+		if err != nil {
+			return "", err
+		}
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(filepath.Join(dir, "openvino_model.xml"), []byte("<net/>"), 0o644); err != nil {
+			return "", err
+		}
+		return dir, nil
+	}
+}
+
+func TestEnsureFeatureModel_AutoPullDownloadsAndAdopts(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	called := false
+	stubEnsure(t, &called)
+
+	var out bytes.Buffer
+	modelPath := ""
+	ok := ensureFeatureModel(context.Background(), setupFlags{autoPull: true, noColor: true},
+		models.FeatureEmbedder, "Embedder", &modelPath, false, strings.NewReader(""), &out)
+	if !ok || !called {
+		t.Fatalf("ok=%v called=%v\n%s", ok, called, out.String())
+	}
+	if modelPath == "" || !models.IsDownloaded(modelPath) {
+		t.Fatalf("model path not adopted: %q", modelPath)
+	}
+}
+
+func TestEnsureFeatureModel_NoPromptReportsOnly(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	called := false
+	stubEnsure(t, &called)
+
+	var out bytes.Buffer
+	modelPath := ""
+	ok := ensureFeatureModel(context.Background(), setupFlags{noPrompt: true, noColor: true},
+		models.FeatureReranker, "Reranker", &modelPath, true, strings.NewReader(""), &out)
+	if ok || called || modelPath != "" {
+		t.Fatalf("no-prompt must not download: ok=%v called=%v path=%q", ok, called, modelPath)
+	}
+	if !strings.Contains(out.String(), "--auto-pull") {
+		t.Errorf("expected --auto-pull hint:\n%s", out.String())
+	}
+}
+
+func TestEnsureFeatureModel_InteractiveDecline(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	called := false
+	stubEnsure(t, &called)
+
+	var out bytes.Buffer
+	modelPath := ""
+	ok := ensureFeatureModel(context.Background(), setupFlags{noColor: true},
+		models.FeatureEmbedder, "Embedder", &modelPath, true, strings.NewReader("n\n"), &out)
+	if ok || called {
+		t.Fatalf("declined prompt must not download: ok=%v called=%v", ok, called)
+	}
+}
+
+func TestEnsureFeatureModel_ExistingDefaultAdopted(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	dir, err := models.LocalDir(models.DefaultRepo(models.FeatureEmbedder))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "openvino_model.xml"), []byte("<net/>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	stubEnsure(t, &called)
+
+	var out bytes.Buffer
+	modelPath := ""
+	ok := ensureFeatureModel(context.Background(), setupFlags{noPrompt: true, noColor: true},
+		models.FeatureEmbedder, "Embedder", &modelPath, false, strings.NewReader(""), &out)
+	if !ok || called {
+		t.Fatalf("present default must be adopted without download: ok=%v called=%v", ok, called)
+	}
+	if modelPath != dir {
+		t.Fatalf("modelPath = %q, want %q", modelPath, dir)
 	}
 }

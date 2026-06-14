@@ -9,7 +9,14 @@ from scipy.stats import kendalltau
 
 
 def cosine(u: list[float], v: list[float]) -> float:
-    """Cosine similarity. Returns 0.0 if either input is zero-norm."""
+    """Cosine similarity. Returns 0.0 if either input is zero-norm.
+
+    Raises ValueError on a dimension mismatch rather than silently truncating
+    via zip(): a partially-corrupted vector file or a model that changed its
+    output dimensionality would otherwise yield a quietly-wrong similarity.
+    """
+    if len(u) != len(v):
+        raise ValueError(f"vector length mismatch: {len(u)} != {len(v)}")
     nu = math.sqrt(sum(x * x for x in u))
     nv = math.sqrt(sum(x * x for x in v))
     if nu == 0.0 or nv == 0.0:

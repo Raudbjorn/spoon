@@ -31,6 +31,10 @@ func ParseSuggestions(commentID, body string) []Suggestion {
 	if body == "" {
 		return out
 	}
+	// Normalize line endings so CRLF (Windows) and lone-CR comment bodies parse
+	// identically to LF: a trailing '\r' would otherwise defeat the fence match.
+	body = strings.ReplaceAll(body, "\r\n", "\n")
+	body = strings.ReplaceAll(body, "\r", "\n")
 	// Walk lines. A suggestion block opens with a fence line whose trimmed-left
 	// text begins with three or more backticks (or tildes) followed by the tag
 	// "suggestion" (case-insensitive). It closes with the *same* fence char at
@@ -332,6 +336,46 @@ func ApplySuggestion(ctx context.Context, thread ReviewThreadWithPolicy, sug Sug
 		return res, &OpError{
 			Code:    OpCodeBadInput,
 			Message: fmt.Sprintf("path %q is a symlink; refusing to write through it", thread.Path),
+			Details: map[string]any{"path": thread.Path},
+		}
+	}
+	// The Lstat above only catches a symlinked *final* element. An intermediate
+	// symlinked *directory* (e.g. `sub` -> /etc with thread.Path `sub/passwd`)
+	// passes the textual `..` check and the final-element Lstat, yet still
+	// escapes the repo. Resolve symlinks on both the repo root and the target's
+	// parent directory and require the resolved parent to remain under the
+	// resolved root. EvalSymlinks requires existing paths; for apply-suggestion
+	// the edited file (and thus its parent) always exists.
+	resolvedRoot, rerr := filepath.EvalSymlinks(absRoot)
+	if rerr != nil {
+		// A non-existent repo root is a user-input error (e.g. a bad
+		// --repo-root), not an internal fault — surface it as bad_input so
+		// callers get consistent error-code semantics.
+		if os.IsNotExist(rerr) {
+			return res, &OpError{
+				Code:    OpCodeBadInput,
+				Message: "repo root does not exist: " + absRoot,
+				Details: map[string]any{"repoRoot": absRoot},
+			}
+		}
+		return res, &OpError{Code: OpCodeInternal, Message: "resolve root symlinks: " + rerr.Error()}
+	}
+	resolvedParent, perr := filepath.EvalSymlinks(filepath.Dir(full))
+	if perr != nil {
+		if os.IsNotExist(perr) {
+			return res, &OpError{
+				Code:    OpCodeNotFound,
+				Message: "file not found: " + thread.Path,
+				Details: map[string]any{"path": full},
+			}
+		}
+		return res, &OpError{Code: OpCodeInternal, Message: "resolve path symlinks: " + perr.Error()}
+	}
+	if relP, rpErr := filepath.Rel(resolvedRoot, resolvedParent); rpErr != nil ||
+		relP == ".." || strings.HasPrefix(relP, ".."+string(filepath.Separator)) || filepath.IsAbs(relP) {
+		return res, &OpError{
+			Code:    OpCodeBadInput,
+			Message: fmt.Sprintf("path %q resolves outside repo root via a symlinked directory; refusing", thread.Path),
 			Details: map[string]any{"path": thread.Path},
 		}
 	}

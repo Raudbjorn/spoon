@@ -32,6 +32,13 @@ sfr_code_2b_lasttoken_vectors.json
 sfr_code_2b_lasttoken_run.log
 nomic_hf_vectors.json
 # OVMS workflow scratch dirs / logs
+.venv-ovms/
+.venv-hf/
+nomic_hf_run.log
+nomic_ovms_v15_vectors.json
+nomic_ovms_v15_run.log
 tokenizer_staging/
 model_staging/
 run_panel_supplement.out
+RESULTS_RUN.md
+dump_features

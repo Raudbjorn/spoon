@@ -143,6 +143,11 @@ func (p *Provider) buildT1(r gtRepo, upstream string) forge.T1Data {
 func (p *Provider) Branches(ctx context.Context, fork forge.T1Data, n int) ([]forge.BranchRef, error) {
 	owner, repo := splitFull(fork.ID)
 	var branches []gtBranch
+	// Over-fetch a sample (at least defaultPageSize) and sort by commit date
+	// client-side below. Unlike GitLab's API, Gitea/Forgejo's branches endpoint
+	// has no date ordering, so fetching only n would sort an arbitrary first-n
+	// slice and miss more-recently-active branches; the sample makes the
+	// date-descending top-n meaningful before we trim to n.
 	_, err := p.client.Get(ctx,
 		fmt.Sprintf("/repos/%s/%s/branches", owner, repo),
 		url.Values{"limit": []string{strconv.Itoa(maxInt(n, defaultPageSize))}},

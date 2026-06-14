@@ -372,7 +372,6 @@ func TestStream_clusterPipelineEnabled(t *testing.T) {
 		TopN:           10,
 		Epsilon:        0.6,
 		MinClusterSize: 3,
-		NonInteractive: true,
 	}
 	opts.Cluster.SetEmbedderForTest(&stubEmbedder{dim: 8})
 	var logBuf bytes.Buffer
@@ -428,9 +427,9 @@ func TestStream_clusterDisabled_emitsImmediately(t *testing.T) {
 	}
 }
 
-func TestStream_clusterEmbedderUnreachable_emitsSkip(t *testing.T) {
-	// Isolate the on-disk cluster cache, or a prior run's cached result would
-	// short-circuit the embed step and no ClusterSkip would be surfaced.
+func TestStream_clusterBuiltinEmbedder_runsWithoutSkip(t *testing.T) {
+	// No embedder stub: the stream must cluster with the built-in in-process
+	// embedder and never surface a ClusterSkip for embedder availability.
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	now := time.Now()
 	ff := &fakeForge{
@@ -441,9 +440,9 @@ func TestStream_clusterEmbedderUnreachable_emitsSkip(t *testing.T) {
 			{ID: "o/c", Owner: "o", Name: "c", PushedAt: now, DefaultBranch: "main"},
 		},
 		t2: map[string]forge.T2Data{
-			"o/a": {AheadCount: 1, Diffs: []forge.FileDiff{{Path: "a.go", Additions: 1}}},
-			"o/b": {AheadCount: 1, Diffs: []forge.FileDiff{{Path: "b.go", Additions: 1}}},
-			"o/c": {AheadCount: 1, Diffs: []forge.FileDiff{{Path: "c.go", Additions: 1}}},
+			"o/a": {AheadCount: 1, Diffs: []forge.FileDiff{{Path: "auth/a.go", Additions: 1}}},
+			"o/b": {AheadCount: 1, Diffs: []forge.FileDiff{{Path: "auth/b.go", Additions: 1}}},
+			"o/c": {AheadCount: 1, Diffs: []forge.FileDiff{{Path: "auth/c.go", Additions: 1}}},
 		},
 	}
 	opts := Options{Tier: 2}
@@ -452,31 +451,25 @@ func TestStream_clusterEmbedderUnreachable_emitsSkip(t *testing.T) {
 		TopN:           10,
 		Epsilon:        0.6,
 		MinClusterSize: 3,
-		NonInteractive: true,
-		Endpoint:       "http://127.0.0.1:1", // unreachable
 	}
 	ch, _ := Stream(context.Background(), ff, "o", "r", opts)
 	var skipSeen *ClusterSkip
-	var anyClusterID bool
+	assigned := 0
 	for r := range ch {
 		if r.ClusterSkip != nil {
 			skipSeen = r.ClusterSkip
 		}
 		if r.Heat.ClusterID != "" {
-			anyClusterID = true
+			assigned++
 		}
 	}
-	if skipSeen == nil {
-		t.Fatalf("expected ClusterSkip to be surfaced when embedder unreachable")
+	if skipSeen != nil {
+		t.Fatalf("builtin embedder must not skip: %+v", skipSeen)
 	}
-	if skipSeen.Code == "" {
-		t.Errorf("expected non-empty skip code")
-	}
-	if anyClusterID {
-		t.Errorf("expected no clusterID populated when embedder unreachable")
+	if assigned == 0 {
+		t.Errorf("expected cluster assignments (cluster or noise) on every fork")
 	}
 }
-
 func TestStream_heatRecomputedWithT2(t *testing.T) {
 	pushedAt := time.Now()
 	// Need >=10 forks so the scorer uses the full percentile path (not TinySetScore).
@@ -622,5 +615,50 @@ func TestStream_fatalRateLimit_parent(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "rate_limited") {
 		t.Errorf("expected error to mention rate_limited; got %v", err)
+	}
+}
+
+func TestStream_querySortsByRelevance(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	now := time.Now()
+	ff := &fakeForge{
+		parent: forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
+		forks: []forge.T1Data{
+			{ID: "o/wayland", Owner: "o", Name: "wayland", PushedAt: now, DefaultBranch: "main"},
+			{ID: "o/docs", Owner: "o", Name: "docs", PushedAt: now, DefaultBranch: "main"},
+		},
+		t2: map[string]forge.T2Data{
+			"o/wayland": {AheadCount: 2,
+				Diffs:   []forge.FileDiff{{Path: "compositor/wayland.go", Additions: 100}},
+				Commits: []forge.AheadCommit{{Message: "add wayland protocol support to compositor"}}},
+			"o/docs": {AheadCount: 1,
+				Diffs:   []forge.FileDiff{{Path: "README.md", Additions: 2}},
+				Commits: []forge.AheadCommit{{Message: "fix typo in readme"}}},
+		},
+	}
+	opts := Options{Tier: 2, Query: "wayland compositor support"}
+	opts.Cluster.Enabled = false
+	ch, err := Stream(context.Background(), ff, "o", "r", opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []Result
+	for r := range ch {
+		got = append(got, r)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(got))
+	}
+	if got[0].Fork.ID != "o/wayland" {
+		t.Errorf("query-relevant fork should be first, got %s (scores %v / %v)",
+			got[0].Fork.ID, got[0].QueryScore, got[1].QueryScore)
+	}
+	for _, r := range got {
+		if r.QueryMethod != "lexical" {
+			t.Errorf("fork %s: QueryMethod = %q, want lexical (no scorer injected)", r.Fork.ID, r.QueryMethod)
+		}
+	}
+	if got[0].QueryScore <= got[1].QueryScore {
+		t.Errorf("relevance ordering wrong: %v <= %v", got[0].QueryScore, got[1].QueryScore)
 	}
 }

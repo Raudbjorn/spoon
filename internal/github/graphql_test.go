@@ -1,8 +1,15 @@
 package github
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 
 	ghAPI "github.com/cli/go-gh/v2/pkg/api"
@@ -34,4 +41,116 @@ func TestIsTransientServerError(t *testing.T) {
 			}
 		})
 	}
+}
+
+// newTestClientGQL builds a *Client whose REST and GraphQL calls both land on
+// srv, so FetchForksAuto's GraphQL→REST fallback can be exercised end to end.
+func newTestClientGQL(t *testing.T, srv *httptest.Server) *Client {
+	t.Helper()
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("parse server URL: %v", err)
+	}
+	tr := &rewriteTransport{target: u, base: http.DefaultTransport}
+	rest, err := ghAPI.NewRESTClient(ghAPI.ClientOptions{
+		AuthToken: "x",
+		Host:      "github.com",
+		Transport: tr,
+	})
+	if err != nil {
+		t.Fatalf("NewRESTClient: %v", err)
+	}
+	gql, err := ghAPI.NewGraphQLClient(ghAPI.ClientOptions{
+		AuthToken: "x",
+		Host:      "github.com",
+		Transport: tr,
+	})
+	if err != nil {
+		t.Fatalf("NewGraphQLClient: %v", err)
+	}
+	return &Client{rest: rest, gql: gql, authenticated: true}
+}
+
+// TestFetchForksAuto_FallbackDedup covers the GraphQL→REST fallback path: the
+// GraphQL query streams one page of forks via onPage and then fails, so we fall
+// back to REST. REST restarts from page 1 and returns an overlapping fork, which
+// must be filtered out of the fallback's onPage so callers see each fork once —
+// while the final returned slice still holds the complete REST result.
+func TestFetchForksAuto_FallbackDedup(t *testing.T) {
+	var gqlCalls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/graphql"):
+			gqlCalls++
+			if gqlCalls == 1 {
+				// First page succeeds and streams fork ID 1, with more pages to come.
+				_, _ = io.WriteString(w, `{"data":{"repository":{"forks":{`+
+					`"pageInfo":{"hasNextPage":true,"endCursor":"c1"},`+
+					`"nodes":[{"databaseId":1,"nameWithOwner":"alice/repo","name":"repo"}]}}}}`)
+				return
+			}
+			// Second page fails non-transiently (500 is not retried), triggering the
+			// REST fallback after fork ID 1 was already streamed.
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = io.WriteString(w, `{"message":"boom"}`)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/repos/foo/bar/forks"):
+			// REST returns the full fork list, overlapping the streamed ID 1.
+			_ = json.NewEncoder(w).Encode([]ForkInfo{
+				{ID: 1, FullName: "alice/repo"},
+				{ID: 2, FullName: "bob/repo"},
+			})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	c := newTestClientGQL(t, srv)
+
+	var streamed []int64
+	onPage := func(forks []ForkInfo, page int) {
+		for _, f := range forks {
+			streamed = append(streamed, f.ID)
+		}
+	}
+
+	forks, extras, err := c.FetchForksAuto(context.Background(), "foo", "bar", onPage)
+	if err != nil {
+		t.Fatalf("FetchForksAuto: %v", err)
+	}
+	if gqlCalls != 2 {
+		t.Fatalf("expected 2 GraphQL calls (success then failure), got %d", gqlCalls)
+	}
+	if extras != nil {
+		t.Errorf("REST fallback should return nil extras, got %v", extras)
+	}
+
+	// Final slice is the complete REST result, including the overlapping fork.
+	gotIDs := make([]int64, len(forks))
+	for i, f := range forks {
+		gotIDs[i] = f.ID
+	}
+	wantIDs := []int64{1, 2}
+	if !equalInt64s(gotIDs, wantIDs) {
+		t.Errorf("returned fork IDs = %v, want %v", gotIDs, wantIDs)
+	}
+
+	// onPage saw ID 1 once (GraphQL) and ID 2 once (REST) — the fallback filtered
+	// out the re-streamed ID 1. Without dedup, streamed would be {1, 1, 2}.
+	wantStreamed := []int64{1, 2}
+	if !equalInt64s(streamed, wantStreamed) {
+		t.Errorf("onPage streamed IDs = %v, want %v (fallback should not re-emit ID 1)", streamed, wantStreamed)
+	}
+}
+
+func equalInt64s(a, b []int64) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

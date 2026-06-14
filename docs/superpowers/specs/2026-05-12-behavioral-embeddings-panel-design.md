@@ -1,6 +1,8 @@
 # Behavioral Embeddings — 4-Model Panel Re-Test (Design)
 
-**Status:** Draft — design for a second-pass gate experiment after Phase A's failure.
+**Status:** Executed — this design was run; see `RESULTS_PANEL.md` for the
+outcome (`Snowflake/snowflake-arctic-embed-l-v2.0` cleared the gate, Phase B in
+progress). Retained as the design of record.
 **Parent context:**
 - Phase A spec (rejected): `docs/superpowers/specs/future/future-work-behavioral-embeddings.md`
 - Phase A plan: `docs/superpowers/plans/2026-05-11-behavioral-embeddings-validation.md`
