@@ -43,6 +43,31 @@ func TestParseSuggestions_NoBlocks(t *testing.T) {
 	}
 }
 
+func TestParseSuggestions_CRLF(t *testing.T) {
+	// Windows-style CRLF line endings must parse identically to LF: a trailing
+	// '\r' on the fence line would otherwise defeat the close-fence match.
+	body := "Please use a const here:\r\n\r\n```suggestion\r\nconst Foo = \"bar\"\r\n```\r\n"
+	got := ParseSuggestions("PRC_CRLF", body)
+	if len(got) != 1 {
+		t.Fatalf("len=%d want 1; got=%+v", len(got), got)
+	}
+	if got[0].Body != "const Foo = \"bar\"" {
+		t.Errorf("Body=%q want %q", got[0].Body, "const Foo = \"bar\"")
+	}
+}
+
+func TestParseSuggestions_LoneCR(t *testing.T) {
+	// Old-Mac-style lone-CR line endings must also normalize to LF.
+	body := "Use this:\r\r~~~suggestion\rx := 1\r~~~\r"
+	got := ParseSuggestions("PRC_CR", body)
+	if len(got) != 1 {
+		t.Fatalf("len=%d want 1; got=%+v", len(got), got)
+	}
+	if got[0].Body != "x := 1" {
+		t.Errorf("Body=%q want %q", got[0].Body, "x := 1")
+	}
+}
+
 func TestParseSuggestions_TildeFence(t *testing.T) {
 	body := "Use this:\n\n~~~suggestion\nx := 1\n~~~\n"
 	got := ParseSuggestions("PRC_4", body)

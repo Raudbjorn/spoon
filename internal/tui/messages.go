@@ -63,20 +63,3 @@ type clusterResultMsg struct {
 	Skip        *cluster.SkipReason // non-nil when clustering was skipped
 	Err         error               // non-nil on hard failure
 }
-
-// clusterPromptMsg is published by the embed.Prompter implementation when
-// it needs to ask the user whether to pull a missing embedding model. The
-// model transitions to the embedderBootstrap viewState and renders the
-// prompt; the user's response is sent back via clusterPromptResponseMsg.
-type clusterPromptMsg struct {
-	Model  string
-	SizeMB int
-	Reply  chan<- bool // SelectEmbedder is blocked waiting on this
-}
-
-// clusterPromptResponseMsg carries the user's answer back to the goroutine
-// running SelectEmbedder.
-type clusterPromptResponseMsg struct {
-	Reply chan<- bool
-	Yes   bool
-}

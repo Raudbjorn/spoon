@@ -40,3 +40,5 @@ nomic_ovms_v15_run.log
 tokenizer_staging/
 model_staging/
 run_panel_supplement.out
+RESULTS_RUN.md
+dump_features

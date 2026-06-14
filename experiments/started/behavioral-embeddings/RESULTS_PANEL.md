@@ -77,13 +77,18 @@ The +0.20 swing in Δ between Phase A and Phase B is driven by two methodology c
 ## Reproduce
 
 ```sh
-ssh vinbonesjr
-cd ~/projects/spoon/spoon-2/experiments/started/behavioral-embeddings
-./run_remote_panel.sh
+cd experiments/started/behavioral-embeddings
+# Baseline (nomic-embed-text, via Ollama) — the τ everything is compared against:
+.venv/bin/python embed_nomic.py --features features.json --out nomic_vectors.json
+# Panel candidates (sequential, resume-safe):
+./run_panel.sh
+# Score each candidate against the baseline:
 .venv/bin/python analyze.py --nomic nomic_vectors.json --codeexecutor <CANDIDATE>_vectors.json --out <CANDIDATE>_results.md
 ```
 
-`run_remote_panel.sh` orchestrates all 6 embedding runs (baseline + 5 panel candidates) sequentially.
+`run_panel.sh` orchestrates the panel-candidate embedding runs sequentially;
+the baseline `nomic_vectors.json` is produced by the separate `embed_nomic.py`
+step above.
 
 ## Future supplements
 

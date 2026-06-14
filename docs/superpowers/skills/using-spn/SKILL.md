@@ -107,7 +107,11 @@ out=$(spn pr status "$PR" 2>/tmp/err.json) || {
 }
 ```
 
-Note: detection works on REST API paths. GitHub's GraphQL endpoint (used internally by `spn threads list/next/reply/resolve`) returns rate-limit hits as the generic `upstream_error` code instead. The error remains `retryable: true` in both cases; the difference is whether `retry_after_seconds` is populated.
+Note: detection works on REST API paths. GitHub's GraphQL endpoint (used internally by `spn threads list/next/reply/resolve` and the forks-list GraphQL fast path) returns rate-limit hits as the generic `upstream_error` code instead. The error remains `retryable: true` in both cases; the difference is whether `retry_after_seconds` is populated.
+
+### CSV mode
+
+`spn forks list <repo> --csv` collects all enriched forks and emits a single CSV blob on stdout with a fixed header (`id,owner,name,url,stars,pushed_at,is_archived,sub_forks,releases,heat,tier,t2_ahead,t2_behind,t2_mna,t3_contributors,t3_commit_span_days,cluster_name,cluster_score`). Per-fork enrichment errors still go to stderr as compact JSON. Use this when downstream tooling expects tabular data; use the default NDJSON when streaming or jq pipelines fit better.
 
 ## Filter modes
 
@@ -356,3 +360,5 @@ All commands accept any of:
 | `spn threads apply-suggestion <pr> <id>` | Apply a thread's suggestion block to the local file. Use --dry-run first. |
 | `spn threads reply <pr> <id> --suggest T` | Reply that wraps T in a suggestion fenced block. Optional --intro for context. |
 | `spn threads * --dry-run` / `--show-code N` / `--verbose` | Cross-cutting modifiers for mutations / context-aware reads / extra metadata. |
+| `spn forks list <repo>` | NDJSON fork enrichment (separate use case, not for PR review) |
+| `spn forks list <repo> --csv` | Batched CSV with fixed header; switches off NDJSON streaming. Use for spreadsheet/tabular consumers. |

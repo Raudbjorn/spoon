@@ -22,22 +22,42 @@ type Config struct {
 	Version  int            `json:"version"`
 	Forge    ForgeConfig    `json:"forge,omitempty"`
 	Embedder EmbedderConfig `json:"embedder,omitempty"`
+	Reranker ModelConfig    `json:"reranker,omitempty"`
+	Labeler  ModelConfig    `json:"labeler,omitempty"`
+}
+
+// ModelConfig points one OpenVINO-backed feature (reranker, labeler) at a
+// model directory and device.
+type ModelConfig struct {
+	// ModelPath is the OVMS-style model directory.
+	ModelPath string `json:"modelPath,omitempty"`
+	// Device is the OpenVINO device ("GPU" default).
+	Device string `json:"device,omitempty"`
+}
+
+// EmbedderConfig selects and configures the in-process embedding backend
+// used for fork clustering. Both backends run inside the spoon process;
+// there are no external services.
+type EmbedderConfig struct {
+	// Backend is "builtin" (zero-setup lexical embedder, the default) or
+	// "openvino" (transformer encoder via the OpenVINO runtime; requires a
+	// binary built with -tags openvino).
+	Backend string `json:"backend,omitempty"`
+	// ModelPath is the OVMS-style model directory for the openvino backend
+	// (openvino_model.xml + openvino_tokenizer.xml).
+	ModelPath string `json:"modelPath,omitempty"`
+	// Device is the OpenVINO device for the encoder, e.g. "GPU" (default)
+	// or "CPU".
+	Device string `json:"device,omitempty"`
+	// Pooling overrides the hidden-state pooling: "cls", "mean", or
+	// "last". Empty → the model dir's graph.pbtxt, else CLS.
+	Pooling string `json:"pooling,omitempty"`
 }
 
 // ForgeConfig records the default forge provider.
 type ForgeConfig struct {
 	Provider string `json:"provider,omitempty"` // "github" | "gitlab"
 	Host     string `json:"host,omitempty"`     // self-hosted GitLab/GHES hostname
-}
-
-// EmbedderConfig records the embedding backend setup discovered/validated by
-// `spoon setup`.
-type EmbedderConfig struct {
-	Backend         string `json:"backend,omitempty"`         // "ollama" | "sidecar" | "openai"
-	Endpoint        string `json:"endpoint,omitempty"`        // ollama endpoint, or openai base URL
-	Model           string `json:"model,omitempty"`           // embedding model id
-	SidecarEndpoint string `json:"sidecarEndpoint,omitempty"` // python sidecar base URL
-	LabelerModel    string `json:"labelerModel,omitempty"`    // LLM labeler model
 }
 
 // DefaultPath returns $XDG_CONFIG_HOME/spoon/config.json, falling back to
@@ -69,6 +89,7 @@ func Load(path string) (*Config, error) {
 	if err := json.Unmarshal(data, &c); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
+	c.normalizeLegacy()
 	if err := c.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config %s: %w", path, err)
 	}
@@ -133,32 +154,20 @@ func Coalesce(vals ...string) string {
 	return ""
 }
 
-// LayerEmbedder applies this config as a defaults layer beneath the given
-// already-resolved (flag > env) embedder values, backend-aware. The backend is
-// adopted from the config only when none was supplied. The backend-specific
-// fields — endpoint, model, sidecar endpoint — are inherited from the config
-// ONLY when the effective backend matches the config's saved backend, so a
-// saved setup for one backend (e.g. openai/OVMS) never leaks its endpoint/model
-// into a run that selects a different backend (e.g. ollama). The labeler model
-// is backend-agnostic and always layered.
-func (c *Config) LayerEmbedder(backend, endpoint, model, sidecarEndpoint, labelerModel string) (rBackend, rEndpoint, rModel, rSidecar, rLabeler string) {
-	rBackend = backend
-	if rBackend == "" {
-		rBackend = strings.ToLower(c.Embedder.Backend)
+// normalizeLegacy clears embedder sections written by older spoon versions
+// for since-removed external backends (ollama, sidecar, openai), so a stale
+// config file degrades to the builtin backend instead of failing every load.
+func (c *Config) normalizeLegacy() {
+	switch strings.ToLower(c.Embedder.Backend) {
+	case "ollama", "sidecar", "openai":
+		c.Embedder = EmbedderConfig{}
 	}
-	rEndpoint, rModel, rSidecar = endpoint, model, sidecarEndpoint
-	if c.Embedder.Backend != "" && strings.EqualFold(rBackend, c.Embedder.Backend) {
-		rEndpoint = Coalesce(rEndpoint, c.Embedder.Endpoint)
-		rModel = Coalesce(rModel, c.Embedder.Model)
-		rSidecar = Coalesce(rSidecar, c.Embedder.SidecarEndpoint)
-	}
-	rLabeler = Coalesce(labelerModel, c.Embedder.LabelerModel)
-	return rBackend, rEndpoint, rModel, rSidecar, rLabeler
 }
 
 var (
-	validBackends  = map[string]bool{"": true, "ollama": true, "sidecar": true, "openai": true}
 	validProviders = map[string]bool{"": true, "github": true, "gitlab": true}
+	validBackends  = map[string]bool{"": true, "builtin": true, "lexical": true, "openvino": true}
+	validPoolings  = map[string]bool{"": true, "cls": true, "mean": true, "last": true}
 )
 
 // Validate checks enum fields. Empty values are allowed (mean "unset").
@@ -167,7 +176,10 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("forge.provider %q must be 'github' or 'gitlab'", c.Forge.Provider)
 	}
 	if !validBackends[strings.ToLower(c.Embedder.Backend)] {
-		return fmt.Errorf("embedder.backend %q must be 'ollama', 'sidecar', or 'openai'", c.Embedder.Backend)
+		return fmt.Errorf("embedder.backend %q must be 'builtin', 'lexical', or 'openvino'", c.Embedder.Backend)
+	}
+	if !validPoolings[strings.ToLower(c.Embedder.Pooling)] {
+		return fmt.Errorf("embedder.pooling %q must be 'cls', 'mean', or 'last'", c.Embedder.Pooling)
 	}
 	return nil
 }

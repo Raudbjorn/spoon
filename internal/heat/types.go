@@ -17,11 +17,11 @@ type HeatResult struct {
 	Confidence float64 // 0.0-1.0
 
 	// V2 fields
-	Components []Component  // tiered component breakdown
-	Trust      float64      // trust multiplier [0, 1]
-	TierScores [3]float64   // per-tier subtotals [T1, T2, T3]
-	Penalties  []string     // names of penalties applied
-	IsTinySet  bool         // true if forkCount < 10
+	Components []Component // tiered component breakdown
+	Trust      float64     // trust multiplier [0, 1]
+	TierScores [3]float64  // per-tier subtotals [T1, T2, T3]
+	Penalties  []string    // names of penalties applied
+	IsTinySet  bool        // true if forkCount < 10
 	LoneWolfV2 *LoneWolfResult
 
 	// Cluster + novelty metadata. Populated by the cluster pipeline (a T3
@@ -31,6 +31,13 @@ type HeatResult struct {
 	NoveltyScore       float64 // 0..1
 	ClusterMemberCount int     // number of forks in this cluster; 0 when ClusterID == ""
 	ChangeImpact       float64 // 0..1; centrality-weighted impact of touched directories; 0 when centrality unavailable
+	Category           string  // zero-shot change category ("feature", "ci-build", ...); "" when classification didn't run
+	CategoryScore      float64 // anchor cosine behind Category; 0 when unclassified
+
+	// noveltyWeight carries the user's "novelty" heat weight from scoring
+	// time to ApplyNoveltyToScore (which runs later, after clustering).
+	noveltyWeight    float64
+	noveltyWeightSet bool
 }
 
 // Archetype classifies the lone wolf behavior pattern.
@@ -59,12 +66,12 @@ func (a Archetype) String() string {
 // LoneWolfResult is the v2 lone wolf detection result with archetypes.
 type LoneWolfResult struct {
 	Detected          bool
-	Strength          float64   // 0.0-1.0
+	Strength          float64 // 0.0-1.0
 	Archetype         Archetype
 	Label             string
 	EffectiveContribs int
 	MeaningfulCommits int
-	MNA               int     // meaningful net additions
+	MNA               int // meaningful net additions
 	CommitSpanDays    float64
 	FileSpread        float64 // 0-1, how spread across dirs
 	RevertCount       int

@@ -159,7 +159,8 @@ def main() -> int:
             rc = 1
             continue
         try:
-            convert_one(repo, model_dir, staging_root / repo)
+            if convert_one(repo, model_dir, staging_root / repo) != 0:
+                rc = 1
         except Exception as e:
             print(f"  FAILED: {e}", file=sys.stderr)
             rc = 1
