@@ -305,12 +305,12 @@ func colorize(text, ansiCode string, noColor bool) string {
 // downloaded (with consent, or unconditionally under --auto-pull) and
 // adopted into cfg. Returns whether every applicable feature is ready.
 func setupOpenVINO(ctx context.Context, f setupFlags, cfg *config.Config, interactive bool, stdin io.Reader, out io.Writer) bool {
-	if !embed.OpenVINOAvailable {
+	if !embed.OpenVINOAvailable() {
 		printCheck(out, "OpenVINO", false, []string{
-			"This binary was built without OpenVINO support.",
+			"OpenVINO runtime (libopenvino_c.so) not found.",
 			"Clustering uses the built-in lexical embedder (zero setup, works fine).",
 			"For GPU semantic embeddings, reranking, and label polish:",
-			"  • rebuild with: go build -tags \"openvino genai\" ./cmd/...",
+			"  • install OpenVINO, or set SPOON_OPENVINO_LIB to libopenvino_c.so",
 		}, f.noColor)
 		return true // advisory — the lexical embedder needs nothing
 	}
@@ -339,8 +339,8 @@ func setupOpenVINO(ctx context.Context, f setupFlags, cfg *config.Config, intera
 	slots := []featureSlot{
 		{models.FeatureEmbedder, "Embedder (semantic clustering)", &cfg.Embedder.ModelPath, true, ""},
 		{models.FeatureReranker, "Reranker (--query relevance)", &cfg.Reranker.ModelPath, true, ""},
-		{models.FeatureLabeler, "Labeler (cluster label polish)", &cfg.Labeler.ModelPath, genai.Available,
-			"rebuild with -tags \"openvino genai\" to enable"},
+		{models.FeatureLabeler, "Labeler (cluster label polish)", &cfg.Labeler.ModelPath, genai.Available(),
+			"install openvino-genai (or set SPOON_OPENVINO_GENAI_LIB) to enable"},
 	}
 	for _, slot := range slots {
 		if !slot.usable {

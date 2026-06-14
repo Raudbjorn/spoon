@@ -1,5 +1,3 @@
-//go:build openvino
-
 package embed
 
 // Model-evaluation harness for picking spoon's default OpenVINO models.
@@ -7,12 +5,12 @@ package embed
 // intent pairs over 200 real PR/fork feature sets) that previously selected
 // the sidecar's model.
 //
-// Gated manual tests:
+// Gated manual tests (require a loadable OpenVINO runtime — see ovload.go):
 //
 //	SPOON_EVAL_EMBEDDERS="builtin,/path/model[:pooling],..." \
-//	  go test -tags openvino -run TestEvalEmbedders_Manual -v ./internal/embed/
+//	  go test -run TestEvalEmbedders_Manual -v ./internal/embed/
 //	SPOON_EVAL_RERANKERS="/path/model,..." \
-//	  go test -tags openvino -run TestEvalRerankers_Manual -v ./internal/embed/
+//	  go test -run TestEvalRerankers_Manual -v ./internal/embed/
 //
 // Embedder metric: AUC of pair cosine vs the same-intent label (probability
 // a random same-intent pair outranks a random different-intent pair). 0.5 =

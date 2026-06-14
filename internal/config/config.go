@@ -40,8 +40,8 @@ type ModelConfig struct {
 // there are no external services.
 type EmbedderConfig struct {
 	// Backend is "builtin" (zero-setup lexical embedder, the default) or
-	// "openvino" (transformer encoder via the OpenVINO runtime; requires a
-	// binary built with -tags openvino).
+	// "openvino" (transformer encoder via the OpenVINO runtime; requires the
+	// OpenVINO C runtime to be loadable at run time).
 	Backend string `json:"backend,omitempty"`
 	// ModelPath is the OVMS-style model directory for the openvino backend
 	// (openvino_model.xml + openvino_tokenizer.xml).

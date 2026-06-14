@@ -1,13 +1,13 @@
-//go:build genai
-
 package genai
 
 // Labeler model comparison: run representative cluster hints through each
 // candidate and report labels + latency. Quality gates: non-empty,
 // single-line, ≤60 chars, mentions the dominant topic term.
 //
+// Requires a loadable openvino-genai runtime (see genai.go).
+//
 //	SPOON_EVAL_LABELERS="/path/model,..." \
-//	  go test -tags "openvino genai" -run TestEvalLabelers_Manual -v ./internal/genai/
+//	  go test -run TestEvalLabelers_Manual -v ./internal/genai/
 
 import (
 	"context"

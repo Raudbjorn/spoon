@@ -1,5 +1,3 @@
-//go:build genai
-
 package genai
 
 import (
@@ -18,6 +16,9 @@ func TestLabelPolisher_RealModel(t *testing.T) {
 	cfg, err := config.LoadDefault()
 	if err != nil || cfg == nil || cfg.Labeler.ModelPath == "" {
 		t.Skip("no labeler configured; run 'spoon setup' first")
+	}
+	if !Available() {
+		t.Skip("openvino-genai runtime not loadable; skipping real-model test")
 	}
 	p, err := NewLabelPolisher(Config{ModelPath: cfg.Labeler.ModelPath, Device: cfg.Labeler.Device})
 	if err != nil {

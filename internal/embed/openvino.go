@@ -1,5 +1,3 @@
-//go:build openvino
-
 package embed
 
 // In-process OpenVINO embedding backend. Reimplements the computation of
@@ -9,26 +7,15 @@ package embed
 // on the configured device (GPU by default), and pooling + L2 normalization
 // happen in Go (see pooling.go).
 //
-// Build with `go build -tags openvino`. Requires the OpenVINO C runtime
-// (libopenvino_c.so + headers) at build time and libopenvino_tokenizers.so
-// at run time.
+// The OpenVINO C runtime is loaded at run time via dlopen (see ovffi.c /
+// ovload.go), so this file compiles into the default build with no OpenVINO
+// SDK present. libopenvino_c.so (and libopenvino_tokenizers.so) are only
+// needed to actually run the backend; OpenVINOAvailable() reports whether
+// they were found.
 
 /*
-#cgo LDFLAGS: -lopenvino_c
 #include <stdlib.h>
-#include <openvino/c/openvino.h>
-
-// compile_with_cache wraps the variadic ov_core_compile_model call so Go
-// doesn't have to deal with C varargs. cache_dir may be NULL.
-static ov_status_e
-compile_with_cache(ov_core_t* core, ov_model_t* model, const char* device,
-                   const char* cache_dir, ov_compiled_model_t** out) {
-	if (cache_dir != NULL) {
-		return ov_core_compile_model(core, model, device, 2, out,
-		                             "CACHE_DIR", cache_dir);
-	}
-	return ov_core_compile_model(core, model, device, 0, out);
-}
+#include "ovffi.h"
 */
 import "C"
 
@@ -39,10 +26,6 @@ import (
 	"sync"
 	"unsafe"
 )
-
-// OpenVINOAvailable reports whether this binary was built with the openvino
-// build tag.
-const OpenVINOAvailable = true
 
 // OpenVINOEmbedder runs an OVMS-style embedding model dir in-process via
 // the OpenVINO C API. Create with NewOpenVINOEmbedder; call Close when done.
@@ -67,6 +50,9 @@ type OpenVINOEmbedder struct {
 // take minutes on Intel Arc; compiled kernels are cached under cfg.CacheDir
 // so later loads are fast.
 func NewOpenVINOEmbedder(cfg OpenVINOConfig) (*OpenVINOEmbedder, error) {
+	if !ovEnsureLoaded() {
+		return nil, errOpenVINOUnavailable()
+	}
 	cfg, err := cfg.withDefaults()
 	if err != nil {
 		return nil, err
@@ -518,6 +504,9 @@ func ovErr(op string, status C.ov_status_e) error {
 // AvailableDevices returns the OpenVINO runtime's visible inference devices
 // (e.g. ["CPU", "GPU"]). Empty on any runtime error.
 func AvailableDevices() []string {
+	if !ovEnsureLoaded() {
+		return nil
+	}
 	var core *C.ov_core_t
 	if status := C.ov_core_create(&core); status != C.OK {
 		return nil

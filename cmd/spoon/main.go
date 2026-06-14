@@ -428,8 +428,8 @@ Flags:
   --cluster-min-size N     Minimum cluster size (default 3)
   --embedder-backend NAME  'builtin' (default; zero-setup lexical embedder)
                            or 'openvino' (in-process transformer encoder on
-                           an Intel GPU; needs a binary built with
-                           -tags openvino). Env: $SPOON_EMBEDDER_BACKEND
+                           an Intel GPU; needs the OpenVINO runtime at run
+                           time). Env: $SPOON_EMBEDDER_BACKEND
   --openvino-model PATH    Model dir with openvino_model.xml +
                            openvino_tokenizer.xml (export via
                            'ovms --pull --task embeddings' or optimum-cli).
@@ -496,9 +496,9 @@ Concepts:
                                  over paths/commits/README/diff. Zero setup.
                        openvino  a transformer encoder (e.g. arctic-embed)
                                  run via the OpenVINO runtime on an Intel
-                                 GPU. Needs 'go build -tags openvino', an
-                                 exported model dir (--openvino-model), and
-                                 the OpenVINO + tokenizers runtime libs.
+                                 GPU. Needs an exported model dir
+                                 (--openvino-model) and the OpenVINO +
+                                 tokenizers runtime libs at run time.
                      Tune with --cluster-epsilon / --cluster-min-size;
                      disable with --no-cluster.
 

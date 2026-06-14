@@ -1,5 +1,3 @@
-//go:build openvino
-
 package embed
 
 import (
@@ -17,6 +15,9 @@ func TestOpenVINOEmbedder_RealModel(t *testing.T) {
 	modelDir := os.Getenv("SPOON_OPENVINO_TEST_MODEL")
 	if modelDir == "" {
 		t.Skip("SPOON_OPENVINO_TEST_MODEL not set; skipping real-model test")
+	}
+	if !OpenVINOAvailable() {
+		t.Skip("OpenVINO runtime not loadable; skipping real-model test")
 	}
 	device := os.Getenv("SPOON_OPENVINO_TEST_DEVICE")
 

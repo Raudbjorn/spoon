@@ -78,12 +78,12 @@ type integrationStub struct {
 	headSHA     string
 	fileContent map[string]string
 
-	mu            sync.Mutex
-	resolveCalls  int32
+	mu             sync.Mutex
+	resolveCalls   int32
 	unresolveCalls int32
-	replyCalls    int32
-	lastReplyBody string
-	currentUser   string
+	replyCalls     int32
+	lastReplyBody  string
+	currentUser    string
 }
 
 func (s *integrationStub) FetchPR(_ context.Context, _, _ string, _ int, _ string) (github.PullRequestStatus, []github.ReviewThread, error) {

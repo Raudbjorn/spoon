@@ -186,11 +186,14 @@ external services either way:
   touched paths, commit messages, README, and diff shape. No model
   downloads, no setup.
 - **openvino**: a transformer encoder run inside the binary via the
-  OpenVINO runtime, on an Intel GPU or CPU. Build with
-  `go build -tags "openvino genai"` and run `spoon setup` — it downloads
-  default models for every OpenVINO feature (semantic embedder, `--query`
-  reranker, LLM cluster-label polish) and persists the config. The same
-  backend also gives each fork a zero-shot `category` facet.
+  OpenVINO runtime, on an Intel GPU or CPU. No build tags — the OpenVINO and
+  openvino-genai libraries are loaded at run time via `dlopen` (so the
+  default build stays portable and needs no OpenVINO SDK). Install the
+  runtime, then run `spoon setup` — it downloads default models for every
+  OpenVINO feature (semantic embedder, `--query` reranker, LLM cluster-label
+  polish) and persists the config. The same backend also gives each fork a
+  zero-shot `category` facet. If the libraries live off the default path,
+  point `SPOON_OPENVINO_LIB` / `SPOON_OPENVINO_GENAI_LIB` at them.
 
 Clusters get deterministic heuristic labels (dominant directory prefix +
 the most discriminative commit/path tokens). Tune with `--cluster-epsilon`

@@ -1,15 +1,15 @@
 # Spoon's OpenVINO features
 
 Spoon runs every model-backed feature **in-process** — there is no external
-service, no model server. The OpenVINO runtime (linked behind build tags)
-powers four features:
+service, no model server. The OpenVINO runtime is loaded at run time via
+`dlopen` (no build tags), and powers four features:
 
-| Feature | What it does | Model (default) | Build tag |
+| Feature | What it does | Model (default) | Runtime lib |
 |---|---|---|---|
-| Semantic embedder | clusters forks by meaning, not just tokens | bge-base-en-v1.5 | `openvino` |
-| Query reranker | `spn forks list --query "intent"` relevance | bge-reranker-base | `openvino` |
-| Zero-shot categories | per-fork facet: feature/bugfix/ci/security/… | (uses embedder) | `openvino` |
-| Label polish | LLM rewrites cluster labels into natural titles | Qwen2.5-1.5B-int4 | `openvino genai` |
+| Semantic embedder | clusters forks by meaning, not just tokens | bge-base-en-v1.5 | `libopenvino_c` |
+| Query reranker | `spn forks list --query "intent"` relevance | bge-reranker-base | `libopenvino_c` |
+| Zero-shot categories | per-fork facet: feature/bugfix/ci/security/… | (uses embedder) | `libopenvino_c` |
+| Label polish | LLM rewrites cluster labels into natural titles | Qwen2.5-1.5B-int4 | `libopenvino_genai_c` |
 
 **`spoon setup` provisions everything**: it detects the runtime and devices,
 downloads the default model for any feature with none configured (pure-Go
@@ -17,9 +17,9 @@ HuggingFace download, consent-gated; `--auto-pull` to skip the prompt), and
 writes the config. After setup, plain `spoon owner/repo` and
 `spn forks list` use the OpenVINO backend automatically.
 
-Without the build tags (or without setup), spoon falls back to the
-**builtin** deterministic lexical embedder — zero setup, no downloads, and
-`--query` still works via lexical cosine scoring.
+When the OpenVINO runtime can't be loaded (not installed, or no setup),
+spoon falls back to the **builtin** deterministic lexical embedder — zero
+setup, no downloads, and `--query` still works via lexical cosine scoring.
 
 ## How it works
 
@@ -88,7 +88,7 @@ batch. Forks matching no anchor stay uncategorized.
 
 ## Cluster label polish
 
-With a labeler configured (and a `-tags "openvino genai"` build), each
+With a labeler configured (and the openvino-genai runtime loadable), each
 cluster's heuristic label is rewritten by a small instruct LLM running
 in-process via OpenVINO GenAI — greedy decoding, ≤24 new tokens, the
 model's own chat template. Errors silently keep the heuristic label.
@@ -106,15 +106,21 @@ plus L2 normalization run in Go. No model server is involved.
 ### Building
 
 ```sh
-go build -tags "openvino genai" ./cmd/spoon ./cmd/spn   # all features
-go build -tags openvino ./cmd/spoon ./cmd/spn           # no LLM labeler
+go build ./cmd/spoon ./cmd/spn   # all features; no build tags
 ```
 
-Requires the OpenVINO C runtime at build and run time (`openvino` +
-`openvino-intel-gpu-plugin` on Arch) and `libopenvino_tokenizers.so` at run
-time (ships with `openvino-genai`; spoon searches the usual locations).
-Binaries built **without** the tag still work — the openvino backend just
-reports that it is unavailable.
+There are no build tags. The OpenVINO and openvino-genai C libraries are
+resolved at **run time** via `dlopen`, so a default build needs no OpenVINO
+SDK and stays portable — it just reports the backend as unavailable and
+falls back to the builtin embedder when the libraries are absent. (cgo is
+still required, as elsewhere in spoon.)
+
+To actually run the openvino backend, install the runtime (`openvino` +
+`openvino-intel-gpu-plugin`, and `openvino-genai` for the labeler +
+`libopenvino_tokenizers.so`). spoon loads `libopenvino_c.so` /
+`libopenvino_genai_c.so` from the openvino-genai prefix (`/opt/intel/...` on
+Arch) and then the ldconfig path; override either with `SPOON_OPENVINO_LIB`
+/ `SPOON_OPENVINO_GENAI_LIB`.
 
 ### Getting models
 
