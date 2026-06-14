@@ -158,7 +158,7 @@ func (p *GHProvider) Compare(ctx context.Context, fork forge.T1Data, branch stri
 		})
 	}
 
-	result, activeBranch, err := p.client.FetchCompareWithBranchScan(
+	scan, err := p.client.FetchCompareWithBranchScan(
 		ctx, p.sourceOwner, p.sourceRepo, parentBranch,
 		ghFork, ghBranches,
 	)
@@ -166,12 +166,21 @@ func (p *GHProvider) Compare(ctx context.Context, fork forge.T1Data, branch stri
 		return forge.T2Data{}, fmt.Errorf("compare %s@%s: %w", fork.ID, branch, err)
 	}
 
-	t2 := compareToT2(result)
+	t2 := compareToT2(scan.Compare)
 
 	// Track branch work
-	if activeBranch != "" && activeBranch != fork.DefaultBranch {
+	if scan.Branch != "" && scan.Branch != fork.DefaultBranch {
 		t2.IsBranchWork = true
-		t2.ActiveBranch = activeBranch
+		t2.ActiveBranch = scan.Branch
+	}
+
+	// Branch selection already probed the chosen branch tip: a maintainer fork's
+	// "ahead" branch is often a PR that was squash-merged upstream — real to a
+	// commit-graph compare but worthless to integrate. Propagate the verdict so
+	// scoring can zero it.
+	if scan.Upstreamed {
+		t2.Upstreamed = true
+		t2.UpstreamedPR = scan.UpstreamedPR
 	}
 
 	return t2, nil

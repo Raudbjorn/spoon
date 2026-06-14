@@ -686,6 +686,7 @@ func rescore(scorer *heat.Scorer, forkID int64, f forge.T1Data, parent forge.Par
 	if t2 != nil {
 		penalty.AheadKnown = true
 		penalty.AheadAllBranches = t2.AheadCount
+		penalty.Upstreamed = t2.Upstreamed
 	}
 	scorer.Finalize(&result, forkID, penalty)
 	return result

@@ -158,7 +158,12 @@ type PenaltyInput struct {
 	// AheadAllBranches is the measured ahead count; 0 with AheadKnown means
 	// the fork contains no work of its own.
 	AheadAllBranches int
-	Archived         bool
+	// Upstreamed reports that the fork's divergent branch tip heads a merged
+	// upstream PR — the "ahead" work is already integrated and there is nothing
+	// left to pull. Distinct from AheadAllBranches==0: the commit graph still
+	// shows real divergence, it just isn't novel.
+	Upstreamed bool
+	Archived   bool
 	// RecencyPct is the fork's recency percentile within the fork set
 	// (1 = pushed most recently).
 	RecencyPct float64
@@ -273,6 +278,13 @@ func ApplyPenalties(result *HeatResult, p PenaltyInput) {
 	if p.AheadKnown && p.AheadAllBranches == 0 {
 		result.Score = 0
 		result.Penalties = append(result.Penalties, "no_ahead")
+		return
+	}
+
+	// Divergent work already merged upstream → nothing to integrate; score 0.
+	if p.Upstreamed {
+		result.Score = 0
+		result.Penalties = append(result.Penalties, "upstreamed")
 		return
 	}
 

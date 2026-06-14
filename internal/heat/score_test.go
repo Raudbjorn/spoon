@@ -349,6 +349,21 @@ func TestApplyPenalties_NoAhead(t *testing.T) {
 	}
 }
 
+func TestApplyPenalties_Upstreamed(t *testing.T) {
+	// A fork with real divergence (ahead=37) whose branch tip is already merged
+	// upstream must score 0 — the commit graph shows work, but there is nothing
+	// left to integrate.
+	result := HeatResult{Score: 75}
+	ApplyPenalties(&result, PenaltyInput{AheadKnown: true, AheadAllBranches: 37, Upstreamed: true})
+
+	if result.Score != 0 {
+		t.Errorf("upstreamed should zero score, got %v", result.Score)
+	}
+	if len(result.Penalties) != 1 || result.Penalties[0] != "upstreamed" {
+		t.Errorf("Expected upstreamed penalty, got %v", result.Penalties)
+	}
+}
+
 func TestApplyPenalties_Archived(t *testing.T) {
 	result := HeatResult{Score: 75}
 	ApplyPenalties(&result, PenaltyInput{AheadKnown: true, AheadAllBranches: 10, Archived: true})
