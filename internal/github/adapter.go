@@ -221,7 +221,7 @@ func forkInfoToT1(f ForkInfo, extra *T1Extra, parentFullPath string) forge.T1Dat
 		SubForkCount:   f.Forks,
 		Description:    f.Description,
 		Size:           f.Size,
-		Language:        f.Language,
+		Language:       f.Language,
 		OpenIssues:     f.OpenIssues,
 		CreatedAt:      created,
 		SourceFullPath: parentFullPath,
