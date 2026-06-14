@@ -10,7 +10,7 @@ import (
 
 // SchemaVersion is the current on-disk schema version. Bump when the
 // ClusterCache shape changes in a way that invalidates older files.
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 // cacheTTL is the maximum age of a cached cluster result before it is
 // considered stale.

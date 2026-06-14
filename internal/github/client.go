@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -207,6 +208,16 @@ func (c *Client) doGet(ctx context.Context, path string) (*http.Response, error)
 func (c *Client) Get(ctx context.Context, path string, result interface{}) error {
 	resp, err := c.doGet(ctx, path)
 	if err != nil {
+		// doGet already converts rate-limit HTTPErrors into *RateLimitError;
+		// re-detecting would re-wrap the same cause, so short-circuit if the
+		// error already carries one.
+		var rlErr *RateLimitError
+		if errors.As(err, &rlErr) {
+			return err
+		}
+		if rl := detectRateLimitFromHTTPError(err); rl != nil {
+			return rl
+		}
 		return err
 	}
 	defer resp.Body.Close()
@@ -230,6 +241,14 @@ func (c *Client) GetPaginated(ctx context.Context, path string, onPage func(json
 	for url != "" {
 		resp, err := c.doGet(ctx, url)
 		if err != nil {
+			// doGet already converts rate-limit HTTPErrors; avoid re-wrapping.
+			var rlErr *RateLimitError
+			if errors.As(err, &rlErr) {
+				return err
+			}
+			if rl := detectRateLimitFromHTTPError(err); rl != nil {
+				return rl
+			}
 			return err
 		}
 

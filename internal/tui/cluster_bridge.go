@@ -1,24 +1,16 @@
 package tui
 
 // cluster_bridge.go contains the TUI-side orchestration of the cluster
-// pipeline. It mirrors what dump.Run and forksops.Stream do for the
-// non-interactive paths, but adapted to Bubble Tea's event-driven model:
-// the goroutine that runs cluster.RunPipeline pushes status/result messages
-// onto a shared channel which the Model drains via a long-lived tea.Cmd.
-//
-// The Prompter for the missing-model bootstrap path routes its yes/no
-// prompt through the same channel as a clusterPromptMsg. The user's
-// keypress in the embedderBootstrap view returns the answer to the blocked
-// SelectEmbedder goroutine via the prompt's reply channel.
+// pipeline. It mirrors what forksops.Stream does for the non-interactive
+// paths, but adapted to Bubble Tea's event-driven model: the goroutine that
+// runs cluster.RunPipeline pushes status/result messages onto a shared
+// channel which the Model drains via a long-lived tea.Cmd.
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/svnbjrn/spoon/internal/cluster"
 	"github.com/svnbjrn/spoon/internal/embed"
@@ -26,55 +18,32 @@ import (
 	gh "github.com/svnbjrn/spoon/internal/github"
 )
 
-// ClusterOptions mirrors dump.ClusterOptions so callers (cmd/spoon/main.go)
-// can pass cluster configuration into the TUI without dragging in the
-// dump package. Keep this in sync with dump.ClusterOptions.
+// ClusterOptions mirrors forksops.ClusterOptions so callers
+// (cmd/spoon/main.go) can pass cluster configuration into the TUI without
+// dragging in the forksops package.
 type ClusterOptions struct {
-	Enabled         bool
-	TopN            int
-	Endpoint        string
-	ModelOverride   string
-	LabelerEndpoint string
-	LabelerModel    string
-	Epsilon         float64
-	MinClusterSize  int
-	AutoPull        bool
-	NoPrompt        bool
-	Refresh         bool
+	Enabled        bool
+	TopN           int
+	Epsilon        float64
+	MinClusterSize int
+	Refresh        bool
 
-	// Backend selects the Embedder implementation. Empty defaults to "ollama".
-	// "sidecar" routes through SidecarEmbedder against SidecarEndpoint.
-	Backend string
+	// Embedder, when non-nil, replaces the built-in lexical embedder
+	// (openvino backend or tests). EmbedderID keys the cluster cache.
+	Embedder   embed.Embedder
+	EmbedderID string
 
-	// SidecarEndpoint is the http://host:port of the Python sidecar process,
-	// used when Backend=="sidecar".
-	SidecarEndpoint string
+	// Categorize enables zero-shot category assignment.
+	Categorize bool
 
-	// NonInteractive mirrors the field of the same name on
-	// dump.ClusterOptions / forksops.ClusterOptions. The TUI is always
-	// interactive (and consequently passes false to the pipeline regardless
-	// of this value); the field exists for shape-parity so callers that
-	// translate between Options structs don't accidentally lose state, and
-	// future refactors can collapse the four ClusterOptions copies into one.
-	NonInteractive bool
-
-	// Labeler, when non-nil, overrides construction from LabelerEndpoint.
-	Labeler cluster.Labeler
-
-	// EmbedderForTest is reserved for tests.
-	EmbedderForTest embed.Embedder
+	// LabelPolisher, when non-nil, rewrites cluster labels (in-process LLM).
+	LabelPolisher cluster.LabelPolisher
 
 	// CentralityBackend is forwarded to cluster.PipelineOptions. "" or
 	// "directory" → directory-centrality proxy. "mdg" → Module Dependency
 	// Graph. See `--full-mdg` in `spoon --help`.
 	CentralityBackend string
 }
-
-// tuiDefaultLabelerModel aliases cluster.DefaultLabelerModel for readability
-// at the call site below. Keeping it as a const aliasing the package-level
-// constant means a single source of truth without churning the existing
-// readability of this file.
-const tuiDefaultLabelerModel = cluster.DefaultLabelerModel
 
 // waitForClusterMsg returns a tea.Cmd that blocks on the model's cluster
 // message channel and re-arms itself on each receive. This is how the
@@ -193,98 +162,26 @@ func runTUIClusterPipeline(
 		inputs.Provider = "other"
 	}
 
-	labeler := opts.Labeler
-	if labeler == nil && opts.LabelerEndpoint != "" {
-		model := opts.LabelerModel
-		if model == "" {
-			model = tuiDefaultLabelerModel
-		}
-		labeler = &cluster.OllamaChatLabeler{
-			Endpoint: opts.LabelerEndpoint,
-			Model:    model,
-		}
-	}
-
 	pipelineOpts := cluster.PipelineOptions{
 		Enabled:           opts.Enabled,
 		TopN:              opts.TopN,
-		Endpoint:          opts.Endpoint,
-		ModelOverride:     opts.ModelOverride,
-		Backend:           opts.Backend,
-		SidecarEndpoint:   opts.SidecarEndpoint,
-		LabelerEndpoint:   opts.LabelerEndpoint,
 		Epsilon:           opts.Epsilon,
 		MinClusterSize:    opts.MinClusterSize,
-		AutoPull:          opts.AutoPull,
-		NoPrompt:          opts.NoPrompt,
-		NonInteractive:    false, // TUI is interactive — let the Prompter run
 		Refresh:           opts.Refresh,
-		Labeler:           labeler,
-		EmbedderForTest:   opts.EmbedderForTest,
+		Embedder:          opts.Embedder,
+		EmbedderID:        opts.EmbedderID,
+		Categorize:        opts.Categorize,
+		LabelPolisher:     opts.LabelPolisher,
 		CentralityBackend: opts.CentralityBackend,
 	}
 
-	// The Prompter is consulted by cluster.RunPipeline via SelectEmbedder.
-	// We can't pass it through PipelineOptions directly — the pipeline
-	// constructs an embed.StdinPrompter when NonInteractive == false. So
-	// we instead wrap the pipeline's bootstrap step ourselves below.
-
-	skip, err := runTUIPipelineWithPrompter(context.Background(), pipelineOpts, inputs, out)
+	skip, err := cluster.RunPipeline(context.Background(), pipelineOpts, inputs, &silentWriter{})
 	send(out, clusterResultMsg{
 		Skip:        skip,
 		Err:         err,
 		Assignments: nil, // pipeline writes back via the Heat pointers; we don't ferry them
 		Clusters:    nil,
 	})
-}
-
-// runTUIPipelineWithPrompter invokes cluster.RunPipeline with a TUI-aware
-// Prompter. Because cluster.RunPipeline's NonInteractive==false branch
-// constructs its own StdinPrompter, we have to do the SelectEmbedder dance
-// ourselves and then call RunPipeline with EmbedderForTest set to the
-// resulting Embedder so the pipeline reuses it.
-//
-// This keeps the surface area of cluster.RunPipeline untouched while still
-// letting the TUI control prompting.
-func runTUIPipelineWithPrompter(
-	ctx context.Context,
-	opts cluster.PipelineOptions,
-	inputs cluster.PipelineInputs,
-	out chan<- tea.Msg,
-) (*cluster.SkipReason, error) {
-	// If a test embedder is already supplied, skip bootstrap entirely.
-	if opts.EmbedderForTest != nil {
-		return cluster.RunPipeline(ctx, opts, inputs, &silentWriter{})
-	}
-
-	prompter := &tuiPrompter{out: out, answer: make(chan bool, 1)}
-	embedder, modelName, skip := embed.SelectEmbedder(ctx, embed.SelectOptions{
-		Endpoint:        opts.Endpoint,
-		ExplicitModel:   opts.ModelOverride,
-		AutoPull:        opts.AutoPull,
-		NoPrompt:        opts.NoPrompt,
-		NonInteractive:  false,
-		Backend:         opts.Backend,
-		SidecarEndpoint: opts.SidecarEndpoint,
-	}, prompter)
-	if skip != nil {
-		return &cluster.SkipReason{
-			Code:     skip.Code,
-			Message:  skip.Message,
-			Endpoint: skip.Endpoint,
-			Model:    skip.Model,
-		}, nil
-	}
-
-	opts.EmbedderForTest = embedder
-	if opts.ModelOverride == "" {
-		opts.ModelOverride = modelName
-	}
-	// NonInteractive must stay false to preserve the existing log noise
-	// suppression behaviour inside the pipeline; the pipeline's stdin
-	// prompter is never consulted because we've already provided the
-	// embedder via EmbedderForTest.
-	return cluster.RunPipeline(ctx, opts, inputs, &silentWriter{})
 }
 
 // send pushes msg onto out without blocking the producer. The channel is
@@ -306,47 +203,6 @@ func send(out chan<- tea.Msg, msg tea.Msg) {
 type silentWriter struct{}
 
 func (silentWriter) Write(p []byte) (int, error) { return len(p), nil }
-
-// --- Prompter ---
-
-// tuiPrompter satisfies embed.Prompter for the TUI. AskPull sends a
-// clusterPromptMsg into the model's message channel and blocks on the
-// returned answer channel until the user replies.
-type tuiPrompter struct {
-	out    chan<- tea.Msg
-	answer chan bool
-}
-
-// AskPull sends a clusterPromptMsg into the TUI message channel and waits
-// for the user's reply. Returns the boolean answer.
-func (p *tuiPrompter) AskPull(model string, sizeMB int) (bool, error) {
-	if p.out == nil {
-		return false, errors.New("tui prompter: no message channel")
-	}
-	// Buffered reply channel so the Update handler can write without
-	// blocking even if AskPull's reader gets cancelled.
-	reply := make(chan bool, 1)
-	// Non-blocking send: if the TUI isn't draining (e.g. mid-quit), drop
-	// the prompt and skip clustering rather than deadlocking the pipeline.
-	select {
-	case p.out <- clusterPromptMsg{Model: model, SizeMB: sizeMB, Reply: reply}:
-	default:
-		return false, errors.New("tui prompter: message channel full; skipping pull prompt")
-	}
-	yes, ok := <-reply
-	if !ok {
-		return false, nil
-	}
-	return yes, nil
-}
-
-// ProgressFunc returns a no-op callback. v1 of the bootstrap screen does
-// not render a progress bar (the goroutine that calls embed.Pull is
-// effectively invisible until it finishes). A future revision can route
-// progress updates through the same channel.
-func (p *tuiPrompter) ProgressFunc() func(phase string, pct float64) {
-	return func(phase string, pct float64) {}
-}
 
 // --- Model handlers for cluster messages ---
 
@@ -376,68 +232,6 @@ func (m *Model) handleClusterResult(msg clusterResultMsg) (tea.Model, tea.Cmd) {
 	// Re-arm the message pump so we continue to receive any later
 	// cluster-related messages.
 	return m, waitForClusterMsg(m.clusterMsgs, m.lifecycleCtx)
-}
-
-// handleClusterPrompt transitions the model into viewEmbedderBootstrap so
-// the next render shows the pull prompt. The reply channel is stashed on
-// the model and consumed by handleEmbedderBootstrapKey.
-func (m *Model) handleClusterPrompt(msg clusterPromptMsg) (tea.Model, tea.Cmd) {
-	cp := msg
-	m.clusterPendingPrompt = &cp
-	m.view = viewEmbedderBootstrap
-	return m, waitForClusterMsg(m.clusterMsgs, m.lifecycleCtx)
-}
-
-// handleEmbedderBootstrapKey consumes Y/N from the user, replies on the
-// prompt's channel, and returns to the previous view.
-func (m *Model) handleEmbedderBootstrapKey(key string) (tea.Model, tea.Cmd) {
-	if m.clusterPendingPrompt == nil {
-		// Defensive: no pending prompt; just bail back to the table.
-		m.view = viewTable
-		return m, nil
-	}
-	reply := m.clusterPendingPrompt.Reply
-	switch key {
-	case "y", "Y", "enter":
-		return m, func() tea.Msg {
-			return clusterPromptResponseMsg{Reply: reply, Yes: true}
-		}
-	case "n", "N", "esc":
-		return m, func() tea.Msg {
-			return clusterPromptResponseMsg{Reply: reply, Yes: false}
-		}
-	}
-	return m, nil
-}
-
-// viewEmbedderBootstrap renders the model-pull confirmation card.
-func (m Model) viewEmbedderBootstrap() string {
-	if m.clusterPendingPrompt == nil {
-		return "\n  (no pending embedder prompt)\n"
-	}
-	cp := m.clusterPendingPrompt
-	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		Padding(1, 3).
-		BorderForeground(lipgloss.Color("214"))
-
-	var b strings.Builder
-	b.WriteString("\n")
-	b.WriteString(titleStyle.Render("  Embedding model required"))
-	b.WriteString("\n\n")
-	body := fmt.Sprintf(
-		"No embedding model installed.\n\n"+
-			"Pull %s (%d MB) from Ollama?\n\n"+
-			"%s   %s",
-		cp.Model, cp.SizeMB,
-		lipgloss.NewStyle().Bold(true).Render("[Y]es"),
-		lipgloss.NewStyle().Bold(true).Render("[N]o"),
-	)
-	b.WriteString("  " + box.Render(body))
-	b.WriteString("\n\n  ")
-	b.WriteString(helpStyle.Render("Enter/Y to pull, N/Esc to skip clustering"))
-	b.WriteString("\n")
-	return b.String()
 }
 
 // clusterFooter returns a short status line for the table footer

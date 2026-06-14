@@ -20,6 +20,8 @@ fi
 
 .venv/bin/python embed_nomic.py --features features.json --out nomic_vectors.json
 .venv/bin/python embed_hf.py --features features.json --out codeexecutor_vectors.json
+# Write to RESULTS_RUN.md, not the committed RESULTS.md narrative report, so a
+# re-run never overwrites the historical record.
 .venv/bin/python analyze.py --features features.json --judgments judgments.json \
-  --nomic nomic_vectors.json --codeexecutor codeexecutor_vectors.json --out RESULTS.md
-echo "wrote RESULTS.md"
+  --nomic nomic_vectors.json --codeexecutor codeexecutor_vectors.json --out RESULTS_RUN.md
+echo "wrote RESULTS_RUN.md"

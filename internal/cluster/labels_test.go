@@ -1,7 +1,6 @@
 package cluster
 
 import (
-	"context"
 	"strings"
 	"testing"
 
@@ -19,14 +18,40 @@ func TestHeuristicLabel_Empty(t *testing.T) {
 	}
 }
 
-func TestHeuristicLabel_OnlyDirPrefix(t *testing.T) {
+func TestHeuristicLabel_NoCommitTokens_FallsBackToPaths(t *testing.T) {
+	// All commit words are stopwords; the label must still carry signal:
+	// the dominant (deep) dir prefix plus discriminative path segments.
 	members := []embed.ForkFeatures{
 		{Paths: "internal/auth/oauth.go\ninternal/auth/scope.go", Commits: "the and for with"},
 		{Paths: "internal/db/conn.go", Commits: "fix update add"},
 	}
 	got := HeuristicLabel(members, nil)
-	if got != "internal/" {
-		t.Fatalf("expected %q, got %q", "internal/", got)
+	if !strings.HasPrefix(got, "internal/auth/") {
+		t.Fatalf("expected deep dir prefix internal/auth/, got %q", got)
+	}
+	if !strings.Contains(got, "oauth") {
+		t.Fatalf("expected path-token fallback to surface %q, got %q", "oauth", got)
+	}
+}
+
+func TestDirPrefix_PrefersDeepPrefixWhenDominant(t *testing.T) {
+	members := []embed.ForkFeatures{
+		{Paths: "internal/auth/oauth.go\ninternal/auth/token.go"},
+		{Paths: "internal/auth/scope.go\ninternal/cli/main.go"},
+	}
+	if got := dirPrefix(members); got != "internal/auth/" {
+		t.Fatalf("expected internal/auth/, got %q", got)
+	}
+}
+
+func TestDirPrefix_StaysShallowWhenScattered(t *testing.T) {
+	// Depth-2 prefixes each occur once → below the dominance threshold.
+	members := []embed.ForkFeatures{
+		{Paths: "internal/auth/oauth.go\ninternal/db/conn.go"},
+		{Paths: "internal/cli/main.go\ninternal/tui/app.go"},
+	}
+	if got := dirPrefix(members); got != "internal/" {
+		t.Fatalf("expected internal/, got %q", got)
 	}
 }
 
@@ -76,8 +101,36 @@ func TestHeuristicLabel_DirTieLexBreak(t *testing.T) {
 		{Paths: "alpha/x.go\nalpha/y.go\nbeta/x.go\nbeta/y.go"},
 	}
 	got := HeuristicLabel(members, nil)
-	if got != "alpha/" {
-		t.Fatalf("expected alpha/, got %q", got)
+	if !strings.HasPrefix(got, "alpha/") {
+		t.Fatalf("expected lexicographic tie-break to alpha/, got %q", got)
+	}
+}
+
+func TestTopTokens_BigramOutranksAndDedupes(t *testing.T) {
+	// "rate limit" co-occurs in every member; the corpus has the unigrams
+	// scattered but never the phrase. The bigram should rank, and its
+	// constituent unigrams must not repeat alongside it.
+	members := []embed.ForkFeatures{
+		{Commits: "implement rate limit middleware"},
+		{Commits: "tune rate limit defaults"},
+	}
+	corpus := []embed.ForkFeatures{
+		{Commits: "limit memory usage during scans"},
+		{Commits: "first rate of telemetry flush"},
+	}
+	got := topTokens(members, corpus, 3)
+	joined := strings.Join(got, " | ")
+	if !strings.Contains(joined, "rate limit") {
+		t.Fatalf("expected bigram \"rate limit\" in %v", got)
+	}
+	count := 0
+	for _, tok := range got {
+		if strings.Contains(tok, "rate") || strings.Contains(tok, "limit") {
+			count++
+		}
+	}
+	if count > 1 {
+		t.Fatalf("constituents of a picked bigram must be deduped: %v", got)
 	}
 }
 
@@ -154,23 +207,5 @@ func TestHeuristicLabel_FewerThanThreeTokens(t *testing.T) {
 	got := HeuristicLabel(members, nil)
 	if got != "oauth" {
 		t.Fatalf("expected just %q, got %q", "oauth", got)
-	}
-}
-
-// fakeLabeler verifies that the Labeler interface is satisfiable.
-type fakeLabeler struct{}
-
-func (fakeLabeler) Polish(_ context.Context, lc LabelerContext) (string, error) {
-	return lc.Heuristic, nil
-}
-
-func TestLabelerInterface_Exists(t *testing.T) {
-	var l Labeler = fakeLabeler{}
-	got, err := l.Polish(context.Background(), LabelerContext{Heuristic: "x"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got != "x" {
-		t.Fatalf("expected pass-through %q, got %q", "x", got)
 	}
 }

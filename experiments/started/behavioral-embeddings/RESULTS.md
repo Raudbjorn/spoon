@@ -5,6 +5,12 @@
 **Branch:** `behavioral-embeddings-validation`
 **Spec:** `docs/superpowers/specs/future/future-work-behavioral-embeddings.md`
 
+> **⚠️ Superseded — this is not the current project status.** This Phase A FAIL
+> verdict ("do not build Phase B") was overturned by the later 4-model panel
+> re-test. `Snowflake/snowflake-arctic-embed-l-v2.0` cleared the gate and Phase
+> B is now in progress. See `RESULTS_PANEL.md` and the updated future-work spec
+> for the authoritative status. This document is retained as the Phase A record.
+
 ## Headline numbers
 
 | metric | value |
@@ -23,7 +29,7 @@ The gate **fails** by 0.13 (delta is −0.08 vs. required +0.05). The full featu
 
 ```sh
 cd experiments/started/behavioral-embeddings
-./run.sh
+./run.sh   # writes RESULTS_RUN.md; this committed RESULTS.md is left untouched
 ```
 
 Requires Ollama running with `nomic-embed-text` pulled, `gh auth status` showing an authenticated user, and `uv` on PATH.
@@ -85,7 +91,7 @@ The branch contains:
 - **`features.json`** — 200 PR records (fixture).
 - **`judgments.json`** — 53 hand-curated PR-pair labels.
 - **`pr_states.json`** — state (MERGED/CLOSED/OPEN) for all 2345 IBM/mcp-context-forge PRs, used to rank candidates during curation.
-- **`embed_common.py`**, **`embed_nomic.py`**, **`embed_codeexecutor.py`**, **`analyze.py`** — Python embedding + analysis. 14 unit tests pass.
+- **`embed_common.py`**, **`embed_nomic.py`**, **`embed_hf.py`**, **`analyze.py`** — Python embedding + analysis. 14 unit tests pass.
 - **`curate_helper.py`** — generates candidate browser/same/different markdown lists.
 - **`curate_cli.py`** — interactive labeling tool: opens PR pairs in browser tabs, prompts y/n/s/q + rationale, saves to judgments.json.
 - **`run.sh`** — orchestrator.
@@ -95,7 +101,7 @@ The branch contains:
 
 Do **not** open a follow-up plan for the Phase B sidecar. The deferred status of the feature was correct.
 
-If new evidence emerges (e.g., a CodeExecutor successor model with longer context, or a larger curated dataset with bigger diffs), revisit this experiment by rerunning `./run.sh` after replacing the embedder model in `embed_codeexecutor.py`. The harness is intact and the labeling work is preserved.
+If new evidence emerges (e.g., a CodeExecutor successor model with longer context, or a larger curated dataset with bigger diffs), revisit this experiment by rerunning `./run.sh` after replacing the embedder model passed to `embed_hf.py` (via its `--model` flag). The harness is intact and the labeling work is preserved.
 
 The spec at `docs/superpowers/specs/future/future-work-behavioral-embeddings.md` should be updated to reflect this result (status: Rejected after gate experiment on 2026-05-11).
 
@@ -115,7 +121,7 @@ This strengthens the original verdict: two embedders from different pre-training
 
 Reproduce with:
 ```sh
-.venv/bin/python embed_codeexecutor.py \
+.venv/bin/python embed_hf.py \
     --model huggingface/CodeBERTa-small-v1 \
     --out codeberta_vectors.json
 .venv/bin/python analyze.py \

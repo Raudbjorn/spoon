@@ -71,7 +71,7 @@ func TestInverseLogNorm(t *testing.T) {
 
 func TestClampRatio(t *testing.T) {
 	tests := []struct {
-		name string
+		name               string
 		x, low, high, want float64
 	}{
 		{"middle", 5, 0, 10, 0.5},

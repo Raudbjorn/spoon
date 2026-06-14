@@ -68,18 +68,41 @@ func detectRateLimitFromHTTPError(err error) *RateLimitError {
 		} else if t, parseErr := http.ParseTime(ra); parseErr == nil {
 			reset = t
 		}
-		return &RateLimitError{ResetAt: reset, cause: err}
+		return &RateLimitError{ResetAt: reset, Remaining: remainingFromHeaders(h), cause: err}
 	}
 
 	if httpErr.StatusCode == http.StatusForbidden && h.Get("X-RateLimit-Remaining") == "0" {
-		rl := &RateLimitError{cause: err}
+		// Default to now so ResetAt is never the zero value (which would surface
+		// as a year-0001 timestamp and retry_after_seconds=0 downstream).
+		rl := &RateLimitError{ResetAt: time.Now(), Remaining: remainingFromHeaders(h), cause: err}
 		if v := h.Get("X-RateLimit-Reset"); v != "" {
 			if epoch, parseErr := strconv.ParseInt(v, 10, 64); parseErr == nil {
 				rl.ResetAt = time.Unix(epoch, 0)
+			}
+		}
+		// Retry-After, when present, is the authoritative back-off hint; prefer it.
+		if ra := h.Get("Retry-After"); ra != "" {
+			if secs, parseErr := strconv.Atoi(ra); parseErr == nil {
+				rl.ResetAt = time.Now().Add(time.Duration(secs) * time.Second)
+			} else if t, parseErr := http.ParseTime(ra); parseErr == nil {
+				rl.ResetAt = t
 			}
 		}
 		return rl
 	}
 
 	return nil
+}
+
+// remainingFromHeaders parses X-RateLimit-Remaining into an int, returning 0
+// when the header is absent or malformed. GitHub reports a non-zero remaining
+// count on secondary/abuse limits, so callers surfacing RateLimitError.Remaining
+// see the real value rather than a hard-coded 0.
+func remainingFromHeaders(h http.Header) int {
+	if v := h.Get("X-RateLimit-Remaining"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return 0
 }

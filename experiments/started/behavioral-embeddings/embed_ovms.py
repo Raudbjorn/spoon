@@ -1,11 +1,11 @@
 """Embed every fork in features.json via OpenVINO Model Server.
 
 Speaks OVMS's OpenAI-compatible `/v3/embeddings` endpoint. The model must
-already be loaded by the server (use ../../../../setup_ovms_models.sh —
-or, on a host with the ovms package, run setup_ovms_embeddings.sh from
-/usr/lib/ovms/contrib/). Inference target (CPU / GPU / NPU) is decided
-when the model is pulled, not by this client; for Intel Arc A770 the
-helper pulls with --target_device GPU.
+already be loaded by the server (run ./setup_ovms_models.sh from this
+directory — on a host with the ovms package it delegates to the packaged
+/usr/lib/ovms/contrib/setup_embeddings_arc.sh helper). Inference target
+(CPU / GPU / NPU) is decided when the model is pulled, not by this client;
+for Intel Arc A770 the helper pulls with --target_device GPU.
 
 Same on-disk vector format and resume semantics as embed_hf.py so
 analyze.py consumes either interchangeably.
