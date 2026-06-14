@@ -69,7 +69,7 @@ func renderModel(m Model) string {
 			b.WriteString("\n")
 		}
 	}
-	footer := "\n[r/Enter] reply  [R] resolve  [a] apply-suggestion  [c] counter-propose  [A] unresolve-all  [o] open  [?] help  [q] quit\n"
+	footer := "\n[r/Enter] reply  [R] resolve  [a] apply-suggestion  [c] counter-propose  [Ctrl+A] resolve-all  [A] unresolve-all  [o] open  [?] help  [q] quit\n"
 	b.WriteString(footer)
 	if m.status != "" {
 		fmt.Fprintf(&b, "\n%s\n", m.status)

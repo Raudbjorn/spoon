@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/svnbjrn/spoon/internal/embed"
@@ -25,35 +26,31 @@ import (
 // the `spoon --json/--csv` and TUI paths) and internal/forksops (used by
 // `spn forks list`).
 type PipelineOptions struct {
-	Enabled         bool   // false → skip clustering entirely
-	TopN            int    // max forks to embed
-	Endpoint        string // embedder URL; "" → default resolution
-	ModelOverride   string // explicit model
-	LabelerEndpoint string // optional LLM labeler endpoint (informational; CLI uses Labeler directly)
-	Epsilon         float64
-	MinClusterSize  int
-	AutoPull        bool
-	NoPrompt        bool
-	NonInteractive  bool // true for --json / --csv / spn runs; false for TUI calls
-	Refresh         bool // true → skip LoadCache, force a fresh clustering pass
+	Enabled        bool // false → skip clustering entirely
+	TopN           int  // max forks to embed
+	Epsilon        float64
+	MinClusterSize int
+	Refresh        bool // true → skip LoadCache, force a fresh clustering pass
 
-	// Backend selects the Embedder implementation. Empty defaults to "ollama".
-	Backend string
+	// Embedder, when non-nil, replaces the built-in lexical embedder. Used
+	// by the openvino backend (constructed in the CLI layer, which owns its
+	// lifecycle) and by tests.
+	Embedder embed.Embedder
 
-	// SidecarEndpoint is the http://host:port of the Python sidecar process,
-	// used when Backend=="sidecar".
-	SidecarEndpoint string
+	// EmbedderID identifies the embedder for cluster-cache keying. Must be
+	// set whenever Embedder is (e.g. embed.OpenVINOConfig.EmbedderID());
+	// empty means the built-in lexical embedder.
+	EmbedderID string
 
-	// Labeler, when non-nil, is invoked after heuristic labeling to polish
-	// each non-noise cluster's label. Errors fall back silently to the
-	// heuristic. Construction is the CLI's responsibility; the pipeline only
-	// consumes the interface.
-	Labeler Labeler
+	// LabelPolisher, when non-nil, rewrites each non-noise cluster's
+	// heuristic label (in-process LLM). Errors fall back silently to the
+	// heuristic.
+	LabelPolisher LabelPolisher
 
-	// EmbedderForTest, when non-nil, skips the SelectEmbedder bootstrap and
-	// uses the provided Embedder directly. Reserved for tests of the
-	// orchestration logic; not exposed via CLI flags.
-	EmbedderForTest embed.Embedder
+	// Categorize enables zero-shot category assignment (ClassifyForks) for
+	// the embedded candidates. Callers gate this on a semantic embedder —
+	// the lexical backend makes anchor matching meaningless.
+	Categorize bool
 
 	// CentralityBackend chooses the ChangeImpact computation. "" or
 	// "directory" → the cheap directory-centrality proxy. "mdg" → the full
@@ -104,19 +101,10 @@ type PipelineInputs struct {
 	TreeSource    repo.TreeSource
 	CommitSource  repo.CommitSource
 	ReadmeFetcher ReadmeFetcher
-
-	// Optional upstream-side context for the LLM labeler. UpstreamDesc and
-	// UpstreamReadme are typically pre-populated by the caller; the pipeline
-	// will additionally fetch the README via ReadmeFetcher (if available) when
-	// Labeler is set and UpstreamReadme is empty. UpstreamCoreDirs is sourced
-	// from the centrality pass below when not pre-set.
-	UpstreamDesc     string
-	UpstreamReadme   string
-	UpstreamCoreDirs []string
 }
 
 // SkipReason is returned by RunPipeline when clustering was skipped for a
-// non-fatal reason (e.g., embedder unreachable, missing model). Callers that
+// non-fatal reason (e.g., no eligible forks). Callers that
 // want to surface a structured warning to the user can inspect Code/Endpoint/
 // Model. When the pipeline ran to completion SkipReason is nil.
 type SkipReason struct {
@@ -156,11 +144,16 @@ func RunPipeline(ctx context.Context, opts PipelineOptions, inputs PipelineInput
 		provider = "github"
 	}
 
+	modelName := opts.EmbedderID
+	if modelName == "" {
+		modelName = embed.BuiltinModelName
+	}
+
 	// 0. Cache fast-path. Try to satisfy this pipeline from a previous run's
 	//    saved clusters before doing any expensive work.
 	if !opts.Refresh {
 		if cached, ok := LoadCache(provider, inputs.UpstreamOwner, inputs.UpstreamRepo,
-			opts.Endpoint, opts.ModelOverride); ok {
+			"", modelName); ok {
 			applyAssignmentsToForks(cached.Clusters, cached.Assignments, inputs.Forks)
 			fmt.Fprintf(logger, "[cluster] cache hit: %d clusters, %d assignments (skipping embed)\n",
 				len(cached.Clusters), len(cached.Assignments))
@@ -168,64 +161,15 @@ func RunPipeline(ctx context.Context, opts PipelineOptions, inputs PipelineInput
 		}
 	}
 
-	// 1. Bootstrap embedder.
-	var embedder embed.Embedder
-	var modelName string
-	if opts.EmbedderForTest != nil {
-		embedder = opts.EmbedderForTest
-		modelName = opts.ModelOverride
-	} else {
-		var prompter embed.Prompter
-		if !opts.NonInteractive {
-			prompter = embed.NewStdinPrompter()
-		}
-		e, m, skip := embed.SelectEmbedder(ctx, embed.SelectOptions{
-			Endpoint:        opts.Endpoint,
-			ExplicitModel:   opts.ModelOverride,
-			AutoPull:        opts.AutoPull,
-			NoPrompt:        opts.NoPrompt,
-			NonInteractive:  opts.NonInteractive,
-			Backend:         opts.Backend,
-			SidecarEndpoint: opts.SidecarEndpoint,
-		}, prompter)
-		if skip != nil {
-			fmt.Fprintf(logger, "[cluster] skipping: %s\n", skip.Message)
-			return &SkipReason{
-				Code:     skip.Code,
-				Message:  skip.Message,
-				Endpoint: skip.Endpoint,
-				Model:    skip.Model,
-			}, nil
-		}
-		embedder = e
-		modelName = m
+	// 1. No embedder bootstrap is needed: both backends run in-process and
+	//    were constructed before the pipeline started.
+	var embedder embed.Embedder = embed.LocalEmbedder{}
+	if opts.Embedder != nil {
+		embedder = opts.Embedder
 	}
 
 	// 2. Compute (or load) centrality (directory proxy or MDG, per opts).
 	c, cOK := loadOrComputeCentrality(ctx, opts, inputs, logger)
-
-	// 2a. Fetch upstream README for the labeler when one is configured and
-	// the caller did not pre-populate it. Failures are non-fatal — the labeler
-	// just gets an empty README in that case.
-	if opts.Labeler != nil && inputs.UpstreamReadme == "" && inputs.ReadmeFetcher != nil &&
-		inputs.UpstreamOwner != "" && inputs.UpstreamRepo != "" {
-		if r, err := inputs.ReadmeFetcher.FetchReadme(ctx, inputs.UpstreamOwner, inputs.UpstreamRepo); err == nil {
-			if len(r) > readmeMaxBytes {
-				r = r[:readmeMaxBytes]
-			}
-			inputs.UpstreamReadme = r
-		} else {
-			fmt.Fprintf(logger, "[cluster] upstream README fetch failed: %v (continuing)\n", err)
-		}
-	}
-	// Fall back to ParentData.Description and centrality CoreDirs when the
-	// caller hasn't set them.
-	if inputs.UpstreamDesc == "" {
-		inputs.UpstreamDesc = inputs.Upstream.Description
-	}
-	if len(inputs.UpstreamCoreDirs) == 0 && cOK {
-		inputs.UpstreamCoreDirs = c.Core()
-	}
 
 	// 3. Gate top-N forks for embedding.
 	candidates := SelectClusterCandidates(inputs.Forks, opts.TopN)
@@ -251,11 +195,11 @@ func RunPipeline(ctx context.Context, opts PipelineOptions, inputs PipelineInput
 	}
 
 	// 5. Multi-modal embed.
-	vecs, err := embed.MultiModalEmbed(ctx, embedder, modelName, features)
+	vecs, err := embed.MultiModalEmbed(ctx, embedder, features)
 	if err != nil {
 		msg := fmt.Sprintf("embedder failed: %v", err)
 		fmt.Fprintf(logger, "[cluster] embedder failed: %v; skipping clustering\n", err)
-		return &SkipReason{Code: "embedder_failed", Message: msg, Endpoint: opts.Endpoint, Model: modelName}, nil
+		return &SkipReason{Code: "embedder_failed", Message: msg, Model: modelName}, nil
 	}
 	if len(vecs) != len(candidates) {
 		msg := fmt.Sprintf("embedder returned %d vecs for %d forks", len(vecs), len(candidates))
@@ -294,11 +238,39 @@ func RunPipeline(ctx context.Context, opts PipelineOptions, inputs PipelineInput
 		})
 	}
 
+	// 5a. Zero-shot categories (advisory). Failures degrade silently to
+	//     uncategorized output.
+	var categories []string
+	var categoryScores []float64
+	if opts.Categorize {
+		var cerr error
+		categories, categoryScores, cerr = ClassifyForks(ctx, embedder, features)
+		if cerr != nil {
+			fmt.Fprintf(logger, "[cluster] classification failed: %v (continuing uncategorized)\n", cerr)
+			categories, categoryScores = nil, nil
+		}
+	}
+
 	// 7. Run clustering.
 	clusters, assignments := Run(points, Options{
 		Epsilon:        opts.Epsilon,
 		MinClusterSize: opts.MinClusterSize,
 	})
+
+	// 7a. Attach categories to assignments (by fork ID) so they ride the
+	//     cluster cache and the shared write-back path.
+	if categories != nil {
+		catByID := make(map[string]int, len(candidates))
+		for i, ef := range candidates {
+			catByID[ef.T1.ID] = i
+		}
+		for i := range assignments {
+			if idx, ok := catByID[assignments[i].ForkID]; ok && idx < len(categories) {
+				assignments[i].Category = categories[idx]
+				assignments[i].CategoryScore = categoryScores[idx]
+			}
+		}
+	}
 
 	// 8. Label each non-noise cluster.
 	idxByForkID := make(map[string]int, len(candidates))
@@ -313,32 +285,28 @@ func RunPipeline(ctx context.Context, opts PipelineOptions, inputs PipelineInput
 		clusters[i].Label = labels[clusters[i].ID]
 	}
 
-	// 8a. Optional LLM polish over each non-noise cluster label. Errors fall
-	//     back silently to the heuristic.
-	if opts.Labeler != nil {
-		upstreamRepo := fmt.Sprintf("%s/%s", inputs.UpstreamOwner, inputs.UpstreamRepo)
+	// 8a. Optional label polish over each non-noise cluster. Errors keep
+	//     the heuristic label.
+	if opts.LabelPolisher != nil {
+		upstreamRepo := inputs.UpstreamOwner + "/" + inputs.UpstreamRepo
 		for i := range clusters {
 			if clusters[i].ID == "noise" {
 				continue
 			}
-			members := membersForCluster(clusters[i], features, idxByForkID, 5)
-			polished, err := opts.Labeler.Polish(ctx, LabelerContext{
-				Heuristic:        clusters[i].Label,
-				Members:          members,
-				UpstreamRepo:     upstreamRepo,
-				UpstreamDesc:     inputs.UpstreamDesc,
-				UpstreamReadme:   inputs.UpstreamReadme,
-				UpstreamCoreDirs: inputs.UpstreamCoreDirs,
-			})
-			if err != nil {
-				fmt.Fprintf(logger, "[cluster] labeler polish failed for %s: %v (keeping heuristic)\n",
-					clusters[i].ID, err)
+			hint := PolishHint{
+				Heuristic:    clusters[i].Label,
+				UpstreamRepo: upstreamRepo,
+			}
+			hint.SampleCommits, hint.SamplePaths = sampleClusterTexts(clusters[i], features, idxByForkID, 6)
+			polished, perr := opts.LabelPolisher.PolishLabel(ctx, hint)
+			if perr != nil {
+				fmt.Fprintf(logger, "[cluster] label polish failed for %s: %v (keeping heuristic)\n", clusters[i].ID, perr)
 				continue
 			}
-			if polished == "" {
-				continue
+			fmt.Fprintf(logger, "[cluster] polish %s: %q (heuristic %q)\n", clusters[i].ID, polished, hint.Heuristic)
+			if polished != "" {
+				clusters[i].Label = polished
 			}
-			clusters[i].Label = polished
 		}
 	}
 
@@ -350,7 +318,7 @@ func RunPipeline(ctx context.Context, opts PipelineOptions, inputs PipelineInput
 		SchemaVersion:    SchemaVersion,
 		ComputedAt:       time.Now().UTC(),
 		EmbedderModel:    modelName,
-		EmbedderEndpoint: opts.Endpoint,
+		EmbedderEndpoint: "",
 		Provider:         provider,
 		Owner:            inputs.UpstreamOwner,
 		Repo:             inputs.UpstreamRepo,
@@ -406,6 +374,8 @@ func applyAssignmentsToForks(clusters []Cluster, assignments []Assignment, forks
 			continue
 		}
 		hr.NoveltyScore = a.Novelty
+		hr.Category = a.Category
+		hr.CategoryScore = a.CategoryScore
 		// Apply the novelty bonus to every assigned fork — including noise
 		// points, which carry Novelty=1.0 by definition. The +5 max matches
 		// the v2 NoveltyComponent's Max so the score stays comparable.
@@ -630,27 +600,6 @@ func SelectClusterCandidates(forks []EnrichedFork, topN int) []EnrichedFork {
 	return eligible
 }
 
-// membersForCluster returns up to `cap` member ForkFeatures for the given
-// cluster, looked up by ForkID via idxByForkID. Order follows the cluster's
-// Members list (which itself is deterministic — see cluster.Run).
-func membersForCluster(c Cluster, features []embed.ForkFeatures, idxByForkID map[string]int, cap int) []embed.ForkFeatures {
-	if cap <= 0 || len(c.Members) == 0 {
-		return nil
-	}
-	out := make([]embed.ForkFeatures, 0, cap)
-	for _, id := range c.Members {
-		if len(out) >= cap {
-			break
-		}
-		idx, ok := idxByForkID[id]
-		if !ok || idx < 0 || idx >= len(features) {
-			continue
-		}
-		out = append(out, features[idx])
-	}
-	return out
-}
-
 // labelClusters runs HeuristicLabel for each non-noise cluster.
 func labelClusters(clusters []Cluster, features []embed.ForkFeatures, idxByForkID map[string]int) map[string]string {
 	out := make(map[string]string, len(clusters))
@@ -720,3 +669,28 @@ func changeImpactFor(c repo.Centrality, ok bool, paths []string) float32 {
 	return float32(c.ScoreFork(paths))
 }
 
+// sampleClusterTexts collects up to n member commit subjects and up to n
+// member file paths for a cluster, for the label polisher's context.
+func sampleClusterTexts(c Cluster, features []embed.ForkFeatures, idxByForkID map[string]int, n int) (commits, paths []string) {
+	for _, id := range c.Members {
+		idx, ok := idxByForkID[id]
+		if !ok || idx < 0 || idx >= len(features) {
+			continue
+		}
+		f := features[idx]
+		for _, line := range strings.Split(f.Commits, "\n") {
+			if line = strings.TrimSpace(line); line != "" && len(commits) < n {
+				commits = append(commits, line)
+			}
+		}
+		for _, line := range strings.Split(f.Paths, "\n") {
+			if line = strings.TrimSpace(line); line != "" && len(paths) < n {
+				paths = append(paths, line)
+			}
+		}
+		if len(commits) >= n && len(paths) >= n {
+			break
+		}
+	}
+	return commits, paths
+}

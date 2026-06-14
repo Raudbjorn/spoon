@@ -1,7 +1,12 @@
-"""Embed every fork in features.json via local HF-served CodeExecutor.
+"""Embed every fork in features.json via a local HuggingFace model.
 
-Uses mean-pooling over the last hidden state to produce a single vector per
-input. Model is downloaded to ./hf_cache on first run (~500 MB).
+Generic transformers embedder: loads any AutoModel by `--model` and produces
+one vector per input by pooling the last hidden state (`--pooling mean` for
+encoders, `last_token` for decoder-style embedders). Originally written for
+`microsoft/codeexecutor`, now the shared runner for the whole model panel
+(nomic-embed-code, jina-v2-code, SFR, arctic, granite, Qwen3, ...). Weights
+are downloaded to ./hf_cache on first run; size varies by model
+(~100 MB CodeBERTa to several GB for the 2B decoders).
 """
 import argparse
 import json
@@ -14,15 +19,38 @@ from transformers import AutoModel, AutoTokenizer
 from embed_common import build_text, load_features
 
 
-def _effective_max_length(tokenizer, ceiling: int = 32768) -> int:
-    """Return the tokenizer's native max_length, capped at `ceiling` and
-    floored at 512. Some HF tokenizers report a sentinel value (e.g., 1e9)
-    when no limit was set during pre-training; we cap to avoid absurdly
-    long tensors. Tokenizers without the attribute fall back to 512.
+def safe_json_dump(data, path: str) -> None:
+    """Atomically write `data` as JSON to `path`.
+
+    Writes to a sibling temp file and `os.replace`s it into place, so an
+    interrupt (OOM, Ctrl-C) mid-flush can never leave a half-written progress
+    file that breaks the next resume. `os.replace` is atomic on the same
+    filesystem.
+    """
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, "w") as f:
+        json.dump(data, f)
+    os.replace(tmp_path, path)
+
+
+def _effective_max_length(tokenizer, model=None, ceiling: int = 32768) -> int:
+    """Return a safe tokenizer `max_length`, capped at `ceiling`.
+
+    Starts from the tokenizer's `model_max_length`, falling back to 512 only
+    when that attribute is missing or a non-positive sentinel (some HF
+    tokenizers report e.g. 1e9 when no limit was set during pre-training).
+    When `model` is given, the result is additionally clamped to the model's
+    `config.max_position_embeddings`: tokenizers frequently advertise a larger
+    window than the model can actually accept, and feeding sequences past the
+    positional-embedding table triggers an IndexError in the forward pass.
     """
     n = getattr(tokenizer, "model_max_length", None)
     if not n or n <= 0:
-        return 512
+        n = 512
+    if model is not None and hasattr(model, "config"):
+        max_pos = getattr(model.config, "max_position_embeddings", None)
+        if max_pos and max_pos > 0:
+            n = min(n, max_pos)
     return min(n, ceiling)
 
 
@@ -87,7 +115,7 @@ def embed_batch(model, tokenizer, texts: list[str], device: str, pooling: str = 
         texts,
         padding=True,
         truncation=True,
-        max_length=_effective_max_length(tokenizer),
+        max_length=_effective_max_length(tokenizer, model),
         return_tensors="pt",
     ).to(device)
     with torch.no_grad():
@@ -122,19 +150,27 @@ def main() -> int:
         "n_pairs gap when the Arc A770's 16 GiB cap rejects single-sequence "
         "allocations on the longest PRs (see RESULTS_PANEL_SUPPLEMENT.md).",
     )
+    ap.add_argument(
+        "--trust-remote-code",
+        action="store_true",
+        help="Allow loading custom modeling code from the model repo. Required "
+        "for models that ship their own implementation (nomic-embed-text-v1, "
+        "jina-embeddings-v2-base-code). OFF by default because it executes "
+        "arbitrary code from the HF repo — only enable it for models you trust.",
+    )
     args = ap.parse_args()
 
     os.makedirs(args.cache_dir, exist_ok=True)
     device = _select_device()
     print(f"loading {args.model} on {device}", file=sys.stderr)
-    # trust_remote_code=True is required for nomic-ai/nomic-embed-text-v1 and
-    # jinaai/jina-embeddings-v2-base-code (custom model implementations on
-    # the HF repo). The panel models are all well-known public weights.
+    # trust_remote_code defaults OFF (arbitrary code execution from the model
+    # repo). Pass --trust-remote-code for models with custom implementations,
+    # e.g. nomic-ai/nomic-embed-text-v1 and jinaai/jina-embeddings-v2-base-code.
     tokenizer = AutoTokenizer.from_pretrained(
-        args.model, cache_dir=args.cache_dir, trust_remote_code=True
+        args.model, cache_dir=args.cache_dir, trust_remote_code=args.trust_remote_code
     )
     model = AutoModel.from_pretrained(
-        args.model, cache_dir=args.cache_dir, trust_remote_code=True
+        args.model, cache_dir=args.cache_dir, trust_remote_code=args.trust_remote_code
     )
     # Some HF models (e.g. SFR-Embedding-Code-2B_R) self-dispatch with
     # device_map="auto" inside their custom modeling_*.py, which leaves
@@ -209,7 +245,8 @@ def main() -> int:
                     print(f"  batch {i//args.batch_size}: {device} OOM; "
                           f"loading CPU fallback model", file=sys.stderr)
                     cpu_model = AutoModel.from_pretrained(
-                        args.model, cache_dir=args.cache_dir, trust_remote_code=True
+                        args.model, cache_dir=args.cache_dir,
+                        trust_remote_code=args.trust_remote_code
                     ).to("cpu")
                     cpu_model.eval()
                 try:
@@ -222,8 +259,7 @@ def main() -> int:
                     failed += len(batch_ids)
                     print(f"  batch {i//args.batch_size}: skip ({len(batch_ids)} "
                           f"ids) after CPU retry: {e2}", file=sys.stderr)
-                    with open(args.out, "w") as f:
-                        json.dump(out, f)
+                    safe_json_dump(out, args.out)
                     continue
             else:
                 failed += len(batch_ids)
@@ -231,21 +267,18 @@ def main() -> int:
                       file=sys.stderr)
                 # Flush what we have so far so a later batch failing doesn't kill
                 # progress from earlier batches.
-                with open(args.out, "w") as f:
-                    json.dump(out, f)
+                safe_json_dump(out, args.out)
                 continue
         for bid, v in zip(batch_ids, vecs):
             out[bid] = v
         # Periodic flush every 4 batches (≈ 128 records) — bounds work-loss
         # on a hard crash to roughly that interval.
         if (i // args.batch_size) % 4 == 3:
-            with open(args.out, "w") as f:
-                json.dump(out, f)
+            safe_json_dump(out, args.out)
         print(f"[{i + len(batch_ids)}/{len(todo_ids)} new] embedded "
               f"(total {len(out)}/{len(ids)})", file=sys.stderr)
 
-    with open(args.out, "w") as f:
-        json.dump(out, f)
+    safe_json_dump(out, args.out)
     print(f"wrote {len(out)} vectors to {args.out} (failed batches: {failed}, "
           f"cpu_recovered_ids: {cpu_recovered})", file=sys.stderr)
     return 0

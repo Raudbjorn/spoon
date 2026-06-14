@@ -70,10 +70,12 @@ else
   AS_OVMS=(sudo -u ovms)
 fi
 # /etc/ovms/config.json may be owned by root, ovms, or the operator depending
-# on packaging. Pick the cheapest context that can actually write it.
+# on packaging. `test -w` already accounts for owner/group/other write bits
+# for the current user (and for root), so trust it directly. The old
+# group-membership probe was wrong: being *in* the file's group doesn't
+# imply the group has the write bit, so it could pick the no-sudo context
+# for a file we can't actually write, making `ovms --add_to_config` fail.
 if [ -w "$CONFIG" ] || [ "$(id -un)" = "root" ]; then
-  AS_CFG=()
-elif id -nG | tr ' ' '\n' | grep -qx "$(stat -c %G "$CONFIG" 2>/dev/null)"; then
   AS_CFG=()
 else
   AS_CFG=("${AS_OVMS[@]}")

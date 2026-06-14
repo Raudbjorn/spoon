@@ -472,8 +472,9 @@ func doThreadsResolve(args []string, stdout, stderr io.Writer) int {
 	if showCode > 0 && t != nil {
 		if fetcher := contentFetcherFor(api); fetcher != nil {
 			// We need the PR head SHA — refetch the status. Cheap relative to
-			// the resolve mutation that just ran.
-			status, _, ferr := api.FetchPR(context.Background(), owner, repo, number, "")
+			// the resolve mutation that just ran. ThreadStateAll is explicit:
+			// we only want PR metadata here, not a filtered thread set.
+			status, _, ferr := api.FetchPR(context.Background(), owner, repo, number, gh.ThreadStateAll)
 			if ferr == nil {
 				if cc, _ := threadsops.FetchCodeContext(context.Background(), fetcher, status.HeadSHA, owner, repo, *t, showCode); cc != nil {
 					t.CodeContext = cc

@@ -170,9 +170,6 @@ func parseUnifiedDiff(diff string) []forge.FileDiff {
 	if diff == "" {
 		return nil
 	}
-	// Normalize CRLF so a trailing '\r' can't corrupt parsed paths or be
-	// miscounted as a content line.
-	diff = strings.ReplaceAll(diff, "\r\n", "\n")
 	var out []forge.FileDiff
 	var cur *forge.FileDiff
 	flush := func() {
@@ -181,15 +178,29 @@ func parseUnifiedDiff(diff string) []forge.FileDiff {
 			cur = nil
 		}
 	}
-	for _, line := range strings.Split(diff, "\n") {
+	// Walk lines by scanning to each '\n' rather than allocating a slice for the
+	// whole (up to ~10MB) diff or a CRLF-normalized copy. A trailing '\r' is
+	// trimmed in place so CRLF input is handled without strings.ReplaceAll, and
+	// arbitrarily long lines (e.g. minified files) are handled without a scanner
+	// buffer limit.
+	for len(diff) > 0 {
+		line := diff
+		if nl := strings.IndexByte(diff, '\n'); nl >= 0 {
+			line, diff = diff[:nl], diff[nl+1:]
+		} else {
+			diff = ""
+		}
+		line = strings.TrimSuffix(line, "\r")
 		switch {
 		case strings.HasPrefix(line, "diff --git "):
 			flush()
 			cur = &forge.FileDiff{Path: gitDiffPath(line)}
 		case cur == nil:
 			// preamble before the first file header
-		case strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---"):
-			// file header lines, not content
+		case strings.HasPrefix(line, "+++ ") || strings.HasPrefix(line, "--- "):
+			// file header lines, not content. Git always emits a space after the
+			// "+++"/"---" marker, so the trailing space distinguishes a header
+			// from a content line like "+++foo" (an added "++foo").
 		case strings.HasPrefix(line, "+"):
 			cur.Additions++
 		case strings.HasPrefix(line, "-"):
@@ -209,6 +220,20 @@ func gitDiffPath(header string) string {
 		return ""
 	}
 	line := header[len(prefix):]
+	// Git C-quotes a path when it contains a space-with-specials, a quote, a
+	// control char, or (with core.quotePath) non-ASCII bytes, e.g.
+	//   diff --git "a/wei\303\237.txt" "b/wei\303\237.txt"
+	// The b-side is the trailing quoted token; strconv.Unquote decodes git's
+	// C-style escapes (including octal bytes) back to the real path.
+	if idx := strings.LastIndex(line, `"b/`); idx != -1 {
+		if end := strings.LastIndexByte(line, '"'); end > idx {
+			token := line[idx : end+1]
+			if unq, uerr := strconv.Unquote(token); uerr == nil {
+				return strings.TrimPrefix(unq, "b/")
+			}
+			return strings.TrimPrefix(strings.Trim(token, `"`), "b/")
+		}
+	}
 	if idx := strings.LastIndex(line, " b/"); idx != -1 {
 		return strings.Trim(line[idx+3:], `"`)
 	}
@@ -218,15 +243,17 @@ func gitDiffPath(header string) string {
 // computeMNA weights net additions per file by heat.FileWeight (junk/generated
 // stripped), matching the GitHub/GitLab providers.
 func computeMNA(diffs []forge.FileDiff) int {
-	var total float64
+	total := 0
 	for _, d := range diffs {
 		net := d.Additions - d.Deletions
 		if net < 0 {
 			net = 0
 		}
-		total += float64(net) * heat.FileWeight(d.Path)
+		// Truncate per file (matching the GitHub/GitLab providers) so the same
+		// diff yields the same MNA regardless of provider.
+		total += int(float64(net) * heat.FileWeight(d.Path))
 	}
-	return int(total)
+	return total
 }
 
 func featureCommitRatio(commits []forge.AheadCommit) float64 {
