@@ -170,9 +170,6 @@ func parseUnifiedDiff(diff string) []forge.FileDiff {
 	if diff == "" {
 		return nil
 	}
-	// Normalize CRLF so a trailing '\r' can't corrupt parsed paths or be
-	// miscounted as a content line.
-	diff = strings.ReplaceAll(diff, "\r\n", "\n")
 	var out []forge.FileDiff
 	var cur *forge.FileDiff
 	flush := func() {
@@ -181,15 +178,29 @@ func parseUnifiedDiff(diff string) []forge.FileDiff {
 			cur = nil
 		}
 	}
-	for _, line := range strings.Split(diff, "\n") {
+	// Walk lines by scanning to each '\n' rather than allocating a slice for the
+	// whole (up to ~10MB) diff or a CRLF-normalized copy. A trailing '\r' is
+	// trimmed in place so CRLF input is handled without strings.ReplaceAll, and
+	// arbitrarily long lines (e.g. minified files) are handled without a scanner
+	// buffer limit.
+	for len(diff) > 0 {
+		line := diff
+		if nl := strings.IndexByte(diff, '\n'); nl >= 0 {
+			line, diff = diff[:nl], diff[nl+1:]
+		} else {
+			diff = ""
+		}
+		line = strings.TrimSuffix(line, "\r")
 		switch {
 		case strings.HasPrefix(line, "diff --git "):
 			flush()
 			cur = &forge.FileDiff{Path: gitDiffPath(line)}
 		case cur == nil:
 			// preamble before the first file header
-		case strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---"):
-			// file header lines, not content
+		case strings.HasPrefix(line, "+++ ") || strings.HasPrefix(line, "--- "):
+			// file header lines, not content. Git always emits a space after the
+			// "+++"/"---" marker, so the trailing space distinguishes a header
+			// from a content line like "+++foo" (an added "++foo").
 		case strings.HasPrefix(line, "+"):
 			cur.Additions++
 		case strings.HasPrefix(line, "-"):
