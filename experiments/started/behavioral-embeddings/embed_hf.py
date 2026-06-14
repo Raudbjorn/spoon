@@ -37,12 +37,17 @@ def _effective_max_length(tokenizer, model=None, ceiling: int = 32768) -> int:
     """Return a safe tokenizer `max_length`, capped at `ceiling`.
 
     Starts from the tokenizer's `model_max_length`, falling back to 512 only
-    when that attribute is missing or a non-positive sentinel (some HF
-    tokenizers report e.g. 1e9 when no limit was set during pre-training).
+    when that attribute is missing or non-positive. Some HF tokenizers instead
+    report a huge positive sentinel (e.g. 1e9) when no limit was set during
+    pre-training; that value is bounded by `ceiling`, not the 512 fallback.
     When `model` is given, the result is additionally clamped to the model's
     `config.max_position_embeddings`: tokenizers frequently advertise a larger
     window than the model can actually accept, and feeding sequences past the
     positional-embedding table triggers an IndexError in the forward pass.
+
+    `model_max_length` may be a float; the return is cast to `int` so the
+    tokenizer's `max_length` parameter never receives a float (which some
+    tokenizers reject with a TypeError).
     """
     n = getattr(tokenizer, "model_max_length", None)
     if not n or n <= 0:
@@ -51,7 +56,7 @@ def _effective_max_length(tokenizer, model=None, ceiling: int = 32768) -> int:
         max_pos = getattr(model.config, "max_position_embeddings", None)
         if max_pos and max_pos > 0:
             n = min(n, max_pos)
-    return min(n, ceiling)
+    return int(min(n, ceiling))
 
 
 def _pool_mean(hidden, attention_mask):
