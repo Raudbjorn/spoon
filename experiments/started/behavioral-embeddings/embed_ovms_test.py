@@ -6,6 +6,7 @@ needed: happy path, out-of-order indices, missing/out-of-range/duplicate
 indices, empty embeddings, API error payloads, and count mismatch.
 """
 import json
+import os
 
 import pytest
 
@@ -75,18 +76,6 @@ def test_embed_batch_out_of_range_index_raises(monkeypatch):
         embed_batch("http://x", "m", ["a", "b"], timeout=1.0)
 
 
-def test_embed_batch_bool_index_raises(monkeypatch):
-    # bool is a subclass of int; a JSON `true`/`false` index must be rejected
-    # rather than coerced to slot 1/0 via bool's int-ness.
-    payload = {"data": [
-        {"index": True, "embedding": [1.0, 2.0]},
-        {"index": 1, "embedding": [3.0, 4.0]},
-    ]}
-    _patch_post(monkeypatch, payload)
-    with pytest.raises(RuntimeError, match="out-of-bounds or missing index"):
-        embed_batch("http://x", "m", ["a", "b"], timeout=1.0)
-
-
 def test_embed_batch_duplicate_index_raises(monkeypatch):
     payload = {"data": [
         {"index": 0, "embedding": [1.0, 2.0]},
@@ -120,6 +109,18 @@ def test_embed_batch_count_mismatch_raises(monkeypatch):
         embed_batch("http://x", "m", ["a", "b"], timeout=1.0)
 
 
+def test_embed_batch_bool_index_raises(monkeypatch):
+    # bool is a subclass of int; a JSON `true` in the index field must be
+    # rejected, not silently treated as slot 1.
+    payload = {"data": [
+        {"index": 0, "embedding": [1.0, 2.0]},
+        {"index": True, "embedding": [3.0, 4.0]},
+    ]}
+    _patch_post(monkeypatch, payload)
+    with pytest.raises(RuntimeError, match="out-of-bounds or missing index"):
+        embed_batch("http://x", "m", ["a", "b"], timeout=1.0)
+
+
 def test_atomic_dump_roundtrips_and_replaces(tmp_path):
     target = tmp_path / "out.json"
     _atomic_dump({"a": [1.0, 2.0]}, str(target))
@@ -127,4 +128,16 @@ def test_atomic_dump_roundtrips_and_replaces(tmp_path):
     # A second write replaces cleanly and leaves no temp files behind.
     _atomic_dump({"b": [3.0]}, str(target))
     assert json.loads(target.read_text()) == {"b": [3.0]}
+    assert list(tmp_path.iterdir()) == [target]
+
+
+def test_atomic_dump_preserves_existing_mode(tmp_path):
+    # Overwriting an existing checkpoint must keep its permission bits: the
+    # temp file is created 0600, so without explicit preservation os.replace
+    # would silently downgrade a 0644 file.
+    target = tmp_path / "out.json"
+    target.write_text("{}")
+    os.chmod(target, 0o644)
+    _atomic_dump({"a": [1.0]}, str(target))
+    assert (target.stat().st_mode & 0o777) == 0o644
     assert list(tmp_path.iterdir()) == [target]

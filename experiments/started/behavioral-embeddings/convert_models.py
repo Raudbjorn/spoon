@@ -59,14 +59,19 @@ def convert_onnx_to_ir(model_dir: Path, staging: Path) -> bool:
     staged_onnx = staging / "model.onnx"
     if not staged_onnx.exists():
         # Stream `sudo cat` straight to disk rather than buffering the whole
-        # ONNX in memory (capture_output) — multi-GB models would OOM.
+        # ONNX in memory (capture_output) — multi-GB models would OOM. Write to
+        # a .tmp and rename only on success, so an interrupt (Ctrl+C, OOM) can't
+        # leave a truncated model.onnx that the exists() check above would later
+        # mistake for a complete staging.
+        tmp_staged = staged_onnx.with_suffix(".tmp")
         try:
-            with open(staged_onnx, "wb") as f:
+            with open(tmp_staged, "wb") as f:
                 subprocess.run(["sudo", "cat", str(src_onnx)], stdout=f, check=True)
+            tmp_staged.rename(staged_onnx)
         except (subprocess.CalledProcessError, OSError) as e:
             print(f"  could not read {src_onnx}: {e}", file=sys.stderr)
-            if staged_onnx.exists():
-                staged_onnx.unlink()
+            if tmp_staged.exists():
+                tmp_staged.unlink()
             return False
         print(f"  staged {staged_onnx} ({staged_onnx.stat().st_size//1024//1024} MB)",
               file=sys.stderr)
@@ -93,13 +98,19 @@ def download_ov_repo(repo: str, files: list[str], staging: Path) -> bool:
             continue
         url = f"{base}/{name}"
         print(f"  downloading {url}", file=sys.stderr)
+        dst_tmp = dst.with_suffix(".tmp")
         try:
             # timeout guards against a network stall hanging an unattended
-            # staging run indefinitely; applies to connect + each read.
-            with urlopen(url, timeout=120) as r, open(dst, "wb") as f:
+            # staging run indefinitely; applies to connect + each read. Write to
+            # .tmp and rename on success so an interrupted download can't leave a
+            # partial file that the size check above treats as complete.
+            with urlopen(url, timeout=120) as r, open(dst_tmp, "wb") as f:
                 shutil.copyfileobj(r, f, length=1024 * 1024)
+            dst_tmp.rename(dst)
         except Exception as e:
             print(f"  FAILED {url}: {e}", file=sys.stderr)
+            if dst_tmp.exists():
+                dst_tmp.unlink()
             return False
         print(f"  -> {dst.stat().st_size // 1024 // 1024} MB", file=sys.stderr)
     return True

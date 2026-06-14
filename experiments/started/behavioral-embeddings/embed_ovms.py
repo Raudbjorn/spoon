@@ -27,14 +27,37 @@ def _atomic_dump(obj: object, path: str) -> None:
     A bare ``json.dump`` to the destination leaves a truncated/corrupt file
     if the process is interrupted (Ctrl+C, OOM) mid-write — fatal for the
     resume path, which trusts whatever is on disk. Write to a temp file in
-    the same directory, then ``os.replace`` (atomic on POSIX) over the
-    target, so a partial write can never clobber a good checkpoint.
+    the same directory, fsync it, then ``os.replace`` (atomic on POSIX) over
+    the target, so a partial write can never clobber a good checkpoint.
+
+    The temp file is removed if the write or replace fails, and the
+    destination's existing permission bits are preserved — NamedTemporaryFile
+    creates 0600, so without this an os.replace would silently downgrade an
+    existing 0644 checkpoint.
     """
     dst_dir = os.path.dirname(path) or "."
-    with tempfile.NamedTemporaryFile("w", dir=dst_dir, delete=False) as tf:
-        json.dump(obj, tf)
-        tmp_name = tf.name
-    os.replace(tmp_name, path)
+    prev_mode: int | None = None
+    try:
+        prev_mode = os.stat(path).st_mode
+    except OSError:
+        pass  # first write — no existing mode to preserve
+    tmp_name: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile("w", dir=dst_dir, delete=False) as tf:
+            tmp_name = tf.name
+            json.dump(obj, tf)
+            tf.flush()
+            os.fsync(tf.fileno())
+        if prev_mode is not None:
+            os.chmod(tmp_name, prev_mode)
+        os.replace(tmp_name, path)
+        tmp_name = None  # ownership transferred; nothing to clean up
+    finally:
+        if tmp_name is not None:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
 
 
 def embed_batch(endpoint: str, model: str, texts: list[str], timeout: float) -> list[list[float]]:
@@ -61,9 +84,10 @@ def embed_batch(endpoint: str, model: str, texts: list[str], timeout: float) -> 
         # missing/out-of-range value (or a duplicate clobbering an earlier
         # slot) means we can't trust the ordering, so fail loudly instead
         # of silently writing to slot 0 or raising a bare IndexError.
-        # `type(idx) is int` (rather than isinstance) also rejects bool, which
-        # is a subclass of int.
         idx = item.get("index")
+        # `type(idx) is not int` rather than isinstance: bool is a subclass of
+        # int, so a JSON `true`/`false` in the index field would pass an
+        # isinstance check and silently map to slot 1/0.
         if type(idx) is not int or not (0 <= idx < len(texts)):
             raise RuntimeError(f"ovms returned out-of-bounds or missing index {idx!r}")
         if out[idx] is not None:
