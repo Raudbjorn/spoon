@@ -348,6 +348,16 @@ func ApplySuggestion(ctx context.Context, thread ReviewThreadWithPolicy, sug Sug
 	// the edited file (and thus its parent) always exists.
 	resolvedRoot, rerr := filepath.EvalSymlinks(absRoot)
 	if rerr != nil {
+		// A non-existent repo root is a user-input error (e.g. a bad
+		// --repo-root), not an internal fault — surface it as bad_input so
+		// callers get consistent error-code semantics.
+		if os.IsNotExist(rerr) {
+			return res, &OpError{
+				Code:    OpCodeBadInput,
+				Message: "repo root does not exist: " + absRoot,
+				Details: map[string]any{"repoRoot": absRoot},
+			}
+		}
 		return res, &OpError{Code: OpCodeInternal, Message: "resolve root symlinks: " + rerr.Error()}
 	}
 	resolvedParent, perr := filepath.EvalSymlinks(filepath.Dir(full))
