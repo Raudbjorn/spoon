@@ -754,6 +754,11 @@ func newLabelPolisher() (cluster.LabelPolisher, func(), error) {
 // records tagged with the upstream's full name. Used by topic mode, where
 // several upstreams share one output stream.
 func streamAndEmit(ctx context.Context, provider forge.Forge, owner, name, upstream string, opts forksops.Options, stdout, stderr io.Writer) int {
+	// Cancel on any early return so the background goroutine spawned by
+	// forksops.Stream doesn't keep consuming API rate limit after we stop
+	// draining ch (e.g. a stdout write failure below).
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	ch, streamErr := forksops.Stream(ctx, provider, owner, name, opts)
 	if streamErr != nil {
 		var rl *gh.RateLimitError
