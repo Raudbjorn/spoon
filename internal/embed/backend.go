@@ -32,6 +32,6 @@ func SelectBackend(backend string, cfg OpenVINOConfig) (Embedder, string, func()
 		}
 		return e, cfg.EmbedderID(), e.Close, nil
 	default:
-		return nil, "", nil, fmt.Errorf("unknown embedder backend %q (want %q or %q)", backend, BackendBuiltin, BackendOpenVINO)
+		return nil, "", nil, fmt.Errorf("unknown embedder backend %q (want %q, %q, or %q)", backend, BackendBuiltin, "lexical", BackendOpenVINO)
 	}
 }

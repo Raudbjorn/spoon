@@ -70,13 +70,18 @@ func PoolHiddenStates(pooling Pooling, hidden []float32, mask []int64, batch, se
 				v[h] *= inv
 			}
 		case PoolingLast:
-			lastT := 0
+			lastT, attended := 0, false
 			for t := 0; t < seq; t++ {
 				if mask[b*seq+t] != 0 {
 					lastT = t
+					attended = true
 				}
 			}
-			copy(v, hidden[rowBase+lastT*hiddenDim:rowBase+(lastT+1)*hiddenDim])
+			// Leave the vector as zeros when nothing is attended; copying
+			// token 0 would treat padding as content for a fully-masked row.
+			if attended {
+				copy(v, hidden[rowBase+lastT*hiddenDim:rowBase+(lastT+1)*hiddenDim])
+			}
 		default: // PoolingCLS
 			copy(v, hidden[rowBase:rowBase+hiddenDim])
 		}

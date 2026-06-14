@@ -17,10 +17,19 @@ func NewScorer(stats []ForkStats) *Scorer {
 // NewScorerWeighted creates a Scorer with per-component weight overrides
 // (see RawScoreWeighted). nil/empty weights means defaults.
 func NewScorerWeighted(stats []ForkStats, weights map[string]float64) *Scorer {
+	// Copy the caller's map so later mutations (or sharing it across
+	// goroutines) can't change scoring behavior mid-run.
+	var w map[string]float64
+	if len(weights) > 0 {
+		w = make(map[string]float64, len(weights))
+		for k, v := range weights {
+			w[k] = v
+		}
+	}
 	return &Scorer{
 		pctTable:  NewPercentileTable(stats),
 		forkCount: len(stats),
-		weights:   weights,
+		weights:   w,
 	}
 }
 

@@ -221,7 +221,7 @@ func forkInfoToT1(f ForkInfo, extra *T1Extra, parentFullPath string) forge.T1Dat
 		SubForkCount:   f.Forks,
 		Description:    f.Description,
 		Size:           f.Size,
-		Language:        f.Language,
+		Language:       f.Language,
 		OpenIssues:     f.OpenIssues,
 		CreatedAt:      created,
 		SourceFullPath: parentFullPath,
@@ -348,7 +348,13 @@ func (p *GHProvider) SearchTopicRepos(ctx context.Context, topic string, limit i
 		if r.IsFork {
 			continue // belt and braces; the query already excludes forks
 		}
-		pushed, _ := time.Parse(time.RFC3339, r.PushedAt)
+		pushed, err := time.Parse(time.RFC3339, r.PushedAt)
+		if err != nil {
+			// Recency drives topic selection; a zero PushedAt from an
+			// unparseable timestamp would silently skew scoring, so skip
+			// the repo rather than rank it as ancient.
+			continue
+		}
 		out = append(out, forge.TopicRepo{
 			FullName:    r.FullName,
 			Description: r.Description,
