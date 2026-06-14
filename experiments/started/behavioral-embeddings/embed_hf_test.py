@@ -36,6 +36,18 @@ def test_effective_max_length_respects_low_native_window():
     assert _effective_max_length(tok) == 512
 
 
+def test_effective_max_length_returns_int_for_float_model_max_length():
+    # Some tokenizers report model_max_length as a float (e.g. 2048.0); the
+    # tokenizer's max_length param must be an int or strict tokenizers raise.
+    tok = _FakeTokenizer(2048.0)
+    result = _effective_max_length(tok)
+    assert result == 2048
+    assert type(result) is int
+    # A huge float sentinel is bounded by the ceiling and still returned as int.
+    assert _effective_max_length(_FakeTokenizer(1e9)) == 32768
+    assert type(_effective_max_length(_FakeTokenizer(1e9))) is int
+
+
 def test_pool_mean_ignores_padded_tokens():
     # Two rows, sequence length 3, hidden size 2. Row 0 has 2 real tokens,
     # row 1 has 3. Padded positions should NOT contribute to the mean.

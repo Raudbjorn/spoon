@@ -28,11 +28,15 @@ models=(
 for entry in "${models[@]}"; do
   IFS=":" read -r model out log <<< "$entry"
   echo "=== ${model} ==="
+  # These panel models ship custom modeling code (nomic-bert, jina v2, SFR,
+  # arctic v2), so they need --trust-remote-code now that embed_hf.py defaults
+  # it OFF. The list is a fixed, curated set of trusted research models.
   if .venv/bin/python embed_hf.py \
       --model "$model" \
       --features features.json \
       --out "$out" \
       --cache-dir hf_cache \
+      --trust-remote-code \
       --batch-size 4 2>"$log" ; then
     echo "  -> $(jq 'length' "$out") vectors in $out"
   else

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"syscall"
 )
 
 func main() {
@@ -27,9 +28,10 @@ func main() {
 		os.Exit(2)
 	}
 
-	// Interrupt (Ctrl-C) cancels the context so dumpFeatures stops paginating
-	// and returns whatever it has collected, saving time and API rate limit.
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	// Interrupt (Ctrl-C) or SIGTERM (containers/systemd/CI shutdown) cancels
+	// the context so dumpFeatures stops paginating and returns whatever it has
+	// collected, saving time and API rate limit.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	records, err := dumpFeatures(ctx, owner, name, *topN)
