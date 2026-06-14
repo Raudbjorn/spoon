@@ -68,6 +68,7 @@ int ovffi_load(const char* lib) {
 	do {                                           \
 		p_##name = dlsym(h, #name);                \
 		if (!p_##name) {                           \
+			dlclose(h);                            \
 			return 2;                              \
 		}                                          \
 	} while (0)

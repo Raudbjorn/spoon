@@ -71,6 +71,7 @@ static int genai_load(const char* lib) {
 	do {                              \
 		var = dlsym(h, sym);          \
 		if (!var) {                   \
+			dlclose(h);               \
 			return 2;                 \
 		}                             \
 	} while (0)
