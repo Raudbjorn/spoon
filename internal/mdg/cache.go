@@ -8,8 +8,8 @@ import (
 )
 
 const (
-	mdgTTL              = 24 * time.Hour
-	CacheSchemaVersion  = 1
+	mdgTTL             = 24 * time.Hour
+	CacheSchemaVersion = 1
 )
 
 // MDGCache is the on-disk MDG entry.

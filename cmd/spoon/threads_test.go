@@ -121,7 +121,6 @@ func TestParseThreadsFlags(t *testing.T) {
 	}
 }
 
-
 func TestParseThreadsFlags_FilterModes(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -496,4 +495,3 @@ func TestParseThreadsFlags_Verbose(t *testing.T) {
 		})
 	}
 }
-

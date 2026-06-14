@@ -4,9 +4,9 @@ import "testing"
 
 func TestNextPageURL(t *testing.T) {
 	tests := []struct {
-		name   string
-		link   string
-		want   string
+		name string
+		link string
+		want string
 	}{
 		{
 			name: "with next",

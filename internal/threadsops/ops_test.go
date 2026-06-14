@@ -18,7 +18,9 @@ type fakeAPI struct {
 func (f *fakeAPI) FetchPR(_ context.Context, _, _ string, _ int, _ string) (github.PullRequestStatus, []github.ReviewThread, error) {
 	return f.status, f.threads, f.err
 }
-func (f *fakeAPI) ReplyToThread(_ context.Context, _, _ string) (github.ThreadComment, error) { return github.ThreadComment{}, nil }
+func (f *fakeAPI) ReplyToThread(_ context.Context, _, _ string) (github.ThreadComment, error) {
+	return github.ThreadComment{}, nil
+}
 func (f *fakeAPI) ResolveThread(_ context.Context, _ string) error   { return nil }
 func (f *fakeAPI) UnresolveThread(_ context.Context, _ string) error { return nil }
 func (f *fakeAPI) CurrentUserLogin(_ context.Context) (string, error) {

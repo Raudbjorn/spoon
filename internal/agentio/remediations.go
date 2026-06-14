@@ -29,7 +29,7 @@ func RemediationPolicyBodyRequired(prRef, threadID string) string {
 }
 
 func RemediationPolicyBulkHumanThreads(prRef string) string {
-	return fmt.Sprintf("Some threads need individual responses. List them with `spn threads list %s`, then resolve each with `spn threads resolve %s <id> --body \"...\"`." +
+	return fmt.Sprintf("Some threads need individual responses. List them with `spn threads list %s`, then resolve each with `spn threads resolve %s <id> --body \"...\"`."+
 		" Bulk-resolve will not touch human-raised threads.", prRef, prRef)
 }
 

@@ -21,7 +21,7 @@ type Provider struct {
 	sem    chan struct{} // bounds concurrency across all goroutines
 
 	// Cached after Parent() call; used by Compare().
-	sourceFullPath    string
+	sourceFullPath      string
 	sourceDefaultBranch string
 }
 
