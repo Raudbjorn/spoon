@@ -177,7 +177,11 @@ func (c *Client) doGraphQLWithRetry(ctx context.Context, query string, variables
 		if attempt == gqlMaxAttempts {
 			break
 		}
-		slog.Warn("forks: transient GraphQL error, retrying",
+		// Debug, not Warn: in `spn forks list` stderr carries structured NDJSON
+		// envelopes, and an unstructured warning here would interleave with them
+		// and break machine consumers. The CLI layer surfaces a structured
+		// warning if the run ultimately degrades.
+		slog.Debug("forks: transient GraphQL error, retrying",
 			"attempt", attempt, "max", gqlMaxAttempts, "err", err)
 		select {
 		case <-ctx.Done():
@@ -204,11 +208,14 @@ func isTransientServerError(err error) bool {
 		}
 	}
 	// go-gh does not always surface the GraphQL HTTP status as a typed error;
-	// fall back to matching the status code in the message.
+	// fall back to matching the status code in the message. Match the "HTTP 50x"
+	// prefix go-gh uses rather than a bare "50x" substring, which would false-
+	// positive on port numbers, IDs, or timestamps that happen to contain those
+	// digits.
 	msg := err.Error()
-	return strings.Contains(msg, "502") ||
-		strings.Contains(msg, "503") ||
-		strings.Contains(msg, "504")
+	return strings.Contains(msg, "HTTP 502") ||
+		strings.Contains(msg, "HTTP 503") ||
+		strings.Contains(msg, "HTTP 504")
 }
 
 // gqlForkToForkInfo converts a GraphQL fork node to ForkInfo + T1Extra.
@@ -297,8 +304,16 @@ func sortBranches(refs []gqlRefNode, defaultBranch string) []BranchInfo {
 // Returns forks and T1Extras (nil for REST path).
 func (c *Client) FetchForksAuto(ctx context.Context, owner, repo string, onPage func(forks []ForkInfo, page int)) ([]ForkInfo, map[int64]T1Extra, error) {
 	if c.HasGraphQL() {
+		// Track fork IDs already streamed via the GraphQL onPage callback. If the
+		// GraphQL query fails partway through (after emitting some pages) and we
+		// fall back to REST below, REST restarts from page 1 and would otherwise
+		// re-emit those same forks to onPage — duplicating them in the TUI/output.
+		streamed := make(map[int64]struct{})
 		forks, extras, err := c.FetchForksGraphQL(ctx, owner, repo, func(forks []ForkInfo, extras []T1Extra, page int) {
 			if onPage != nil {
+				for _, f := range forks {
+					streamed[f.ID] = struct{}{}
+				}
 				onPage(forks, page)
 			}
 		})
@@ -307,9 +322,31 @@ func (c *Client) FetchForksAuto(ctx context.Context, owner, repo string, onPage 
 			// networks even after retries (GitHub 502/timeout). Fall back to the
 			// REST forks endpoint so the user gets the fork list — just without
 			// the T1 extras (open PRs, releases, top branches).
-			slog.Warn("forks: GraphQL failed, falling back to REST",
+			//
+			// Debug, not Warn: stderr is reserved for structured envelopes in the
+			// agent-facing `spn` command; the CLI layer surfaces a structured
+			// degraded-run warning instead.
+			slog.Debug("forks: GraphQL failed, falling back to REST",
 				"owner", owner, "repo", repo, "err", err)
-			forks, restErr := c.FetchForks(ctx, owner, repo, onPage)
+			// Filter already-streamed forks out of the fallback's per-page
+			// callback so callers don't see duplicates, while still returning the
+			// complete REST fork list.
+			dedupOnPage := onPage
+			if onPage != nil && len(streamed) > 0 {
+				dedupOnPage = func(forks []ForkInfo, page int) {
+					fresh := forks[:0:0]
+					for _, f := range forks {
+						if _, seen := streamed[f.ID]; seen {
+							continue
+						}
+						fresh = append(fresh, f)
+					}
+					if len(fresh) > 0 {
+						onPage(fresh, page)
+					}
+				}
+			}
+			forks, restErr := c.FetchForks(ctx, owner, repo, dedupOnPage)
 			if restErr != nil {
 				return nil, nil, fmt.Errorf("graphql failed (%v); rest fallback failed: %w", err, restErr)
 			}

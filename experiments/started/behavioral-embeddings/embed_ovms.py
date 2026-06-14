@@ -1,11 +1,11 @@
 """Embed every fork in features.json via OpenVINO Model Server.
 
 Speaks OVMS's OpenAI-compatible `/v3/embeddings` endpoint. The model must
-already be loaded by the server (use ../../../../setup_ovms_models.sh —
-or, on a host with the ovms package, run setup_ovms_embeddings.sh from
-/usr/lib/ovms/contrib/). Inference target (CPU / GPU / NPU) is decided
-when the model is pulled, not by this client; for Intel Arc A770 the
-helper pulls with --target_device GPU.
+already be loaded by the server (run ./setup_ovms_models.sh from this
+directory — on a host with the ovms package it delegates to the packaged
+/usr/lib/ovms/contrib/setup_embeddings_arc.sh helper). Inference target
+(CPU / GPU / NPU) is decided when the model is pulled, not by this client;
+for Intel Arc A770 the helper pulls with --target_device GPU.
 
 Same on-disk vector format and resume semantics as embed_hf.py so
 analyze.py consumes either interchangeably.
@@ -14,10 +14,27 @@ import argparse
 import json
 import os
 import sys
+import tempfile
 
 import requests
 
 from embed_common import build_text, load_features
+
+
+def _atomic_dump(obj: object, path: str) -> None:
+    """Write JSON to ``path`` atomically.
+
+    A bare ``json.dump`` to the destination leaves a truncated/corrupt file
+    if the process is interrupted (Ctrl+C, OOM) mid-write — fatal for the
+    resume path, which trusts whatever is on disk. Write to a temp file in
+    the same directory, then ``os.replace`` (atomic on POSIX) over the
+    target, so a partial write can never clobber a good checkpoint.
+    """
+    dst_dir = os.path.dirname(path) or "."
+    with tempfile.NamedTemporaryFile("w", dir=dst_dir, delete=False) as tf:
+        json.dump(obj, tf)
+        tmp_name = tf.name
+    os.replace(tmp_name, path)
 
 
 def embed_batch(endpoint: str, model: str, texts: list[str], timeout: float) -> list[list[float]]:
@@ -40,7 +57,16 @@ def embed_batch(endpoint: str, model: str, texts: list[str], timeout: float) -> 
     # may return out of order under pipelining).
     out: list[list[float] | None] = [None] * len(texts)
     for item in data:
-        idx = item.get("index", 0)
+        # `index` is required to map a result back to its input slot; a
+        # missing/out-of-range value (or a duplicate clobbering an earlier
+        # slot) means we can't trust the ordering, so fail loudly instead
+        # of silently writing to slot 0 or raising a bare IndexError.
+        # bool is a subclass of int, so reject it explicitly.
+        idx = item.get("index")
+        if not isinstance(idx, int) or isinstance(idx, bool) or not (0 <= idx < len(texts)):
+            raise RuntimeError(f"ovms returned out-of-bounds or missing index {idx!r}")
+        if out[idx] is not None:
+            raise RuntimeError(f"ovms returned duplicate index {idx}")
         vec = item.get("embedding") or []
         if not vec:
             raise RuntimeError(f"empty embedding at index {idx}")
@@ -105,25 +131,19 @@ def main() -> int:
                 f"({len(batch_ids)} ids): {e}",
                 file=sys.stderr,
             )
-            import tempfile
-            with tempfile.NamedTemporaryFile("w", dir=os.path.dirname(args.out) or ".", delete=False) as tf:
-                json.dump(out, tf)
-                temp_name = tf.name
-            os.replace(temp_name, args.out)
+            _atomic_dump(out, args.out)
             continue
         for bid, v in zip(batch_ids, vecs):
             out[bid] = v
         if (i // args.batch_size) % 4 == 3:
-            with open(args.out, "w") as f:
-                json.dump(out, f)
+            _atomic_dump(out, args.out)
         print(
             f"[{i + len(batch_ids)}/{len(todo_ids)} new] embedded "
             f"(total {len(out)}/{len(ids)})",
             file=sys.stderr,
         )
 
-    with open(args.out, "w") as f:
-        json.dump(out, f)
+    _atomic_dump(out, args.out)
     print(
         f"wrote {len(out)} vectors to {args.out} (failed batches: {failed})",
         file=sys.stderr,

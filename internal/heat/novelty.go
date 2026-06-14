@@ -47,7 +47,11 @@ func ApplyNoveltyToScore(hr *HeatResult) {
 	if n > 1 {
 		n = 1
 	}
-	hr.Score += n * 5
+	w := 1.0
+	if hr.noveltyWeightSet {
+		w = hr.noveltyWeight
+	}
+	hr.Score += n * 5 * w
 	if hr.Score > 100 {
 		hr.Score = 100
 	}

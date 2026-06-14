@@ -14,6 +14,9 @@ type Provider int
 const (
 	ProviderGitHub Provider = iota
 	ProviderGitLab
+	// ProviderGitea covers Gitea and its fork Forgejo (e.g. codeberg.org). They
+	// share the /api/v1 REST surface, so one provider serves both.
+	ProviderGitea
 )
 
 func (p Provider) String() string {
@@ -22,6 +25,8 @@ func (p Provider) String() string {
 		return "github"
 	case ProviderGitLab:
 		return "gitlab"
+	case ProviderGitea:
+		return "gitea"
 	default:
 		return "unknown"
 	}
@@ -182,4 +187,16 @@ type Forge interface {
 
 	// Headroom returns the current rate-limit headroom in [0.0, 1.0].
 	Headroom() float64
+}
+
+// TopicRepo is a repository carrying a forge topic, as returned by a
+// provider's topic search (see topics.TopicSearcher).
+type TopicRepo struct {
+	FullName    string
+	Description string
+	Language    string
+	Stars       int
+	ForkCount   int
+	PushedAt    time.Time
+	Archived    bool
 }

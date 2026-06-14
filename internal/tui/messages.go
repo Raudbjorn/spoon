@@ -22,6 +22,10 @@ type parentFetchedMsg struct {
 type forksFetchedMsg struct {
 	forks []forge.T1Data
 	err   error
+	// warn is a non-fatal warning to surface alongside a populated fork list —
+	// e.g. the stream was cut short by an error after some forks arrived, so the
+	// displayed list is partial. Distinct from err, which suppresses the list.
+	warn error
 }
 
 type tier2ResultMsg struct {
@@ -58,21 +62,4 @@ type clusterResultMsg struct {
 	Clusters    []cluster.Cluster
 	Skip        *cluster.SkipReason // non-nil when clustering was skipped
 	Err         error               // non-nil on hard failure
-}
-
-// clusterPromptMsg is published by the embed.Prompter implementation when
-// it needs to ask the user whether to pull a missing embedding model. The
-// model transitions to the embedderBootstrap viewState and renders the
-// prompt; the user's response is sent back via clusterPromptResponseMsg.
-type clusterPromptMsg struct {
-	Model  string
-	SizeMB int
-	Reply  chan<- bool // SelectEmbedder is blocked waiting on this
-}
-
-// clusterPromptResponseMsg carries the user's answer back to the goroutine
-// running SelectEmbedder.
-type clusterPromptResponseMsg struct {
-	Reply chan<- bool
-	Yes   bool
 }
