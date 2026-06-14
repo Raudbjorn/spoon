@@ -102,6 +102,13 @@ if [ ! -f nomic_vectors.json ]; then
     echo "  -> no nomic backend available (neither OVMS nor Ollama)"
     exit 3
   fi
+  # The regeneration paths above only log "FAILED" and don't abort; bail now if
+  # the baseline didn't actually land, so the scoring loop and the analyze.py
+  # commands printed at the end don't fail later in confusing ways.
+  if [ ! -s nomic_vectors.json ]; then
+    echo "  -> ERROR: nomic_vectors.json was not produced (see nomic_run.log)" >&2
+    exit 3
+  fi
 fi
 
 # (model_name, output_file, log_file)

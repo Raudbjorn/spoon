@@ -21,8 +21,7 @@ func TestDefaultPath_XDG(t *testing.T) {
 func TestSaveLoad_RoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", "config.json")
 	in := &Config{
-		Forge:    ForgeConfig{Provider: "github"},
-		Embedder: EmbedderConfig{Backend: "openai", Endpoint: "http://x:8978", Model: "m"},
+		Forge: ForgeConfig{Provider: "github", Host: "ghe.example.com"},
 	}
 	if err := Save(path, in); err != nil {
 		t.Fatal(err)
@@ -34,7 +33,7 @@ func TestSaveLoad_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.Embedder.Backend != "openai" || out.Embedder.Endpoint != "http://x:8978" || out.Forge.Provider != "github" {
+	if out.Forge.Provider != "github" || out.Forge.Host != "ghe.example.com" {
 		t.Errorf("roundtrip mismatch: %+v", out)
 	}
 }
@@ -46,57 +45,30 @@ func TestLoad_NotExist(t *testing.T) {
 	}
 }
 
+func TestLoad_IgnoresUnknownKeys(t *testing.T) {
+	// Configs written by older spoon versions carry an "embedder" section;
+	// loading one must not fail.
+	path := filepath.Join(t.TempDir(), "config.json")
+	legacy := `{"version":1,"forge":{"provider":"github"},"embedder":{"backend":"ollama","endpoint":"http://localhost:11434"}}`
+	if err := os.WriteFile(path, []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("legacy config should load: %v", err)
+	}
+	if c.Forge.Provider != "github" {
+		t.Errorf("forge provider lost: %+v", c)
+	}
+}
+
 func TestValidate_RejectsBadEnums(t *testing.T) {
 	if err := (&Config{Forge: ForgeConfig{Provider: "bitbucket"}}).Validate(); err == nil {
 		t.Error("expected provider rejection")
 	}
-	if err := (&Config{Embedder: EmbedderConfig{Backend: "magic"}}).Validate(); err == nil {
-		t.Error("expected backend rejection")
-	}
-	if err := (&Config{Forge: ForgeConfig{Provider: "GitHub"}, Embedder: EmbedderConfig{Backend: "OpenAI"}}).Validate(); err != nil {
+	if err := (&Config{Forge: ForgeConfig{Provider: "GitHub"}}).Validate(); err != nil {
 		t.Errorf("case-insensitive enums should pass: %v", err)
 	}
-}
-
-func TestLayerEmbedder(t *testing.T) {
-	cfg := &Config{Embedder: EmbedderConfig{
-		Backend: "openai", Endpoint: "http://ovms:8978", Model: "nomic-ai/x",
-		SidecarEndpoint: "http://side:8766", LabelerModel: "llama3.2:3b",
-	}}
-
-	t.Run("no flag backend adopts config fully", func(t *testing.T) {
-		b, ep, m, _, lab := cfg.LayerEmbedder("", "", "", "", "")
-		if b != "openai" || ep != "http://ovms:8978" || m != "nomic-ai/x" || lab != "llama3.2:3b" {
-			t.Errorf("got backend=%q ep=%q model=%q labeler=%q", b, ep, m, lab)
-		}
-	})
-
-	t.Run("switching backend does NOT inherit the saved endpoint/model", func(t *testing.T) {
-		b, ep, m, _, lab := cfg.LayerEmbedder("ollama", "", "", "", "")
-		if b != "ollama" {
-			t.Errorf("backend=%q want ollama", b)
-		}
-		if ep != "" || m != "" {
-			t.Errorf("openai endpoint/model leaked into ollama: ep=%q model=%q", ep, m)
-		}
-		if lab != "llama3.2:3b" {
-			t.Errorf("labeler is backend-agnostic, want it layered; got %q", lab)
-		}
-	})
-
-	t.Run("matching backend inherits endpoint/model", func(t *testing.T) {
-		_, ep, m, _, _ := cfg.LayerEmbedder("openai", "", "", "", "")
-		if ep != "http://ovms:8978" || m != "nomic-ai/x" {
-			t.Errorf("ep=%q model=%q", ep, m)
-		}
-	})
-
-	t.Run("flag overrides config endpoint", func(t *testing.T) {
-		_, ep, _, _, _ := cfg.LayerEmbedder("openai", "http://flag:1", "", "", "")
-		if ep != "http://flag:1" {
-			t.Errorf("ep=%q want flag value", ep)
-		}
-	})
 }
 
 func TestCoalesce(t *testing.T) {
@@ -123,11 +95,11 @@ func TestLoadDefault(t *testing.T) {
 
 	// Present → loaded.
 	p, _ := DefaultPath()
-	if err := Save(p, &Config{Embedder: EmbedderConfig{Backend: "openai"}}); err != nil {
+	if err := Save(p, &Config{Forge: ForgeConfig{Provider: "gitlab"}}); err != nil {
 		t.Fatal(err)
 	}
 	c, err = LoadDefault()
-	if err != nil || c == nil || c.Embedder.Backend != "openai" {
+	if err != nil || c == nil || c.Forge.Provider != "gitlab" {
 		t.Fatalf("present: c=%v err=%v", c, err)
 	}
 
@@ -141,7 +113,7 @@ func TestLoadDefault(t *testing.T) {
 
 func TestSave_RejectsInvalid(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	if err := Save(path, &Config{Embedder: EmbedderConfig{Backend: "nope"}}); err == nil {
+	if err := Save(path, &Config{Forge: ForgeConfig{Provider: "nope"}}); err == nil {
 		t.Error("Save should reject invalid config")
 	}
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {

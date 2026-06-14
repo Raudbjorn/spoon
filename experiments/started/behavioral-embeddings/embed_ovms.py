@@ -1,11 +1,11 @@
 """Embed every fork in features.json via OpenVINO Model Server.
 
 Speaks OVMS's OpenAI-compatible `/v3/embeddings` endpoint. The model must
-already be loaded by the server (use ../../../../setup_ovms_models.sh —
-or, on a host with the ovms package, run setup_ovms_embeddings.sh from
-/usr/lib/ovms/contrib/). Inference target (CPU / GPU / NPU) is decided
-when the model is pulled, not by this client; for Intel Arc A770 the
-helper pulls with --target_device GPU.
+already be loaded by the server (run ./setup_ovms_models.sh from this
+directory — on a host with the ovms package it delegates to the packaged
+/usr/lib/ovms/contrib/setup_embeddings_arc.sh helper). Inference target
+(CPU / GPU / NPU) is decided when the model is pulled, not by this client;
+for Intel Arc A770 the helper pulls with --target_device GPU.
 
 Same on-disk vector format and resume semantics as embed_hf.py so
 analyze.py consumes either interchangeably.
@@ -27,14 +27,37 @@ def _atomic_dump(obj: object, path: str) -> None:
     A bare ``json.dump`` to the destination leaves a truncated/corrupt file
     if the process is interrupted (Ctrl+C, OOM) mid-write — fatal for the
     resume path, which trusts whatever is on disk. Write to a temp file in
-    the same directory, then ``os.replace`` (atomic on POSIX) over the
-    target, so a partial write can never clobber a good checkpoint.
+    the same directory, fsync it, then ``os.replace`` (atomic on POSIX) over
+    the target, so a partial write can never clobber a good checkpoint.
+
+    The temp file is removed if the write or replace fails, and the
+    destination's existing permission bits are preserved — NamedTemporaryFile
+    creates 0600, so without this an os.replace would silently downgrade an
+    existing 0644 checkpoint.
     """
     dst_dir = os.path.dirname(path) or "."
-    with tempfile.NamedTemporaryFile("w", dir=dst_dir, delete=False) as tf:
-        json.dump(obj, tf)
-        tmp_name = tf.name
-    os.replace(tmp_name, path)
+    prev_mode: int | None = None
+    try:
+        prev_mode = os.stat(path).st_mode
+    except OSError:
+        pass  # first write — no existing mode to preserve
+    tmp_name: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile("w", dir=dst_dir, delete=False) as tf:
+            tmp_name = tf.name
+            json.dump(obj, tf)
+            tf.flush()
+            os.fsync(tf.fileno())
+        if prev_mode is not None:
+            os.chmod(tmp_name, prev_mode)
+        os.replace(tmp_name, path)
+        tmp_name = None  # ownership transferred; nothing to clean up
+    finally:
+        if tmp_name is not None:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
 
 
 def embed_batch(endpoint: str, model: str, texts: list[str], timeout: float) -> list[list[float]]:
@@ -62,7 +85,10 @@ def embed_batch(endpoint: str, model: str, texts: list[str], timeout: float) -> 
         # slot) means we can't trust the ordering, so fail loudly instead
         # of silently writing to slot 0 or raising a bare IndexError.
         idx = item.get("index")
-        if not isinstance(idx, int) or not (0 <= idx < len(texts)):
+        # `type(idx) is not int` rather than isinstance: bool is a subclass of
+        # int, so a JSON `true`/`false` in the index field would pass an
+        # isinstance check and silently map to slot 1/0.
+        if type(idx) is not int or not (0 <= idx < len(texts)):
             raise RuntimeError(f"ovms returned out-of-bounds or missing index {idx!r}")
         if out[idx] is not None:
             raise RuntimeError(f"ovms returned duplicate index {idx}")

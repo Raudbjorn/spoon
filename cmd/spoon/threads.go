@@ -276,6 +276,12 @@ func parseThreadsFlags(args []string) (threadsFlags, error) {
 	if !f.suggestSet && !f.suggestFileSet && f.introSet {
 		return f, fmt.Errorf("--intro requires --suggest or --suggest-file")
 	}
+	// --suggest/--suggest-file only make sense when replying: they wrap the
+	// reply body in a suggestion block. Outside reply mode they would be
+	// silently ignored, so reject the combination explicitly.
+	if (f.suggestSet || f.suggestFileSet) && f.mode != modeReply {
+		return f, fmt.Errorf("--suggest/--suggest-file requires --reply")
+	}
 	if f.suggestFileSet {
 		b, err := readBody(f.suggestFile)
 		if err != nil {

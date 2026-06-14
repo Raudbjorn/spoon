@@ -113,6 +113,14 @@ func resolveTarget(ctx context.Context, api API, target *github.ReviewThread, th
 	}
 	if rerr := api.ResolveThread(ctx, threadID); rerr != nil {
 		if op := rateLimitedOpError(rerr); op != nil {
+			if commentID != "" {
+				if op.Details == nil {
+					op.Details = map[string]any{}
+				}
+				op.Details["thread_id"] = threadID
+				op.Details["comment_posted"] = true
+				op.Details["comment_id"] = commentID
+			}
 			return nil, false, op
 		}
 		details := map[string]any{"thread_id": threadID}

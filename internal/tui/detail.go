@@ -48,19 +48,21 @@ func (m Model) viewDetail() string {
 		if c.Points < 0.5 {
 			continue
 		}
-		pct := c.Points / c.Max
+		// Keep the arrow neutral when Max is 0 (undefined ratio); only an
+		// actual denominator earns an up/down direction. Otherwise a 0/0
+		// component would render "↓" and read as "declining".
 		arrow := "→"
-		if pct > 0.75 {
-			arrow = "↑"
-		} else if pct < 0.25 {
-			arrow = "↓"
+		if c.Max > 0 {
+			pct := c.Points / c.Max
+			if pct > 0.75 {
+				arrow = "↑"
+			} else if pct < 0.25 {
+				arrow = "↓"
+			}
 		}
 		desc := componentDescription(c.Name, c.Raw, c.Points, c.Max)
-		line := fmt.Sprintf("│  %s %-48s │", arrow, desc)
-		if len(line) > boxWidth+2 {
-			line = line[:boxWidth+1] + "│"
-		}
-		b.WriteString(line + "\n")
+		line := fmt.Sprintf("│  %s %s", arrow, desc)
+		b.WriteString(fitBoxLine(line, boxWidth) + "\n")
 	}
 
 	// Penalties

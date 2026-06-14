@@ -319,4 +319,3 @@ func TestCounterPropose_nonEmptyContent_postsWrappedReply(t *testing.T) {
 		t.Errorf("status should mention posted comment ID, got %q", m.status)
 	}
 }
-
