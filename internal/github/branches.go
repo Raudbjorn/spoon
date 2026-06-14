@@ -60,17 +60,25 @@ func (c *Client) ScanBranches(
 	upstream := parentOwner + "/" + parentRepo
 
 	// Branches arrive newest-first from the provider, but sort defensively so
-	// recency-first selection holds regardless of caller ordering.
-	ordered := make([]BranchInfo, len(branches))
-	copy(ordered, branches)
+	// recency-first selection holds regardless of caller ordering. Parse each
+	// timestamp once up front rather than inside the comparator (which would
+	// re-parse O(N log N) times).
+	type datedBranch struct {
+		info BranchInfo
+		at   time.Time
+	}
+	ordered := make([]datedBranch, len(branches))
+	for i, b := range branches {
+		at, _ := time.Parse(time.RFC3339, b.LastCommitAt)
+		ordered[i] = datedBranch{info: b, at: at}
+	}
 	sort.SliceStable(ordered, func(i, j int) bool {
-		ti, _ := time.Parse(time.RFC3339, ordered[i].LastCommitAt)
-		tj, _ := time.Parse(time.RFC3339, ordered[j].LastCommitAt)
-		return ti.After(tj)
+		return ordered[i].at.After(ordered[j].at)
 	})
 
 	var fallback *BranchScan // most-recent divergent-but-upstreamed branch
-	for _, branch := range ordered {
+	for _, db := range ordered {
+		branch := db.info
 		if branch.Name == fork.DefaultBranch {
 			continue
 		}
@@ -133,7 +141,13 @@ func (c *Client) FetchCompareWithBranchScan(
 		// Default's own work is already merged; prefer a side branch with
 		// genuine work if one exists before falling back to the merged default.
 		if len(branches) > 0 {
-			if scan, _ := c.ScanBranches(ctx, parentOwner, parentRepo, parentBranch, fork, branches); scan != nil && !scan.Upstreamed {
+			scan, scanErr := c.ScanBranches(ctx, parentOwner, parentRepo, parentBranch, fork, branches)
+			if scanErr != nil {
+				// ScanBranches only errors on ctx cancellation; propagate it
+				// rather than masking it as a successful (merged) result.
+				return BranchScan{}, scanErr
+			}
+			if scan != nil && !scan.Upstreamed {
 				return *scan, nil
 			}
 		}
@@ -145,7 +159,12 @@ func (c *Client) FetchCompareWithBranchScan(
 		return BranchScan{Compare: result, Branch: fork.DefaultBranch}, nil
 	}
 	scan, scanErr := c.ScanBranches(ctx, parentOwner, parentRepo, parentBranch, fork, branches)
-	if scanErr != nil || scan == nil {
+	if scanErr != nil {
+		// ctx cancellation: propagate rather than returning a successful
+		// default-branch result the caller would treat as complete.
+		return BranchScan{}, scanErr
+	}
+	if scan == nil {
 		return BranchScan{Compare: result, Branch: fork.DefaultBranch}, nil
 	}
 	return *scan, nil

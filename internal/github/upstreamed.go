@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 )
 
 // associatedPR is the subset of the "list pull requests associated with a
@@ -78,7 +79,7 @@ func (c *Client) PullsForCommit(ctx context.Context, owner, repo, sha string) ([
 // correctly left unflagged. The empty-sha and empty-upstream cases short-circuit
 // to "not upstreamed" so callers can probe unconditionally.
 func (c *Client) CheckUpstreamed(ctx context.Context, forkOwner, forkRepo, sha, upstreamFullName string) (UpstreamedResult, error) {
-	if sha == "" {
+	if sha == "" || upstreamFullName == "" {
 		return UpstreamedResult{}, nil
 	}
 
@@ -93,8 +94,10 @@ func (c *Client) CheckUpstreamed(ctx context.Context, forkOwner, forkRepo, sha, 
 		}
 		// Only a PR whose base is the upstream repo proves the work reached
 		// upstream. PRs merged into the fork's own branches (or some unrelated
-		// repo in the network) don't count.
-		if upstreamFullName != "" && pr.Base.Repo.FullName != upstreamFullName {
+		// repo in the network) don't count. GitHub repo full names are
+		// case-insensitive, so compare with EqualFold to avoid false negatives
+		// on a casing mismatch (e.g. OpenVINOtoolkit vs openvinotoolkit).
+		if !strings.EqualFold(pr.Base.Repo.FullName, upstreamFullName) {
 			continue
 		}
 		return UpstreamedResult{Upstreamed: true, PRNumber: pr.Number}, nil
