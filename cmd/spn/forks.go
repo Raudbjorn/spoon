@@ -253,6 +253,9 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 			opts.Cluster.CentralityBackend = "mdg"
 		case "--no-mdg":
 			opts.Cluster.CentralityBackend = ""
+		case "--strict-mdg":
+			opts.Cluster.CentralityBackend = "mdg"
+			opts.Cluster.StrictMDG = true
 		case "--csv":
 			csvMode = true
 		default:
@@ -436,6 +439,11 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 	degraded, total := 0, 0
 	for r := range ch {
 		if r.ClusterSkip != nil {
+			if r.ClusterSkip.Code == "mdg_unavailable" {
+				// Strict-mode failure: surface as policy_violation and exit non-zero.
+				return agentio.NewError(agentio.CodePolicy, r.ClusterSkip.Message,
+					"--strict-mdg: MDG centrality is unavailable; rerun without --strict-mdg to allow silent fallback, or omit --full-mdg to use the directory proxy.").Emit(stderr)
+			}
 			emitClusterWarning(stderr, r.ClusterSkip)
 		}
 		if r.T3Skip != nil {

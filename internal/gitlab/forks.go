@@ -61,10 +61,16 @@ func (p *Provider) Parent(ctx context.Context, owner, repo string) (forge.Parent
 	p.sourceFullPath = proj.PathWithNamespace
 	p.sourceDefaultBranch = proj.DefaultBranch
 
+	// Resolve the default-branch tip SHA so the MDG cache (cluster
+	// pipeline's CentralityHeadSHA) can pin entries. Soft-fail: a missing
+	// SHA disables cache persistence but does not fail the parent fetch.
+	headSHA, _ := p.branchTipSHA(ctx, proj.PathWithNamespace, proj.DefaultBranch)
+
 	return forge.ParentData{
 		FullName:      proj.PathWithNamespace,
 		Description:   proj.Description,
 		DefaultBranch: proj.DefaultBranch,
+		HeadSHA:       headSHA,
 		Stars:         proj.StarCount,
 		Forks:         proj.ForksCount,
 		Size:          0, // GitLab doesn't expose size in the same way

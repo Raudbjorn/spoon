@@ -25,6 +25,12 @@ func main() {
 	case "pr":
 		os.Exit(runPR(os.Args[2:]))
 	case "forks":
+		// `spn forks eval` is a sub-verb of forks; dispatch by argv[2]
+		// when present. Everything else (incl. `spn forks list`) keeps
+		// its existing runForks path.
+		if len(os.Args) >= 3 && os.Args[2] == "eval" {
+			os.Exit(runEval(os.Args[3:]))
+		}
 		os.Exit(runForks(os.Args[2:]))
 	case "repo":
 		os.Exit(runRepo(os.Args[2:]))

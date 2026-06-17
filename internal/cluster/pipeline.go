@@ -66,6 +66,15 @@ type PipelineOptions struct {
 	// CentralityHeadSHA, when non-empty, is the upstream default-branch SHA;
 	// used by the MDG cache to invalidate stale entries.
 	CentralityHeadSHA string
+
+	// StrictMDG, when true, makes loadOrComputeCentrality return an error
+	// to the caller on MDG build/cache failure instead of silently falling
+	// back to the directory proxy. The error is surfaced as a ClusterSkip
+	// with code "mdg_unavailable" so callers can decide whether to treat
+	// it as fatal. Off by default — the silent fallback is the right
+	// behavior for ordinary `--full-mdg` runs that just want *some*
+	// ChangeImpact signal.
+	StrictMDG bool
 }
 
 // EnrichedFork pairs a fork's T1+T2 data with its HeatResult so the pipeline
@@ -169,9 +178,14 @@ func RunPipeline(ctx context.Context, opts PipelineOptions, inputs PipelineInput
 	}
 
 	// 2. Compute (or load) centrality (directory proxy or MDG, per opts).
-	c, cOK := loadOrComputeCentrality(ctx, opts, inputs, logger)
+	c, cOK, err := loadOrComputeCentrality(ctx, opts, inputs, logger)
+	if err != nil {
+		// Strict mode: surface MDG failure as a non-fatal skip so callers
+		// can render the policy_violation envelope.
+		fmt.Fprintf(logger, "[cluster] strict mode: %v\n", err)
+		return &SkipReason{Code: "mdg_unavailable", Message: err.Error()}, nil
+	}
 
-	// 3. Gate top-N forks for embedding.
 	candidates := SelectClusterCandidates(inputs.Forks, opts.TopN)
 	if len(candidates) == 0 {
 		fmt.Fprintln(logger, "[cluster] no eligible forks after filtering")
@@ -330,7 +344,6 @@ func RunPipeline(ctx context.Context, opts PipelineOptions, inputs PipelineInput
 	}); err != nil {
 		fmt.Fprintf(logger, "[cluster] cache save failed: %v (non-fatal)\n", err)
 	}
-
 	fmt.Fprintf(logger, "[cluster] embedded %d forks → %d clusters (incl. noise)\n",
 		len(candidates), len(clusters))
 	return nil, nil
@@ -350,6 +363,13 @@ func RunPipeline(ctx context.Context, opts PipelineOptions, inputs PipelineInput
 // the assignment and the +5 heat bonus — they are "outliers, most novel" by
 // definition. Only real clusters get ClusterID/ClusterLabel/ClusterMemberCount
 // populated; noise points have those left at their assigned/zero values.
+//
+// Empty-fork demotion (R3): noise points with no T2 data signal (MNA == 0
+// AND AheadCount == 0) are demoted to NoveltyScore = 0.5 so that "isolated
+// but empty" is not indistinguishable from "isolated and novel". The 0.5
+// value is the only magic number in this helper — it is the floor of the
+// "interesting but unproven" zone and is pinned by the regression test
+// TestApplyNoveltyToScore_EmptyNoise in internal/heat/novelty_test.go.
 func applyAssignmentsToForks(clusters []Cluster, assignments []Assignment, forks []EnrichedFork) {
 	idxByForkID := make(map[string]int, len(forks))
 	for i, ef := range forks {
@@ -373,12 +393,23 @@ func applyAssignmentsToForks(clusters []Cluster, assignments []Assignment, forks
 		if hr == nil {
 			continue
 		}
-		hr.NoveltyScore = a.Novelty
+
+		// Empty-fork demotion (R3): noise forks with no T2 data signal
+		// get a clamped novelty of 0.5 instead of the unconditional 1.0.
+		// This preserves the +5 bonus for genuinely novel forks while
+		// suppressing the false positive that an empty fork would
+		// otherwise receive.
+		novelty := a.Novelty
+		if (a.Cluster == "noise" || a.Cluster == "") && isEmptyNoiseFork(forks[i].T2) {
+			novelty = 0.5
+		}
+		hr.NoveltyScore = novelty
 		hr.Category = a.Category
 		hr.CategoryScore = a.CategoryScore
-		// Apply the novelty bonus to every assigned fork — including noise
-		// points, which carry Novelty=1.0 by definition. The +5 max matches
-		// the v2 NoveltyComponent's Max so the score stays comparable.
+		// Apply the novelty bonus to every assigned fork — including
+		// noise points, which carry Novelty=1.0 (or 0.5 for empty
+		// forks) by definition. The +5 max matches the v2
+		// NoveltyComponent's Max so the score stays comparable.
 		heat.ApplyNoveltyToScore(hr)
 		if a.Cluster == "noise" || a.Cluster == "" {
 			hr.ClusterID = a.Cluster
@@ -392,23 +423,41 @@ func applyAssignmentsToForks(clusters []Cluster, assignments []Assignment, forks
 	}
 }
 
+// isEmptyNoiseFork reports whether a fork has no T2 divergence signal:
+// T2 is nil, or both MNA and AheadCount are zero. The condition is
+// intentionally permissive: false negatives (true novel forks demoted to
+// 0.5) are less costly than false positives (empty forks rewarded as
+// novel with the full +5).
+func isEmptyNoiseFork(t2 *forge.T2Data) bool {
+	if t2 == nil {
+		return true
+	}
+	return t2.MNA == 0 && t2.AheadCount == 0
+}
+
 // loadOrComputeCentrality returns the centrality backend. Dispatch is by
 // PipelineOptions.CentralityBackend with silent fallback to the directory
-// proxy when MDG cannot run.
+// proxy when MDG cannot run — unless opts.StrictMDG is set, in which case
+// an MDG failure is returned as a non-nil error and the caller decides
+// how to surface it (typically a SkipReason with code "mdg_unavailable").
 func loadOrComputeCentrality(
 	ctx context.Context,
 	opts PipelineOptions,
 	inputs PipelineInputs,
 	logger io.Writer,
-) (repo.Centrality, bool) {
+) (repo.Centrality, bool, error) {
 	if opts.CentralityBackend == "mdg" {
-		c, ok := loadOrComputeMDG(ctx, opts, inputs, logger)
+		c, ok, err := loadOrComputeMDG(ctx, opts, inputs, logger)
 		if ok {
-			return c, true
+			return c, true, nil
 		}
 		fmt.Fprintln(logger, "[cluster] MDG centrality unavailable; falling back to directory proxy")
+		if opts.StrictMDG && err != nil {
+			return nil, false, err
+		}
 	}
-	return loadOrComputeDirCentrality(ctx, inputs, logger)
+	dc, ok := loadOrComputeDirCentrality(ctx, inputs, logger)
+	return dc, ok, nil
 }
 
 // loadOrComputeDirCentrality is the existing directory-proxy path, extracted
@@ -440,43 +489,50 @@ func loadOrComputeDirCentrality(
 	return dc, true
 }
 
+// The dispatcher wraps the dir proxy with a hard-coded "ok=true" to satisfy
+// the 3-value signature contract — dir-proxy failures are non-fatal by
+// design and ChangeImpact is left at zero.
+
 // loadOrComputeMDG attempts to build and cache an MDG-backed centrality.
-// Returns (nil, false) on any failure; the dispatcher treats that as a signal
-// to fall back to the directory proxy.
+// Returns (nil, false, nil) on any failure; the dispatcher treats that
+// as a signal to fall back to the directory proxy. The error is non-nil
+// for build/cache failures and is propagated to the caller when
+// opts.StrictMDG is set.
 //
-// When opts.CentralityHeadSHA is empty, the cache is neither consulted nor
-// populated — the computed result is returned without persistence.
+// When opts.CentralityHeadSHA is empty, the cache is neither consulted
+// nor populated — the computed result is returned without persistence.
 func loadOrComputeMDG(
 	ctx context.Context,
 	opts PipelineOptions,
 	inputs PipelineInputs,
 	logger io.Writer,
-) (repo.Centrality, bool) {
+) (repo.Centrality, bool, error) {
 	provider := inputs.Provider
 	if provider == "" {
 		provider = "github"
 	}
-	// Cache fast-path. Requires a non-empty HeadSHA — the cache pinned that
-	// SHA at build time, and an empty SHA can't match.
+	// Cache fast-path. Requires a non-empty HeadSHA — the cache pinned
+	// that SHA at build time, and an empty SHA can't match.
 	if opts.CentralityHeadSHA != "" {
 		if cached, ok := mdg.LoadMDGCache(provider, inputs.UpstreamOwner, inputs.UpstreamRepo, opts.CentralityHeadSHA); ok {
-			return &mdgCachedAdapter{cache: cached}, true
+			fmt.Fprintf(logger, "[cluster] mdg cache hit for %s/%s @ %s\n",
+				inputs.UpstreamOwner, inputs.UpstreamRepo, opts.CentralityHeadSHA)
+			return &mdgCachedAdapter{cache: cached}, true, nil
 		}
 	}
-	// We need a repo on disk.
 	repoPath := opts.CentralityRepoPath
 	cleanup := func() {}
 	if repoPath == "" {
 		tmp, err := os.MkdirTemp("", "spoon-mdg-")
 		if err != nil {
 			fmt.Fprintf(logger, "[cluster] mdg tempdir: %v\n", err)
-			return nil, false
+			return nil, false, fmt.Errorf("create tempdir for mdg: %w", err)
 		}
 		cleanup = func() { _ = os.RemoveAll(tmp) }
 		if err := mdg.ShallowClone(ctx, provider, inputs.UpstreamOwner, inputs.UpstreamRepo, tmp); err != nil {
 			fmt.Fprintf(logger, "[cluster] mdg shallow clone failed: %v\n", err)
 			cleanup()
-			return nil, false
+			return nil, false, fmt.Errorf("shallow clone upstream: %w", err)
 		}
 		repoPath = tmp
 	}
@@ -486,10 +542,10 @@ func loadOrComputeMDG(
 		inputs.UpstreamOwner, inputs.UpstreamRepo, opts.CentralityHeadSHA, mdg.BuildOptions{})
 	if err != nil {
 		fmt.Fprintf(logger, "[cluster] mdg build failed: %v\n", err)
-		return nil, false
+		return nil, false, fmt.Errorf("build mdg: %w", err)
 	}
-	// Persist cache for next run. Skip persistence when HeadSHA is empty —
-	// without it, the next load() can never match.
+	// Persist cache for next run. Skip persistence when HeadSHA is
+	// empty — without it, the next load() can never match.
 	if opts.CentralityHeadSHA != "" {
 		if err := mdg.SaveMDGCache(mdg.MDGCache{
 			SchemaVersion: mdg.CacheSchemaVersion,
@@ -503,7 +559,7 @@ func loadOrComputeMDG(
 			fmt.Fprintf(logger, "[cluster] mdg cache save failed: %v (non-fatal)\n", err)
 		}
 	}
-	return c, true
+	return c, true, nil
 }
 
 // mdgCachedAdapter wraps a cached MDGCache as a repo.Centrality. It serves

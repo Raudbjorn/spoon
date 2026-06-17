@@ -55,8 +55,10 @@ func main() {
 
 	// MDG centrality backend. Off by default; --full-mdg opts in. --no-mdg
 	// reverts to off (useful for users who set the env var elsewhere).
+	// --strict-mdg implies --full-mdg and turns the silent-fallback path
+	// into a hard skip surfaced as a ClusterSkip with code "mdg_unavailable".
 	fullMDG := false
-
+	strictMDG := false
 	args := os.Args[1:]
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -188,6 +190,9 @@ func main() {
 			fullMDG = true
 		case "--no-mdg":
 			fullMDG = false
+		case "--strict-mdg":
+			fullMDG = true
+			strictMDG = true
 		default:
 			if !strings.HasPrefix(args[i], "-") && (strings.Contains(args[i], "/") || strings.HasPrefix(args[i], "topic:")) {
 				repo = args[i]
@@ -235,6 +240,7 @@ func main() {
 		MinClusterSize:    clusterMinSize,
 		Refresh:           refresh,
 		CentralityBackend: backendFor(fullMDG),
+		StrictMDG:         strictMDG,
 	}
 	if embedderBackend != "" && embedderBackend != embed.BackendBuiltin {
 		tuiClusterOpts.Embedder = embedder

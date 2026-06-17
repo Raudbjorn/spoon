@@ -50,17 +50,35 @@ func (p *Provider) Parent(ctx context.Context, owner, repo string) (forge.Parent
 	if _, err := p.client.Get(ctx, "/repos/"+owner+"/"+repo, nil, &r); err != nil {
 		return forge.ParentData{}, fmt.Errorf("fetch parent %s/%s: %w", owner, repo, err)
 	}
+
+	// Resolve the default-branch tip SHA so the MDG cache (cluster
+	// pipeline's CentralityHeadSHA) can pin entries. Soft-fail: a missing
+	// SHA disables cache persistence but does not fail the parent fetch.
+	var headSHA string
+	if r.DefaultBranch != "" {
+		var b gtBranch
+		if _, err := p.client.Get(ctx,
+			fmt.Sprintf("/repos/%s/%s/branches/%s", owner, repo, r.DefaultBranch),
+			nil, &b); err == nil {
+			headSHA = b.Commit.ID
+		}
+	}
+
 	p.mu.Lock()
 	p.sourceOwner, p.sourceRepo = owner, repo
 	p.sourceFull = r.FullName
 	p.sourceDefault = r.DefaultBranch
-	p.sourceTip = "" // invalidate any tip cached for a previous upstream
+	p.sourceTip = headSHA // re-use the SHA we just resolved; the lazy path
+	// can still refresh it later, but pinning it here means a Parent call
+	// is sufficient on its own — the lazy fallback was only there to amortize
+	// the cost when Parent is never called.
 	p.mu.Unlock()
 
 	return forge.ParentData{
 		FullName:      r.FullName,
 		Description:   r.Description,
 		DefaultBranch: r.DefaultBranch,
+		HeadSHA:       headSHA,
 		Stars:         r.StarsCount,
 		Forks:         r.ForksCount,
 		Size:          r.Size,

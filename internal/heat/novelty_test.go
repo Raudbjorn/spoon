@@ -142,3 +142,31 @@ func TestApplyNoveltyToScore_DoesNotRescaleNonClustered(t *testing.T) {
 		t.Errorf("clustered Score = %v, want 52.5", clustered.Score)
 	}
 }
+
+// TestApplyNoveltyToScore_EmptyNoise pins the R3 contract: an empty noise
+// fork (no T2 data signal) is demoted to NoveltyScore=0.5 by the cluster
+// pipeline, so ApplyNoveltyToScore must add only 0.5*5=2.5 (not the full
+// +5 that a non-empty noise fork receives). The test exercises the score
+// math directly, asserting both the demoted +2.5 case and the full +5
+// case for a non-empty noise fork.
+func TestApplyNoveltyToScore_EmptyNoise(t *testing.T) {
+	// Empty noise: applyAssignmentsToForks writes 0.5.
+	empty := &HeatResult{Score: 50, NoveltyScore: 0.5}
+	ApplyNoveltyToScore(empty)
+	if !approxEqual(empty.Score, 52.5, 0.001) {
+		t.Errorf("empty noise: Score = %v, want 52.5 (50 + 0.5*5)", empty.Score)
+	}
+	// Non-empty noise: stays at 1.0.
+	full := &HeatResult{Score: 50, NoveltyScore: 1.0}
+	ApplyNoveltyToScore(full)
+	if !approxEqual(full.Score, 55, 0.001) {
+		t.Errorf("non-empty noise: Score = %v, want 55 (50 + 1.0*5)", full.Score)
+	}
+	// Cap at 100 still works for the demoted case.
+	capped := &HeatResult{Score: 99, NoveltyScore: 0.5}
+	ApplyNoveltyToScore(capped)
+	if capped.Score != 100 {
+		t.Errorf("demoted cap: Score = %v, want 100 (99 + 2.5 capped)", capped.Score)
+	}
+
+}
