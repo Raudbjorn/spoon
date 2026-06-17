@@ -6,8 +6,8 @@ import (
 	"log/slog"
 	"math"
 	"sort"
+	"sync"
 )
-
 //go:embed topicidf.json
 var topicIDFFS embed.FS
 
@@ -29,35 +29,54 @@ const (
 	minTopicIDF = 1.0
 	maxTopicIDF = 8.0
 )
+// topicIDFLoadWarned is a sync-guarded latch: the first failure
+// surfaces via slog.Warn, subsequent failures stay silent so a noisy
+// run doesn't flood the log.
+var (
+	corpusCache   TopicIDF
+	corpusOnce    sync.Once
+	corpusFailed  bool // set by corpusOnce.Do when load fails
+	corpusWarned  bool
+	corpusWarnMu  sync.Mutex
+)
 
-// topicIDFLoadWarned suppresses repeated slog.Warn emissions on corpus
-// load failure so a noisy run doesn't flood the log.
-var topicIDFLoadWarned bool
-
-// LoadTopicIDF returns the embedded corpus. Returns an empty map on load
-// failure so P1 degrades to "no penalty" rather than failing the whole
-// scoring pass; the only signal difference vs a populated corpus is that
-// the spammy/deviation penalties fall back to 0.
+// LoadTopicIDF returns the embedded corpus, parsed once and cached.
+// Returns an empty map on load failure so P1 degrades to "no penalty"
+// rather than failing the whole scoring pass. Safe for concurrent use
+// from multiple goroutines.
 func LoadTopicIDF() TopicIDF {
-	data, err := topicIDFFS.ReadFile("topicidf.json")
-	if err != nil {
-		if !topicIDFLoadWarned {
-			slog.Warn("topic-idf: embedded corpus unreadable, P1 disabled", "err", err)
-			topicIDFLoadWarned = true
-		}
-		return TopicIDF{}
-	}
-	var corpus TopicIDF
-	if err := json.Unmarshal(data, &corpus); err != nil {
-		if !topicIDFLoadWarned {
-			slog.Warn("topic-idf: embedded corpus malformed, P1 disabled", "err", err)
-			topicIDFLoadWarned = true
-		}
-		return TopicIDF{}
-	}
-	return corpus
+	corpusOnce.Do(loadTopicIDFOnce)
+	return corpusCache
 }
 
+// loadTopicIDFOnce is the idempotent loader. Populates corpusCache and
+// the failure flag; LoadTopicIDF callers see the cached values.
+func loadTopicIDFOnce() {
+	data, err := topicIDFFS.ReadFile("topicidf.json")
+	if err != nil {
+		corpusCache = TopicIDF{}
+		corpusFailed = true
+		corpusWarn("topic-idf: embedded corpus unreadable, P1 disabled", err)
+		return
+	}
+	var corpus TopicIDF
+	if uerr := json.Unmarshal(data, &corpus); uerr != nil {
+		corpusCache = TopicIDF{}
+		corpusFailed = true
+		corpusWarn("topic-idf: embedded corpus malformed, P1 disabled", uerr)
+		return
+	}
+	corpusCache = corpus
+}
+
+func corpusWarn(msg string, err error) {
+	corpusWarnMu.Lock()
+	defer corpusWarnMu.Unlock()
+	if !corpusWarned {
+		slog.Warn(msg, "err", err)
+		corpusWarned = true
+	}
+}
 // topicIDFFor returns the IDF for a topic, clamped to [min, max]. The
 // corpus is the source of truth: a missing topic is "as generic as it
 // gets" and gets the floor value (1.0), so P1's deviation formula reads
@@ -135,10 +154,12 @@ func (c TopicIDF) deviation(forkTopics, parentTopics []string) float64 {
 	return dev
 }
 
-// topicTagSpammyBonus returns -2 when the fork has 11+ topics AND the
-// median topic IDF is <2.0 (i.e. the tag set is long AND all generic).
-// Returns 0 otherwise. The "spammy" signal is meant to catch forks
-// that pad their topic list to game search visibility.
+// topicTagSpammyBonus returns 2 (a magnitude) when the fork has 11+
+// topics AND the median topic IDF is <2.0 (i.e. the tag set is long
+// AND all generic). Returns 0 otherwise. The "spammy" signal is
+// meant to catch forks that pad their topic list to game search
+// visibility. The caller subtracts this from the deviation
+// penalty; the function returns a magnitude, not a signed penalty.
 func (c TopicIDF) spammyBonus(forkTopics []string) float64 {
 	if len(forkTopics) <= 10 {
 		return 0

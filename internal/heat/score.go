@@ -287,11 +287,13 @@ func ApplyTrust(result *HeatResult, starsPct, subForksPct float64) {
 }
 
 // ApplyPenalties applies post-trust penalties. Floor is 0. weights is
-// the per-component factor map; only the "topic_tag" key is consulted
-// here — other weights are applied upstream in RawScoreWeighted.
-// Pass nil to use defaults (factor 1 for every penalty).
+// the per-component factor map; "topic_tag" and "fork_farmer" are
+// consulted here, and any new penalty components should be added
+// to this list so the weight plumbing stays discoverable. Other
+// weights (recency, novelty, sibling_sim, ...) are applied upstream
+// in RawScoreWeighted or in their own Apply*ToScore helpers. Pass
+// nil to use defaults (factor 1 for every penalty).
 func ApplyPenalties(result *HeatResult, p PenaltyInput, weights map[string]float64) {
-	// Measured ahead == 0 → the fork contains no work; score 0.
 	if p.AheadKnown && p.AheadAllBranches == 0 {
 		result.Score = 0
 		result.Penalties = append(result.Penalties, "no_ahead")

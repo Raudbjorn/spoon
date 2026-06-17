@@ -109,32 +109,35 @@ func ownerProfileCachePath(login string) (string, error) {
 }
 
 // FetchUserRepos returns the owner profile for the given login,
-// consulting the on-disk cache first. Returns (nil, nil) on rate-limit
-// or 404 so the caller (the fork pipeline) can treat the absence as
-// "no signal" rather than an error.
+// consulting the on-disk cache first. The second return value is
+// true when the record was served from cache (and therefore did not
+// consume rate-budget); the caller uses this to avoid charging
+// cache hits against the per-run owner-cap. Returns (nil, false, nil)
+// on rate-limit or 404 so the caller (the fork pipeline) can treat
+// the absence as "no signal" rather than an error.
 //
 // ttl overrides the on-disk cache freshness; pass 0 to force a fresh
 // fetch (the test/refresh path).
-func (c *Client) FetchUserRepos(ctx context.Context, login string, ttl time.Duration) (*ownerProfileRecord, error) {
+func (c *Client) FetchUserRepos(ctx context.Context, login string, ttl time.Duration) (*ownerProfileRecord, bool, error) {
 	if login == "" {
-		return nil, nil
+		return nil, false, nil
 	}
 	if rec := loadOwnerProfile(login, ttl); rec != nil {
-		return rec, nil
+		return rec, true, nil
 	}
 	rec, err := c.fetchOwnerProfileLive(ctx, login)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if rec == nil {
-		return nil, nil
+		return nil, false, nil
 	}
 	// Best-effort cache write. The in-memory record is still returned
 	// to the caller; only the rate-budget optimization is lost.
 	if err := saveOwnerProfile(rec); err != nil {
 		slog.Warn("owner-profile: cache write failed", "login", login, "err", err)
 	}
-	return rec, nil
+	return rec, false, nil
 }
 
 // fetchOwnerProfileLive walks /users/{login}/repos?type=owner paginated

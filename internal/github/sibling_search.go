@@ -1,0 +1,167 @@
+package github
+
+import (
+	"context"
+	"fmt"
+	"math"
+	"net/url"
+	"strings"
+
+	"github.com/svnbjrn/spoon/internal/cluster"
+	"github.com/svnbjrn/spoon/internal/embed"
+	"github.com/svnbjrn/spoon/internal/forge"
+)
+
+// SiblingSearchHit is the trimmed shape of a /search/repositories item
+// that GHSiblingSearcher needs. Defined as a separate type so the
+// search API's other fields (description, stargazers_count, etc.)
+// don't leak into the package.
+type SiblingSearchHit struct {
+	FullName   string `json:"full_name"`
+	HTMLURL    string `json:"html_url"`
+	HasTopics  bool   `json:"-"`
+}
+
+// siblingSearchResponse is the trimmed /search/repositories envelope.
+type siblingSearchResponse struct {
+	Items []SiblingSearchHit `json:"items"`
+}
+
+// GHSiblingSearcher implements cluster.SiblingSearcher against the
+// GitHub /search/repositories endpoint. It picks the first topic from
+// the upstream's topic set as the search key, fetches the top
+// candidateCandidateLimit (default 50) non-fork repos matching that
+// topic, embeds their READMEs alongside the upstream's README, and
+// returns the max cosine of the upstream README to any candidate
+// README.
+//
+// The implementation is intentionally bounded: one /search call +
+// one batched Embed call + N README fetches, regardless of
+// candidateCount. The plan calls this the "per-upstream" tier; a
+// future "per-fork" tier would re-embed the fork's change digest
+// against the same candidate set.
+type GHSiblingSearcher struct {
+	Client *Client
+}
+
+// NewGHSiblingSearcher returns a GHSiblingSearcher backed by c. May be
+// nil; the cluster pipeline handles a nil searcher as a no-op.
+func NewGHSiblingSearcher(c *Client) *GHSiblingSearcher {
+	if c == nil {
+		return nil
+	}
+	return &GHSiblingSearcher{Client: c}
+}
+
+// SearchSiblings runs the P2 distant-relation search. Returns (0, 0,
+// nil) on no-signal paths (no upstream topic, no candidates, empty
+// upstream README) so the caller can always treat absence as "no
+// penalty".
+func (s *GHSiblingSearcher) SearchSiblings(
+	ctx context.Context,
+	parent forge.ParentData,
+	emb embed.Embedder,
+	readmeFetcher cluster.ReadmeFetcher,
+	candidateLimit int,
+) (float64, int, error) {
+	if s == nil || s.Client == nil {
+		return 0, 0, nil
+	}
+	if len(parent.Topics) == 0 {
+		return 0, 0, nil
+	}
+	if candidateLimit <= 0 {
+		candidateLimit = 50
+	}
+	// Pick the first topic — the most specific one — as the search
+	// key. The artifact's "topic:PARENT_TOPIC_N" path picks the
+	// narrowest; for v1 we use the first in the upstream's order
+	// (GitHub returns topics in declared order, so the first is the
+	// owner's stated subject).
+	searchTopic := parent.Topics[0]
+	q := url.QueryEscape(fmt.Sprintf("topic:%s fork:false", searchTopic))
+	path := fmt.Sprintf("search/repositories?q=%s&sort=stars&order=desc&per_page=%d", q, candidateLimit)
+	var resp siblingSearchResponse
+	if err := s.Client.Get(ctx, path, &resp); err != nil {
+		return 0, 0, fmt.Errorf("sibling search: %w", err)
+	}
+	if len(resp.Items) == 0 {
+		return 0, 0, nil
+	}
+	// Fetch the upstream README.
+	upstreamOwner, upstreamRepo, ok := splitFullName(parent.FullName)
+	if !ok {
+		return 0, 0, nil
+	}
+	upstreamReadme, err := readmeFetcher.FetchReadme(ctx, upstreamOwner, upstreamRepo)
+	if err != nil || strings.TrimSpace(upstreamReadme) == "" {
+		// No upstream README → no signal. P2 requires both sides.
+		return 0, 0, nil
+	}
+	// Fetch the candidates' READMEs. Skip empty results.
+	texts := make([]string, 0, 1+len(resp.Items))
+	texts = append(texts, upstreamReadme)
+	kept := 0
+	for _, hit := range resp.Items {
+		owner, name, ok := splitFullName(hit.FullName)
+		if !ok {
+			continue
+		}
+		readme, ferr := readmeFetcher.FetchReadme(ctx, owner, name)
+		if ferr != nil || strings.TrimSpace(readme) == "" {
+			continue
+		}
+		texts = append(texts, readme)
+		kept++
+	}
+	if kept == 0 {
+		return 0, 0, nil
+	}
+	// One batched embed. The first row is the upstream; rows 1..N
+	// are candidates.
+	vecs, err := emb.Embed(ctx, texts)
+	if err != nil {
+		return 0, 0, fmt.Errorf("sibling search embed: %w", err)
+	}
+	if len(vecs) < 2 || len(vecs[0]) == 0 {
+		return 0, 0, nil
+	}
+	upstreamVec := vecs[0]
+	maxSim := 0.0
+	for i := 1; i < len(vecs); i++ {
+		if len(vecs[i]) != len(upstreamVec) {
+			continue
+		}
+		sim := cosineSimilarity(upstreamVec, vecs[i])
+		if math.IsNaN(sim) || math.IsInf(sim, 0) {
+			continue
+		}
+		if sim > maxSim {
+			maxSim = sim
+		}
+	}
+	return maxSim, kept, nil
+}
+
+// splitFullName splits "owner/repo" into (owner, repo, true). Returns
+// ("", "", false) on bad input.
+func splitFullName(s string) (string, string, bool) {
+	parts := strings.SplitN(s, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
+}
+
+// cosineSimilarity assumes L2-normalized vectors and reduces to a dot
+// product. The LocalEmbedder and OpenVINOEmbedder both return
+// L2-normalized vectors, so the dot product IS the cosine similarity.
+// For un-normalized inputs the value is in [-1, 1] but biased by
+// magnitude; the P2 score is clamped via ApplySiblingSimilarityToScore.
+func cosineSimilarity(a, b []float32) float64 {
+	var dot float64
+	for i := range a {
+		dot += float64(a[i]) * float64(b[i])
+	}
+	return dot
+}

@@ -125,8 +125,12 @@ type ClusterOptions struct {
 	// P2 is on by default for standard runs (low cost), opt-in for
 	// topic mode (5x cost multiplier per upstream).
 	SiblingSimEnabled bool
-}
 
+	// SiblingSearcher forwards cluster.PipelineOptions.SiblingSearcher.
+	// The CLI constructs a real GHSiblingSearcher when --sibling-sim
+	// is set; for tests, a fake searcher can be wired in directly.
+	SiblingSearcher cluster.SiblingSearcher
+}
 // SetEmbedderForTest installs an embedder stub on ClusterOptions for tests.
 func (o *ClusterOptions) SetEmbedderForTest(e embed.Embedder) { o.Embedder = e }
 
@@ -414,7 +418,7 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 						if int(ownerProfileCalls.Load()) < ownerCap &&
 							(opts.ReserveDisabled || provider.Headroom() >= ReserveHeadroom) {
 							if ghp, ok := provider.(*gh.GHProvider); ok {
-								rec, ferr := ghp.Client().FetchUserRepos(
+								rec, cached, ferr := ghp.Client().FetchUserRepos(
 									ctx, s.fork.Owner, opts.OwnerCacheTTL,
 								)
 								if rec != nil {
@@ -425,14 +429,21 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 										SignalForkCount:  rec.SignalForkCount,
 										NonForkRepoCount: rec.NonForkRepoCount,
 									}
+									// Mirror onto r.Fork so the emitted Result
+									// matches what scoring saw. The worker
+									// snapshot for the result was already taken
+									// above; copying here keeps the public
+									// record and the in-flight fork in sync.
+									r.Fork.OwnerProfile = s.fork.OwnerProfile
 								}
-								// Only count the call against the cap if it
-								// wasn't a rate-limit 403 — a rate-limited
-								// attempt is not a real call against the
-								// budget and we want the slot to remain
-								// available for the next fork.
+								// Only count a real API call against the cap:
+								//   - cache hit (cached=true): no rate-budget
+								//     was burned, so the slot is free
+								//   - rate-limit 403: the attempt failed
+								//     before consuming a slot; we want the
+								//     slot to remain for the next fork
 								var rl *gh.RateLimitError
-								if !errors.As(ferr, &rl) {
+								if !cached && !errors.As(ferr, &rl) {
 									ownerProfileCalls.Add(1)
 								}
 							}
@@ -652,6 +663,7 @@ func runForksClusterPipeline(
 	pipelineOpts.Categorize = opts.Categorize
 	pipelineOpts.LabelPolisher = opts.LabelPolisher
 	pipelineOpts.SiblingSimEnabled = opts.SiblingSimEnabled
+	pipelineOpts.SiblingSearcher = opts.SiblingSearcher
 	skip, err := cluster.RunPipeline(ctx, pipelineOpts, inputs, logger)
 	if err != nil {
 		fmt.Fprintf(logger, "[cluster] pipeline error: %v (continuing)\n", err)

@@ -72,6 +72,15 @@ type PipelineOptions struct {
 	// fetches + one batched embed, and assigns the resulting max
 	// cosine to every fork in the run as Heat.SiblingSim.
 	SiblingSimEnabled bool
+
+	// SiblingSearcher is the active SiblingSearcher for P2 distant-
+	// relation discovery. When non-nil, RunPipeline calls it after
+	// the cluster pass and folds the resulting max cosine into
+	// Heat.SiblingSim for every fork. When nil, no P2 work is
+	// attempted and the cluster pipeline degrades to "no signal"
+	// without surfacing a warning. The CLI wires in a real
+	// GHSiblingSearcher when --sibling-sim is set.
+	SiblingSearcher SiblingSearcher
 }
 
 // EnrichedFork pairs a fork's T1+T2 data with its HeatResult so the pipeline
@@ -321,7 +330,7 @@ func RunPipeline(ctx context.Context, opts PipelineOptions, inputs PipelineInput
 	// Heat.SiblingSim for every fork (used by
 	// ApplySiblingSimilarityToScore below).
 	if opts.SiblingSimEnabled {
-		sim, n, serr := SearchSiblings(ctx, nil, inputs.Upstream, opts.Embedder, inputs.ReadmeFetcher, 50)
+		sim, n, serr := SearchSiblings(ctx, opts.SiblingSearcher, inputs.Upstream, opts.Embedder, inputs.ReadmeFetcher, 50)
 		if serr != nil {
 			fmt.Fprintf(logger, "[sibling] search failed: %v\n", serr)
 		} else {

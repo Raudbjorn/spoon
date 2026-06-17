@@ -34,7 +34,7 @@ query($owner: String!, $name: String!, $cursor: String) {
         owner { login avatarUrl }
         pullRequests(states: OPEN, first: 1) { totalCount }
         releases(first: 1) { totalCount }
-        repositoryTopics(first: 10) { nodes { topic { name } } }
+        repositoryTopics(first: 20) { nodes { topic { name } } }
         refs(refPrefix: "refs/heads/", first: 10, orderBy: {field: ALPHABETICAL, direction: ASC}) {
           nodes {
             name

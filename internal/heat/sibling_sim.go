@@ -32,8 +32,10 @@ func ApplySiblingSimilarityToScore(hr *HeatResult) {
 		w = hr.siblingSimWeight
 	}
 	// Compute the combined post-hoc bonus from the two available
-	// signals. Each is in [0, 1] and maps to up to +5. Cap the
-	// combined contribution at CombinedNoveltyBonusCap.
+	// signals. Each is in [0, 1] and maps to up to +5. The cluster
+	// bonus is scaled by noveltyWeight to mirror ApplyNoveltyToScore
+	// (which also weights novelty), so the cap math stays consistent
+	// when the user has nudged novelty above or below 1.0.
 	clusterBonus := 0.0
 	if hr.NoveltyScore > 0 {
 		n := hr.NoveltyScore
@@ -41,6 +43,9 @@ func ApplySiblingSimilarityToScore(hr *HeatResult) {
 			n = 1
 		}
 		clusterBonus = n * 5
+		if hr.noveltyWeightSet {
+			clusterBonus *= hr.noveltyWeight
+		}
 	}
 	sibBonus := s * 5 * w
 	combined := clusterBonus + sibBonus

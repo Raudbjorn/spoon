@@ -39,26 +39,26 @@ func newTestClientREST(t *testing.T, srv *httptest.Server) *Client {
 // resulting record has the expected totals. Cache TTL of -1 forces
 // a live fetch.
 func TestFetchUserRepos_BuildsProfileFromPages(t *testing.T) {
+	recent := time.Now().Add(-30 * 24 * time.Hour).UTC().Format(time.RFC3339)
+	ancient := time.Now().Add(-3 * 365 * 24 * time.Hour).UTC().Format(time.RFC3339)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasSuffix(r.URL.Path, "/users/alice/repos") {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
-		// Two pages of repos: page 1 has 2 forks + 1 non-fork; page 2 has 1 fork.
 		switch r.URL.Query().Get("page") {
 		case "", "1":
-			// advertise a next page via the Link header
 			next := *r.URL
 			q := next.Query()
 			q.Set("page", "2")
 			next.RawQuery = q.Encode()
 			w.Header().Set("Link", "<"+next.String()+">; rel=\"next\"")
 			_, _ = w.Write([]byte(`[
-				{"fork": true,  "pushed_at": "2026-01-15T00:00:00Z"},
-				{"fork": true,  "pushed_at": "2020-01-15T00:00:00Z"},
-				{"fork": false, "pushed_at": "2025-06-01T00:00:00Z"}
+				{"fork": true,  "pushed_at": "` + recent + `"},
+				{"fork": true,  "pushed_at": "` + ancient + `"},
+				{"fork": false, "pushed_at": "` + recent + `"}
 			]`))
 		case "2":
-			_, _ = w.Write([]byte(`[{"fork": true, "pushed_at": "2026-02-01T00:00:00Z"}]`))
+			_, _ = w.Write([]byte(`[{"fork": true, "pushed_at": "` + recent + `"}]`))
 		default:
 			_, _ = w.Write([]byte(`[]`))
 		}
@@ -66,9 +66,12 @@ func TestFetchUserRepos_BuildsProfileFromPages(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientREST(t, srv)
-	rec, err := c.FetchUserRepos(context.Background(), "alice", -1)
+	rec, cached, err := c.FetchUserRepos(context.Background(), "alice", -1)
 	if err != nil {
 		t.Fatalf("FetchUserRepos: %v", err)
+	}
+	if cached {
+		t.Error("expected cached=false for a live fetch")
 	}
 	if rec == nil {
 		t.Fatal("expected non-nil record")
@@ -83,7 +86,7 @@ func TestFetchUserRepos_BuildsProfileFromPages(t *testing.T) {
 		t.Errorf("ForkCount: got %d, want 3", rec.ForkCount)
 	}
 	if rec.SignalForkCount != 2 {
-		// Only the two 2026 forks are within the 1-year window.
+		// Only the two recent forks are within the 1-year window.
 		t.Errorf("SignalForkCount: got %d, want 2", rec.SignalForkCount)
 	}
 	if rec.NonForkRepoCount != 1 {
@@ -95,8 +98,9 @@ func TestFetchUserRepos_BuildsProfileFromPages(t *testing.T) {
 }
 
 // TestFetchUserRepos_RateLimitReturnsNil covers the rate-limit path:
-// 403 with X-RateLimit-Remaining: 0 yields a *RateLimitError and a nil
-// record. The caller (forksops) treats this as "no signal".
+// 403 with X-RateLimit-Remaining: 0 yields a *RateLimitError, a nil
+// record, and cached=false. The caller (forksops) treats this as
+// "no signal".
 func TestFetchUserRepos_RateLimitReturnsNil(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-RateLimit-Remaining", "0")
@@ -107,9 +111,12 @@ func TestFetchUserRepos_RateLimitReturnsNil(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientREST(t, srv)
-	rec, err := c.FetchUserRepos(context.Background(), "alice", -1)
+	rec, cached, err := c.FetchUserRepos(context.Background(), "alice", -1)
 	if rec != nil {
 		t.Errorf("expected nil record on rate limit, got %+v", rec)
+	}
+	if cached {
+		t.Error("expected cached=false on rate limit")
 	}
 	if err == nil {
 		t.Fatal("expected error on rate limit, got nil")
@@ -121,8 +128,8 @@ func TestFetchUserRepos_RateLimitReturnsNil(t *testing.T) {
 }
 
 // TestFetchUserRepos_NotFoundReturnsNil covers the 404 path: a
-// private or renamed user yields (nil, nil) so the pipeline treats
-// it as "no signal" without logging a warning.
+// private or renamed user yields (nil, false, nil) so the pipeline
+// treats it as "no signal" without logging a warning.
 func TestFetchUserRepos_NotFoundReturnsNil(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
@@ -131,9 +138,12 @@ func TestFetchUserRepos_NotFoundReturnsNil(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientREST(t, srv)
-	rec, err := c.FetchUserRepos(context.Background(), "ghost", -1)
+	rec, cached, err := c.FetchUserRepos(context.Background(), "ghost", -1)
 	if rec != nil {
 		t.Errorf("expected nil record on 404, got %+v", rec)
+	}
+	if cached {
+		t.Error("expected cached=false on 404")
 	}
 	if err != nil {
 		t.Errorf("expected nil error on 404, got %v", err)
@@ -141,7 +151,7 @@ func TestFetchUserRepos_NotFoundReturnsNil(t *testing.T) {
 }
 
 // TestFetchUserRepos_EmptyLoginReturnsNil covers the defensive
-// path: an empty login yields (nil, nil) without an HTTP call.
+// path: an empty login yields (nil, false, nil) without an HTTP call.
 func TestFetchUserRepos_EmptyLoginReturnsNil(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Errorf("should not hit server for empty login")
@@ -149,9 +159,50 @@ func TestFetchUserRepos_EmptyLoginReturnsNil(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClientREST(t, srv)
-	rec, err := c.FetchUserRepos(context.Background(), "", -1)
-	if rec != nil || err != nil {
-		t.Errorf("empty login: got (%+v, %v), want (nil, nil)", rec, err)
+	rec, cached, err := c.FetchUserRepos(context.Background(), "", -1)
+	if rec != nil || cached || err != nil {
+		t.Errorf("empty login: got (%+v, %v, %v), want (nil, false, nil)", rec, cached, err)
+	}
+}
+
+// TestFetchUserRepos_CacheHit covers the on-disk cache path: a
+// second call within the TTL returns the cached record and reports
+// cached=true.
+func TestFetchUserRepos_CacheHit(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Should be hit at most once (the first call). The second
+		// call should be served from disk.
+		_, _ = w.Write([]byte(`[{"fork": true, "pushed_at": "` +
+			time.Now().UTC().Format(time.RFC3339) + `"}]`))
+	}))
+	defer srv.Close()
+
+	c := newTestClientREST(t, srv)
+	// First call: live fetch, cache write.
+	rec1, cached1, err := c.FetchUserRepos(context.Background(), "alice", time.Hour)
+	if err != nil {
+		t.Fatalf("first FetchUserRepos: %v", err)
+	}
+	if cached1 {
+		t.Error("first call: expected cached=false")
+	}
+	if rec1 == nil {
+		t.Fatal("first call: expected non-nil record")
+	}
+	// Second call: cache hit, no HTTP traffic.
+	rec2, cached2, err := c.FetchUserRepos(context.Background(), "alice", time.Hour)
+	if err != nil {
+		t.Fatalf("second FetchUserRepos: %v", err)
+	}
+	if !cached2 {
+		t.Error("second call: expected cached=true")
+	}
+	if rec2 == nil {
+		t.Fatal("second call: expected non-nil record")
+	}
+	if rec2.Login != rec1.Login || rec2.ForkCount != rec1.ForkCount {
+		t.Errorf("cache mismatch: %+v vs %+v", rec1, rec2)
 	}
 }
 
