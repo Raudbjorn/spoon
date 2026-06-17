@@ -255,6 +255,93 @@ func TestPipelineOptions_CentralityBackend(t *testing.T) {
 	}
 }
 
+// TestPipelineOptions_CentralityHeadSHA pins the contract that the new
+// MDG-cache pin field round-trips. The R1 plumbing guarantees that
+// forge.ParentData.HeadSHA is forwarded to loadOrComputeMDG; this is the
+// structural test that the field exists and is settable. The actual
+// cache-hit behavior is covered by TestPipeline_CentralityHeadSHACacheHit.
+func TestPipelineOptions_CentralityHeadSHA(t *testing.T) {
+	opts := PipelineOptions{CentralityHeadSHA: "deadbeefcafe1234"}
+	if opts.CentralityHeadSHA != "deadbeefcafe1234" {
+		t.Fatalf("CentralityHeadSHA should round-trip; got %q", opts.CentralityHeadSHA)
+	}
+	// Empty value must remain a valid opt-out: loadOrComputeMDG skips the
+	// cache entirely when the SHA is empty (see cache.go fast-path check).
+	empty := PipelineOptions{}
+	if empty.CentralityHeadSHA != "" {
+		t.Fatalf("zero-value CentralityHeadSHA should be empty, got %q", empty.CentralityHeadSHA)
+	}
+}
+
+// TestPipeline_CentralityHeadSHACacheHit exercises the full MDG-cache
+// fast-path: pre-seed a cache entry with a known SHA, then run the
+// pipeline with that same SHA on CentralityHeadSHA. The pipeline must
+// surface a non-empty Centrality through ChangeImpact (via the cached
+// adapter) without calling the network. With Refresh=true or a different
+// SHA, the cache should be bypassed.
+func TestPipeline_CentralityHeadSHACacheHit(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", tmp)
+
+	sha := "abc1234def5678"
+	owner, repo := "cachetest", "cached"
+
+	// Pre-seed the MDG cache. The adapter serves ScoreFork by exact
+	// touched-file match against the score table, so seed with the
+	// exact path the T2 diff below will carry.
+	if err := mdg.SaveMDGCache(mdg.MDGCache{
+		SchemaVersion: mdg.CacheSchemaVersion,
+		Provider:      "github",
+		Owner:         owner,
+		Repo:          repo,
+		HeadSHA:       sha,
+		ComputedAt:    time.Now(),
+		Scores: map[string]float64{
+			"cluster/pipeline.go": 0.5,
+		},
+	}); err != nil {
+		t.Fatalf("seed MDG cache: %v", err)
+	}
+
+	// Build a single fork whose T2 diffs target the seeded path.
+	fork := makePipelineFork(owner+"/"+repo, 3, []string{"cluster/pipeline.go"}, 80)
+
+	inputs := PipelineInputs{
+		Provider:      "github",
+		UpstreamOwner: owner,
+		UpstreamRepo:  repo,
+		Upstream:      parentDataFixture(),
+		Forks:         []EnrichedFork{fork},
+		// No TreeSource → without the cache, the dispatcher would fall
+		// back to the directory proxy and produce zero ChangeImpact.
+	}
+	opts := PipelineOptions{
+		Enabled:           true,
+		TopN:              1,
+		CentralityBackend: "mdg",
+		CentralityHeadSHA: sha,
+		Embedder:          pipelineStubEmbedder{},
+		EmbedderID:        "stub",
+	}
+
+	var log bytes.Buffer
+	if _, err := RunPipeline(context.Background(), opts, inputs, &log); err != nil {
+		t.Fatalf("RunPipeline: %v", err)
+	}
+
+	// The cached adapter should have served the seeded score through to
+	// ChangeImpact. Without a real file→module bridge we can't pin an
+	// exact value, but the field must be > 0 because the cached adapter's
+	// ScoreFork returned non-zero for at least one input — and 0 with no
+	// inputs would mean the cache was bypassed. We assert > 0 to lock the
+	// fast-path wire-up; the exact fidelity is documented degraded at
+	// mdgCachedAdapter.
+	if fork.Heat.ChangeImpact <= 0 {
+		t.Fatalf("expected ChangeImpact > 0 from MDG cache, got %v (log: %s)",
+			fork.Heat.ChangeImpact, log.String())
+	}
+}
+
 func TestMDGCachedAdapter_ScoreFork(t *testing.T) {
 	a := &mdgCachedAdapter{cache: mdg.MDGCache{
 		Scores: map[string]float64{

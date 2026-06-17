@@ -13,6 +13,47 @@ import (
 	ghAPI "github.com/cli/go-gh/v2/pkg/api"
 )
 
+// defaultBranchTipQuery is a one-off GraphQL query used to fetch the
+// upstream default branch's tip SHA. Used by FetchParent to populate
+// ParentData.HeadSHA so the MDG cache (cluster.PipelineOptions) can pin
+// entries against the right revision. Authentication is required for
+// private repos; for public ones the unauthenticated path is still allowed.
+const defaultBranchTipQuery = `query($owner: String!, $name: String!) {
+  repository(owner: $owner, name: $name) {
+    defaultBranchRef { target { oid } }
+  }
+}`
+
+// defaultBranchTipSHA returns the upstream default-branch tip SHA using
+// the GraphQL client. Returns the empty string and no error when the
+// repository has no default branch (e.g., empty repo) — the caller treats
+// that as a soft miss and continues without pinning. Other errors
+// (network, 5xx) are propagated.
+func (c *Client) defaultBranchTipSHA(ctx context.Context, owner, repo string) (string, error) {
+	if c.gql == nil {
+		return "", nil
+	}
+	var resp struct {
+		Repository struct {
+			DefaultBranchRef *struct {
+				Target struct {
+					OID string `json:"oid"`
+				} `json:"target"`
+			} `json:"defaultBranchRef"`
+		} `json:"repository"`
+	}
+	if err := c.gql.DoWithContext(ctx, defaultBranchTipQuery, map[string]interface{}{
+		"owner": owner,
+		"name":  repo,
+	}, &resp); err != nil {
+		return "", err
+	}
+	if resp.Repository.DefaultBranchRef == nil {
+		return "", nil
+	}
+	return resp.Repository.DefaultBranchRef.Target.OID, nil
+}
+
 const forksGraphQLQuery = `
 query($owner: String!, $name: String!, $cursor: String) {
   repository(owner: $owner, name: $name) {

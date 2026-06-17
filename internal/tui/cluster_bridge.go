@@ -43,6 +43,20 @@ type ClusterOptions struct {
 	// "directory" → directory-centrality proxy. "mdg" → Module Dependency
 	// Graph. See `--full-mdg` in `spoon --help`.
 	CentralityBackend string
+
+	// CentralityHeadSHA is forwarded to cluster.PipelineOptions. It pins
+	// the MDG cache to the upstream's current default-branch tip SHA so
+	// the 24h fast path is actually used. When empty (e.g., a Parent
+	// call that did not resolve a SHA), the cache is skipped and the MDG
+	// builds from scratch on every run.
+	CentralityHeadSHA string
+
+	// StrictMDG, when true, surfaces a non-fatal MDG build/cache failure
+	// as a ClusterSkip with code "mdg_unavailable" instead of silently
+	// falling back to the directory proxy. Off by default — the silent
+	// fallback is the right behavior for ordinary `--full-mdg` runs.
+	// See `--strict-mdg` in `spoon --help`.
+	StrictMDG bool
 }
 
 // waitForClusterMsg returns a tea.Cmd that blocks on the model's cluster
@@ -173,8 +187,9 @@ func runTUIClusterPipeline(
 		Categorize:        opts.Categorize,
 		LabelPolisher:     opts.LabelPolisher,
 		CentralityBackend: opts.CentralityBackend,
+		CentralityHeadSHA: parent.HeadSHA,
+		StrictMDG:         opts.StrictMDG,
 	}
-
 	skip, err := cluster.RunPipeline(context.Background(), pipelineOpts, inputs, &silentWriter{})
 	send(out, clusterResultMsg{
 		Skip:        skip,

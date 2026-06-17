@@ -68,6 +68,7 @@ type ParentData struct {
 	FullName      string
 	Description   string
 	DefaultBranch string
+	HeadSHA       string // upstream default-branch tip SHA; powers the MDG cache
 	Stars         int
 	Forks         int
 	Size          int
