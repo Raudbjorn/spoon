@@ -172,11 +172,26 @@ func runEvalWith(args []string, stdout, stderr io.Writer) int {
 	if streamErr != nil {
 		return agentio.NewError(agentio.CodeUpstream, streamErr.Error(), agentio.RemediationUpstream()).Emit(stderr)
 	}
-
 	// Drain the stream, join to judgments, compute the report. Per-fork
 	// errors are tolerated (we want the report on partial data).
+	//
+	// ClusterSkip and T3Skip warnings are surfaced on stderr via the
+	// same emitClusterWarning / emitStageSkipWarning helpers used by
+	// `spn forks list`. Without this, an HCA-of-0 report looks like
+	// "the eval is broken" when the real cause is "the cluster
+	// pipeline was skipped because the embedder failed". The emit
+	// helpers intentionally discard write errors (stderr is the
+	// standard output of last resort); a stuck consumer would still
+	// drain the upstream channel, but the cost is bounded by the
+	// per-fork budget reserve — see forksops.Stream's ctx wiring.
 	rows := make([]eval.ScoredFork, 0, len(jtmt.Forks))
 	for r := range ch {
+		if r.ClusterSkip != nil {
+			emitClusterWarning(stderr, r.ClusterSkip)
+		}
+		if r.T3Skip != nil {
+			emitStageSkipWarning(stderr, r.T3Skip)
+		}
 		if r.Err != nil {
 			continue
 		}
@@ -187,9 +202,9 @@ func runEvalWith(args []string, stdout, stderr io.Writer) int {
 			Score:     r.Heat.Score,
 		})
 	}
+	_ = cancel
 	report := eval.Compute(repo, rows, jtmt)
 	enc := json.NewEncoder(stdout)
-	enc.SetIndent("", "  ")
 	if err := enc.Encode(report); err != nil {
 		return agentio.NewError(agentio.CodeInternal, err.Error(), agentio.RemediationInternal()).Emit(stderr)
 	}

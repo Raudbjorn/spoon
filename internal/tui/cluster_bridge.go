@@ -176,6 +176,18 @@ func runTUIClusterPipeline(
 		inputs.Provider = "other"
 	}
 
+	// Resolve the MDG-cache pin: prefer the caller's explicit
+	// CentralityHeadSHA override (tests, future pinning beyond the
+	// upstream's HEAD), and fall back to parent.HeadSHA when the
+	// caller didn't supply one. The fallback is the common case for
+	// both the spn forks list and the spoon TUI — both end up here
+	// via the cluster_pipeline construction in cmd/spn and cmd/spoon
+	// respectively, which always set opts.CentralityHeadSHA = ""
+	// and rely on parent.HeadSHA being populated.
+	pin := parent.HeadSHA
+	if opts.CentralityHeadSHA != "" {
+		pin = opts.CentralityHeadSHA
+	}
 	pipelineOpts := cluster.PipelineOptions{
 		Enabled:           opts.Enabled,
 		TopN:              opts.TopN,
@@ -187,7 +199,7 @@ func runTUIClusterPipeline(
 		Categorize:        opts.Categorize,
 		LabelPolisher:     opts.LabelPolisher,
 		CentralityBackend: opts.CentralityBackend,
-		CentralityHeadSHA: parent.HeadSHA,
+		CentralityHeadSHA: pin,
 		StrictMDG:         opts.StrictMDG,
 	}
 	skip, err := cluster.RunPipeline(context.Background(), pipelineOpts, inputs, &silentWriter{})

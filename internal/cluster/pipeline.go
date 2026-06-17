@@ -358,18 +358,21 @@ func RunPipeline(ctx context.Context, opts PipelineOptions, inputs PipelineInput
 // HeatResult.Score via heat.ApplyNoveltyToScore (up to +5, capped at 100).
 // Score is therefore mutated. Idempotency is the caller's responsibility:
 // this helper must be invoked exactly once per HeatResult per run.
-//
-// Noise points (a.Cluster == "noise" or "") receive NoveltyScore = 1.0 from
-// the assignment and the +5 heat bonus — they are "outliers, most novel" by
-// definition. Only real clusters get ClusterID/ClusterLabel/ClusterMemberCount
-// populated; noise points have those left at their assigned/zero values.
+// Noise points (a.Cluster == "noise" or "") receive NoveltyScore = 1.0
+// from the assignment by default and the +5 heat bonus — they are
+// "outliers, most novel" by definition. Empty-fork demotion (R3,
+// below) demotes a subset of these to 0.5. Only real clusters get
+// ClusterID / ClusterLabel / ClusterMemberCount populated; noise
+// points have those left at their assigned/zero values.
 //
 // Empty-fork demotion (R3): noise points with no T2 data signal (MNA == 0
 // AND AheadCount == 0) are demoted to NoveltyScore = 0.5 so that "isolated
 // but empty" is not indistinguishable from "isolated and novel". The 0.5
 // value is the only magic number in this helper — it is the floor of the
 // "interesting but unproven" zone and is pinned by the regression test
-// TestApplyNoveltyToScore_EmptyNoise in internal/heat/novelty_test.go.
+// TestApplyNoveltyToScore_EmptyNoise in internal/heat/novelty_test.go
+// (math) and TestApplyAssignmentsToForks_EmptyNoiseDemotion
+// (this function's branch) in internal/cluster/pipeline_test.go.
 func applyAssignmentsToForks(clusters []Cluster, assignments []Assignment, forks []EnrichedFork) {
 	idxByForkID := make(map[string]int, len(forks))
 	for i, ef := range forks {
@@ -451,10 +454,15 @@ func loadOrComputeCentrality(
 		if ok {
 			return c, true, nil
 		}
-		fmt.Fprintln(logger, "[cluster] MDG centrality unavailable; falling back to directory proxy")
+		// Strict mode short-circuits BEFORE the fallback log: when
+		// StrictMDG is set, the directory proxy is never consulted,
+		// so the "falling back" message would be misleading. The
+		// error is propagated and the caller renders it as a
+		// ClusterSkip with code "mdg_unavailable".
 		if opts.StrictMDG && err != nil {
 			return nil, false, err
 		}
+		fmt.Fprintln(logger, "[cluster] MDG centrality unavailable; falling back to directory proxy")
 	}
 	dc, ok := loadOrComputeDirCentrality(ctx, inputs, logger)
 	return dc, ok, nil
@@ -489,17 +497,22 @@ func loadOrComputeDirCentrality(
 	return dc, true
 }
 
-// The dispatcher wraps the dir proxy with a hard-coded "ok=true" to satisfy
-// the 3-value signature contract — dir-proxy failures are non-fatal by
-// design and ChangeImpact is left at zero.
-
 // loadOrComputeMDG attempts to build and cache an MDG-backed centrality.
-// Returns (nil, false, nil) on any failure; the dispatcher treats that
-// as a signal to fall back to the directory proxy. The error is non-nil
-// for build/cache failures and is propagated to the caller when
-// opts.StrictMDG is set.
+// Returns:
+//   - (c, true, nil)   on success (cache hit or fresh build).
+//   - (nil, false, err) on a recoverable build/cache failure: the
+//     err is non-nil for any tempdir/clone/build failure and is
+//     propagated upward by the dispatcher when opts.StrictMDG is set.
+//     When opts.StrictMDG is false, the dispatcher swallows the
+//     error and falls back to the directory proxy.
+//   - (nil, false, nil) when MDG was requested but opts.CentralityHeadSHA
+//     was empty (the cache cannot pin against an empty SHA).
+// The error contract is asymmetric: callers must check ok first, then
+// err. A nil err with ok=false is a soft "skip MDG" signal, not a
+// clean success.
 //
-// When opts.CentralityHeadSHA is empty, the cache is neither consulted
+// When opts.CentralityHeadSHA is non-empty, a cache hit short-circuits
+// the live build entirely. When empty, the cache is neither consulted
 // nor populated — the computed result is returned without persistence.
 func loadOrComputeMDG(
 	ctx context.Context,
