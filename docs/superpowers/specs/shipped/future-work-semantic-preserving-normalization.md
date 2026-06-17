@@ -1,3 +1,5 @@
+> **Status (2026-06-17): ABANDONED.** The AST-based per-language normalizer described here was not built. The convergence (commit `355dcd8`) shipped a much cheaper lexical embedder (`internal/embed/local.go`, `BuiltinModelName = "builtin-lexical-v1"`) as the v1 default; AST-level normalization was deferred indefinitely in favor of letting the OpenVINO embedder (`--embedder-backend openvino`) carry the semantic load. The spec remains as design history; the lexical embedder + OpenVINO backend are the source of truth.
+
 # Future Work: AST-Based Semantic-Preserving Diff Normalization
 
 **Status:** Deferred from v1 (which uses cheap text-level normalization).

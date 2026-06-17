@@ -1,3 +1,5 @@
+> **Status (2026-06-17): SHIPPED.** See `internal/mdg/`. Opt-in via `--full-mdg`; the directory-centrality proxy in `internal/repo/` remains the default.
+
 # Future Work: Full Module Dependency Graph Centrality
 
 **Status:** Deferred from v1, which ships the cheap directory-centrality proxy in `internal/repo/centrality.go`.

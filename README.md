@@ -38,10 +38,10 @@ spoon golang/go                                 # GitHub repo
 spoon gitlab.com/inkscape/inkscape              # GitLab (auto-detected)
 spoon --forge gitlab group/repo                 # force provider
 spoon --forge-host gitlab.example.com g/repo    # self-hosted GitLab
-spoon --json charmbracelet/bubbletea            # JSON to stdout
-spoon --csv charmbracelet/bubbletea -o forks.csv
-spoon --tier 1 golang/go                        # T1 only (skip compare calls)
-spoon --top 5 golang/go                         # only enrich top 5 by T1 score
+spn forks list charmbracelet/bubbletea --json   # JSON to stdout (agent CLI)
+spn forks list charmbracelet/bubbletea --csv    # batched CSV (see "Agent CLI" below)
+spn forks list golang/go --tier 1               # T1 only (skip compare calls)
+spn forks list golang/go --top 5                # only enrich top 5 by T1 score
 spoon topic:terminal                            # GitHub topic → repo picker → forks
 ```
 
@@ -207,9 +207,13 @@ for both algorithms and the OpenVINO setup.
 cmd/spoon/         Interactive CLI entry point
 cmd/spn/           Agent-shaped CLI (JSON/NDJSON)
 internal/forge/    Provider abstraction (GitHub + GitLab + Gitea)
+internal/genai/    OpenVINO GenAI label polisher for cluster labels
 internal/github/   GitHub client (REST + GraphQL via gh CLI)
 internal/gitlab/   GitLab client
 internal/heat/     Scoring, percentiles, filters
+internal/mdg/      Module Dependency Graph centrality backend (opt-in via --full-mdg)
+internal/threadsops/ PR thread ops shared by `spoon threads` and `spn threads`
+internal/agentio/  Structured error envelope + JSON writers for `spn`
 internal/embed/    Built-in lexical embedder + per-fork features
 internal/cluster/  Clustering, novelty, heuristic labels
 internal/forksops/ Streaming fork enumeration/enrichment

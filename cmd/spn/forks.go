@@ -442,14 +442,11 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 			emitStageSkipWarning(stderr, r.T3Skip)
 		}
 		if r.Err != nil {
-			// Compact one-line stderr error per failing fork.
-			_ = agentio.WriteNDJSON(stderr, map[string]any{
-				"error": map[string]any{
-					"code":    r.Err.Code,
-					"message": r.Err.Message,
-					"details": r.Err.Details,
-				},
-			})
+			// Compact one-line stderr error per failing fork. The full
+			// agentio envelope contract (remediation + retryable) applies
+			// even on the stream so agents can branch consistently with
+			// the fatal-error path above.
+			_ = agentio.WriteNDJSON(stderr, perForkErrorEnvelope(r.Err))
 			continue
 		}
 		total++
@@ -826,4 +823,28 @@ func forkToJSONUpstream(r forksops.Result, upstream string) map[string]any {
 		out["upstream"] = upstream
 	}
 	return out
+}
+
+// perForkErrorEnvelope builds the NDJSON-shaped `{"error": {...}}` map for
+// a per-fork failure, populating the full agentio envelope contract
+// (remediation + retryable) so agents can branch consistently with the
+// fatal-error path. Called only from the streaming loop; emits a single
+// compact line via agentio.WriteNDJSON.
+func perForkErrorEnvelope(e *forksops.Error) map[string]any {
+	code := agentio.Code(e.Code)
+	// Per-fork failures don't carry reset_at / retry-after metadata, so we
+	// use the generic upstream wait guidance for every code. The code-to-
+	// retryable mapping still comes from agentio (defaultRetryable), which
+	// is the contract that matters for agent branching.
+	rem := agentio.RemediationUpstream()
+	body := map[string]any{
+		"code":        string(code),
+		"message":     e.Message,
+		"remediation": rem,
+		"retryable":   agentio.NewError(code, e.Message, rem).Retryable,
+	}
+	if e.Details != nil {
+		body["details"] = e.Details
+	}
+	return map[string]any{"error": body}
 }

@@ -52,38 +52,16 @@ GitHub rate-limit hits produce a `rate_limited` envelope with `retry_after_secon
 
 Detection works on REST API paths. GitHub's GraphQL endpoint (used by the forks-list GraphQL fast path) returns rate-limit hits as the generic `upstream_error` code instead.
 
-## Embedding pipeline (preflight)
+## Query-driven fork search (no embedder required)
 
-`spn forks list` enriches forks with cluster labels when an Ollama embedder is reachable. Three sibling verbs let an agent set that up or query the underlying data:
-
-```sh
-spn embed status                   # JSON: running, endpoint, installed[], recommended[]
-spn embed models                   # JSON: known-good models (name, dim, size, codeAware)
-spn embed pull <model>             # NDJSON progress: one {model,phase,pct} per line until phase=="done"
-spn repo centrality owner/repo     # JSON: per-directory centrality + top-K core dirs
-```
-
-Preflight pattern before clustering:
-
-```bash
-status=$(spn embed status)
-running=$(jq -r .running <<<"$status")
-if [ "$running" != "true" ]; then
-  echo "Ollama not reachable; clustering will be skipped" >&2
-fi
-installed=$(jq -r '.installed | join(",")' <<<"$status")
-if ! grep -q nomic <<<"$installed"; then
-  spn embed pull nomic-embed-text | jq -c .   # streaming progress
-fi
-```
+`spn forks list <repo> --query "intent"` scores each fork's change digest against the query and outputs sorted by relevance. Each NDJSON record gains a `queryScore` (0..1) and a `queryMethod` field. When the OpenVINO reranker is configured, `queryMethod` is `"openvino"`; otherwise it falls back to lexical cosine scoring. No external embedder service is required for any path.
 
 ## Common Mistakes
 
 | Mistake | What to do instead |
 | --- | --- |
 | Treating `forks list` as a one-shot batched command by default | NDJSON streaming is the default; pipe through `jq -c` to consume incrementally. Use `--csv` only when the consumer expects tabular data. |
-| Running `forks list` without checking the embedder | If clustering is critical, run `spn embed status` first and `spn embed pull` if a recommended model isn't installed. |
-| Confusing `repo centrality` and fork centrality | `spn repo centrality <repo>` returns the upstream's directory centrality, not per-fork. There's no per-fork centrality verb yet. |
+| Running `forks list` expecting clusters to always run | Clustering needs an embedder; if no backend is configured, the pipeline silently skips the cluster stage and emits per-fork warnings on stderr. Check the run output for `cluster_skip` warnings. |
 
 ## Quick Reference
 
@@ -91,7 +69,4 @@ fi
 | --- | --- |
 | `spn forks list <repo>` | NDJSON stream of enriched forks |
 | `spn forks list <repo> --csv` | Batched CSV with fixed 18-column header |
-| `spn embed status` | Probe Ollama; report running state, installed models, recommended models |
-| `spn embed pull <model>` | Pull a model with streaming progress NDJSON |
-| `spn embed models` | List known-good embedding models |
 | `spn repo centrality <owner/repo>` | Per-directory centrality JSON for the upstream repo |

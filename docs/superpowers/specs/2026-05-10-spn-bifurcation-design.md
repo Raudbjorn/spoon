@@ -1,3 +1,11 @@
+> **Status (2026-06-17): SUPERSEDED.** The 4 claims below contradict the shipped code. The spec remains as design history; the README + the convergence commits (`c65bf96` deleted `internal/dump`, `e92556b` removed `spoon --json/--csv/-o`, `355dcd8` replaced external embedder paths with in-process OpenVINO) are the source of truth.
+>
+> Errata:
+> - Line 12: `spoon --json/--csv` were removed in `e92556b` (2026-05-10). Only `spoon threads --json/--next` remain on the human CLI; `spn forks list` is the agent path.
+> - Line 13: `spn forks list --csv` is supported (see `cmd/spn/forks.go:256`); the spec's "No CSV in `spn`" claim is wrong.
+> - Line 17: `spn` ships its own forks/embedder pipeline (`cmd/spn/forks.go`, `internal/forksops/Stream`) and is not a thin re-presenter of `spoon`.
+> - Line 38: `internal/dump` was deleted in `c65bf96` (2026-05-10); the convergence removed the dump-backed JSON/CSV path entirely.
+
 # `spn` — agent-shaped CLI bifurcation
 
 **Date:** 2026-05-10

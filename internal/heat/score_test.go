@@ -519,3 +519,27 @@ func TestRecencyPercentile(t *testing.T) {
 		t.Errorf("most recent fork must rank highest: %v <= %v", r0, r2)
 	}
 }
+
+func TestFullPipeline_ScoreWithinZeroToHundred(t *testing.T) {
+	// Full pipeline: RawScoreWeighted → ApplyTrust → ApplyPenalties → ApplyNoveltyToScore.
+	// The cap is enforced in ApplyTrust (score.go:270) and ApplyNoveltyToScore
+	// (novelty.go:55). This test pins the post-pipeline invariant: no matter how
+	// aggressive the inputs and the user-set novelty weight, HeatResult.Score
+	// never exits [0, 100].
+	in := ScoreInput{
+		T1: Tier1ParamsV2{Stars: 1e9, DaysSincePush: 0},
+		T2: &Tier2ParamsV2{AheadBy: 1000, MNA: 1e9, BehindBy: 0, FeatureCommitRatio: 1.0},
+		T3: &Tier3ParamsV2{LoneWolf: &LoneWolfResult{Detected: true, Strength: 1.0}, CommitSpanDays: 365, NoveltyScore: 1.0},
+	}
+	hr := RawScoreWeighted(in, map[string]float64{"novelty": 2.0})
+	ApplyTrust(&hr, 1.0, 1.0)
+	ApplyPenalties(&hr, PenaltyInput{AheadKnown: true, AheadAllBranches: 1000, Archived: false, RecencyPct: 0.5})
+	hr.NoveltyScore = 1.0
+	ApplyNoveltyToScore(&hr)
+	if hr.Score < 0 || hr.Score > 100 {
+		t.Errorf("post-pipeline Score = %v, want in [0, 100]", hr.Score)
+	}
+	if hr.Score < 90 {
+		t.Errorf("post-pipeline Score = %v on maxed inputs, want >= 90 (sanity)", hr.Score)
+	}
+}
