@@ -4,3 +4,12 @@
 
 # Exports
 spoon-export-*.json
+
+# Local Python tooling (sidecar venv was removed; future Python experiments should be inlined)
+embed/sidecar/
+**/__pycache__/
+*.pyc
+
+# Experiment run artifacts (transient logs + multi-MB vector dumps; never commit)
+experiments/**/*.log
+experiments/**/*_vectors.json

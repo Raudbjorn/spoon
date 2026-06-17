@@ -96,11 +96,20 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 			TopN:           50,
 			Epsilon:        0, // resolved per embedder backend below
 			MinClusterSize: 3,
+			// SiblingSimEnabled defaults to true for standard mode;
+			// topic mode overrides it to false (5x cost multiplier).
+			SiblingSimEnabled: true,
 		},
 	}
 	var embedderBackend, openvinoModel, openvinoDevice, openvinoPooling string
 	query := ""
 	topicRepos := 0
+	// Track which flags the user passed explicitly so the post-loop
+	// defaulting can distinguish "user wants the default" from "user
+	// did not address this knob". Used by OwnerCacheTTL (default 24h)
+	// and topic-mode SiblingSimEnabled (default off).
+	ownerCacheTTLSet := false
+	siblingSimFlagSet := false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--tier":
@@ -258,6 +267,23 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 			opts.Cluster.StrictMDG = true
 		case "--csv":
 			csvMode = true
+		case "--sibling-sim":
+			opts.Cluster.SiblingSimEnabled = true
+			siblingSimFlagSet = true
+		case "--no-sibling-sim":
+			opts.Cluster.SiblingSimEnabled = false
+			siblingSimFlagSet = true
+		case "--owner-cache-ttl":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--owner-cache-ttl requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			d, err := time.ParseDuration(args[i])
+			if err != nil || d < 0 {
+				return agentio.NewError(agentio.CodeBadInput, "--owner-cache-ttl must be a valid Go duration (e.g. 1h, 24h)", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			opts.OwnerCacheTTL = d
+			ownerCacheTTLSet = true
 		default:
 			if strings.HasPrefix(args[i], "--") {
 				return agentio.NewError(agentio.CodeBadInput, "unknown flag: "+args[i], agentio.RemediationBadInput("forks", "list")).Emit(stderr)
@@ -279,6 +305,15 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 				opts.BotAllowlist[strings.ToLower(b)] = true
 			}
 		}
+	}
+
+	// Default the owner-profile cache TTL to 24h when the user did not
+	// pass --owner-cache-ttl and did not pass --refresh. The cache
+	// layer treats ttl==0 as "always re-fetch", which is the wrong
+	// default for normal runs. --refresh falls back to ttl==0 so the
+	// refresh path stays intact.
+	if !ownerCacheTTLSet && !opts.Refresh {
+		opts.OwnerCacheTTL = 24 * time.Hour
 	}
 
 	// Resolve and construct the embedder backend (flag > env > config) so a
@@ -359,8 +394,13 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 			return agentio.NewError(agentio.CodeBadInput, "topic mode emits NDJSON only (records span multiple upstreams)",
 				"Drop --csv, or run per-repo CSV exports against the repos topic mode reports on stderr.").Emit(stderr)
 		}
-		// Provider construction needs no repo in topic mode; the placeholder
-		// is parsed for its host only.
+		// P2 is opt-in for topic mode; the 5x cost multiplier burns
+		// the search rate budget. Override this default only when
+		// the user did not pass either --sibling-sim or --no-sibling-sim
+		// (an explicit flag wins over the topic-mode default).
+		if !siblingSimFlagSet {
+			opts.Cluster.SiblingSimEnabled = false
+		}
 		provider, _, e := providerFactory(ctx, "topic/placeholder", forgeFlag, forgeHost)
 		if e != nil {
 			return e.Emit(stderr)
@@ -405,7 +445,16 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 	if owner == "" || name == "" {
 		return agentio.NewError(agentio.CodeBadInput, "invalid repo: "+repo, agentio.RemediationBadInput("forks", "list")).Emit(stderr)
 	}
-	// Shadow ctx with a cancellable child so any early return below (a write
+	// P2 distant-relation discovery: when the provider is GitHub, wire
+	// a real GHSiblingSearcher that uses the same REST client. The
+	// cluster pipeline calls it when opts.Cluster.SiblingSimEnabled
+	// is true; otherwise the no-op default in the searcher path
+	// short-circuits the call.
+	if ghp, ok := provider.(*gh.GHProvider); ok {
+		if client := ghp.Client(); client != nil {
+			opts.Cluster.SiblingSearcher = gh.NewGHSiblingSearcher(client)
+		}
+	}
 	// error in the CSV or NDJSON path) aborts the upstream Stream goroutine
 	// instead of leaking it blocked on a channel send. opts.Logger,
 	// ReserveDisabled, and the test embedder hook are already configured above
@@ -449,15 +498,17 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 		if r.T3Skip != nil {
 			emitStageSkipWarning(stderr, r.T3Skip)
 		}
+		if r.OwnerProfileSkip != nil {
+			emitStageSkipWarning(stderr, r.OwnerProfileSkip)
+		}
+		if r.SiblingSimSkip != nil {
+			emitStageSkipWarning(stderr, r.SiblingSimSkip)
+		}
 		if r.Err != nil {
-			// Compact one-line stderr error per failing fork.
-			_ = agentio.WriteNDJSON(stderr, map[string]any{
-				"error": map[string]any{
-					"code":    r.Err.Code,
-					"message": r.Err.Message,
-					"details": r.Err.Details,
-				},
-			})
+			// agentio envelope contract (remediation + retryable) applies
+			// even on the stream so agents can branch consistently with
+			// the fatal-error path above.
+			_ = agentio.WriteNDJSON(stderr, perForkErrorEnvelope(r.Err))
 			continue
 		}
 		total++
@@ -591,6 +642,12 @@ func emitForksCSV(stdout, stderr io.Writer, ch <-chan forksops.Result) int {
 		}
 		if r.T3Skip != nil {
 			emitStageSkipWarning(stderr, r.T3Skip)
+		}
+		if r.OwnerProfileSkip != nil {
+			emitStageSkipWarning(stderr, r.OwnerProfileSkip)
+		}
+		if r.SiblingSimSkip != nil {
+			emitStageSkipWarning(stderr, r.SiblingSimSkip)
 		}
 		if r.Err != nil {
 			_ = agentio.WriteNDJSON(stderr, map[string]any{
@@ -762,6 +819,14 @@ func newLabelPolisher() (cluster.LabelPolisher, func(), error) {
 // records tagged with the upstream's full name. Used by topic mode, where
 // several upstreams share one output stream.
 func streamAndEmit(ctx context.Context, provider forge.Forge, owner, name, upstream string, opts forksops.Options, stdout, stderr io.Writer) int {
+	// P2 distant-relation discovery: wire a real GHSiblingSearcher for
+	// the GitHub provider. Topic mode reaches this path once per
+	// selected upstream; the per-upstream cost is 1 search + 1 embed.
+	if ghp, ok := provider.(*gh.GHProvider); ok {
+		if client := ghp.Client(); client != nil {
+			opts.Cluster.SiblingSearcher = gh.NewGHSiblingSearcher(client)
+		}
+	}
 	// Cancel on any early return so the background goroutine spawned by
 	// forksops.Stream doesn't keep consuming API rate limit after we stop
 	// draining ch (e.g. a stdout write failure below).
@@ -796,6 +861,12 @@ func streamAndEmit(ctx context.Context, provider forge.Forge, owner, name, upstr
 		}
 		if r.T3Skip != nil {
 			emitStageSkipWarning(stderr, r.T3Skip)
+		}
+		if r.OwnerProfileSkip != nil {
+			emitStageSkipWarning(stderr, r.OwnerProfileSkip)
+		}
+		if r.SiblingSimSkip != nil {
+			emitStageSkipWarning(stderr, r.SiblingSimSkip)
 		}
 		if r.Err != nil {
 			_ = agentio.WriteNDJSON(stderr, map[string]any{
@@ -834,4 +905,28 @@ func forkToJSONUpstream(r forksops.Result, upstream string) map[string]any {
 		out["upstream"] = upstream
 	}
 	return out
+}
+
+// perForkErrorEnvelope builds the NDJSON-shaped `{"error": {...}}` map for
+// a per-fork failure, populating the full agentio envelope contract
+// (remediation + retryable) so agents can branch consistently with the
+// fatal-error path. Called only from the streaming loop; emits a single
+// compact line via agentio.WriteNDJSON.
+func perForkErrorEnvelope(e *forksops.Error) map[string]any {
+	code := agentio.Code(e.Code)
+	// Per-fork failures don't carry reset_at / retry-after metadata, so we
+	// use the generic upstream wait guidance for every code. The code-to-
+	// retryable mapping still comes from agentio (defaultRetryable), which
+	// is the contract that matters for agent branching.
+	rem := agentio.RemediationUpstream()
+	body := map[string]any{
+		"code":        string(code),
+		"message":     e.Message,
+		"remediation": rem,
+		"retryable":   agentio.NewError(code, e.Message, rem).Retryable,
+	}
+	if e.Details != nil {
+		body["details"] = e.Details
+	}
+	return map[string]any{"error": body}
 }

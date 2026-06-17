@@ -75,6 +75,7 @@ type ParentData struct {
 	PushedAt      time.Time
 	URL           string
 	Language      string
+	Topics        []string
 }
 
 // T1Data is the surface data available immediately after fork discovery,
@@ -110,6 +111,32 @@ type T1Data struct {
 	SourceFullPath string // network root used for compare baseline; never the direct parent.
 	ParentFullPath string // direct parent
 	IsForkOfFork   bool
+
+	// Topics is the repository's topic set as returned by the provider.
+	// Empty/nil means "no signal" (e.g. provider lacks topic support, or
+	// the topic fetch was skipped by the rate-budget). The P1 penalty in
+	// internal/heat reads both Fork.Topics and Parent.Topics.
+	Topics []string
+
+	// OwnerProfile is the owner-farmer signal (P3). Populated by the fork
+	// pipeline after a GitHub owner-history fetch (capped at 30 distinct
+	// owners per run). Nil means "no signal" — see OwnerProfile's doc.
+	OwnerProfile *OwnerProfile
+}
+
+// OwnerProfile is the owner-farmer signal (P3). Populated by the fork
+// pipeline after a GitHub owner-history fetch, with a hard cap of 30
+// distinct owners per run. Nil means "no signal": the fetch was
+// skipped (rate cap reached), failed (404/403), or the provider does
+// not implement the owner-profile path (GitLab, Gitea). Consumers
+// must treat nil as "no penalty", not as "owner is a farmer".
+type OwnerProfile struct {
+	Login            string
+	TotalPublicRepos int
+	ForkCount        int
+	SignalForkCount  int // forks pushed within 1 year AND fork: true
+	NonForkRepoCount int // public non-fork repos
+	FetchedAt        time.Time
 }
 
 // FileDiff is a single file's change statistics from a compare call.

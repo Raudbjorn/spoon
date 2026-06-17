@@ -94,6 +94,7 @@ func (p *GHProvider) Parent(ctx context.Context, owner, repo string) (forge.Pare
 		PushedAt:      pushed,
 		URL:           info.HTMLURL,
 		Language:      info.Language,
+		Topics:        info.Topics,
 	}, nil
 }
 
@@ -242,6 +243,7 @@ func forkInfoToT1(f ForkInfo, extra *T1Extra, parentFullPath string) forge.T1Dat
 		Language:       f.Language,
 		OpenIssues:     f.OpenIssues,
 		CreatedAt:      created,
+		Topics:         f.Topics,
 		SourceFullPath: parentFullPath,
 		ParentFullPath: parentFullPath,
 	}

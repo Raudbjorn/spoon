@@ -37,7 +37,6 @@ func main() {
 	var repo string
 	noColor := false
 	refresh := false
-	concurrency := 0
 	forgeFlag := ""
 	forgeHost := ""
 
@@ -92,18 +91,6 @@ func main() {
 			}
 			i++
 			forgeHost = args[i]
-		case "--concurrency":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "Error: --concurrency requires a value")
-				os.Exit(1)
-			}
-			i++
-			n, err := strconv.Atoi(args[i])
-			if err != nil || n < 1 {
-				fmt.Fprintln(os.Stderr, "Error: --concurrency requires a positive integer")
-				os.Exit(1)
-			}
-			concurrency = n
 		case "--heat-weights":
 			if i+1 >= len(args) {
 				fmt.Fprintln(os.Stderr, "Error: --heat-weights requires a value")
@@ -207,8 +194,6 @@ func main() {
 	if noColor {
 		os.Setenv("NO_COLOR", "1")
 	}
-
-	_ = concurrency // TODO: pass to auth overrides
 
 	ctx := context.Background()
 
@@ -425,7 +410,6 @@ Flags:
   --forge github|gitlab    Override provider detection
   --forge-host HOSTNAME    Self-hosted GitLab/GHES hostname
   --refresh, --no-cache    Bypass cache (re-fetch all data)
-  --concurrency N          Override worker pool size (default: 10 authed, 2 unauthed)
   --heat-weights path      Path to JSON weight override file
   --no-cluster             Disable the embedding + clustering pass
   --cluster-top N          Max forks fed to the embedder (default 50)

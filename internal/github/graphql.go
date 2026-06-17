@@ -75,6 +75,7 @@ query($owner: String!, $name: String!, $cursor: String) {
         owner { login avatarUrl }
         pullRequests(states: OPEN, first: 1) { totalCount }
         releases(first: 1) { totalCount }
+        repositoryTopics(first: 20) { nodes { topic { name } } }
         refs(refPrefix: "refs/heads/", first: 10, orderBy: {field: ALPHABETICAL, direction: ASC}) {
           nodes {
             name
@@ -129,6 +130,13 @@ type gqlForkNode struct {
 	Releases struct {
 		TotalCount int `json:"totalCount"`
 	} `json:"releases"`
+	RepositoryTopics struct {
+		Nodes []struct {
+			Topic struct {
+				Name string `json:"name"`
+			} `json:"topic"`
+		} `json:"nodes"`
+	} `json:"repositoryTopics"`
 	Refs struct {
 		Nodes []gqlRefNode `json:"nodes"`
 	} `json:"refs"`
@@ -288,6 +296,8 @@ func gqlForkToForkInfo(node gqlForkNode) (ForkInfo, T1Extra) {
 		Disabled:      node.IsDisabled,
 		PushedAt:      node.PushedAt,
 		HTMLURL:       htmlURL,
+		Fork:          true,
+		Topics:        extractTopicNames(node.RepositoryTopics.Nodes),
 		Owner: OwnerInfo{
 			Login:     node.Owner.Login,
 			AvatarURL: node.Owner.AvatarURL,
@@ -307,6 +317,29 @@ func gqlForkToForkInfo(node gqlForkNode) (ForkInfo, T1Extra) {
 	}
 
 	return fork, extra
+}
+
+// extractTopicNames flattens a `repositoryTopics.nodes` payload into a
+// []string. Returns nil when the input is empty so JSON output stays
+// idiomatic ("topics": null) rather than carrying a zero-length slice.
+func extractTopicNames(nodes []struct {
+	Topic struct {
+		Name string `json:"name"`
+	} `json:"topic"`
+}) []string {
+	if len(nodes) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(nodes))
+	for _, n := range nodes {
+		if n.Topic.Name != "" {
+			out = append(out, n.Topic.Name)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // sortBranches sorts refs by committedDate descending and returns top 5 non-default branches.

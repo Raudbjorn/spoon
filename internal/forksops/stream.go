@@ -72,10 +72,28 @@ type Options struct {
 	// contract (one record per fork) is preserved.
 	Cluster ClusterOptions
 
+	// OwnerProfileCap bounds how many distinct owner-history calls this
+	// run will make (P3). 0 → ownerProfileDefaultCap (30). The cap
+	// protects the 5000/h rate budget on popular repos (3000+ forks
+	// imply 3000+ distinct owners). When the cap is hit, remaining
+	// forks are scored with OwnerProfile == nil (no penalty).
+	OwnerProfileCap int
+
+	// OwnerCacheTTL overrides the owner-profile on-disk cache TTL.
+	// 0 → github.ownerProfileTTL (24h). Set to a negative value to
+	// force a fresh fetch (the test/refresh path).
+	OwnerCacheTTL time.Duration
+
 	// Logger receives cluster-pipeline progress and warnings. May be nil
 	// (defaults to io.Discard).
 	Logger io.Writer
 }
+
+// ownerProfileDefaultCap is the per-run cap on the number of distinct
+// owner-profile fetches. 30 strikes a balance: enough to characterize
+// the most-promising fork owners in a typical run, low enough to
+// leave the 5000/h rate budget untouched for the rest of the pipeline.
+const ownerProfileDefaultCap = 30
 
 // ClusterOptions is the spn-side options struct for the cluster pipeline.
 // Mirrors cluster.PipelineOptions but keeps the test seam unexported.
@@ -116,6 +134,16 @@ type ClusterOptions struct {
 	// also the test seam). EmbedderID must identify it for cache keying.
 	Embedder   embed.Embedder
 	EmbedderID string
+
+	// SiblingSimEnabled forwards cluster.PipelineOptions.SiblingSimEnabled.
+	// P2 is on by default for standard runs (low cost), opt-in for
+	// topic mode (5x cost multiplier per upstream).
+	SiblingSimEnabled bool
+
+	// SiblingSearcher forwards cluster.PipelineOptions.SiblingSearcher.
+	// The CLI constructs a real GHSiblingSearcher when --sibling-sim
+	// is set; for tests, a fake searcher can be wired in directly.
+	SiblingSearcher cluster.SiblingSearcher
 }
 
 // SetEmbedderForTest installs an embedder stub on ClusterOptions for tests.
@@ -162,6 +190,20 @@ type Result struct {
 	// Re-running after the rate window resets backfills it from cache. Nil when
 	// the fork was enriched, or was never eligible for enrichment by design.
 	BudgetSkip *StageSkip
+
+	// OwnerProfileSkip is set when the owner-profile fetch (P3) was
+	// skipped for a non-fatal reason (rate-limit reserve reached, hard
+	// cap exhausted, or non-GH provider). The fork is still emitted
+	// with Fork.OwnerProfile == nil; consumers surface a warning
+	// rather than reporting a missing penalty as zero.
+	OwnerProfileSkip *StageSkip
+
+	// SiblingSimSkip is set when the sibling-similarity search (P2) was
+	// skipped for a non-fatal reason (empty candidate set, embedder
+	// unavailable, or the run reached the cluster pass without
+	// SiblingSimEnabled). The fork is emitted with Heat.SiblingSim = 0;
+	// no post-hoc bonus is applied.
+	SiblingSimSkip *StageSkip
 }
 
 // StageSkip describes a non-fatal, per-fork enrichment skip. Unlike Error it
@@ -352,9 +394,9 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 			collectedMu sync.Mutex
 			collected   []Result
 		)
-
 		var wg sync.WaitGroup
 		var budgetSkipped atomic.Int64
+		var ownerProfileCalls atomic.Int64
 		for w := 0; w < concurrency; w++ {
 			wg.Add(1)
 			go func() {
@@ -377,6 +419,51 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 					// reached are the most promising; the rest are flagged
 					// degraded (BudgetSkip), not silently zeroed.
 					enrich := eligible(s.fork.ID, i)
+					// Owner-profile fetch (P3): best-first dispatch, capped at
+					// OwnerProfileCap calls per run. The remaining forks are
+					// scored with Fork.OwnerProfile == nil (no penalty).
+					// The fetch is gated on the same headroom floor as
+					// compare/contributors; a low-headroom run skips owner
+					// hard bound; headroom is the courtesy floor.
+					if s.fork.Owner != "" {
+						ownerCap := opts.OwnerProfileCap
+						if ownerCap <= 0 {
+							ownerCap = ownerProfileDefaultCap
+						}
+						if int(ownerProfileCalls.Load()) < ownerCap &&
+							(opts.ReserveDisabled || provider.Headroom() >= ReserveHeadroom) {
+							if ghp, ok := provider.(*gh.GHProvider); ok {
+								rec, cached, ferr := ghp.Client().FetchUserRepos(
+									ctx, s.fork.Owner, opts.OwnerCacheTTL,
+								)
+								if rec != nil {
+									s.fork.OwnerProfile = &forge.OwnerProfile{
+										Login:            rec.Login,
+										TotalPublicRepos: rec.TotalPublicRepos,
+										ForkCount:        rec.ForkCount,
+										SignalForkCount:  rec.SignalForkCount,
+										NonForkRepoCount: rec.NonForkRepoCount,
+									}
+									// Mirror onto r.Fork so the emitted Result
+									// matches what scoring saw. The worker
+									// snapshot for the result was already taken
+									// above; copying here keeps the public
+									// record and the in-flight fork in sync.
+									r.Fork.OwnerProfile = s.fork.OwnerProfile
+								}
+								// Only count a real API call against the cap:
+								//   - cache hit (cached=true): no rate-budget
+								//     was burned, so the slot is free
+								//   - rate-limit 403: the attempt failed
+								//     before consuming a slot; we want the
+								//     slot to remain for the next fork
+								var rl *gh.RateLimitError
+								if !cached && !errors.As(ferr, &rl) {
+									ownerProfileCalls.Add(1)
+								}
+							}
+						}
+					}
 					if enrich && tier >= 2 && !opts.ReserveDisabled && provider.Headroom() < ReserveHeadroom {
 						enrich = false
 						r.BudgetSkip = &StageSkip{
@@ -597,6 +684,8 @@ func runForksClusterPipeline(
 	pipelineOpts.EmbedderID = opts.EmbedderID
 	pipelineOpts.Categorize = opts.Categorize
 	pipelineOpts.LabelPolisher = opts.LabelPolisher
+	pipelineOpts.SiblingSimEnabled = opts.SiblingSimEnabled
+	pipelineOpts.SiblingSearcher = opts.SiblingSearcher
 	skip, err := cluster.RunPipeline(ctx, pipelineOpts, inputs, logger)
 	if err != nil {
 		fmt.Fprintf(logger, "[cluster] pipeline error: %v (continuing)\n", err)
@@ -708,6 +797,9 @@ func rescore(scorer *heat.Scorer, forkID int64, f forge.T1Data, parent forge.Par
 		penalty.AheadAllBranches = t2.AheadCount
 		penalty.Upstreamed = t2.Upstreamed
 	}
+	penalty.ForkTopics = f.Topics
+	penalty.ParentTopics = parent.Topics
+	penalty.OwnerProfile = f.OwnerProfile
 	scorer.Finalize(&result, forkID, penalty)
 	return result
 }

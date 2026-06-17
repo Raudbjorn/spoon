@@ -339,7 +339,7 @@ func TestApplyTrust_NoLoneWolfBoostBelowThreshold(t *testing.T) {
 
 func TestApplyPenalties_NoAhead(t *testing.T) {
 	result := HeatResult{Score: 75}
-	ApplyPenalties(&result, PenaltyInput{AheadKnown: true, AheadAllBranches: 0})
+	ApplyPenalties(&result, PenaltyInput{AheadKnown: true, AheadAllBranches: 0}, nil)
 
 	if result.Score != 0 {
 		t.Errorf("ahead=0 should zero score, got %v", result.Score)
@@ -354,7 +354,7 @@ func TestApplyPenalties_Upstreamed(t *testing.T) {
 	// upstream must score 0 — the commit graph shows work, but there is nothing
 	// left to integrate.
 	result := HeatResult{Score: 75}
-	ApplyPenalties(&result, PenaltyInput{AheadKnown: true, AheadAllBranches: 37, Upstreamed: true})
+	ApplyPenalties(&result, PenaltyInput{AheadKnown: true, AheadAllBranches: 37, Upstreamed: true}, nil)
 
 	if result.Score != 0 {
 		t.Errorf("upstreamed should zero score, got %v", result.Score)
@@ -366,7 +366,7 @@ func TestApplyPenalties_Upstreamed(t *testing.T) {
 
 func TestApplyPenalties_Archived(t *testing.T) {
 	result := HeatResult{Score: 75}
-	ApplyPenalties(&result, PenaltyInput{AheadKnown: true, AheadAllBranches: 10, Archived: true})
+	ApplyPenalties(&result, PenaltyInput{AheadKnown: true, AheadAllBranches: 10, Archived: true}, nil)
 
 	if result.Score > 30 {
 		t.Errorf("Archived should cap at 30, got %v", result.Score)
@@ -375,7 +375,7 @@ func TestApplyPenalties_Archived(t *testing.T) {
 
 func TestApplyPenalties_ArchivedAlreadyLow(t *testing.T) {
 	result := HeatResult{Score: 20}
-	ApplyPenalties(&result, PenaltyInput{AheadKnown: true, AheadAllBranches: 10, Archived: true, RecencyPct: 0.5})
+	ApplyPenalties(&result, PenaltyInput{AheadKnown: true, AheadAllBranches: 10, Archived: true, RecencyPct: 0.5}, nil)
 
 	if result.Score != 20 {
 		t.Errorf("Archived with score 20 should stay at 20, got %v", result.Score)
@@ -384,7 +384,7 @@ func TestApplyPenalties_ArchivedAlreadyLow(t *testing.T) {
 
 func TestApplyPenalties_LowRecency(t *testing.T) {
 	result := HeatResult{Score: 60}
-	ApplyPenalties(&result, PenaltyInput{AheadKnown: true, AheadAllBranches: 10, RecencyPct: 0.1})
+	ApplyPenalties(&result, PenaltyInput{AheadKnown: true, AheadAllBranches: 10, RecencyPct: 0.1}, nil)
 
 	expected := 60 * 0.7
 	if !approxEqual(result.Score, expected, 0.1) {
@@ -395,7 +395,7 @@ func TestApplyPenalties_LowRecency(t *testing.T) {
 func TestApplyPenalties_Stacking(t *testing.T) {
 	// Archived + low recency stack
 	result := HeatResult{Score: 80}
-	ApplyPenalties(&result, PenaltyInput{AheadKnown: true, AheadAllBranches: 5, Archived: true, RecencyPct: 0.1})
+	ApplyPenalties(&result, PenaltyInput{AheadKnown: true, AheadAllBranches: 5, Archived: true, RecencyPct: 0.1}, nil)
 
 	// Archived caps at 30, then low recency: 30 * 0.7 = 21
 	if !approxEqual(result.Score, 21, 0.1) {
@@ -459,7 +459,7 @@ func TestApplyPenalties_UnknownAheadNotZeroed(t *testing.T) {
 	// A fork whose divergence was never measured (T2 skipped) must keep its
 	// T1 score — "unknown" is not "no work".
 	result := HeatResult{Score: 30}
-	ApplyPenalties(&result, PenaltyInput{AheadKnown: false, AheadAllBranches: 0, RecencyPct: 0.9})
+	ApplyPenalties(&result, PenaltyInput{AheadKnown: false, AheadAllBranches: 0, RecencyPct: 0.9}, nil)
 	if result.Score != 30 {
 		t.Errorf("unknown ahead must not zero the score, got %v", result.Score)
 	}
@@ -517,5 +517,29 @@ func TestRecencyPercentile(t *testing.T) {
 	pt := NewPercentileTable(stats)
 	if r0, r2 := pt.RecencyPercentile(0), pt.RecencyPercentile(2); r0 <= r2 {
 		t.Errorf("most recent fork must rank highest: %v <= %v", r0, r2)
+	}
+}
+
+func TestFullPipeline_ScoreWithinZeroToHundred(t *testing.T) {
+	// Full pipeline: RawScoreWeighted → ApplyTrust → ApplyPenalties → ApplyNoveltyToScore.
+	// The cap is enforced in ApplyTrust (score.go:270) and ApplyNoveltyToScore
+	// (novelty.go:55). This test pins the post-pipeline invariant: no matter how
+	// aggressive the inputs and the user-set novelty weight, HeatResult.Score
+	// never exits [0, 100].
+	in := ScoreInput{
+		T1: Tier1ParamsV2{Stars: 1e9, DaysSincePush: 0},
+		T2: &Tier2ParamsV2{AheadBy: 1000, MNA: 1e9, BehindBy: 0, FeatureCommitRatio: 1.0},
+		T3: &Tier3ParamsV2{LoneWolf: &LoneWolfResult{Detected: true, Strength: 1.0}, CommitSpanDays: 365, NoveltyScore: 1.0},
+	}
+	hr := RawScoreWeighted(in, map[string]float64{"novelty": 2.0})
+	ApplyTrust(&hr, 1.0, 1.0)
+	ApplyPenalties(&hr, PenaltyInput{AheadKnown: true, AheadAllBranches: 1000, Archived: false, RecencyPct: 0.5}, nil)
+	hr.NoveltyScore = 1.0
+	ApplyNoveltyToScore(&hr)
+	if hr.Score < 0 || hr.Score > 100 {
+		t.Errorf("post-pipeline Score = %v, want in [0, 100]", hr.Score)
+	}
+	if hr.Score < 90 {
+		t.Errorf("post-pipeline Score = %v on maxed inputs, want >= 90 (sanity)", hr.Score)
 	}
 }

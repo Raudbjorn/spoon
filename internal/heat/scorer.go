@@ -55,7 +55,7 @@ func (s *Scorer) ScoreRaw(input ScoreInput) HeatResult {
 
 // Finalize applies trust and penalties to a raw result. Trust requires
 // meaningful percentiles and is skipped for tiny sets; penalties (no-ahead
-// zeroing, archived cap, low-recency dampening) always apply.
+// zeroing, archived cap, low-recency dampening, topic-tag fitness) always apply.
 func (s *Scorer) Finalize(result *HeatResult, forkID int64, penalty PenaltyInput) {
 	if !s.IsTinySet() {
 		starsPct := s.pctTable.StarsPercentile(forkID)
@@ -67,7 +67,7 @@ func (s *Scorer) Finalize(result *HeatResult, forkID int64, penalty PenaltyInput
 		// low-recency penalty rather than feed it garbage.
 		penalty.RecencyPct = 1
 	}
-	ApplyPenalties(result, penalty)
+	ApplyPenalties(result, penalty, s.weights)
 }
 
 // LoadWeights reads a heat-weights JSON file ({"component": factor, ...})
