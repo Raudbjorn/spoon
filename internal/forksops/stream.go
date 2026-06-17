@@ -588,6 +588,15 @@ func runForksClusterPipeline(
 		CentralityHeadSHA: parent.HeadSHA,
 		StrictMDG:         opts.StrictMDG,
 	}
+	// Forward the optional embedder / categorizer / label-polisher hooks
+	// from the spn-side options into the cluster pipeline. Without these,
+	// `--embedder-backend openvino` would fall back silently to the
+	// built-in embedder, the cache key would lose its backend identity,
+	// and label polishing would never run.
+	pipelineOpts.Embedder = opts.Embedder
+	pipelineOpts.EmbedderID = opts.EmbedderID
+	pipelineOpts.Categorize = opts.Categorize
+	pipelineOpts.LabelPolisher = opts.LabelPolisher
 	skip, err := cluster.RunPipeline(ctx, pipelineOpts, inputs, logger)
 	if err != nil {
 		fmt.Fprintf(logger, "[cluster] pipeline error: %v (continuing)\n", err)

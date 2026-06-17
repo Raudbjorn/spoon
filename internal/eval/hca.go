@@ -28,10 +28,12 @@ type ScoredFork struct {
 // The caller is responsible for joining the HeatResult rows to the
 // judgments by T1Data.ID before calling Compute — the package does
 // not own that join.
-//
 // The function is total: an empty `rows` or empty `judgments` returns
-// a Report with all metrics at 0 and a single-bucket NoveltyDist
-// (not nil) so JSON encoders downstream don't blow up on a nil map.
+// a Report with all metrics at 0 and a non-nil but empty NoveltyDist
+// map (allocated with capacity 10 so JSON encoders downstream don't
+// blow up on a nil map). The map has no keys in the empty-input
+// case; consumers should fill in zero counts client-side if they
+// need a fixed 10-bucket output.
 func Compute(upstream string, rows []ScoredFork, judgments Judgments) Report {
 	report := Report{
 		Upstream:    upstream,

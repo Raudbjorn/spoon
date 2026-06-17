@@ -342,6 +342,87 @@ func TestPipeline_CentralityHeadSHACacheHit(t *testing.T) {
 	}
 }
 
+// TestApplyAssignmentsToForks_EmptyNoiseDemotion pins the R3 contract:
+// noise-clustered forks with no T2 data signal must have their
+// NoveltyScore clamped to 0.5 (not the unconditional 1.0 the
+// upstream assignment carries). The heat-level test
+// TestApplyNoveltyToScore_EmptyNoise covers the score math; this
+// test covers the branch in applyAssignmentsToForks that decides
+// what to write into HeatResult.NoveltyScore in the first place.
+func TestApplyAssignmentsToForks_EmptyNoiseDemotion(t *testing.T) {
+	// Build a single fork with T2 = nil (the strongest "empty" signal:
+	// the upstream compare call never returned a diff).
+	emptyFork := EnrichedFork{
+		T1: forge.T1Data{ID: "o/empty", Owner: "o", Name: "empty"},
+		Heat: &heat.HeatResult{
+			Score: 40,
+		},
+	}
+	// Build a non-empty fork with T2.AheadCount > 0 — the demotion
+	// must NOT apply.
+	liveFork := EnrichedFork{
+		T1: forge.T1Data{ID: "o/live", Owner: "o", Name: "live"},
+		T2: &forge.T2Data{AheadCount: 3, MNA: 1},
+		Heat: &heat.HeatResult{
+			Score: 40,
+		},
+	}
+	forks := []EnrichedFork{emptyFork, liveFork}
+
+	clusters := []Cluster{
+		{ID: "noise", Members: []string{"o/empty", "o/live"}},
+	}
+	// Both assignments carry Novelty=1.0 from the cluster run; the
+	// empty-noise branch must override only the empty fork.
+	assignments := []Assignment{
+		{ForkID: "o/empty", Cluster: "noise", Novelty: 1.0},
+		{ForkID: "o/live", Cluster: "noise", Novelty: 1.0},
+	}
+
+	applyAssignmentsToForks(clusters, assignments, forks)
+
+	// Empty noise: NoveltyScore demoted to 0.5.
+	if got := forks[0].Heat.NoveltyScore; got != 0.5 {
+		t.Errorf("empty noise: NoveltyScore = %v, want 0.5", got)
+	}
+	// Non-empty noise: NoveltyScore passes through at 1.0.
+	if got := forks[1].Heat.NoveltyScore; got != 1.0 {
+		t.Errorf("live noise: NoveltyScore = %v, want 1.0", got)
+	}
+	// Both should be marked noise.
+	if forks[0].Heat.ClusterID != "noise" {
+		t.Errorf("empty: ClusterID = %q, want noise", forks[0].Heat.ClusterID)
+	}
+	if forks[1].Heat.ClusterID != "noise" {
+		t.Errorf("live: ClusterID = %q, want noise", forks[1].Heat.ClusterID)
+	}
+	// Score should be bumped by the novelty bonus. Empty noise:
+	// 40 + 0.5*5 = 42.5; live noise: 40 + 1.0*5 = 45.
+	if got := forks[0].Heat.Score; got != 42.5 {
+		t.Errorf("empty noise: Score = %v, want 42.5", got)
+	}
+	if got := forks[1].Heat.Score; got != 45 {
+		t.Errorf("live noise: Score = %v, want 45", got)
+	}
+
+	// Sanity: an empty fork in a non-noise cluster is NOT demoted.
+	// The branch is noise-only; a demoted empty fork in a real
+	// cluster would be a separate (and unjustified) change.
+	emptyInCluster := EnrichedFork{
+		T1: forge.T1Data{ID: "o/emptyc", Owner: "o", Name: "emptyc"},
+		Heat: &heat.HeatResult{Score: 40},
+	}
+	forks2 := []EnrichedFork{emptyInCluster}
+	applyAssignmentsToForks(
+		[]Cluster{{ID: "c0", Label: "real", Members: []string{"o/emptyc"}}},
+		[]Assignment{{ForkID: "o/emptyc", Cluster: "c0", Novelty: 0.2}},
+		forks2,
+	)
+	if got := forks2[0].Heat.NoveltyScore; got != 0.2 {
+		t.Errorf("empty-in-cluster: NoveltyScore = %v, want 0.2 (no demotion outside noise)", got)
+	}
+}
+
 func TestMDGCachedAdapter_ScoreFork(t *testing.T) {
 	a := &mdgCachedAdapter{cache: mdg.MDGCache{
 		Scores: map[string]float64{
