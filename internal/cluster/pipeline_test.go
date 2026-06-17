@@ -255,6 +255,174 @@ func TestPipelineOptions_CentralityBackend(t *testing.T) {
 	}
 }
 
+// TestPipelineOptions_CentralityHeadSHA pins the contract that the new
+// MDG-cache pin field round-trips. The R1 plumbing guarantees that
+// forge.ParentData.HeadSHA is forwarded to loadOrComputeMDG; this is the
+// structural test that the field exists and is settable. The actual
+// cache-hit behavior is covered by TestPipeline_CentralityHeadSHACacheHit.
+func TestPipelineOptions_CentralityHeadSHA(t *testing.T) {
+	opts := PipelineOptions{CentralityHeadSHA: "deadbeefcafe1234"}
+	if opts.CentralityHeadSHA != "deadbeefcafe1234" {
+		t.Fatalf("CentralityHeadSHA should round-trip; got %q", opts.CentralityHeadSHA)
+	}
+	// Empty value must remain a valid opt-out: loadOrComputeMDG skips the
+	// cache entirely when the SHA is empty (see cache.go fast-path check).
+	empty := PipelineOptions{}
+	if empty.CentralityHeadSHA != "" {
+		t.Fatalf("zero-value CentralityHeadSHA should be empty, got %q", empty.CentralityHeadSHA)
+	}
+}
+
+// TestPipeline_CentralityHeadSHACacheHit exercises the full MDG-cache
+// fast-path: pre-seed a cache entry with a known SHA, then run the
+// pipeline with that same SHA on CentralityHeadSHA. The pipeline must
+// surface a non-empty Centrality through ChangeImpact (via the cached
+// adapter) without calling the network. With Refresh=true or a different
+// SHA, the cache should be bypassed.
+func TestPipeline_CentralityHeadSHACacheHit(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", tmp)
+
+	sha := "abc1234def5678"
+	owner, repo := "cachetest", "cached"
+
+	// Pre-seed the MDG cache. The adapter serves ScoreFork by exact
+	// touched-file match against the score table, so seed with the
+	// exact path the T2 diff below will carry.
+	if err := mdg.SaveMDGCache(mdg.MDGCache{
+		SchemaVersion: mdg.CacheSchemaVersion,
+		Provider:      "github",
+		Owner:         owner,
+		Repo:          repo,
+		HeadSHA:       sha,
+		ComputedAt:    time.Now(),
+		Scores: map[string]float64{
+			"cluster/pipeline.go": 0.5,
+		},
+	}); err != nil {
+		t.Fatalf("seed MDG cache: %v", err)
+	}
+
+	// Build a single fork whose T2 diffs target the seeded path.
+	fork := makePipelineFork(owner+"/"+repo, 3, []string{"cluster/pipeline.go"}, 80)
+
+	inputs := PipelineInputs{
+		Provider:      "github",
+		UpstreamOwner: owner,
+		UpstreamRepo:  repo,
+		Upstream:      parentDataFixture(),
+		Forks:         []EnrichedFork{fork},
+		// No TreeSource → without the cache, the dispatcher would fall
+		// back to the directory proxy and produce zero ChangeImpact.
+	}
+	opts := PipelineOptions{
+		Enabled:           true,
+		TopN:              1,
+		CentralityBackend: "mdg",
+		CentralityHeadSHA: sha,
+		Embedder:          pipelineStubEmbedder{},
+		EmbedderID:        "stub",
+	}
+
+	var log bytes.Buffer
+	if _, err := RunPipeline(context.Background(), opts, inputs, &log); err != nil {
+		t.Fatalf("RunPipeline: %v", err)
+	}
+
+	// The cached adapter should have served the seeded score through to
+	// ChangeImpact. Without a real file→module bridge we can't pin an
+	// exact value, but the field must be > 0 because the cached adapter's
+	// ScoreFork returned non-zero for at least one input — and 0 with no
+	// inputs would mean the cache was bypassed. We assert > 0 to lock the
+	// fast-path wire-up; the exact fidelity is documented degraded at
+	// mdgCachedAdapter.
+	if fork.Heat.ChangeImpact <= 0 {
+		t.Fatalf("expected ChangeImpact > 0 from MDG cache, got %v (log: %s)",
+			fork.Heat.ChangeImpact, log.String())
+	}
+}
+
+// TestApplyAssignmentsToForks_EmptyNoiseDemotion pins the R3 contract:
+// noise-clustered forks with no T2 data signal must have their
+// NoveltyScore clamped to 0.5 (not the unconditional 1.0 the
+// upstream assignment carries). The heat-level test
+// TestApplyNoveltyToScore_EmptyNoise covers the score math; this
+// test covers the branch in applyAssignmentsToForks that decides
+// what to write into HeatResult.NoveltyScore in the first place.
+func TestApplyAssignmentsToForks_EmptyNoiseDemotion(t *testing.T) {
+	// Build a single fork with T2 = nil (the strongest "empty" signal:
+	// the upstream compare call never returned a diff).
+	emptyFork := EnrichedFork{
+		T1: forge.T1Data{ID: "o/empty", Owner: "o", Name: "empty"},
+		Heat: &heat.HeatResult{
+			Score: 40,
+		},
+	}
+	// Build a non-empty fork with T2.AheadCount > 0 — the demotion
+	// must NOT apply.
+	liveFork := EnrichedFork{
+		T1: forge.T1Data{ID: "o/live", Owner: "o", Name: "live"},
+		T2: &forge.T2Data{AheadCount: 3, MNA: 1},
+		Heat: &heat.HeatResult{
+			Score: 40,
+		},
+	}
+	forks := []EnrichedFork{emptyFork, liveFork}
+
+	clusters := []Cluster{
+		{ID: "noise", Members: []string{"o/empty", "o/live"}},
+	}
+	// Both assignments carry Novelty=1.0 from the cluster run; the
+	// empty-noise branch must override only the empty fork.
+	assignments := []Assignment{
+		{ForkID: "o/empty", Cluster: "noise", Novelty: 1.0},
+		{ForkID: "o/live", Cluster: "noise", Novelty: 1.0},
+	}
+
+	applyAssignmentsToForks(clusters, assignments, forks)
+
+	// Empty noise: NoveltyScore demoted to 0.5.
+	if got := forks[0].Heat.NoveltyScore; got != 0.5 {
+		t.Errorf("empty noise: NoveltyScore = %v, want 0.5", got)
+	}
+	// Non-empty noise: NoveltyScore passes through at 1.0.
+	if got := forks[1].Heat.NoveltyScore; got != 1.0 {
+		t.Errorf("live noise: NoveltyScore = %v, want 1.0", got)
+	}
+	// Both should be marked noise.
+	if forks[0].Heat.ClusterID != "noise" {
+		t.Errorf("empty: ClusterID = %q, want noise", forks[0].Heat.ClusterID)
+	}
+	if forks[1].Heat.ClusterID != "noise" {
+		t.Errorf("live: ClusterID = %q, want noise", forks[1].Heat.ClusterID)
+	}
+	// Score should be bumped by the novelty bonus. Empty noise:
+	// 40 + 0.5*5 = 42.5; live noise: 40 + 1.0*5 = 45.
+	if got := forks[0].Heat.Score; got != 42.5 {
+		t.Errorf("empty noise: Score = %v, want 42.5", got)
+	}
+	if got := forks[1].Heat.Score; got != 45 {
+		t.Errorf("live noise: Score = %v, want 45", got)
+	}
+
+	// Sanity: an empty fork in a non-noise cluster is NOT demoted.
+	// The branch is noise-only; a demoted empty fork in a real
+	// cluster would be a separate (and unjustified) change.
+	emptyInCluster := EnrichedFork{
+		T1: forge.T1Data{ID: "o/emptyc", Owner: "o", Name: "emptyc"},
+		Heat: &heat.HeatResult{Score: 40},
+	}
+	forks2 := []EnrichedFork{emptyInCluster}
+	applyAssignmentsToForks(
+		[]Cluster{{ID: "c0", Label: "real", Members: []string{"o/emptyc"}}},
+		[]Assignment{{ForkID: "o/emptyc", Cluster: "c0", Novelty: 0.2}},
+		forks2,
+	)
+	if got := forks2[0].Heat.NoveltyScore; got != 0.2 {
+		t.Errorf("empty-in-cluster: NoveltyScore = %v, want 0.2 (no demotion outside noise)", got)
+	}
+}
+
 func TestMDGCachedAdapter_ScoreFork(t *testing.T) {
 	a := &mdgCachedAdapter{cache: mdg.MDGCache{
 		Scores: map[string]float64{

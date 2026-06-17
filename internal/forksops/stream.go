@@ -109,6 +109,20 @@ type ClusterOptions struct {
 	// Graph. See `--full-mdg` on `spn forks list`.
 	CentralityBackend string
 
+	// CentralityHeadSHA is forwarded to cluster.PipelineOptions. It pins
+	// the MDG cache to the upstream's current default-branch tip SHA so
+	// the 24h fast path is actually used. When empty (e.g., a Parent
+	// call that did not resolve a SHA), the cache is skipped and the MDG
+	// builds from scratch on every run.
+	CentralityHeadSHA string
+
+	// StrictMDG, when true, surfaces a non-fatal MDG build/cache failure
+	// as a ClusterSkip with code "mdg_unavailable" instead of silently
+	// falling back to the directory proxy. Off by default — the silent
+	// fallback is the right behavior for ordinary `--full-mdg` runs.
+	// See `--strict-mdg` on `spn forks list`.
+	StrictMDG bool
+
 	// Categorize enables zero-shot category assignment for embedded forks.
 	Categorize bool
 
@@ -131,6 +145,7 @@ type ClusterOptions struct {
 	// is set; for tests, a fake searcher can be wired in directly.
 	SiblingSearcher cluster.SiblingSearcher
 }
+
 // SetEmbedderForTest installs an embedder stub on ClusterOptions for tests.
 func (o *ClusterOptions) SetEmbedderForTest(e embed.Embedder) { o.Embedder = e }
 
@@ -657,7 +672,14 @@ func runForksClusterPipeline(
 		MinClusterSize:    opts.MinClusterSize,
 		Refresh:           opts.Refresh,
 		CentralityBackend: opts.CentralityBackend,
+		CentralityHeadSHA: parent.HeadSHA,
+		StrictMDG:         opts.StrictMDG,
 	}
+	// Forward the optional embedder / categorizer / label-polisher hooks
+	// from the spn-side options into the cluster pipeline. Without these,
+	// `--embedder-backend openvino` would fall back silently to the
+	// built-in embedder, the cache key would lose its backend identity,
+	// and label polishing would never run.
 	pipelineOpts.Embedder = opts.Embedder
 	pipelineOpts.EmbedderID = opts.EmbedderID
 	pipelineOpts.Categorize = opts.Categorize

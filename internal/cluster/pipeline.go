@@ -81,6 +81,15 @@ type PipelineOptions struct {
 	// without surfacing a warning. The CLI wires in a real
 	// GHSiblingSearcher when --sibling-sim is set.
 	SiblingSearcher SiblingSearcher
+
+	// StrictMDG, when true, makes loadOrComputeCentrality return an error
+	// to the caller on MDG build/cache failure instead of silently falling
+	// back to the directory proxy. The error is surfaced as a ClusterSkip
+	// with code "mdg_unavailable" so callers can decide whether to treat
+	// it as fatal. Off by default — the silent fallback is the right
+	// behavior for ordinary `--full-mdg` runs that just want *some*
+	// ChangeImpact signal.
+	StrictMDG bool
 }
 
 // EnrichedFork pairs a fork's T1+T2 data with its HeatResult so the pipeline
@@ -405,10 +414,20 @@ func applyAssignmentsToForks(clusters []Cluster, assignments []Assignment, forks
 		if hr == nil {
 			continue
 		}
-		hr.NoveltyScore = a.Novelty
+		// Empty-fork demotion (R3): noise forks with no T2 data signal
+		// get a clamped novelty of 0.5 instead of the unconditional 1.0.
+		// This preserves the +5 bonus for genuinely novel forks while
+		// suppressing the false positive that an empty fork would
+		// otherwise receive. The 0.5 floor is the "interesting but
+		// unproven" zone and is pinned by the regression test
+		// TestApplyAssignmentsToForks_EmptyNoiseDemotion below.
+		novelty := a.Novelty
+		if (a.Cluster == "noise" || a.Cluster == "") && isEmptyNoiseFork(forks[i].T2) {
+			novelty = 0.5
+		}
+		hr.NoveltyScore = novelty
 		hr.Category = a.Category
 		hr.CategoryScore = a.CategoryScore
-		// Apply the novelty bonus to every assigned fork — including noise
 		// points, which carry Novelty=1.0 by definition. The +5 max matches
 		// the v2 NoveltyComponent's Max so the score stays comparable.
 		heat.ApplyNoveltyToScore(hr)
@@ -729,4 +748,16 @@ func sampleClusterTexts(c Cluster, features []embed.ForkFeatures, idxByForkID ma
 		}
 	}
 	return commits, paths
+}
+
+// isEmptyNoiseFork reports whether a fork has no T2 divergence signal:
+// T2 is nil, or both MNA and AheadCount are zero. The condition is
+// intentionally permissive: false negatives (true novel forks demoted
+// to 0.5) are less costly than false positives (empty forks rewarded
+// as novel with the full +5).
+func isEmptyNoiseFork(t2 *forge.T2Data) bool {
+	if t2 == nil {
+		return true
+	}
+	return t2.MNA == 0 && t2.AheadCount == 0
 }

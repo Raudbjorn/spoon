@@ -114,7 +114,23 @@ func (m Model) viewDetail() string {
 			line += fmt.Sprintf(" (%d members)", sf.Heat.ClusterMemberCount)
 		}
 		b.WriteString(fitBoxLine(line, boxWidth) + "\n")
-
+		// R5: cluster isolation context — the "isolation" line surfaces
+		// how far this fork is from the rest of its cluster. The novelty
+		// score encodes distance from centroid: ~1.0 for noise points
+		// (including the 0.5 demotion for empty noise forks from R3) and
+		// lower for tight cluster members. The member count gives scale
+		// context; noise points deliberately omit it because
+		// ClusterMemberCount is 0 for them — a hard-coded "1 member"
+		// would assert a value we don't track. Only emitted when
+		// ClusterID != "" (clustering ran).
+		var iso string
+		if isNoise {
+			iso = fmt.Sprintf("│  isolation: %.2f/1.0 (cluster noise)", sf.Heat.NoveltyScore)
+		} else {
+			iso = fmt.Sprintf("│  isolation: %.2f/1.0 (cluster %s, %d members)",
+				sf.Heat.NoveltyScore, sf.Heat.ClusterID, sf.Heat.ClusterMemberCount)
+		}
+		b.WriteString(fitBoxLine(iso, boxWidth) + "\n")
 		if sf.Heat.NoveltyScore > 0 {
 			nl := fmt.Sprintf("│  Novelty: %.2f", sf.Heat.NoveltyScore)
 			b.WriteString(fitBoxLine(nl, boxWidth) + "\n")

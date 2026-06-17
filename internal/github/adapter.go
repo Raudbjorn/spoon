@@ -75,10 +75,19 @@ func (p *GHProvider) Parent(ctx context.Context, owner, repo string) (forge.Pare
 	p.sourceDefaultBranch = info.DefaultBranch
 
 	pushed, _ := time.Parse(time.RFC3339, info.PushedAt)
+
+	// Resolve the default-branch tip SHA so the MDG cache (cluster
+	// pipeline's CentralityHeadSHA) can pin entries. Soft-fail: a missing
+	// SHA disables cache persistence (and the 24h fast path) but does not
+	// fail the parent fetch — change-impact still computes via the
+	// directory proxy.
+	headSHA, _ := p.client.defaultBranchTipSHA(ctx, owner, repo)
+
 	return forge.ParentData{
 		FullName:      info.FullName,
 		Description:   info.Description,
 		DefaultBranch: info.DefaultBranch,
+		HeadSHA:       headSHA,
 		Stars:         info.Stars,
 		Forks:         info.Forks,
 		Size:          info.Size,
