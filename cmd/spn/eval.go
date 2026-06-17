@@ -5,7 +5,6 @@
 // rows to the judgments by T1Data.ID, computes the HCA / ARI /
 // ranking metrics in internal/eval, and emits a single JSON Report
 // to stdout.
-//
 package main
 
 import (
@@ -225,4 +224,3 @@ func loadJudgments(path string) (eval.Judgments, error) {
 	}
 	return j, nil
 }
-

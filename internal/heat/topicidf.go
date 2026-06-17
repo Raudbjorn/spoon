@@ -8,6 +8,7 @@ import (
 	"sort"
 	"sync"
 )
+
 //go:embed topicidf.json
 var topicIDFFS embed.FS
 
@@ -29,15 +30,16 @@ const (
 	minTopicIDF = 1.0
 	maxTopicIDF = 8.0
 )
+
 // topicIDFLoadWarned is a sync-guarded latch: the first failure
 // surfaces via slog.Warn, subsequent failures stay silent so a noisy
 // run doesn't flood the log.
 var (
-	corpusCache   TopicIDF
-	corpusOnce    sync.Once
-	corpusFailed  bool // set by corpusOnce.Do when load fails
-	corpusWarned  bool
-	corpusWarnMu  sync.Mutex
+	corpusCache  TopicIDF
+	corpusOnce   sync.Once
+	corpusFailed bool // set by corpusOnce.Do when load fails
+	corpusWarned bool
+	corpusWarnMu sync.Mutex
 )
 
 // LoadTopicIDF returns the embedded corpus, parsed once and cached.
@@ -77,6 +79,7 @@ func corpusWarn(msg string, err error) {
 		corpusWarned = true
 	}
 }
+
 // topicIDFFor returns the IDF for a topic, clamped to [min, max]. The
 // corpus is the source of truth: a missing topic is "as generic as it
 // gets" and gets the floor value (1.0), so P1's deviation formula reads

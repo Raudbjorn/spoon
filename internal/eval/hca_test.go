@@ -6,6 +6,7 @@ import (
 	"os"
 	"testing"
 )
+
 // TestCompute_EmptyInputs pins the contract that empty rows / empty
 // judgments produce a fully-populated Report with all metrics at 0 and
 // a non-nil NoveltyDist map (so JSON encoders don't choke on nil).

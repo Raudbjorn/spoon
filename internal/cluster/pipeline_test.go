@@ -409,7 +409,7 @@ func TestApplyAssignmentsToForks_EmptyNoiseDemotion(t *testing.T) {
 	// The branch is noise-only; a demoted empty fork in a real
 	// cluster would be a separate (and unjustified) change.
 	emptyInCluster := EnrichedFork{
-		T1: forge.T1Data{ID: "o/emptyc", Owner: "o", Name: "emptyc"},
+		T1:   forge.T1Data{ID: "o/emptyc", Owner: "o", Name: "emptyc"},
 		Heat: &heat.HeatResult{Score: 40},
 	}
 	forks2 := []EnrichedFork{emptyInCluster}

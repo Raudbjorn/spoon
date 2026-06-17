@@ -17,9 +17,9 @@ import (
 // search API's other fields (description, stargazers_count, etc.)
 // don't leak into the package.
 type SiblingSearchHit struct {
-	FullName   string `json:"full_name"`
-	HTMLURL    string `json:"html_url"`
-	HasTopics  bool   `json:"-"`
+	FullName  string `json:"full_name"`
+	HTMLURL   string `json:"html_url"`
+	HasTopics bool   `json:"-"`
 }
 
 // siblingSearchResponse is the trimmed /search/repositories envelope.
