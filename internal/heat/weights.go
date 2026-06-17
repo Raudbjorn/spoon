@@ -11,6 +11,7 @@ var ValidWeightKeys = map[string]bool{
 	"recency": true, "stars": true, "sub_forks": true, "releases": true,
 	"mna": true, "sync_ratio": true, "feature_ratio": true,
 	"lone_wolf": true, "span": true, "novelty": true,
+	"topic_tag": true, "sibling_sim": true, "fork_farmer": true,
 }
 
 func loadWeightsFile(path string) (map[string]float64, error) {

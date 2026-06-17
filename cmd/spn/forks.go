@@ -96,6 +96,9 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 			TopN:           50,
 			Epsilon:        0, // resolved per embedder backend below
 			MinClusterSize: 3,
+			// SiblingSimEnabled defaults to true for standard mode;
+			// topic mode overrides it to false (5x cost multiplier).
+			SiblingSimEnabled: true,
 		},
 	}
 	var embedderBackend, openvinoModel, openvinoDevice, openvinoPooling string
@@ -255,6 +258,20 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 			opts.Cluster.CentralityBackend = ""
 		case "--csv":
 			csvMode = true
+		case "--sibling-sim":
+			opts.Cluster.SiblingSimEnabled = true
+		case "--no-sibling-sim":
+			opts.Cluster.SiblingSimEnabled = false
+		case "--owner-cache-ttl":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--owner-cache-ttl requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			d, err := time.ParseDuration(args[i])
+			if err != nil || d < 0 {
+				return agentio.NewError(agentio.CodeBadInput, "--owner-cache-ttl must be a valid Go duration (e.g. 1h, 24h)", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			opts.OwnerCacheTTL = d
 		default:
 			if strings.HasPrefix(args[i], "--") {
 				return agentio.NewError(agentio.CodeBadInput, "unknown flag: "+args[i], agentio.RemediationBadInput("forks", "list")).Emit(stderr)
@@ -356,8 +373,10 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 			return agentio.NewError(agentio.CodeBadInput, "topic mode emits NDJSON only (records span multiple upstreams)",
 				"Drop --csv, or run per-repo CSV exports against the repos topic mode reports on stderr.").Emit(stderr)
 		}
+		// P2 is opt-in for topic mode; the 5x cost multiplier burns
+		// the search rate budget. Users can override with --sibling-sim.
+		opts.Cluster.SiblingSimEnabled = false
 		// Provider construction needs no repo in topic mode; the placeholder
-		// is parsed for its host only.
 		provider, _, e := providerFactory(ctx, "topic/placeholder", forgeFlag, forgeHost)
 		if e != nil {
 			return e.Emit(stderr)
@@ -441,8 +460,13 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 		if r.T3Skip != nil {
 			emitStageSkipWarning(stderr, r.T3Skip)
 		}
+		if r.OwnerProfileSkip != nil {
+			emitStageSkipWarning(stderr, r.OwnerProfileSkip)
+		}
+		if r.SiblingSimSkip != nil {
+			emitStageSkipWarning(stderr, r.SiblingSimSkip)
+		}
 		if r.Err != nil {
-			// Compact one-line stderr error per failing fork. The full
 			// agentio envelope contract (remediation + retryable) applies
 			// even on the stream so agents can branch consistently with
 			// the fatal-error path above.
@@ -580,6 +604,12 @@ func emitForksCSV(stdout, stderr io.Writer, ch <-chan forksops.Result) int {
 		}
 		if r.T3Skip != nil {
 			emitStageSkipWarning(stderr, r.T3Skip)
+		}
+		if r.OwnerProfileSkip != nil {
+			emitStageSkipWarning(stderr, r.OwnerProfileSkip)
+		}
+		if r.SiblingSimSkip != nil {
+			emitStageSkipWarning(stderr, r.SiblingSimSkip)
 		}
 		if r.Err != nil {
 			_ = agentio.WriteNDJSON(stderr, map[string]any{
@@ -785,6 +815,12 @@ func streamAndEmit(ctx context.Context, provider forge.Forge, owner, name, upstr
 		}
 		if r.T3Skip != nil {
 			emitStageSkipWarning(stderr, r.T3Skip)
+		}
+		if r.OwnerProfileSkip != nil {
+			emitStageSkipWarning(stderr, r.OwnerProfileSkip)
+		}
+		if r.SiblingSimSkip != nil {
+			emitStageSkipWarning(stderr, r.SiblingSimSkip)
 		}
 		if r.Err != nil {
 			_ = agentio.WriteNDJSON(stderr, map[string]any{

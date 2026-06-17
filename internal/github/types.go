@@ -4,43 +4,47 @@ import "time"
 
 // RepoInfo represents a GitHub repository (used for the parent repo).
 type RepoInfo struct {
-	ID            int64  `json:"id"`
-	FullName      string `json:"full_name"`
-	Name          string `json:"name"`
-	Description   string `json:"description"`
-	DefaultBranch string `json:"default_branch"`
-	Stars         int    `json:"stargazers_count"`
-	Forks         int    `json:"forks_count"`
-	OpenIssues    int    `json:"open_issues_count"`
-	Size          int    `json:"size"`
-	Language      string `json:"language"`
-	Archived      bool   `json:"archived"`
-	Disabled      bool   `json:"disabled"`
-	PushedAt      string `json:"pushed_at"`
-	CreatedAt     string `json:"created_at"`
-	HTMLURL       string `json:"html_url"`
+	ID            int64    `json:"id"`
+	FullName      string   `json:"full_name"`
+	Name          string   `json:"name"`
+	Description   string   `json:"description"`
+	DefaultBranch string   `json:"default_branch"`
+	Stars         int      `json:"stargazers_count"`
+	Forks         int      `json:"forks_count"`
+	OpenIssues    int      `json:"open_issues_count"`
+	Size          int      `json:"size"`
+	Language      string   `json:"language"`
+	Archived      bool     `json:"archived"`
+	Disabled      bool     `json:"disabled"`
+	PushedAt      string   `json:"pushed_at"`
+	CreatedAt     string   `json:"created_at"`
+	HTMLURL       string   `json:"html_url"`
+	Topics        []string `json:"topics"`
+	Fork          bool     `json:"fork"`
 
 	Owner OwnerInfo `json:"owner"`
 }
 
 // ForkInfo represents a fork from the forks list endpoint.
 type ForkInfo struct {
-	ID            int64  `json:"id"`
-	FullName      string `json:"full_name"`
-	Name          string `json:"name"`
-	Description   string `json:"description"`
-	DefaultBranch string `json:"default_branch"`
-	Stars         int    `json:"stargazers_count"`
-	Forks         int    `json:"forks_count"`
-	OpenIssues    int    `json:"open_issues_count"`
-	Watchers      int    `json:"watchers_count"`
-	Size          int    `json:"size"`
-	Language      string `json:"language"`
-	Archived      bool   `json:"archived"`
-	Disabled      bool   `json:"disabled"`
-	PushedAt      string `json:"pushed_at"`
-	CreatedAt     string `json:"created_at"`
-	HTMLURL       string `json:"html_url"`
+	ID            int64    `json:"id"`
+	FullName      string   `json:"full_name"`
+	Name          string   `json:"name"`
+	Description   string   `json:"description"`
+	DefaultBranch string   `json:"default_branch"`
+	Stars         int      `json:"stargazers_count"`
+	Forks         int      `json:"forks_count"`
+	OpenIssues    int      `json:"open_issues_count"`
+	Watchers      int      `json:"watchers_count"`
+	Size          int      `json:"size"`
+	Language      string   `json:"language"`
+	Archived      bool     `json:"archived"`
+	Disabled      bool     `json:"disabled"`
+	PushedAt      string   `json:"pushed_at"`
+	CreatedAt     string   `json:"created_at"`
+	HTMLURL       string   `json:"html_url"`
+	Topics        []string `json:"topics"`
+	Fork          bool     `json:"fork"`
 
 	Owner OwnerInfo `json:"owner"`
 }

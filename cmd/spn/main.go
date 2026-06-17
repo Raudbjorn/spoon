@@ -63,11 +63,8 @@ Nouns and verbs:
                     [--embedder-backend builtin|openvino] [--openvino-model PATH]
                     [--openvino-device DEV] [--openvino-pooling cls|mean|last]
                     [--query "intent"] [--full-mdg] [--no-mdg]
+                    [--sibling-sim | --no-sibling-sim] [--owner-cache-ttl DUR]
         --budget N caps the expensive per-fork compare/contributors calls to N,
-        choosing which forks to spend them on by an optimal-stopping ("secretary
-        problem") gate over a cheap divergence signal — so a rate-limited scan of
-        a huge fork network spends its budget on forks that likely diverged
-        rather than the most popular ones. Re-running resumes via the 24h compare
         cache. --top N instead deep-scans the top N by surface score.
         --shortlist N emits only the top N forks by Robbins expected rank (lower
         = more likely best), adding expectedRank + rankConfidence to each.
@@ -88,12 +85,16 @@ Nouns and verbs:
         each record. With the openvino backend each fork also gets a
         zero-shot 'category' facet, and a configured labeler polishes
         cluster labels with an in-process LLM.
+        --sibling-sim / --no-sibling-sim toggles P2 distant-relation
+        discovery: one /search/repositories + ~50 README fetches + one
+        batched embed, with the max cosine to the upstream README
+        folded into Heat.SiblingSim (capped by the combined-novelty
+        cap of 7.5). On by default for standard runs; opt-in via
+        --sibling-sim for topic mode (5x cost multiplier per upstream).
+        --owner-cache-ttl DUR overrides the owner-profile on-disk
+        cache TTL (default 24h). Use 0 to force a fresh fetch every
+        run, or a short value (e.g. 1h) for more aggressive refresh.
   repo centrality <owner/repo> [--forge github] [--forge-host H]
-
-PR refs accept:
-  owner/repo#42
-  https://github.com/owner/repo/pull/42
-  #42                  (uses local repo context)
 
 Output:
   Success: bare JSON on stdout (single value for reads; NDJSON for forks list).

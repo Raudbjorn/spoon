@@ -154,3 +154,76 @@ func equalInt64s(a, b []int64) bool {
 	}
 	return true
 }
+
+// TestGqlForkToForkInfo_TopicsAndForkFlag covers the P1 plumbing path:
+// a GraphQL `repositoryTopics` payload is flattened into ForkInfo.Topics,
+// and the Fork boolean is set on every row of the forks query (since
+// /repos/{o}/{r}/forks only returns forks, `fork: true` is implicit).
+func TestGqlForkToForkInfo_TopicsAndForkFlag(t *testing.T) {
+	node := gqlForkNode{
+		DatabaseID:    42,
+		NameWithOwner: "alice/foo",
+		Name:          "foo",
+		RepositoryTopics: struct {
+			Nodes []struct {
+				Topic struct {
+					Name string `json:"name"`
+				} `json:"topic"`
+			} `json:"nodes"`
+		}{
+			Nodes: []struct {
+				Topic struct {
+					Name string `json:"name"`
+				} `json:"topic"`
+			}{
+				{Topic: struct {
+					Name string `json:"name"`
+				}{Name: "kubernetes"}},
+				{Topic: struct {
+					Name string `json:"name"`
+				}{Name: "kustomize"}},
+			},
+		},
+	}
+
+	fork, _ := gqlForkToForkInfo(node)
+
+	if !fork.Fork {
+		t.Errorf("Fork flag: got %v, want true (forks query rows are forks)", fork.Fork)
+	}
+	want := []string{"kubernetes", "kustomize"}
+	if !equalStrings(fork.Topics, want) {
+		t.Errorf("Topics: got %v, want %v", fork.Topics, want)
+	}
+}
+
+// TestGqlForkToForkInfo_NoTopicsNilSlice covers the legacy/empty case
+// where the GraphQL payload omits repositoryTopics. Fork.Topics must
+// be nil (not []string{}) so JSON output stays idiomatic and P1's
+// "no signal" guard fires.
+func TestGqlForkToForkInfo_NoTopicsNilSlice(t *testing.T) {
+	node := gqlForkNode{
+		DatabaseID:    7,
+		NameWithOwner: "bob/bar",
+		Name:          "bar",
+	}
+	fork, _ := gqlForkToForkInfo(node)
+	if fork.Topics != nil {
+		t.Errorf("Topics: got %v, want nil (no repositoryTopics payload)", fork.Topics)
+	}
+	if !fork.Fork {
+		t.Errorf("Fork flag: got %v, want true", fork.Fork)
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}

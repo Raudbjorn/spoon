@@ -33,11 +33,23 @@ type HeatResult struct {
 	ChangeImpact       float64 // 0..1; centrality-weighted impact of touched directories; 0 when centrality unavailable
 	Category           string  // zero-shot change category ("feature", "ci-build", ...); "" when classification didn't run
 	CategoryScore      float64 // anchor cosine behind Category; 0 when unclassified
+	// SiblingSim is the maximum cosine similarity of this fork's README
+	// to any non-fork sibling found by the P2 search (distant-relation
+	// discovery). Populated by the cluster pipeline, same lifecycle as
+	// NoveltyScore. 0..1; 0 when P2 was disabled, the candidate set was
+	// empty, or the embedder was unavailable.
+	SiblingSim float64
 
 	// noveltyWeight carries the user's "novelty" heat weight from scoring
 	// time to ApplyNoveltyToScore (which runs later, after clustering).
 	noveltyWeight    float64
 	noveltyWeightSet bool
+
+	// siblingSimWeight carries the user's "sibling_sim" heat weight from
+	// scoring time to ApplySiblingSimilarityToScore (which runs later,
+	// after the cluster pipeline). Mirrors noveltyWeight.
+	siblingSimWeight    float64
+	siblingSimWeightSet bool
 }
 
 // Archetype classifies the lone wolf behavior pattern.

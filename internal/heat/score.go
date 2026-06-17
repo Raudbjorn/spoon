@@ -2,6 +2,8 @@ package heat
 
 import (
 	"math"
+
+	"github.com/svnbjrn/spoon/internal/forge"
 )
 
 // ---- V2 Scoring API (additive point tiers) ----
@@ -167,6 +169,16 @@ type PenaltyInput struct {
 	// RecencyPct is the fork's recency percentile within the fork set
 	// (1 = pushed most recently).
 	RecencyPct float64
+	// ForkTopics is the fork's topic set; nil/empty means "no signal".
+	// Used by the P1 topic-tag penalty.
+	ForkTopics []string
+	// ParentTopics is the parent's topic set; nil/empty disables the
+	// P1 deviation comparison (we have no reference to compare against).
+	ParentTopics []string
+	// OwnerProfile is the fork-owner's farmer signal (P3). Nil means
+	// "no signal" — the fetch was skipped, failed, or the provider
+	// does not implement the owner-profile path.
+	OwnerProfile *forge.OwnerProfile
 }
 
 // RawScore computes the additive tier scores and returns a HeatResult.
@@ -208,13 +220,15 @@ func RawScoreWeighted(input ScoreInput, weights map[string]float64) HeatResult {
 	components = append(components, t3Comps...)
 
 	return HeatResult{
-		Score:            signal,
-		Tier:             tier,
-		Confidence:       tierConfidence(tier),
-		Components:       components,
-		TierScores:       [3]float64{t1Score, t2Score, t3Score},
-		noveltyWeight:    weightFor(weights, "novelty"),
-		noveltyWeightSet: true,
+		Score:               signal,
+		Tier:                tier,
+		Confidence:          tierConfidence(tier),
+		Components:          components,
+		TierScores:          [3]float64{t1Score, t2Score, t3Score},
+		noveltyWeight:       weightFor(weights, "novelty"),
+		noveltyWeightSet:    true,
+		siblingSimWeight:    weightFor(weights, "sibling_sim"),
+		siblingSimWeightSet: true,
 	}
 }
 
@@ -272,8 +286,11 @@ func ApplyTrust(result *HeatResult, starsPct, subForksPct float64) {
 	}
 }
 
-// ApplyPenalties applies post-trust penalties. Floor is 0.
-func ApplyPenalties(result *HeatResult, p PenaltyInput) {
+// ApplyPenalties applies post-trust penalties. Floor is 0. weights is
+// the per-component factor map; only the "topic_tag" key is consulted
+// here — other weights are applied upstream in RawScoreWeighted.
+// Pass nil to use defaults (factor 1 for every penalty).
+func ApplyPenalties(result *HeatResult, p PenaltyInput, weights map[string]float64) {
 	// Measured ahead == 0 → the fork contains no work; score 0.
 	if p.AheadKnown && p.AheadAllBranches == 0 {
 		result.Score = 0
@@ -300,6 +317,31 @@ func ApplyPenalties(result *HeatResult, p PenaltyInput) {
 	if p.RecencyPct < 0.2 {
 		result.Score *= 0.7
 		result.Penalties = append(result.Penalties, "low_recency")
+	}
+
+	// P1 topic-tag fitness: penalize forks whose topic set diverges
+	// sharply from the parent's, gated on real work
+	// (AheadAllBranches > 0) and on at least one topic on each side.
+	// Apply before the floor so the result lands at 0 when the penalty
+	// would have driven it below.
+	if pen := TopicTagPenaltyFromWeights(p.ForkTopics, p.ParentTopics, p, weights); pen < 0 {
+		result.Score += pen
+		if result.Score < 0 {
+			result.Score = 0
+		}
+		result.Penalties = append(result.Penalties, "topic_tag")
+	}
+
+	// P3 fork-farmer penalty: owner has many mostly-fork repos and few
+	// of their own. Cached upstream (FetchUserRepos) with a hard cap
+	// of 30 distinct owners per run; nil OwnerProfile means "no
+	// signal" → no penalty.
+	if pen := forkFarmerFromWeights(p.OwnerProfile, weights); pen < 0 {
+		result.Score += pen
+		if result.Score < 0 {
+			result.Score = 0
+		}
+		result.Penalties = append(result.Penalties, "fork_farmer")
 	}
 
 	if result.Score < 0 {

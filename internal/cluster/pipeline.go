@@ -66,6 +66,12 @@ type PipelineOptions struct {
 	// CentralityHeadSHA, when non-empty, is the upstream default-branch SHA;
 	// used by the MDG cache to invalidate stale entries.
 	CentralityHeadSHA string
+
+	// SiblingSimEnabled turns on P2 distant-relation discovery. When
+	// true, the pipeline runs one /search/repositories + ~50 README
+	// fetches + one batched embed, and assigns the resulting max
+	// cosine to every fork in the run as Heat.SiblingSim.
+	SiblingSimEnabled bool
 }
 
 // EnrichedFork pairs a fork's T1+T2 data with its HeatResult so the pipeline
@@ -309,10 +315,27 @@ func RunPipeline(ctx context.Context, opts PipelineOptions, inputs PipelineInput
 			}
 		}
 	}
-
 	// 9. Write back cluster metadata into each candidate's HeatResult.
+	// 8b. P2 distant-relation discovery (opt-in). Runs after the
+	// cluster pass so the embedder is already constructed; populates
+	// Heat.SiblingSim for every fork (used by
+	// ApplySiblingSimilarityToScore below).
+	if opts.SiblingSimEnabled {
+		sim, n, serr := SearchSiblings(ctx, nil, inputs.Upstream, opts.Embedder, inputs.ReadmeFetcher, 50)
+		if serr != nil {
+			fmt.Fprintf(logger, "[sibling] search failed: %v\n", serr)
+		} else {
+			for i := range inputs.Forks {
+				if inputs.Forks[i].Heat != nil {
+					inputs.Forks[i].Heat.SiblingSim = sim
+				}
+			}
+			if sim > 0 {
+				fmt.Fprintf(logger, "[sibling] assigned sim=%.3f across %d forks (%d candidates checked)\n", sim, len(inputs.Forks), n)
+			}
+		}
+	}
 	applyAssignmentsToForks(clusters, assignments, candidates)
-
 	// 10. Persist a cache entry. Failures are logged but non-fatal.
 	if err := SaveCache(ClusterCache{
 		SchemaVersion:    SchemaVersion,
@@ -380,6 +403,10 @@ func applyAssignmentsToForks(clusters []Cluster, assignments []Assignment, forks
 		// points, which carry Novelty=1.0 by definition. The +5 max matches
 		// the v2 NoveltyComponent's Max so the score stays comparable.
 		heat.ApplyNoveltyToScore(hr)
+		// P2 sibling-similarity bonus: applied right after novelty so
+		// the combined cap (7.5) sees NoveltyScore. Both bonuses
+		// target the post-percentile heat score.
+		heat.ApplySiblingSimilarityToScore(hr)
 		if a.Cluster == "noise" || a.Cluster == "" {
 			hr.ClusterID = a.Cluster
 			hr.ClusterLabel = ""
