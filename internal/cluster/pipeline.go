@@ -192,9 +192,14 @@ func RunPipeline(ctx context.Context, opts PipelineOptions, inputs PipelineInput
 		embedder = opts.Embedder
 	}
 
-	// 2. Compute (or load) centrality (directory proxy or MDG, per opts).
-	c, cOK := loadOrComputeCentrality(ctx, opts, inputs, logger)
-
+// 2. Compute (or load) centrality (directory proxy or MDG, per opts).
+	c, cOK, err := loadOrComputeCentrality(ctx, opts, inputs, logger)
+	if err != nil {
+		// StrictMDG: surface MDG failure as a non-fatal skip so callers
+		// can render the policy_violation envelope.
+		fmt.Fprintf(logger, "[cluster] strict mode: %v\n", err)
+		return &SkipReason{Code: "mdg_unavailable", Message: err.Error()}, nil
+	}
 	// 3. Gate top-N forks for embedding.
 	candidates := SelectClusterCandidates(inputs.Forks, opts.TopN)
 	if len(candidates) == 0 {
@@ -448,22 +453,33 @@ func applyAssignmentsToForks(clusters []Cluster, assignments []Assignment, forks
 }
 
 // loadOrComputeCentrality returns the centrality backend. Dispatch is by
-// PipelineOptions.CentralityBackend with silent fallback to the directory
-// proxy when MDG cannot run.
+// PipelineOptions.CentralityBackend. When CentralityBackend == "mdg" and
+// StrictMDG is true, an MDG build/cache failure is propagated as an error
+// (caller surfaces it as a SkipReason with code "mdg_unavailable"). Otherwise
+// MDG failures fall back silently to the directory proxy.
 func loadOrComputeCentrality(
 	ctx context.Context,
 	opts PipelineOptions,
 	inputs PipelineInputs,
 	logger io.Writer,
-) (repo.Centrality, bool) {
+) (repo.Centrality, bool, error) {
 	if opts.CentralityBackend == "mdg" {
-		c, ok := loadOrComputeMDG(ctx, opts, inputs, logger)
+		c, ok, err := loadOrComputeMDG(ctx, opts, inputs, logger)
 		if ok {
-			return c, true
+			return c, true, nil
+		}
+		// Strict mode short-circuits BEFORE the fallback log: when
+		// StrictMDG is set, the directory proxy is never consulted,
+		// so the "falling back" message would be misleading. The
+		// error is propagated and the caller renders it as a
+		// ClusterSkip with code "mdg_unavailable".
+		if opts.StrictMDG {
+			return nil, false, err
 		}
 		fmt.Fprintln(logger, "[cluster] MDG centrality unavailable; falling back to directory proxy")
 	}
-	return loadOrComputeDirCentrality(ctx, inputs, logger)
+	dc, ok := loadOrComputeDirCentrality(ctx, inputs, logger)
+	return dc, ok, nil
 }
 
 // loadOrComputeDirCentrality is the existing directory-proxy path, extracted
@@ -496,8 +512,9 @@ func loadOrComputeDirCentrality(
 }
 
 // loadOrComputeMDG attempts to build and cache an MDG-backed centrality.
-// Returns (nil, false) on any failure; the dispatcher treats that as a signal
-// to fall back to the directory proxy.
+// Returns (nil, false, err) on any failure; the dispatcher treats that as a
+// signal to fall back to the directory proxy (or, under StrictMDG, to
+// propagate the error to the caller).
 //
 // When opts.CentralityHeadSHA is empty, the cache is neither consulted nor
 // populated — the computed result is returned without persistence.
@@ -506,7 +523,7 @@ func loadOrComputeMDG(
 	opts PipelineOptions,
 	inputs PipelineInputs,
 	logger io.Writer,
-) (repo.Centrality, bool) {
+) (repo.Centrality, bool, error) {
 	provider := inputs.Provider
 	if provider == "" {
 		provider = "github"
@@ -515,23 +532,23 @@ func loadOrComputeMDG(
 	// SHA at build time, and an empty SHA can't match.
 	if opts.CentralityHeadSHA != "" {
 		if cached, ok := mdg.LoadMDGCache(provider, inputs.UpstreamOwner, inputs.UpstreamRepo, opts.CentralityHeadSHA); ok {
-			return &mdgCachedAdapter{cache: cached}, true
+			return &mdgCachedAdapter{cache: cached}, true, nil
 		}
 	}
-	// We need a repo on disk.
+// We need a repo on disk.
 	repoPath := opts.CentralityRepoPath
 	cleanup := func() {}
 	if repoPath == "" {
 		tmp, err := os.MkdirTemp("", "spoon-mdg-")
 		if err != nil {
 			fmt.Fprintf(logger, "[cluster] mdg tempdir: %v\n", err)
-			return nil, false
+			return nil, false, fmt.Errorf("mdg tempdir: %w", err)
 		}
 		cleanup = func() { _ = os.RemoveAll(tmp) }
 		if err := mdg.ShallowClone(ctx, provider, inputs.UpstreamOwner, inputs.UpstreamRepo, tmp); err != nil {
 			fmt.Fprintf(logger, "[cluster] mdg shallow clone failed: %v\n", err)
 			cleanup()
-			return nil, false
+			return nil, false, fmt.Errorf("mdg shallow clone: %w", err)
 		}
 		repoPath = tmp
 	}
@@ -541,7 +558,7 @@ func loadOrComputeMDG(
 		inputs.UpstreamOwner, inputs.UpstreamRepo, opts.CentralityHeadSHA, mdg.BuildOptions{})
 	if err != nil {
 		fmt.Fprintf(logger, "[cluster] mdg build failed: %v\n", err)
-		return nil, false
+		return nil, false, fmt.Errorf("mdg build: %w", err)
 	}
 	// Persist cache for next run. Skip persistence when HeadSHA is empty —
 	// without it, the next load() can never match.
@@ -558,7 +575,7 @@ func loadOrComputeMDG(
 			fmt.Fprintf(logger, "[cluster] mdg cache save failed: %v (non-fatal)\n", err)
 		}
 	}
-	return c, true
+	return c, true, nil
 }
 
 // mdgCachedAdapter wraps a cached MDGCache as a repo.Centrality. It serves

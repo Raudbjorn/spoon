@@ -80,8 +80,9 @@ type Options struct {
 	OwnerProfileCap int
 
 	// OwnerCacheTTL overrides the owner-profile on-disk cache TTL.
-	// 0 → github.ownerProfileTTL (24h). Set to a negative value to
-	// force a fresh fetch (the test/refresh path).
+	// 0 disables cache reads (always fetch live). Set to a negative
+	// value to force a fresh fetch (the test/refresh path). The CLI
+	// translates an unset flag to 24h before calling Stream().
 	OwnerCacheTTL time.Duration
 
 	// Logger receives cluster-pipeline progress and warnings. May be nil
@@ -430,37 +431,60 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 						if ownerCap <= 0 {
 							ownerCap = ownerProfileDefaultCap
 						}
-						if int(ownerProfileCalls.Load()) < ownerCap &&
-							(opts.ReserveDisabled || provider.Headroom() >= ReserveHeadroom) {
-							if ghp, ok := provider.(*gh.GHProvider); ok {
-								rec, cached, ferr := ghp.Client().FetchUserRepos(
-									ctx, s.fork.Owner, opts.OwnerCacheTTL,
-								)
-								if rec != nil {
-									s.fork.OwnerProfile = &forge.OwnerProfile{
-										Login:            rec.Login,
-										TotalPublicRepos: rec.TotalPublicRepos,
-										ForkCount:        rec.ForkCount,
-										SignalForkCount:  rec.SignalForkCount,
-										NonForkRepoCount: rec.NonForkRepoCount,
-									}
-									// Mirror onto r.Fork so the emitted Result
-									// matches what scoring saw. The worker
-									// snapshot for the result was already taken
-									// above; copying here keeps the public
-									// record and the in-flight fork in sync.
-									r.Fork.OwnerProfile = s.fork.OwnerProfile
+						ghp, isGH := provider.(*gh.GHProvider)
+						if !isGH {
+							r.OwnerProfileSkip = &StageSkip{
+								Stage:  "owner_profile",
+								ForkID: s.fork.ID,
+								Reason: "owner profile fetch only implemented for the GitHub provider",
+							}
+						} else if int(ownerProfileCalls.Load()) >= ownerCap {
+							r.OwnerProfileSkip = &StageSkip{
+								Stage:  "owner_profile",
+								ForkID: s.fork.ID,
+								Reason: fmt.Sprintf("owner-profile cap (%d) exhausted for this run; remaining forks scored with no P3 signal", ownerCap),
+							}
+						} else if !opts.ReserveDisabled && provider.Headroom() < ReserveHeadroom {
+							r.OwnerProfileSkip = &StageSkip{
+								Stage:  "owner_profile",
+								ForkID: s.fork.ID,
+								Reason: "rate-limit reserve reached; re-run after the window resets to enrich (cached results resume)",
+							}
+						} else if ghp.Client() == nil {
+							r.OwnerProfileSkip = &StageSkip{
+								Stage:  "owner_profile",
+								ForkID: s.fork.ID,
+								Reason: "GitHub client not initialized for this provider; owner profile fetch skipped",
+							}
+						} else {
+							rec, cached, ferr := ghp.Client().FetchUserRepos(
+								ctx, s.fork.Owner, opts.OwnerCacheTTL,
+							)
+							if rec != nil {
+								s.fork.OwnerProfile = &forge.OwnerProfile{
+									Login:            rec.Login,
+									TotalPublicRepos: rec.TotalPublicRepos,
+									ForkCount:        rec.ForkCount,
+									SignalForkCount:  rec.SignalForkCount,
+									NonForkRepoCount: rec.NonForkRepoCount,
+									FetchedAt:        rec.FetchedAt,
 								}
-								// Only count a real API call against the cap:
-								//   - cache hit (cached=true): no rate-budget
-								//     was burned, so the slot is free
-								//   - rate-limit 403: the attempt failed
-								//     before consuming a slot; we want the
-								//     slot to remain for the next fork
-								var rl *gh.RateLimitError
-								if !cached && !errors.As(ferr, &rl) {
-									ownerProfileCalls.Add(1)
-								}
+								// Mirror onto r.Fork so the emitted Result
+								// matches what scoring saw. The worker
+								// snapshot for the result was already taken
+								// above; copying here keeps the public
+								// record and the in-flight fork in sync.
+								r.Fork.OwnerProfile = s.fork.OwnerProfile
+							}
+							// Only count a real API call against the cap:
+							//   - cache hit (cached=true): no rate-budget
+							//     was burned, so the slot is free
+							//   - rate-limit 403: the attempt failed
+							//     before consuming a slot; we want the
+							//     slot to remain for the next fork
+							var rl *gh.RateLimitError
+							if !cached && !errors.As(ferr, &rl) {
+								ownerProfileCalls.Add(1)
 							}
 						}
 					}
