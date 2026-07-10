@@ -359,7 +359,24 @@ func isMergeOrSyncMsg(msg string) bool {
 // SearchTopicRepos implements the optional topics.TopicSearcher capability:
 // it returns repositories carrying the GitHub topic, mapped to forge types.
 func (p *GHProvider) SearchTopicRepos(ctx context.Context, topic string, limit int) ([]forge.TopicRepo, error) {
-	repos, err := p.client.SearchTopicRepos(ctx, topic, limit)
+	return p.searchTopicReposSorted(ctx, topic, "stars", limit)
+}
+
+func (p *GHProvider) SearchTopicReposByLane(ctx context.Context, topic string, lane forge.TopicLane, limit int) ([]forge.TopicRepo, error) {
+	switch lane {
+	case forge.TopicLaneDefault, forge.TopicLaneStars:
+		return p.searchTopicReposSorted(ctx, topic, "stars", limit)
+	case forge.TopicLaneUpdated:
+		return p.searchTopicReposSorted(ctx, topic, "updated", limit)
+	case forge.TopicLaneForks:
+		return p.searchTopicReposSorted(ctx, topic, "forks", limit)
+	default:
+		return nil, fmt.Errorf("unsupported topic lane %q", lane)
+	}
+}
+
+func (p *GHProvider) searchTopicReposSorted(ctx context.Context, topic, sort string, limit int) ([]forge.TopicRepo, error) {
+	repos, err := p.client.SearchTopicReposSorted(ctx, topic, sort, limit)
 	if err != nil {
 		return nil, err
 	}

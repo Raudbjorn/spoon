@@ -219,6 +219,15 @@ type Forge interface {
 	Headroom() float64
 }
 
+type TopicLane string
+
+const (
+	TopicLaneDefault TopicLane = "default"
+	TopicLaneStars   TopicLane = "stars"
+	TopicLaneUpdated TopicLane = "updated"
+	TopicLaneForks   TopicLane = "forks"
+)
+
 // TopicRepo is a repository carrying a forge topic, as returned by a
 // provider's topic search (see topics.TopicSearcher).
 type TopicRepo struct {

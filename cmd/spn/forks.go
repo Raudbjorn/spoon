@@ -24,6 +24,7 @@ import (
 	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/gitlab"
 	"github.com/svnbjrn/spoon/internal/heat"
+	"github.com/svnbjrn/spoon/internal/priors"
 	"github.com/svnbjrn/spoon/internal/topics"
 )
 
@@ -100,16 +101,24 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 			// topic mode overrides it to false (5x cost multiplier).
 			SiblingSimEnabled: true,
 		},
+		MomentumSnapshots: true,
 	}
 	var embedderBackend, openvinoModel, openvinoDevice, openvinoPooling string
 	query := ""
 	topicRepos := 0
+	topicLanesRaw := ""
+	topicLaneBudget := 0
+	siblingSimModeRaw := ""
 	// Track which flags the user passed explicitly so the post-loop
 	// defaulting can distinguish "user wants the default" from "user
 	// did not address this knob". Used by OwnerCacheTTL (default 24h)
 	// and topic-mode SiblingSimEnabled (default off).
 	ownerCacheTTLSet := false
 	siblingSimFlagSet := false
+	noSiblingSimFlagSet := false
+	siblingSimModeSet := false
+	topicLanesSet := false
+	topicLaneBudgetSet := false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--tier":
@@ -215,6 +224,24 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 				return agentio.NewError(agentio.CodeBadInput, "--topic-repos must be in [1, 25]", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
 			}
 			topicRepos = n
+		case "--topic-lanes":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--topic-lanes requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			topicLanesRaw = args[i]
+			topicLanesSet = true
+		case "--topic-lane-budget":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--topic-lane-budget requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n < 1 || n > 100 {
+				return agentio.NewError(agentio.CodeBadInput, "--topic-lane-budget must be in [1, 100]", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			topicLaneBudget = n
+			topicLaneBudgetSet = true
 		case "--heat-weights":
 			if i+1 >= len(args) {
 				return agentio.NewError(agentio.CodeBadInput, "--heat-weights requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
@@ -225,6 +252,16 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 				return agentio.NewError(agentio.CodeBadInput, "--heat-weights: "+werr.Error(), agentio.RemediationBadInput("forks", "list")).Emit(stderr)
 			}
 			opts.HeatWeights = w
+		case "--priors":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--priors requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			spec, perr := priors.Load(args[i])
+			if perr != nil {
+				return agentio.NewError(agentio.CodeBadInput, "--priors: "+perr.Error(), agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			opts.Priors = spec
 		case "--query":
 			if i+1 >= len(args) {
 				return agentio.NewError(agentio.CodeBadInput, "--query requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
@@ -273,6 +310,15 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 		case "--no-sibling-sim":
 			opts.Cluster.SiblingSimEnabled = false
 			siblingSimFlagSet = true
+			noSiblingSimFlagSet = true
+		case "--sibling-sim-mode":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--sibling-sim-mode requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			siblingSimModeRaw = args[i]
+			siblingSimFlagSet = true
+			siblingSimModeSet = true
 		case "--owner-cache-ttl":
 			if i+1 >= len(args) {
 				return agentio.NewError(agentio.CodeBadInput, "--owner-cache-ttl requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
@@ -304,6 +350,21 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 			if b != "" {
 				opts.BotAllowlist[strings.ToLower(b)] = true
 			}
+		}
+	}
+	if _, isTopic := strings.CutPrefix(repo, "topic:"); !isTopic && (topicLanesSet || topicLaneBudgetSet) {
+		return agentio.NewError(agentio.CodeBadInput, "--topic-lanes and --topic-lane-budget only apply to topic:NAME mode", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+	}
+	if siblingSimModeSet {
+		if noSiblingSimFlagSet {
+			return agentio.NewError(agentio.CodeBadInput, "--sibling-sim-mode conflicts with --no-sibling-sim", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+		}
+		switch cluster.SiblingSimMode(siblingSimModeRaw) {
+		case cluster.SiblingSimModeUpstreamReadme, cluster.SiblingSimModeForkIntent:
+			opts.Cluster.SiblingSimMode = cluster.SiblingSimMode(siblingSimModeRaw)
+			opts.Cluster.SiblingSimEnabled = true
+		default:
+			return agentio.NewError(agentio.CodeBadInput, "--sibling-sim-mode must be upstream_readme or fork_intent", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
 		}
 	}
 
@@ -405,23 +466,36 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 		if e != nil {
 			return e.Emit(stderr)
 		}
-		selections, terr := topics.Resolve(ctx, provider, topicName, topicRepos)
+		parsedLanes, perr := topics.ParseLanes(topicLanesRaw)
+		if perr != nil {
+			return agentio.NewError(agentio.CodeBadInput, perr.Error(),
+				"Use --topic-lanes with comma-separated values: default,stars,updated,forks.").Emit(stderr)
+		}
+		selections, terr := topics.ResolveWithOptions(ctx, provider, topicName, topics.ResolveOptions{
+			Repos:      topicRepos,
+			Lanes:      parsedLanes,
+			LaneBudget: topicLaneBudget,
+		})
 		if terr != nil {
 			return agentio.NewError(agentio.CodeBadInput, terr.Error(),
 				"Topic mode needs a GitHub topic with forkable repositories, e.g. `spn forks list topic:terminal`.").Emit(stderr)
 		}
 		for _, sel := range selections {
+			details := map[string]any{
+				"repo":       sel.FullName,
+				"score":      sel.Score,
+				"components": sel.Components,
+				"stars":      sel.Stars,
+				"forks":      sel.ForkCount,
+			}
+			if len(parsedLanes) > 0 {
+				details["lanes"] = sel.Lanes
+			}
 			_ = json.NewEncoder(stderr).Encode(map[string]any{
 				"info": map[string]any{
 					"code":    "topic_repo_selected",
 					"message": fmt.Sprintf("evaluating %s (score %.1f)", sel.FullName, sel.Score),
-					"details": map[string]any{
-						"repo":       sel.FullName,
-						"score":      sel.Score,
-						"components": sel.Components,
-						"stars":      sel.Stars,
-						"forks":      sel.ForkCount,
-					},
+					"details": details,
 				},
 			})
 		}
@@ -552,10 +626,19 @@ func forkToJSON(r forksops.Result) map[string]any {
 		"releases":    r.Fork.ReleaseCount,
 		"heat":        r.Heat.Score,
 		"tier":        r.Heat.Tier,
+		"visibility":  visibilityToJSON(r),
+		"momentum":    momentumToJSON(r.Momentum),
 	}
 	if r.QueryMethod != "" {
 		out["queryScore"] = r.QueryScore
 		out["queryMethod"] = r.QueryMethod
+	}
+	// priorScore/priorReasons are emitted only when --priors ran (a match
+	// scored > 0, or a deny-only match left reasons). NDJSON-only, like
+	// visibility/momentum/networkRank; CSV is intentionally unchanged.
+	if len(r.PriorReasons) > 0 || r.PriorScore > 0 {
+		out["priorScore"] = r.PriorScore
+		out["priorReasons"] = r.PriorReasons
 	}
 	if r.Heat.Category != "" {
 		out["category"] = r.Heat.Category
@@ -621,7 +704,68 @@ func forkToJSON(r forksops.Result) map[string]any {
 		}
 		out["components"] = comps
 	}
+	if degraded := degradedToJSON(r); len(degraded) > 0 {
+		out["degraded"] = degraded
+	}
+	if r.NetworkRank != nil {
+		out["networkRank"] = map[string]any{
+			"position":   r.NetworkRank.Position,
+			"total":      r.NetworkRank.Total,
+			"percentile": r.NetworkRank.Percentile,
+			"band":       string(r.NetworkRank.Band),
+		}
+	}
+	// profile is always meaningful (derives from always-present fields, with
+	// "standard" as the floor), so it is emitted unconditionally; profileReasons
+	// only when the label carries explanatory facts.
+	profile, profileReasons := forksops.DeriveProfile(r)
+	out["profile"] = profile
+	if len(profileReasons) > 0 {
+		out["profileReasons"] = profileReasons
+	}
 	return out
+}
+
+func visibilityToJSON(r forksops.Result) map[string]any {
+	visibility := r.Visibility
+	if visibility.Status == "" {
+		visibility = forksops.DeriveVisibility(r)
+	}
+	out := map[string]any{"status": string(visibility.Status)}
+	if len(visibility.Reasons) > 0 {
+		out["reasons"] = append([]string(nil), visibility.Reasons...)
+	}
+	return out
+}
+
+func degradedToJSON(r forksops.Result) []map[string]any {
+	degraded := r.Degraded
+	if len(degraded) == 0 {
+		degraded = forksops.CollectDegradedStages(r)
+	}
+	if len(degraded) == 0 {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(degraded))
+	for _, d := range degraded {
+		out = append(out, map[string]any{
+			"stage":  d.Stage,
+			"reason": d.Reason,
+		})
+	}
+	return out
+}
+
+func momentumToJSON(momentum forksops.MomentumInfo) map[string]any {
+	if momentum.Status == "" {
+		momentum.Status = forksops.MomentumUnknown
+	}
+	return map[string]any{
+		"status":           string(momentum.Status),
+		"starsDelta30d":    momentum.StarsDelta30d,
+		"subForksDelta30d": momentum.SubForksDelta30d,
+		"observedDays":     momentum.ObservedDays,
+	}
 }
 
 func emitForksCSV(stdout, stderr io.Writer, ch <-chan forksops.Result) int {

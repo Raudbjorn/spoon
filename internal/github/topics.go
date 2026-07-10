@@ -23,20 +23,40 @@ type topicSearchResponse struct {
 	Items      []TopicRepo `json:"items"`
 }
 
+// topicSearchPath builds the GitHub repository-search path for one topic lane.
+func topicSearchPath(topic, sort string, limit int) (string, error) {
+	if topic == "" {
+		return "", fmt.Errorf("empty topic")
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 100
+	}
+	if sort == "" {
+		sort = "stars"
+	}
+	switch sort {
+	case "stars", "forks", "updated":
+	default:
+		return "", fmt.Errorf("unsupported topic search sort %q", sort)
+	}
+	q := url.QueryEscape(fmt.Sprintf("topic:%s fork:false", topic))
+	return fmt.Sprintf("search/repositories?q=%s&sort=%s&order=desc&per_page=%d", q, sort, limit), nil
+}
+
 // SearchTopicRepos returns up to limit repositories carrying the given
 // GitHub topic (github.com/topics/<topic>), ordered by stars. Forks are
 // excluded server-side — topic mode prospects the fork networks of original
 // repos. Note the search API has its own rate window (30 req/min
 // authenticated); one call here is one search request.
 func (c *Client) SearchTopicRepos(ctx context.Context, topic string, limit int) ([]TopicRepo, error) {
-	if topic == "" {
-		return nil, fmt.Errorf("empty topic")
+	return c.SearchTopicReposSorted(ctx, topic, "stars", limit)
+}
+
+func (c *Client) SearchTopicReposSorted(ctx context.Context, topic, sort string, limit int) ([]TopicRepo, error) {
+	path, err := topicSearchPath(topic, sort, limit)
+	if err != nil {
+		return nil, err
 	}
-	if limit <= 0 || limit > 100 {
-		limit = 100
-	}
-	q := url.QueryEscape(fmt.Sprintf("topic:%s fork:false", topic))
-	path := fmt.Sprintf("search/repositories?q=%s&sort=stars&order=desc&per_page=%d", q, limit)
 	var resp topicSearchResponse
 	if err := c.Get(ctx, path, &resp); err != nil {
 		return nil, fmt.Errorf("topic search %q: %w", topic, err)

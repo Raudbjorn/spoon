@@ -1,0 +1,10 @@
+{
+  "k": 3,
+  "rows": [
+    {"id": "steady-useful", "score": 90, "starsDelta30d": 0, "subForksDelta30d": 0, "observedDays": 30, "useful": true},
+    {"id": "popular-stale-junk", "score": 89, "starsDelta30d": 0, "subForksDelta30d": 0, "observedDays": 30, "useful": false},
+    {"id": "rising-useful", "score": 87, "starsDelta30d": 8, "subForksDelta30d": 2, "observedDays": 30, "useful": true},
+    {"id": "subfork-rising-useful", "score": 85, "starsDelta30d": 1, "subForksDelta30d": 5, "observedDays": 30, "useful": true},
+    {"id": "unknown-momentum", "score": 84, "starsDelta30d": 100, "subForksDelta30d": 100, "observedDays": 0, "useful": false}
+  ]
+}

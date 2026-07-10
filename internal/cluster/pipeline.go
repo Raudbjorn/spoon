@@ -73,6 +73,10 @@ type PipelineOptions struct {
 	// cosine to every fork in the run as Heat.SiblingSim.
 	SiblingSimEnabled bool
 
+	// SiblingSimMode selects the source of P2 distant-relation similarity.
+	// Empty keeps the existing upstream-readme behavior.
+	SiblingSimMode SiblingSimMode
+
 	// SiblingSearcher is the active SiblingSearcher for P2 distant-
 	// relation discovery. When non-nil, RunPipeline calls it after
 	// the cluster pass and folds the resulting max cosine into
@@ -173,9 +177,15 @@ func RunPipeline(ctx context.Context, opts PipelineOptions, inputs PipelineInput
 		modelName = embed.BuiltinModelName
 	}
 
+	siblingMode := opts.SiblingSimMode
+	if siblingMode == "" {
+		siblingMode = SiblingSimModeUpstreamReadme
+	}
+
 	// 0. Cache fast-path. Try to satisfy this pipeline from a previous run's
 	//    saved clusters before doing any expensive work.
-	if !opts.Refresh {
+	skipClusterCache := opts.SiblingSimEnabled && siblingMode == SiblingSimModeForkIntent
+	if !opts.Refresh && !skipClusterCache {
 		if cached, ok := LoadCache(provider, inputs.UpstreamOwner, inputs.UpstreamRepo,
 			"", modelName); ok {
 			applyAssignmentsToForks(cached.Clusters, cached.Assignments, inputs.Forks)
@@ -192,7 +202,7 @@ func RunPipeline(ctx context.Context, opts PipelineOptions, inputs PipelineInput
 		embedder = opts.Embedder
 	}
 
-// 2. Compute (or load) centrality (directory proxy or MDG, per opts).
+	// 2. Compute (or load) centrality (directory proxy or MDG, per opts).
 	c, cOK, err := loadOrComputeCentrality(ctx, opts, inputs, logger)
 	if err != nil {
 		// StrictMDG: surface MDG failure as a non-fatal skip so callers
@@ -341,21 +351,50 @@ func RunPipeline(ctx context.Context, opts PipelineOptions, inputs PipelineInput
 	// 9. Write back cluster metadata into each candidate's HeatResult.
 	// 8b. P2 distant-relation discovery (opt-in). Runs after the
 	// cluster pass so the embedder is already constructed; populates
-	// Heat.SiblingSim for every fork (used by
-	// ApplySiblingSimilarityToScore below).
+	// Heat.SiblingSim before applyAssignmentsToForks folds the score
+	// bonus into each fork.
 	if opts.SiblingSimEnabled {
-		sim, n, serr := SearchSiblings(ctx, opts.SiblingSearcher, inputs.Upstream, opts.Embedder, inputs.ReadmeFetcher, 50)
-		if serr != nil {
-			fmt.Fprintf(logger, "[sibling] search failed: %v\n", serr)
-		} else {
-			for i := range inputs.Forks {
-				if inputs.Forks[i].Heat != nil {
-					inputs.Forks[i].Heat.SiblingSim = sim
+		switch siblingMode {
+		case SiblingSimModeUpstreamReadme:
+			sim, n, serr := SearchSiblings(ctx, opts.SiblingSearcher, inputs.Upstream, embedder, inputs.ReadmeFetcher, 50)
+			if serr != nil {
+				fmt.Fprintf(logger, "[sibling] search failed: %v\n", serr)
+			} else {
+				for i := range inputs.Forks {
+					if inputs.Forks[i].Heat != nil {
+						inputs.Forks[i].Heat.SiblingSim = sim
+					}
+				}
+				if sim > 0 {
+					fmt.Fprintf(logger, "[sibling] assigned sim=%.3f across %d forks (%d candidates checked)\n", sim, len(inputs.Forks), n)
 				}
 			}
-			if sim > 0 {
-				fmt.Fprintf(logger, "[sibling] assigned sim=%.3f across %d forks (%d candidates checked)\n", sim, len(inputs.Forks), n)
+		case SiblingSimModeForkIntent:
+			forkInputs := make([]ForkIntentSiblingInput, 0, len(candidates))
+			for i := range candidates {
+				forkInputs = append(forkInputs, ForkIntentSiblingInput{
+					ForkID:   candidates[i].T1.ID,
+					Features: features[i],
+				})
 			}
+			sims, n, serr := SearchForkIntentSiblings(ctx, opts.SiblingSearcher, inputs.Upstream, forkInputs, embedder, inputs.ReadmeFetcher, 50)
+			if serr != nil {
+				fmt.Fprintf(logger, "[sibling] fork-intent search failed: %v\n", serr)
+			} else {
+				assigned := 0
+				for i := range candidates {
+					sim := sims[candidates[i].T1.ID]
+					if sim > 0 && candidates[i].Heat != nil {
+						candidates[i].Heat.SiblingSim = sim
+						assigned++
+					}
+				}
+				if assigned > 0 {
+					fmt.Fprintf(logger, "[sibling] assigned fork-intent sims to %d forks (%d candidates checked)\n", assigned, n)
+				}
+			}
+		default:
+			fmt.Fprintf(logger, "[sibling] unknown sibling sim mode %q; skipping\n", siblingMode)
 		}
 	}
 	applyAssignmentsToForks(clusters, assignments, candidates)
@@ -535,7 +574,7 @@ func loadOrComputeMDG(
 			return &mdgCachedAdapter{cache: cached}, true, nil
 		}
 	}
-// We need a repo on disk.
+	// We need a repo on disk.
 	repoPath := opts.CentralityRepoPath
 	cleanup := func() {}
 	if repoPath == "" {

@@ -1,0 +1,105 @@
+{
+  "cases": [
+    {
+      "name": "path_directory_prefix",
+      "spec": {"paths": ["internal/auth"]},
+      "changedPaths": ["internal/auth/token.go", "README.md"],
+      "wantScore": 1,
+      "wantReasons": ["path:internal/auth"]
+    },
+    {
+      "name": "path_exact_file",
+      "spec": {"paths": ["go.mod"]},
+      "changedPaths": ["go.mod"],
+      "wantScore": 1,
+      "wantReasons": ["path:go.mod"]
+    },
+    {
+      "name": "path_glob_single_segment",
+      "spec": {"paths": ["docs/*.md"]},
+      "changedPaths": ["docs/guide.md", "src/main.go"],
+      "wantScore": 1,
+      "wantReasons": ["path:docs/*.md"]
+    },
+    {
+      "name": "keyword_substring_case_insensitive",
+      "spec": {"keywords": ["OAuth"]},
+      "digest": "add oauth login flow",
+      "wantScore": 1,
+      "wantReasons": ["keyword:oauth"]
+    },
+    {
+      "name": "language_match_case_insensitive",
+      "spec": {"languages": ["Go"]},
+      "language": "Go",
+      "wantScore": 1,
+      "wantReasons": ["language:go"]
+    },
+    {
+      "name": "owner_allow_match",
+      "spec": {"owners": {"allow": ["Trusted"]}},
+      "owner": "Trusted",
+      "wantScore": 1,
+      "wantReasons": ["owner_allow:trusted"]
+    },
+    {
+      "name": "owner_deny_forces_zero_reasons_kept",
+      "spec": {"paths": ["internal/auth"], "owners": {"deny": ["Farmer"]}},
+      "changedPaths": ["internal/auth/x.go"],
+      "owner": "farmer",
+      "wantScore": 0,
+      "wantReasons": ["owner_deny:farmer", "path:internal/auth"]
+    },
+    {
+      "name": "multi_dimension_half",
+      "spec": {"paths": ["internal/auth"], "keywords": ["oauth"]},
+      "changedPaths": ["internal/auth/x.go"],
+      "digest": "unrelated changes",
+      "wantScore": 0.5,
+      "wantReasons": ["path:internal/auth"]
+    },
+    {
+      "name": "multi_dimension_three_quarters",
+      "spec": {"paths": ["internal/auth"], "keywords": ["oauth"], "languages": ["go"], "owners": {"allow": ["trusted"]}},
+      "changedPaths": ["internal/auth/x.go"],
+      "digest": "add oauth",
+      "language": "go",
+      "owner": "stranger",
+      "wantScore": 0.75,
+      "wantReasons": ["keyword:oauth", "language:go", "path:internal/auth"]
+    },
+    {
+      "name": "full_match_all_dims",
+      "spec": {"paths": ["internal/auth"], "keywords": ["oauth"], "languages": ["go"], "owners": {"allow": ["trusted"]}},
+      "changedPaths": ["internal/auth/x.go"],
+      "digest": "add oauth",
+      "language": "go",
+      "owner": "trusted",
+      "wantScore": 1,
+      "wantReasons": ["keyword:oauth", "language:go", "owner_allow:trusted", "path:internal/auth"]
+    },
+    {
+      "name": "no_match_zero_no_reasons",
+      "spec": {"paths": ["internal/auth"]},
+      "changedPaths": ["docs/readme.md"],
+      "wantScore": 0
+    },
+    {
+      "name": "deny_only_zero_with_reason",
+      "spec": {"owners": {"deny": ["Bad"]}},
+      "owner": "bad",
+      "wantScore": 0,
+      "wantReasons": ["owner_deny:bad"]
+    },
+    {
+      "name": "sorted_reasons_multi_path",
+      "spec": {"paths": ["z/dir", "a/dir"], "keywords": ["oauth"], "languages": ["go"], "owners": {"allow": ["trusted"]}},
+      "changedPaths": ["z/dir/x.go", "a/dir/y.go"],
+      "digest": "add oauth",
+      "language": "go",
+      "owner": "trusted",
+      "wantScore": 1,
+      "wantReasons": ["keyword:oauth", "language:go", "owner_allow:trusted", "path:a/dir", "path:z/dir"]
+    }
+  ]
+}

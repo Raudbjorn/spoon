@@ -19,6 +19,7 @@ import (
 	"github.com/svnbjrn/spoon/internal/forge"
 	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/heat"
+	"github.com/svnbjrn/spoon/internal/priors"
 )
 
 // Options controls the streaming pipeline.
@@ -53,6 +54,13 @@ type Options struct {
 	// here when one is configured.
 	QueryScorer embed.QueryScorer
 
+	// Priors, when non-nil, scores every collected fork against a curated
+	// interest spec (paths/keywords/languages/owner allow-deny) using only
+	// already-fetched data — no network. It never mutates heat and never
+	// drops a record; with neither Query nor ShortlistN set it splits output
+	// into a matched-then-unmatched lane. Forces collect-then-emit semantics.
+	Priors *priors.Spec
+
 	// ReserveDisabled turns off the automatic rate-limit reserve floor
 	// (ReserveHeadroom). By default the pipeline stops enriching when the forge's
 	// headroom drops below the reserve and marks the remaining forks degraded
@@ -84,6 +92,11 @@ type Options struct {
 	// value to force a fresh fetch (the test/refresh path). The CLI
 	// translates an unset flag to 24h before calling Stream().
 	OwnerCacheTTL time.Duration
+
+	// MomentumSnapshots enables the 30-day on-disk surface-history cache used
+	// to derive Result.Momentum. Default false so library callers and tests do
+	// not write to the user's real cache unless they opt in.
+	MomentumSnapshots bool
 
 	// Logger receives cluster-pipeline progress and warnings. May be nil
 	// (defaults to io.Discard).
@@ -141,6 +154,10 @@ type ClusterOptions struct {
 	// topic mode (5x cost multiplier per upstream).
 	SiblingSimEnabled bool
 
+	// SiblingSimMode forwards cluster.PipelineOptions.SiblingSimMode.
+	// Empty preserves upstream_readme.
+	SiblingSimMode cluster.SiblingSimMode
+
 	// SiblingSearcher forwards cluster.PipelineOptions.SiblingSearcher.
 	// The CLI constructs a real GHSiblingSearcher when --sibling-sim
 	// is set; for tests, a fake searcher can be wired in directly.
@@ -170,6 +187,17 @@ type Result struct {
 	// "lexical" cosine fallback). Both zero when no query was given.
 	QueryScore  float64
 	QueryMethod string
+
+	// PriorScore is the fork's match to Options.Priors in [0,1]; PriorReasons
+	// lists the stable, sorted facts behind it. Both zero/nil when no priors
+	// spec was given. Never affects heat.
+	PriorScore   float64
+	PriorReasons []string
+
+	Visibility  VisibilityDecision
+	Degraded    []DegradedStage
+	NetworkRank *NetworkRank
+	Momentum    MomentumInfo
 
 	// ClusterSkip is set when the cluster pipeline was enabled but skipped
 	// for a non-fatal reason (embedder unreachable, no model, etc.). Only the
@@ -293,6 +321,11 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 		}
 
 		now := time.Now()
+		momentumByID := unknownMomentumMap(t1Forks)
+		if opts.MomentumSnapshots {
+			momentumByID = buildMomentumMap(now, momentumProviderKey(ctx, provider), owner, repo, t1Forks, logger)
+		}
+
 		stats := makeStats(t1Forks, now)
 		scorer := heat.NewScorerWeighted(stats, opts.HeatWeights)
 
@@ -390,7 +423,7 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 		// them into `collected` (mu-guarded) and emit at the end.
 		// Clustering and the expected-rank shortlist both require all enriched
 		// results in hand, so either forces collect-then-emit.
-		batchMode := opts.Cluster.Enabled || opts.ShortlistN > 0 || opts.Query != ""
+		batchMode := opts.Cluster.Enabled || opts.ShortlistN > 0 || opts.Query != "" || opts.Priors != nil
 		var (
 			collectedMu sync.Mutex
 			collected   []Result
@@ -412,7 +445,7 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 					}
 					i := dispatchOrder[pos]
 					s := all[i]
-					r := Result{Fork: s.fork, Heat: s.res}
+					r := Result{Fork: s.fork, Heat: s.res, Momentum: momentumByID[s.fork.ID]}
 
 					// Auto-budget: an eligible fork is enriched only while the
 					// rate-limit reserve holds. Because dispatch is best-first
@@ -551,6 +584,8 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 						}
 					}
 					r.Heat = rescore(scorer, int64(i), s.fork, parent, now, r.T2, r.T3)
+					r.Visibility = deriveVisibility(r)
+					r.Degraded = collectDegradedStages(r)
 					if batchMode {
 						collectedMu.Lock()
 						collected = append(collected, r)
@@ -584,12 +619,29 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 			skip = runForksClusterPipeline(ctx, provider, &parent, owner, repo, collected, opts.Cluster, logger)
 		}
 
+		if skip != nil && len(collected) > 0 {
+			collected[0].ClusterSkip = skip
+		}
+
+		for i := range collected {
+			collected[i].Visibility = deriveVisibility(collected[i])
+			collected[i].Degraded = collectDegradedStages(collected[i])
+		}
+
 		// Query relevance pass: one batched scoring call over every enriched
 		// fork's digest. Failures degrade to unscored output with a log line —
 		// a broken scorer should not kill the listing.
 		if opts.Query != "" {
 			scoreQuery(ctx, opts, collected, logger)
 		}
+
+		// Prior relevance pass: pure/deterministic scoring of every collected
+		// fork against the curated interest spec. No network calls.
+		if opts.Priors != nil {
+			scorePriors(opts, collected)
+		}
+
+		assignNetworkRanks(collected)
 
 		if opts.ShortlistN > 0 {
 			// Robbins expected-rank shortlist: compute over the final heat (after
@@ -630,6 +682,17 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 				}
 				return collected[i].Heat.Score > collected[j].Heat.Score
 			})
+		} else if opts.Priors != nil {
+			// Priors lane split: matched (PriorScore > 0) before unmatched,
+			// each internally in heat order. Never hides a fork; network rank
+			// (assigned above) stays heat-relative regardless of lane.
+			sort.SliceStable(collected, func(i, j int) bool {
+				im, jm := collected[i].PriorScore > 0, collected[j].PriorScore > 0
+				if im != jm {
+					return im
+				}
+				return collected[i].Heat.Score > collected[j].Heat.Score
+			})
 		} else {
 			// Re-sort emitted output by heat desc to match dump's ordering.
 			sort.SliceStable(collected, func(i, j int) bool {
@@ -637,10 +700,7 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 			})
 		}
 
-		for i, r := range collected {
-			if i == 0 && skip != nil {
-				r.ClusterSkip = skip
-			}
+		for _, r := range collected {
 			select {
 			case out <- r:
 			case <-ctx.Done():
@@ -710,6 +770,7 @@ func runForksClusterPipeline(
 	pipelineOpts.LabelPolisher = opts.LabelPolisher
 	pipelineOpts.SiblingSimEnabled = opts.SiblingSimEnabled
 	pipelineOpts.SiblingSearcher = opts.SiblingSearcher
+	pipelineOpts.SiblingSimMode = opts.SiblingSimMode
 	skip, err := cluster.RunPipeline(ctx, pipelineOpts, inputs, logger)
 	if err != nil {
 		fmt.Fprintf(logger, "[cluster] pipeline error: %v (continuing)\n", err)
@@ -928,4 +989,25 @@ func queryDigest(t2 *forge.T2Data) string {
 		d = string(runes[:queryDigestMaxChars])
 	}
 	return d
+}
+
+// scorePriors computes Result.PriorScore/PriorReasons for every collected
+// fork against opts.Priors. Pure and deterministic — it reuses the query
+// digest (lowercased) and the fork's T2 diff paths, and issues no provider
+// calls. Never mutates heat.
+func scorePriors(opts Options, collected []Result) {
+	for i := range collected {
+		r := &collected[i]
+		digest := strings.ToLower(queryDigest(r.T2))
+		var paths []string
+		if r.T2 != nil {
+			paths = make([]string, 0, len(r.T2.Diffs))
+			for _, d := range r.T2.Diffs {
+				paths = append(paths, d.Path)
+			}
+		}
+		m := opts.Priors.Score(r.Fork.Language, r.Fork.Owner, paths, digest)
+		r.PriorScore = m.Score
+		r.PriorReasons = m.Reasons
+	}
 }
