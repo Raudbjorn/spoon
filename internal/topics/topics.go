@@ -5,7 +5,9 @@ package topics
 
 import (
 	"context"
+	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/svnbjrn/spoon/internal/forge"
@@ -17,12 +19,28 @@ type Selection struct {
 	forge.TopicRepo
 	Score      float64            // 0..100
 	Components map[string]float64 // stars / fork_network / recency contributions
+	Lanes      []forge.TopicLane
 }
 
 // TopicSearcher is the optional forge capability for topic search. Only
 // GitHub implements it today; provider detection is by interface assertion.
 type TopicSearcher interface {
 	SearchTopicRepos(ctx context.Context, topic string, limit int) ([]forge.TopicRepo, error)
+}
+
+type ResolveOptions struct {
+	Repos      int
+	Lanes      []forge.TopicLane
+	LaneBudget int
+}
+
+type LaneCandidate struct {
+	Repo forge.TopicRepo
+	Lane forge.TopicLane
+}
+
+type LaneTopicSearcher interface {
+	SearchTopicReposByLane(ctx context.Context, topic string, lane forge.TopicLane, limit int) ([]forge.TopicRepo, error)
 }
 
 // DefaultRepoCount is how many representative repos topic mode evaluates
@@ -44,30 +62,47 @@ const searchPoolSize = 50
 // Archived repos are halved, not excluded — a dead upstream is often
 // exactly where the interesting forks live.
 func SelectBest(cands []forge.TopicRepo, k int, now time.Time) []Selection {
+	laneCands := make([]LaneCandidate, 0, len(cands))
+	for _, c := range cands {
+		laneCands = append(laneCands, LaneCandidate{Repo: c, Lane: forge.TopicLaneDefault})
+	}
+	return SelectBestFromLanes(laneCands, k, now)
+}
+
+func SelectBestFromLanes(cands []LaneCandidate, k int, now time.Time) []Selection {
 	if k <= 0 {
 		k = DefaultRepoCount
 	}
 	out := make([]Selection, 0, len(cands))
+	byRepo := make(map[string]int, len(cands))
 	for _, c := range cands {
-		if c.ForkCount == 0 {
+		if c.Repo.ForkCount == 0 {
 			continue // nothing to prospect
 		}
-		stars := heat.LogNormRange(float64(c.Stars), 50000, 40)
-		network := heat.LogNormRange(float64(c.ForkCount), 5000, 40)
-		days := now.Sub(c.PushedAt).Hours() / 24
+		if idx, ok := byRepo[c.Repo.FullName]; ok {
+			if !hasLane(out[idx].Lanes, c.Lane) {
+				out[idx].Lanes = append(out[idx].Lanes, c.Lane)
+			}
+			continue
+		}
+		stars := heat.LogNormRange(float64(c.Repo.Stars), 50000, 40)
+		network := heat.LogNormRange(float64(c.Repo.ForkCount), 5000, 40)
+		days := now.Sub(c.Repo.PushedAt).Hours() / 24
 		recency := heat.ExpDecay(days, 180) * 20
 		score := stars + network + recency
-		if c.Archived {
+		if c.Repo.Archived {
 			score *= 0.5
 		}
+		byRepo[c.Repo.FullName] = len(out)
 		out = append(out, Selection{
-			TopicRepo: c,
+			TopicRepo: c.Repo,
 			Score:     score,
 			Components: map[string]float64{
 				"stars":        stars,
 				"fork_network": network,
 				"recency":      recency,
 			},
+			Lanes: []forge.TopicLane{c.Lane},
 		})
 	}
 	sort.SliceStable(out, func(i, j int) bool {
@@ -82,20 +117,93 @@ func SelectBest(cands []forge.TopicRepo, k int, now time.Time) []Selection {
 	return out
 }
 
+func hasLane(lanes []forge.TopicLane, lane forge.TopicLane) bool {
+	for _, existing := range lanes {
+		if existing == lane {
+			return true
+		}
+	}
+	return false
+}
+
+func ParseLanes(raw string) ([]forge.TopicLane, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	seen := map[forge.TopicLane]bool{}
+	var lanes []forge.TopicLane
+	for _, part := range strings.Split(raw, ",") {
+		token := strings.TrimSpace(part)
+		var lane forge.TopicLane
+		switch token {
+		case string(forge.TopicLaneDefault):
+			lane = forge.TopicLaneDefault
+		case string(forge.TopicLaneStars):
+			lane = forge.TopicLaneStars
+		case string(forge.TopicLaneUpdated):
+			lane = forge.TopicLaneUpdated
+		case string(forge.TopicLaneForks):
+			lane = forge.TopicLaneForks
+		default:
+			return nil, fmt.Errorf("unknown topic lane %q (want default, stars, updated, or forks)", token)
+		}
+		if !seen[lane] {
+			seen[lane] = true
+			lanes = append(lanes, lane)
+		}
+	}
+	return lanes, nil
+}
+
 // Resolve searches the forge for the topic and returns the best k repos.
 // Errors when the provider lacks topic search or nothing qualifies.
 func Resolve(ctx context.Context, provider forge.Forge, topic string, k int) ([]Selection, error) {
-	searcher, ok := provider.(TopicSearcher)
+	return ResolveWithOptions(ctx, provider, topic, ResolveOptions{Repos: k})
+}
+
+func ResolveWithOptions(ctx context.Context, provider forge.Forge, topic string, opts ResolveOptions) ([]Selection, error) {
+	repos := opts.Repos
+	if repos <= 0 {
+		repos = DefaultRepoCount
+	}
+	laneBudget := opts.LaneBudget
+	if laneBudget <= 0 {
+		laneBudget = searchPoolSize
+	}
+	if len(opts.Lanes) == 0 || (len(opts.Lanes) == 1 && opts.Lanes[0] == forge.TopicLaneDefault) {
+		searcher, ok := provider.(TopicSearcher)
+		if !ok {
+			return nil, ErrUnsupported
+		}
+		cands, err := searcher.SearchTopicRepos(ctx, topic, searchPoolSize)
+		if err != nil {
+			return nil, err
+		}
+		selected := SelectBest(cands, repos, time.Now())
+		if len(selected) == 0 {
+			return nil, &NoReposError{Topic: topic, Candidates: len(cands)}
+		}
+		return selected, nil
+	}
+	searcher, ok := provider.(LaneTopicSearcher)
 	if !ok {
 		return nil, ErrUnsupported
 	}
-	cands, err := searcher.SearchTopicRepos(ctx, topic, searchPoolSize)
-	if err != nil {
-		return nil, err
+	var cands []LaneCandidate
+	candidateCount := 0
+	for _, lane := range opts.Lanes {
+		repos, err := searcher.SearchTopicReposByLane(ctx, topic, lane, laneBudget)
+		if err != nil {
+			return nil, err
+		}
+		candidateCount += len(repos)
+		for _, repo := range repos {
+			cands = append(cands, LaneCandidate{Repo: repo, Lane: lane})
+		}
 	}
-	selected := SelectBest(cands, k, time.Now())
+	selected := SelectBestFromLanes(cands, repos, time.Now())
 	if len(selected) == 0 {
-		return nil, &NoReposError{Topic: topic, Candidates: len(cands)}
+		return nil, &NoReposError{Topic: topic, Candidates: candidateCount}
 	}
 	return selected, nil
 }

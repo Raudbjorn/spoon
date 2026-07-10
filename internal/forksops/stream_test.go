@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,8 @@ import (
 	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/forge"
 	"github.com/svnbjrn/spoon/internal/github"
+	"github.com/svnbjrn/spoon/internal/heat"
+	"github.com/svnbjrn/spoon/internal/priors"
 )
 
 type fakeForge struct {
@@ -335,6 +338,18 @@ func (s *stubEmbedder) Dim() int {
 		return 8
 	}
 	return s.dim
+}
+
+type fakeQueryScorer struct{}
+
+func (fakeQueryScorer) Rerank(_ context.Context, _ string, docs []string) ([]float64, error) {
+	scores := make([]float64, len(docs))
+	for i, doc := range docs {
+		if strings.Contains(doc, "cold") {
+			scores[i] = 1
+		}
+	}
+	return scores, nil
 }
 
 func TestStream_clusterPipelineEnabled(t *testing.T) {
@@ -661,4 +676,331 @@ func TestStream_querySortsByRelevance(t *testing.T) {
 	if got[0].QueryScore <= got[1].QueryScore {
 		t.Errorf("relevance ordering wrong: %v <= %v", got[0].QueryScore, got[1].QueryScore)
 	}
+}
+
+func TestStream_batchModeAssignsNetworkRank(t *testing.T) {
+	now := time.Now()
+	ff := &fakeForge{
+		parent: forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
+		forks: []forge.T1Data{
+			{ID: "o/hot", Owner: "o", Name: "hot", Stars: 100, PushedAt: now, DefaultBranch: "main"},
+			{ID: "o/warm", Owner: "o", Name: "warm", Stars: 10, PushedAt: now, DefaultBranch: "main"},
+			{ID: "o/cold", Owner: "o", Name: "cold", Stars: 1, PushedAt: now, DefaultBranch: "main"},
+		},
+	}
+	opts := Options{Tier: 1}
+	opts.Cluster.Enabled = true
+	ch, err := Stream(context.Background(), ff, "o", "r", opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var results []Result
+	for r := range ch {
+		results = append(results, r)
+	}
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(results))
+	}
+	for _, r := range results {
+		if r.NetworkRank == nil {
+			t.Fatalf("%s missing NetworkRank", r.Fork.ID)
+		}
+		if r.NetworkRank.Position < 1 || r.NetworkRank.Total != len(results) {
+			t.Fatalf("%s invalid NetworkRank: %+v", r.Fork.ID, r.NetworkRank)
+		}
+	}
+	byID := map[string]Result{}
+	for _, r := range results {
+		byID[r.Fork.ID] = r
+	}
+	if byID["o/hot"].Heat.Score > byID["o/cold"].Heat.Score &&
+		byID["o/hot"].NetworkRank.Position >= byID["o/cold"].NetworkRank.Position {
+		t.Fatalf("higher heat should have better rank: hot=%+v cold=%+v", byID["o/hot"].NetworkRank, byID["o/cold"].NetworkRank)
+	}
+}
+
+func TestStream_queryModePreservesHeatBasedNetworkRank(t *testing.T) {
+	now := time.Now()
+	ff := &fakeForge{
+		parent:      forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
+		concurrency: 1,
+		forks: []forge.T1Data{
+			{ID: "o/hot", Owner: "o", Name: "hot", Stars: 100, PushedAt: now, DefaultBranch: "main"},
+			{ID: "o/cold", Owner: "o", Name: "cold", Stars: 1, PushedAt: now, DefaultBranch: "main"},
+		},
+		t2: map[string]forge.T2Data{
+			"o/hot":  {AheadCount: 1, Commits: []forge.AheadCommit{{Message: "hot feature"}}},
+			"o/cold": {AheadCount: 1, Commits: []forge.AheadCommit{{Message: "cold feature"}}},
+		},
+	}
+	opts := Options{Tier: 2, Query: "prefer cold", QueryScorer: fakeQueryScorer{}}
+	opts.Cluster.Enabled = false
+	ch, err := Stream(context.Background(), ff, "o", "r", opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []Result
+	for r := range ch {
+		got = append(got, r)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(got))
+	}
+	if got[0].Fork.ID != "o/cold" {
+		t.Fatalf("query order should put cold first, got %s", got[0].Fork.ID)
+	}
+	byID := map[string]Result{got[0].Fork.ID: got[0], got[1].Fork.ID: got[1]}
+	if byID["o/hot"].NetworkRank == nil || byID["o/cold"].NetworkRank == nil {
+		t.Fatalf("missing network ranks: hot=%+v cold=%+v", byID["o/hot"].NetworkRank, byID["o/cold"].NetworkRank)
+	}
+	if byID["o/hot"].NetworkRank.Position >= byID["o/cold"].NetworkRank.Position {
+		t.Fatalf("network rank should preserve heat order despite query output: hot=%+v cold=%+v", byID["o/hot"].NetworkRank, byID["o/cold"].NetworkRank)
+	}
+}
+
+func TestStream_momentumDisabledIsUnknownAndSideEffectFree(t *testing.T) {
+	now := time.Now()
+	ff := &fakeForge{
+		parent: forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
+		forks:  []forge.T1Data{{ID: "o/a", Owner: "o", Name: "a", Stars: 1, PushedAt: now, DefaultBranch: "main"}},
+	}
+	opts := Options{Tier: 1}
+	opts.Cluster.Enabled = false
+	ch, err := Stream(context.Background(), ff, "o", "r", opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for r := range ch {
+		if r.Momentum.Status != MomentumUnknown {
+			t.Fatalf("Momentum.Status = %q, want unknown", r.Momentum.Status)
+		}
+	}
+}
+
+func TestStream_momentumFirstRunUnknown(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	now := time.Now()
+	ff := &fakeForge{
+		parent: forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
+		forks:  []forge.T1Data{{ID: "o/a", Owner: "o", Name: "a", Stars: 1, PushedAt: now, DefaultBranch: "main"}},
+	}
+	opts := Options{Tier: 1, MomentumSnapshots: true}
+	opts.Cluster.Enabled = false
+	ch, err := Stream(context.Background(), ff, "o", "r", opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := <-ch
+	if r.Momentum.Status != MomentumUnknown {
+		t.Fatalf("Momentum.Status = %q, want unknown", r.Momentum.Status)
+	}
+}
+
+func TestStream_momentumSecondRunComputesDelta(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	now := time.Now().UTC()
+	yesterday := now.AddDate(0, 0, -1).Format("2006-01-02")
+	if err := saveSnapshotHistory("github", "o", "r", &snapshotHistory{
+		Days: []snapshotDay{{
+			Date: yesterday,
+			Forks: map[string]snapshotFork{
+				"o/a": {FullName: "o/a", Stars: 1, SubForks: 1, PushedAt: now.AddDate(0, 0, -1)},
+			},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ff := &fakeForge{
+		parent: forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
+		forks: []forge.T1Data{
+			{ID: "o/a", Owner: "o", Name: "a", Stars: 5, SubForkCount: 2, PushedAt: now, DefaultBranch: "main"},
+			{ID: "o/b", Owner: "o", Name: "b", Stars: 3, SubForkCount: 1, PushedAt: now, DefaultBranch: "main"},
+		},
+	}
+	opts := Options{Tier: 1, MomentumSnapshots: true}
+	opts.Cluster.Enabled = false
+	ch, err := Stream(context.Background(), ff, "o", "r", opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]MomentumInfo{}
+	for r := range ch {
+		got[r.Fork.ID] = r.Momentum
+	}
+	if got["o/a"].Status != MomentumRising || got["o/a"].StarsDelta30d != 4 || got["o/a"].SubForksDelta30d != 1 {
+		t.Fatalf("o/a momentum = %+v, want rising +4/+1", got["o/a"])
+	}
+	if got["o/b"].Status != MomentumNew || got["o/b"].StarsDelta30d != 3 || got["o/b"].SubForksDelta30d != 1 {
+		t.Fatalf("o/b momentum = %+v, want new +3/+1", got["o/b"])
+	}
+	if got["o/a"].ObservedDays != 1 || got["o/b"].ObservedDays != 1 {
+		t.Fatalf("ObservedDays = a:%d b:%d, want 1", got["o/a"].ObservedDays, got["o/b"].ObservedDays)
+	}
+}
+
+func TestStream_degradedStagesFollowSkipFields(t *testing.T) {
+	now := time.Now()
+	low := 0.05
+	ff := &fakeForge{
+		parent:   forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
+		headroom: &low,
+		forks:    []forge.T1Data{{ID: "o/a", Owner: "o", Name: "a", PushedAt: now, DefaultBranch: "main"}},
+	}
+	ch, err := Stream(context.Background(), ff, "o", "r", Options{Tier: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := <-ch
+	if r.BudgetSkip == nil {
+		t.Fatal("expected BudgetSkip")
+	}
+	if len(r.Degraded) == 0 {
+		t.Fatal("expected Degraded metadata")
+	}
+	if r.Degraded[0].Stage != "compare" || r.Degraded[0].Reason != r.BudgetSkip.Reason {
+		t.Fatalf("first degraded stage = %+v, want compare reason %q", r.Degraded[0], r.BudgetSkip.Reason)
+	}
+}
+
+func TestStream_priorsLaneSplit_matchedBeforeUnmatched(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	now := time.Now()
+	newForge := func() *fakeForge {
+		return &fakeForge{
+			parent: forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
+			forks: []forge.T1Data{
+				{ID: "o/docs", Owner: "o", Name: "docs", Stars: 500, SubForkCount: 20, PushedAt: now, DefaultBranch: "main"},
+				{ID: "o/auth", Owner: "o", Name: "auth", Stars: 1, PushedAt: now, DefaultBranch: "main"},
+			},
+			t2: map[string]forge.T2Data{
+				"o/docs": {AheadCount: 1, MNA: 10, Diffs: []forge.FileDiff{{Path: "README.md", Additions: 10}}},
+				"o/auth": {AheadCount: 1, MNA: 10, Diffs: []forge.FileDiff{{Path: "internal/auth/token.go", Additions: 10}}},
+			},
+		}
+	}
+	collect := func(opts Options) []Result {
+		opts.Cluster.Enabled = false
+		ch, err := Stream(context.Background(), newForge(), "o", "r", opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []Result
+		for r := range ch {
+			got = append(got, r)
+		}
+		return got
+	}
+
+	// Control: no priors → heat order, so high-heat docs leads.
+	ctrl := collect(Options{Tier: 2})
+	if len(ctrl) != 2 || ctrl[0].Fork.ID != "o/docs" {
+		t.Fatalf("control (no priors) should sort high-heat docs first, got %d results, first=%q", len(ctrl), firstID(ctrl))
+	}
+
+	// With priors: the low-heat auth fork (matches the path) leads; docs still emitted.
+	got := collect(Options{Tier: 2, Priors: &priors.Spec{Paths: []string{"internal/auth"}}})
+	if len(got) != 2 {
+		t.Fatalf("expected 2 results (nothing hidden), got %d", len(got))
+	}
+	if got[0].Fork.ID != "o/auth" {
+		t.Fatalf("matched low-heat fork should lead, got first=%q second=%q", got[0].Fork.ID, got[1].Fork.ID)
+	}
+	if got[0].PriorScore != 1 {
+		t.Errorf("auth PriorScore = %v, want 1", got[0].PriorScore)
+	}
+	if !slices.Contains(got[0].PriorReasons, "path:internal/auth") {
+		t.Errorf("auth PriorReasons = %v, want to contain path:internal/auth", got[0].PriorReasons)
+	}
+	if got[1].Fork.ID != "o/docs" || got[1].PriorScore != 0 {
+		t.Errorf("docs should be the unmatched lane with PriorScore 0, got %q score=%v", got[1].Fork.ID, got[1].PriorScore)
+	}
+	// Guard: the split really overrode heat — docs's heat is strictly higher.
+	if got[1].Heat.Score <= got[0].Heat.Score {
+		t.Errorf("expected docs heat (%v) > auth heat (%v); the priors lane split must reorder against heat", got[1].Heat.Score, got[0].Heat.Score)
+	}
+	// networkRank stays heat-relative regardless of prior lane: docs (higher
+	// heat) outranks auth even though auth leads the matched lane.
+	if got[0].NetworkRank == nil || got[1].NetworkRank == nil {
+		t.Fatalf("both forks should carry a network rank: auth=%+v docs=%+v", got[0].NetworkRank, got[1].NetworkRank)
+	}
+	if got[1].NetworkRank.Position >= got[0].NetworkRank.Position {
+		t.Errorf("networkRank must stay heat-relative: docs (higher heat) should outrank auth, got docs=%d auth=%d", got[1].NetworkRank.Position, got[0].NetworkRank.Position)
+	}
+}
+
+func TestStream_priorsDoesNotReorderUnderQuery(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	now := time.Now()
+	ff := &fakeForge{
+		parent: forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
+		forks: []forge.T1Data{
+			{ID: "o/auth", Owner: "o", Name: "auth", Stars: 1, PushedAt: now, DefaultBranch: "main"},
+			{ID: "o/docs", Owner: "o", Name: "docs", Stars: 1, PushedAt: now, DefaultBranch: "main"},
+		},
+		t2: map[string]forge.T2Data{
+			"o/auth": {AheadCount: 1, Diffs: []forge.FileDiff{{Path: "internal/auth/token.go"}}, Commits: []forge.AheadCommit{{Message: "refactor auth internals"}}},
+			"o/docs": {AheadCount: 1, Diffs: []forge.FileDiff{{Path: "README.md"}}, Commits: []forge.AheadCommit{{Message: "expand readme documentation guide"}}},
+		},
+	}
+	opts := Options{Tier: 2, Query: "readme documentation", Priors: &priors.Spec{Paths: []string{"internal/auth"}}}
+	opts.Cluster.Enabled = false
+	ch, err := Stream(context.Background(), ff, "o", "r", opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []Result
+	for r := range ch {
+		got = append(got, r)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(got))
+	}
+	// Query relevance owns ordering; priors only annotate, never reorder.
+	if got[0].Fork.ID != "o/docs" {
+		t.Fatalf("query relevance should lead with docs, got first=%q", got[0].Fork.ID)
+	}
+	byID := map[string]Result{got[0].Fork.ID: got[0], got[1].Fork.ID: got[1]}
+	if byID["o/auth"].PriorScore != 1 || !slices.Contains(byID["o/auth"].PriorReasons, "path:internal/auth") {
+		t.Errorf("auth should still be annotated by priors: score=%v reasons=%v", byID["o/auth"].PriorScore, byID["o/auth"].PriorReasons)
+	}
+}
+
+// TestScorePriorsNeverMutatesHeat exercises the scorer directly (no Stream,
+// no wall clock) so the "priors never touch heat" invariant is verified
+// byte-for-byte, free of the recency drift two end-to-end runs would incur.
+func TestScorePriorsNeverMutatesHeat(t *testing.T) {
+	collected := []Result{
+		{
+			Fork: forge.T1Data{ID: "o/auth", Owner: "o", Language: "go"},
+			Heat: heat.HeatResult{Score: 42.5},
+			T2:   &forge.T2Data{Diffs: []forge.FileDiff{{Path: "internal/auth/token.go"}}},
+		},
+		{
+			Fork: forge.T1Data{ID: "o/docs", Owner: "o"},
+			Heat: heat.HeatResult{Score: 88.125},
+			T2:   &forge.T2Data{Diffs: []forge.FileDiff{{Path: "README.md"}}},
+		},
+	}
+	before := []float64{collected[0].Heat.Score, collected[1].Heat.Score}
+
+	scorePriors(Options{Priors: &priors.Spec{Paths: []string{"internal/auth"}}}, collected)
+
+	if collected[0].Heat.Score != before[0] || collected[1].Heat.Score != before[1] {
+		t.Errorf("scorePriors mutated heat: before=%v after=[%v %v]",
+			before, collected[0].Heat.Score, collected[1].Heat.Score)
+	}
+	// ...but it did run: the matching fork scores, the other does not.
+	if collected[0].PriorScore != 1 || !slices.Contains(collected[0].PriorReasons, "path:internal/auth") {
+		t.Errorf("auth fork not scored: score=%v reasons=%v", collected[0].PriorScore, collected[0].PriorReasons)
+	}
+	if collected[1].PriorScore != 0 || len(collected[1].PriorReasons) != 0 {
+		t.Errorf("docs fork should have no prior signal: score=%v reasons=%v", collected[1].PriorScore, collected[1].PriorReasons)
+	}
+}
+
+func firstID(rs []Result) string {
+	if len(rs) == 0 {
+		return ""
+	}
+	return rs[0].Fork.ID
 }

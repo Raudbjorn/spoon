@@ -23,6 +23,22 @@ type SiblingSearcher interface {
 	SearchSiblings(ctx context.Context, parent forge.ParentData, embedder embed.Embedder, readmeFetcher ReadmeFetcher, candidateLimit int) (siblingSim float64, candidatesChecked int, err error)
 }
 
+type SiblingSimMode string
+
+const (
+	SiblingSimModeUpstreamReadme SiblingSimMode = "upstream_readme"
+	SiblingSimModeForkIntent     SiblingSimMode = "fork_intent"
+)
+
+type ForkIntentSiblingInput struct {
+	ForkID   string
+	Features embed.ForkFeatures
+}
+
+type ForkIntentSiblingSearcher interface {
+	SearchForkIntentSiblings(ctx context.Context, parent forge.ParentData, forks []ForkIntentSiblingInput, embedder embed.Embedder, readmeFetcher ReadmeFetcher, candidateLimit int) (map[string]float64, int, error)
+}
+
 // DefaultSiblingSearcher is the placeholder SiblingSearcher. It
 // always returns (0, 0, nil) so the cluster pipeline degrades to "no
 // signal" without surfacing a warning.
@@ -68,4 +84,30 @@ func SearchSiblings(
 		return 0, 0, fmt.Errorf("sibling search: %w", err)
 	}
 	return sim, n, nil
+}
+
+func SearchForkIntentSiblings(
+	ctx context.Context,
+	searcher SiblingSearcher,
+	parent forge.ParentData,
+	forks []ForkIntentSiblingInput,
+	embedder embed.Embedder,
+	readmeFetcher ReadmeFetcher,
+	candidateLimit int,
+) (map[string]float64, int, error) {
+	if searcher == nil || embedder == nil || readmeFetcher == nil || len(forks) == 0 {
+		return nil, 0, nil
+	}
+	forkIntentSearcher, ok := searcher.(ForkIntentSiblingSearcher)
+	if !ok {
+		return nil, 0, nil
+	}
+	if candidateLimit <= 0 {
+		candidateLimit = 50
+	}
+	sims, n, err := forkIntentSearcher.SearchForkIntentSiblings(ctx, parent, forks, embedder, readmeFetcher, candidateLimit)
+	if err != nil {
+		return nil, 0, fmt.Errorf("sibling fork-intent search: %w", err)
+	}
+	return sims, n, nil
 }

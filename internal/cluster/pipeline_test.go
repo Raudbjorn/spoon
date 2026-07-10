@@ -444,3 +444,153 @@ func TestMDGCachedAdapter_ScoreFork(t *testing.T) {
 		t.Fatalf("ScoreFork(nil) = %v, want 0", got)
 	}
 }
+
+type pipelineSiblingSearcher struct {
+	upstreamSim float64
+	forkSims    map[string]float64
+	forkCalls   int
+}
+
+func (p *pipelineSiblingSearcher) SearchSiblings(_ context.Context, _ forge.ParentData, _ embed.Embedder, _ ReadmeFetcher, _ int) (float64, int, error) {
+	return p.upstreamSim, 5, nil
+}
+
+func (p *pipelineSiblingSearcher) SearchForkIntentSiblings(_ context.Context, _ forge.ParentData, _ []ForkIntentSiblingInput, _ embed.Embedder, _ ReadmeFetcher, _ int) (map[string]float64, int, error) {
+	p.forkCalls++
+	return p.forkSims, 5, nil
+}
+
+func TestPipeline_ForkIntentSiblingSimAssignsPerForkScores(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	forks := []EnrichedFork{
+		makePipelineFork("o/a1", 3, []string{"Alpha/x.go"}, 10),
+		makePipelineFork("o/a2", 3, []string{"Alpha/y.go"}, 10),
+	}
+	searcher := &pipelineSiblingSearcher{forkSims: map[string]float64{
+		"o/a1": 0.2,
+		"o/a2": 0.8,
+	}}
+	opts := PipelineOptions{
+		Enabled:           true,
+		TopN:              10,
+		Epsilon:           0.6,
+		MinClusterSize:    2,
+		Embedder:          pipelineStubEmbedder{},
+		SiblingSimEnabled: true,
+		SiblingSimMode:    SiblingSimModeForkIntent,
+		SiblingSearcher:   searcher,
+	}
+	inputs := PipelineInputs{
+		Provider:      "github",
+		UpstreamOwner: "up",
+		UpstreamRepo:  "stream",
+		Upstream:      parentDataFixture(),
+		Forks:         forks,
+		ReadmeFetcher: &dummyReadmeFetcher{},
+	}
+	var buf bytes.Buffer
+	skip, err := RunPipeline(context.Background(), opts, inputs, &buf)
+	if err != nil || skip != nil {
+		t.Fatalf("RunPipeline err=%v skip=%+v log=%s", err, skip, buf.String())
+	}
+	if forks[0].Heat.SiblingSim != 0.2 || forks[1].Heat.SiblingSim != 0.8 {
+		t.Fatalf("SiblingSim=(%v,%v), want (0.2,0.8)", forks[0].Heat.SiblingSim, forks[1].Heat.SiblingSim)
+	}
+	if forks[1].Heat.Score <= forks[0].Heat.Score {
+		t.Fatalf("higher fork-intent sim should produce higher score: fork1=%v fork2=%v", forks[0].Heat.Score, forks[1].Heat.Score)
+	}
+}
+
+func TestPipeline_ForkIntentSiblingSimBypassesClusterCache(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", tmp)
+	t.Setenv("HOME", tmp)
+	if err := SaveCache(ClusterCache{
+		SchemaVersion:  SchemaVersion,
+		ComputedAt:     time.Now().UTC(),
+		EmbedderModel:  embed.BuiltinModelName,
+		Provider:       "github",
+		Owner:          "up",
+		Repo:           "stream",
+		Epsilon:        0.6,
+		MinClusterSize: 2,
+		TopM:           10,
+		Clusters:       []Cluster{{ID: "cached", Members: []string{"o/a1", "o/a2"}, Label: "cached"}},
+		Assignments: []Assignment{
+			{ForkID: "o/a1", Cluster: "cached", Novelty: 0.1},
+			{ForkID: "o/a2", Cluster: "cached", Novelty: 0.1},
+		},
+	}); err != nil {
+		t.Fatalf("SaveCache: %v", err)
+	}
+	forks := []EnrichedFork{
+		makePipelineFork("o/a1", 3, []string{"Alpha/x.go"}, 10),
+		makePipelineFork("o/a2", 3, []string{"Alpha/y.go"}, 10),
+	}
+	searcher := &pipelineSiblingSearcher{forkSims: map[string]float64{"o/a1": 0.6}}
+	opts := PipelineOptions{
+		Enabled:           true,
+		TopN:              10,
+		Epsilon:           0.6,
+		MinClusterSize:    2,
+		Embedder:          pipelineStubEmbedder{},
+		SiblingSimEnabled: true,
+		SiblingSimMode:    SiblingSimModeForkIntent,
+		SiblingSearcher:   searcher,
+	}
+	inputs := PipelineInputs{
+		Provider:      "github",
+		UpstreamOwner: "up",
+		UpstreamRepo:  "stream",
+		Upstream:      parentDataFixture(),
+		Forks:         forks,
+		ReadmeFetcher: &dummyReadmeFetcher{},
+	}
+	var buf bytes.Buffer
+	skip, err := RunPipeline(context.Background(), opts, inputs, &buf)
+	if err != nil || skip != nil {
+		t.Fatalf("RunPipeline err=%v skip=%+v log=%s", err, skip, buf.String())
+	}
+	if searcher.forkCalls != 1 {
+		t.Fatalf("fork-intent search calls=%d want 1 (log=%s)", searcher.forkCalls, buf.String())
+	}
+	if forks[0].Heat.SiblingSim != 0.6 {
+		t.Fatalf("fork o/a1 SiblingSim=%v want 0.6", forks[0].Heat.SiblingSim)
+	}
+}
+
+func TestPipeline_UpstreamSiblingSimStillAssignsRunWideScore(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	forks := []EnrichedFork{
+		makePipelineFork("o/a1", 3, []string{"Alpha/x.go"}, 10),
+		makePipelineFork("o/a2", 3, []string{"Alpha/y.go"}, 10),
+	}
+	searcher := &pipelineSiblingSearcher{upstreamSim: 0.4}
+	opts := PipelineOptions{
+		Enabled:           true,
+		TopN:              10,
+		Epsilon:           0.6,
+		MinClusterSize:    2,
+		Embedder:          pipelineStubEmbedder{},
+		SiblingSimEnabled: true,
+		SiblingSearcher:   searcher,
+	}
+	inputs := PipelineInputs{
+		Provider:      "github",
+		UpstreamOwner: "up",
+		UpstreamRepo:  "stream",
+		Upstream:      parentDataFixture(),
+		Forks:         forks,
+		ReadmeFetcher: &dummyReadmeFetcher{},
+	}
+	var buf bytes.Buffer
+	skip, err := RunPipeline(context.Background(), opts, inputs, &buf)
+	if err != nil || skip != nil {
+		t.Fatalf("RunPipeline err=%v skip=%+v log=%s", err, skip, buf.String())
+	}
+	for _, fork := range forks {
+		if fork.Heat.SiblingSim != 0.4 {
+			t.Fatalf("%s SiblingSim=%v want 0.4", fork.T1.ID, fork.Heat.SiblingSim)
+		}
+	}
+}

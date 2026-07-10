@@ -95,3 +95,66 @@ func errorAs(err error, target **NoReposError) bool {
 	}
 	return ok
 }
+
+func TestParseLanes_DedupesAndRejectsUnknown(t *testing.T) {
+	got, err := ParseLanes("stars, updated, stars, forks")
+	if err != nil {
+		t.Fatalf("ParseLanes returned error: %v", err)
+	}
+	want := []forge.TopicLane{forge.TopicLaneStars, forge.TopicLaneUpdated, forge.TopicLaneForks}
+	if len(got) != len(want) {
+		t.Fatalf("lanes length=%d want %d: %#v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("lane[%d]=%q want %q", i, got[i], want[i])
+		}
+	}
+	if _, err := ParseLanes("stars,nope"); err == nil {
+		t.Fatal("expected unknown lane error")
+	}
+}
+
+func TestResolve_DefaultLaneMatchesResolve(t *testing.T) {
+	s := stubSearcher{repos: candidates(time.Now())}
+	gotResolve, err := Resolve(context.Background(), s, "zig", 0)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	gotOptions, err := ResolveWithOptions(context.Background(), s, "zig", ResolveOptions{})
+	if err != nil {
+		t.Fatalf("ResolveWithOptions: %v", err)
+	}
+	if len(gotResolve) != len(gotOptions) {
+		t.Fatalf("selection length mismatch: Resolve=%d ResolveWithOptions=%d", len(gotResolve), len(gotOptions))
+	}
+	for i := range gotResolve {
+		if gotResolve[i].FullName != gotOptions[i].FullName {
+			t.Fatalf("selection[%d]=%s want %s", i, gotOptions[i].FullName, gotResolve[i].FullName)
+		}
+	}
+}
+
+func TestSelectBestFromLanes_DedupesAndPreservesLanes(t *testing.T) {
+	now := time.Now()
+	got := SelectBestFromLanes([]LaneCandidate{
+		{Repo: forge.TopicRepo{FullName: "dup/repo", Stars: 100, ForkCount: 50, PushedAt: now}, Lane: forge.TopicLaneStars},
+		{Repo: forge.TopicRepo{FullName: "zero/forks", Stars: 500, ForkCount: 0, PushedAt: now}, Lane: forge.TopicLaneStars},
+		{Repo: forge.TopicRepo{FullName: "dup/repo", Stars: 9999, ForkCount: 9999, PushedAt: now}, Lane: forge.TopicLaneUpdated},
+	}, 5, now)
+	if len(got) != 1 {
+		t.Fatalf("selection length=%d want 1: %#v", len(got), got)
+	}
+	if got[0].FullName != "dup/repo" {
+		t.Fatalf("selected repo=%s want dup/repo", got[0].FullName)
+	}
+	wantLanes := []forge.TopicLane{forge.TopicLaneStars, forge.TopicLaneUpdated}
+	if len(got[0].Lanes) != len(wantLanes) {
+		t.Fatalf("lanes=%#v want %#v", got[0].Lanes, wantLanes)
+	}
+	for i := range wantLanes {
+		if got[0].Lanes[i] != wantLanes[i] {
+			t.Fatalf("lane[%d]=%q want %q", i, got[0].Lanes[i], wantLanes[i])
+		}
+	}
+}

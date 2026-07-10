@@ -68,7 +68,7 @@ Nouns and verbs:
                     [--no-cluster] [--cluster-top N] [--cluster-epsilon F] [--cluster-min-size N]
                     [--embedder-backend builtin|openvino] [--openvino-model PATH]
                     [--openvino-device DEV] [--openvino-pooling cls|mean|last]
-                    [--query "intent"] [--full-mdg] [--no-mdg]
+                    [--query "intent"] [--priors PATH] [--full-mdg] [--no-mdg]
                     [--sibling-sim | --no-sibling-sim] [--owner-cache-ttl DUR]
         --budget N caps the expensive per-fork compare/contributors calls to N,
         cache. --top N instead deep-scans the top N by surface score.
@@ -85,18 +85,27 @@ Nouns and verbs:
         representing a GitHub topic (selection by stars + fork-network size +
         recency; cap with --topic-repos N, default 5). Each record gains an
         "upstream" field; selections are reported as info envelopes on stderr.
+        --topic-lanes LIST opts into comma-separated topic candidate lanes
+        (default,stars,updated,forks); --topic-lane-budget N caps each lane.
         --query "intent" scores every enriched fork against a free-text
         intent (cross-encoder reranker when configured, lexical fallback
         otherwise), sorts by relevance, and adds queryScore/queryMethod to
         each record. With the openvino backend each fork also gets a
         zero-shot 'category' facet, and a configured labeler polishes
         cluster labels with an in-process LLM.
+        --priors PATH scores each fork against a JSON interest spec
+        (paths/keywords/languages/owners allow+deny); adds
+        priorScore/priorReasons and, when neither --query nor --shortlist
+        is set, lists matched forks before unmatched (heat order within
+        each lane); never hides forks or changes heat.
         --sibling-sim / --no-sibling-sim toggles P2 distant-relation
         discovery: one /search/repositories + ~50 README fetches + one
-        batched embed, with the max cosine to the upstream README
-        folded into Heat.SiblingSim (capped by the combined-novelty
-        cap of 7.5). On by default for standard runs; opt-in via
-        --sibling-sim for topic mode (5x cost multiplier per upstream).
+        batched embed. The default upstream_readme mode folds the max cosine
+        to the upstream README into every fork's Heat.SiblingSim; opt in to
+        per-fork digest matching with --sibling-sim-mode fork_intent
+        (accepted values: upstream_readme, fork_intent). On by default for
+        standard runs; opt-in via --sibling-sim or --sibling-sim-mode for
+        topic mode (5x cost multiplier per upstream).
         --owner-cache-ttl DUR overrides the owner-profile on-disk
         cache TTL (default 24h). Use 0 to force a fresh fetch every
         run, or a short value (e.g. 1h) for more aggressive refresh.

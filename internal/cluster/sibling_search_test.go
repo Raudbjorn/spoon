@@ -82,3 +82,50 @@ type dummyReadmeFetcher struct{}
 func (d *dummyReadmeFetcher) FetchReadme(_ context.Context, _, _ string) (string, error) {
 	return "# README\n\nSome text.\n", nil
 }
+
+type fakeForkIntentSiblingSearcher struct {
+	fakeSiblingSearcher
+	sims map[string]float64
+	n    int
+}
+
+func (f fakeForkIntentSiblingSearcher) SearchForkIntentSiblings(_ context.Context, _ forge.ParentData, _ []ForkIntentSiblingInput, _ embed.Embedder, _ ReadmeFetcher, _ int) (map[string]float64, int, error) {
+	return f.sims, f.n, nil
+}
+
+func TestSearchForkIntentSiblings_Dispatches(t *testing.T) {
+	want := map[string]float64{"fork-a": 0.7}
+	got, n, err := SearchForkIntentSiblings(
+		context.Background(),
+		fakeForkIntentSiblingSearcher{sims: want, n: 3},
+		forge.ParentData{},
+		[]ForkIntentSiblingInput{{ForkID: "fork-a", Features: embed.ForkFeatures{Paths: "a.go"}}},
+		&dummyEmbedder{},
+		&dummyReadmeFetcher{},
+		50,
+	)
+	if err != nil {
+		t.Fatalf("SearchForkIntentSiblings: %v", err)
+	}
+	if n != 3 || got["fork-a"] != 0.7 {
+		t.Fatalf("got (%v, %d), want (%v, 3)", got, n, want)
+	}
+}
+
+func TestSearchForkIntentSiblings_UnsupportedSearcherNoops(t *testing.T) {
+	got, n, err := SearchForkIntentSiblings(
+		context.Background(),
+		fakeSiblingSearcher{sim: 0.4, n: 2},
+		forge.ParentData{},
+		[]ForkIntentSiblingInput{{ForkID: "fork-a", Features: embed.ForkFeatures{Paths: "a.go"}}},
+		&dummyEmbedder{},
+		&dummyReadmeFetcher{},
+		50,
+	)
+	if err != nil {
+		t.Fatalf("SearchForkIntentSiblings: %v", err)
+	}
+	if got != nil || n != 0 {
+		t.Fatalf("got (%v, %d), want (nil, 0)", got, n)
+	}
+}

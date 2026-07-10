@@ -52,6 +52,7 @@ func (f *fakeForge) Headroom() float64 { return 1.0 }
 
 func TestSpnForksList_emitsNDJSON(t *testing.T) {
 	t.Setenv("SPOON_NO_CONFIG", "1") // isolate from the host's spoon config
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	prev := providerFactory
 	defer func() { providerFactory = prev }()
 	providerFactory = func(_ context.Context, _, _, _ string) (forge.Forge, string, *agentio.Error) {
@@ -242,6 +243,9 @@ func TestSpnForksList_noCluster_omitsClusterFields(t *testing.T) {
 		if _, ok := obj["clusterLabel"]; ok {
 			t.Errorf("--no-cluster: clusterLabel should be omitted, got: %s", line)
 		}
+		if _, ok := obj["networkRank"]; ok {
+			t.Errorf("--no-cluster: networkRank should be omitted, got: %s", line)
+		}
 	}
 	// No warning either.
 	if strings.Contains(stderr.String(), "embedder_model_missing") {
@@ -369,9 +373,128 @@ func TestForkToJSON_NoComponents(t *testing.T) {
 	}
 }
 
+func TestForkToJSON_EmitsVisibilityVisible(t *testing.T) {
+	out := forkToJSON(forksops.Result{Fork: forge.T1Data{ID: "o/r", Owner: "o", Name: "r"}})
+	visibility, ok := out["visibility"].(map[string]any)
+	if !ok {
+		t.Fatalf("visibility missing or wrong type: %T", out["visibility"])
+	}
+	if visibility["status"] != "visible" {
+		t.Fatalf("visibility.status = %v, want visible", visibility["status"])
+	}
+	if _, ok := visibility["reasons"]; ok {
+		t.Fatalf("visibility.reasons should be omitted for visible fork: %+v", visibility["reasons"])
+	}
+}
+
+func TestForkToJSON_EmitsVisibilityDemoted(t *testing.T) {
+	out := forkToJSON(forksops.Result{
+		Fork: forge.T1Data{ID: "o/r", Owner: "o", Name: "r"},
+		Heat: heat.HeatResult{Penalties: []string{"archived", "low_recency"}},
+	})
+	visibility := out["visibility"].(map[string]any)
+	if visibility["status"] != "demoted" {
+		t.Fatalf("visibility.status = %v, want demoted", visibility["status"])
+	}
+	reasons, ok := visibility["reasons"].([]string)
+	if !ok {
+		t.Fatalf("visibility.reasons missing or wrong type: %T", visibility["reasons"])
+	}
+	if len(reasons) != 2 || reasons[0] != "archived" || reasons[1] != "low_recency" {
+		t.Fatalf("visibility.reasons = %#v, want archived, low_recency", reasons)
+	}
+}
+
+func TestForkToJSON_EmitsVisibilityHidden(t *testing.T) {
+	for _, penalty := range []string{"upstreamed", "no_ahead"} {
+		out := forkToJSON(forksops.Result{
+			Fork: forge.T1Data{ID: "o/r", Owner: "o", Name: "r"},
+			Heat: heat.HeatResult{Penalties: []string{penalty}},
+		})
+		visibility := out["visibility"].(map[string]any)
+		if visibility["status"] != "hidden" {
+			t.Fatalf("penalty %s: visibility.status = %v, want hidden", penalty, visibility["status"])
+		}
+	}
+}
+
+func TestForkToJSON_EmitsDegradedStages(t *testing.T) {
+	out := forkToJSON(forksops.Result{
+		Fork: forge.T1Data{ID: "o/r", Owner: "o", Name: "r"},
+		BudgetSkip: &forksops.StageSkip{
+			Stage:  "compare",
+			ForkID: "o/r",
+			Reason: "rate reserve",
+		},
+		T3Skip: &forksops.StageSkip{
+			Stage:  "contributors",
+			ForkID: "o/r",
+			Reason: "contributors o/r: stats timeout",
+		},
+		OwnerProfileSkip: &forksops.StageSkip{
+			Stage:  "owner_profile",
+			ForkID: "o/r",
+			Reason: "owner cap",
+		},
+	})
+	degraded, ok := out["degraded"].([]map[string]any)
+	if !ok {
+		t.Fatalf("degraded missing or wrong type: %T", out["degraded"])
+	}
+	if len(degraded) != 3 {
+		t.Fatalf("degraded len = %d, want 3", len(degraded))
+	}
+	wantStages := []string{"compare", "contributors", "owner_profile"}
+	wantReasons := []string{"rate reserve", "contributors o/r: stats timeout", "owner cap"}
+	for i := range wantStages {
+		if degraded[i]["stage"] != wantStages[i] || degraded[i]["reason"] != wantReasons[i] {
+			t.Fatalf("degraded[%d] = %+v, want stage=%s reason=%s", i, degraded[i], wantStages[i], wantReasons[i])
+		}
+	}
+}
+
+func TestForkToJSON_EmitsNetworkRank(t *testing.T) {
+	out := forkToJSON(forksops.Result{
+		Fork: forge.T1Data{ID: "o/r", Owner: "o", Name: "r"},
+		NetworkRank: &forksops.NetworkRank{
+			Position:   3,
+			Total:      147,
+			Percentile: 0.986,
+			Band:       forksops.RankBandTop5Pct,
+		},
+	})
+	rank, ok := out["networkRank"].(map[string]any)
+	if !ok {
+		t.Fatalf("networkRank missing or wrong type: %T", out["networkRank"])
+	}
+	if rank["position"] != 3 || rank["total"] != 147 || rank["percentile"] != 0.986 || rank["band"] != "top_5pct" {
+		t.Fatalf("networkRank = %+v", rank)
+	}
+}
+
+func TestForkToJSON_EmitsMomentum(t *testing.T) {
+	out := forkToJSON(forksops.Result{
+		Fork: forge.T1Data{ID: "o/r", Owner: "o", Name: "r"},
+		Momentum: forksops.MomentumInfo{
+			Status:           forksops.MomentumRising,
+			StarsDelta30d:    12,
+			SubForksDelta30d: 3,
+			ObservedDays:     30,
+		},
+	})
+	momentum, ok := out["momentum"].(map[string]any)
+	if !ok {
+		t.Fatalf("momentum missing or wrong type: %T", out["momentum"])
+	}
+	if momentum["status"] != "rising" || momentum["starsDelta30d"] != 12 || momentum["subForksDelta30d"] != 3 || momentum["observedDays"] != 30 {
+		t.Fatalf("momentum = %+v", momentum)
+	}
+}
+
 func TestSpnForksList_csv_emitsHeaderAndRows(t *testing.T) {
 	t.Setenv("SPOON_NO_CONFIG", "1")         // isolate from the host's spoon config
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // don't read the real embedder config
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	prev := providerFactory
 	defer func() { providerFactory = prev }()
 	providerFactory = func(_ context.Context, _, _, _ string) (forge.Forge, string, *agentio.Error) {
@@ -401,6 +524,7 @@ func TestSpnForksList_csv_emitsHeaderAndRows(t *testing.T) {
 func TestSpnForksList_csv_noNDJSONLeak(t *testing.T) {
 	t.Setenv("SPOON_NO_CONFIG", "1") // isolate from the host's spoon config
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	prev := providerFactory
 	defer func() { providerFactory = prev }()
 	providerFactory = func(_ context.Context, _, _, _ string) (forge.Forge, string, *agentio.Error) {
@@ -437,5 +561,178 @@ func TestSpnForksList_unknownEmbedderFlag_rejected(t *testing.T) {
 	e, _ := env["error"].(map[string]any)
 	if e == nil || e["code"] != "bad_input" {
 		t.Errorf("expected bad_input error, got: %s", stderr.String())
+	}
+}
+
+func TestSpnForksList_siblingSimModeConflict(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	var stdout, stderr bytes.Buffer
+	exit := runForksWith([]string{
+		"list", "up/stream",
+		"--sibling-sim-mode", "fork_intent",
+		"--no-sibling-sim",
+	}, &stdout, &stderr)
+	if exit != 2 {
+		t.Fatalf("exit=%d want 2\nstderr=%s", exit, stderr.String())
+	}
+	var env map[string]any
+	if err := json.Unmarshal(stderr.Bytes(), &env); err != nil {
+		t.Fatalf("stderr is not a JSON error envelope: %v\n%s", err, stderr.String())
+	}
+	e, _ := env["error"].(map[string]any)
+	if e == nil || e["code"] != "bad_input" {
+		t.Errorf("expected bad_input error, got: %s", stderr.String())
+	}
+	if msg, _ := e["message"].(string); !strings.Contains(msg, "conflicts with --no-sibling-sim") {
+		t.Errorf("unexpected message: %s", stderr.String())
+	}
+}
+
+func TestSpnForksList_topicLanesRequireTopicMode(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	var stdout, stderr bytes.Buffer
+	exit := runForksWith([]string{
+		"list", "up/stream",
+		"--topic-lanes", "stars,updated",
+	}, &stdout, &stderr)
+	if exit != 2 {
+		t.Fatalf("exit=%d want 2\nstderr=%s", exit, stderr.String())
+	}
+	var env map[string]any
+	if err := json.Unmarshal(stderr.Bytes(), &env); err != nil {
+		t.Fatalf("stderr is not a JSON error envelope: %v\n%s", err, stderr.String())
+	}
+	e, _ := env["error"].(map[string]any)
+	if e == nil || e["code"] != "bad_input" {
+		t.Errorf("expected bad_input error, got: %s", stderr.String())
+	}
+	if msg, _ := e["message"].(string); !strings.Contains(msg, "only apply to topic:NAME mode") {
+		t.Errorf("unexpected message: %s", stderr.String())
+	}
+}
+
+func TestForkToJSON_EmitsPriorScore(t *testing.T) {
+	// A prior match emits both fields.
+	out := forkToJSON(forksops.Result{
+		Fork:         forge.T1Data{ID: "o/r", Owner: "o", Name: "r"},
+		PriorScore:   1,
+		PriorReasons: []string{"path:internal/auth"},
+	})
+	if s, ok := out["priorScore"].(float64); !ok || s != 1 {
+		t.Fatalf("priorScore = %v (%T), want 1", out["priorScore"], out["priorScore"])
+	}
+	reasons, ok := out["priorReasons"].([]string)
+	if !ok || len(reasons) != 1 || reasons[0] != "path:internal/auth" {
+		t.Fatalf("priorReasons = %#v, want [path:internal/auth]", out["priorReasons"])
+	}
+
+	// A deny-only match scores 0 but keeps its reason, so it still emits.
+	deny := forkToJSON(forksops.Result{
+		Fork:         forge.T1Data{ID: "o/r", Owner: "o", Name: "r"},
+		PriorReasons: []string{"owner_deny:farmer"},
+	})
+	if s, ok := deny["priorScore"].(float64); !ok || s != 0 {
+		t.Errorf("deny-only priorScore should emit as 0, got %v", deny["priorScore"])
+	}
+	if _, ok := deny["priorReasons"]; !ok {
+		t.Errorf("deny-only priorReasons should be emitted")
+	}
+
+	// No priors ran → both fields omitted (omission = not computed).
+	bare := forkToJSON(forksops.Result{Fork: forge.T1Data{ID: "o/r", Owner: "o", Name: "r"}})
+	if _, ok := bare["priorScore"]; ok {
+		t.Errorf("priorScore should be omitted when no priors ran: %v", bare["priorScore"])
+	}
+	if _, ok := bare["priorReasons"]; ok {
+		t.Errorf("priorReasons should be omitted when no priors ran: %v", bare["priorReasons"])
+	}
+}
+
+func TestForkToJSON_EmitsProfile(t *testing.T) {
+	// A hidden/upstreamed result derives profile "hidden" with its reasons.
+	hidden := forkToJSON(forksops.Result{
+		Fork:       forge.T1Data{ID: "o/r", Owner: "o", Name: "r"},
+		Visibility: forksops.VisibilityDecision{Status: forksops.VisibilityHidden, Reasons: []string{"upstreamed"}},
+	})
+	if hidden["profile"] != "hidden" {
+		t.Fatalf("profile = %v, want hidden", hidden["profile"])
+	}
+	reasons, ok := hidden["profileReasons"].([]string)
+	if !ok || len(reasons) != 1 || reasons[0] != "upstreamed" {
+		t.Fatalf("profileReasons = %#v, want [upstreamed]", hidden["profileReasons"])
+	}
+
+	// A plain enriched fork is "standard" with no reasons.
+	plain := forkToJSON(forksops.Result{Fork: forge.T1Data{ID: "o/r", Owner: "o", Name: "r"}})
+	if plain["profile"] != "standard" {
+		t.Fatalf("profile = %v, want standard", plain["profile"])
+	}
+	if _, ok := plain["profileReasons"]; ok {
+		t.Errorf("profileReasons should be omitted for the standard floor: %v", plain["profileReasons"])
+	}
+}
+
+func TestSpnForksList_priorsFlag_rejectsMissingFile(t *testing.T) {
+	t.Setenv("SPOON_NO_CONFIG", "1")
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	var stdout, stderr bytes.Buffer
+	exit := runForksWith([]string{
+		"list", "o/r",
+		"--priors", t.TempDir() + "/does-not-exist.json",
+	}, &stdout, &stderr)
+	if exit != 2 {
+		t.Fatalf("exit=%d want 2\nstderr=%s", exit, stderr.String())
+	}
+	var env map[string]any
+	if err := json.Unmarshal(stderr.Bytes(), &env); err != nil {
+		t.Fatalf("stderr is not a JSON error envelope: %v\n%s", err, stderr.String())
+	}
+	e, _ := env["error"].(map[string]any)
+	if e == nil || e["code"] != "bad_input" {
+		t.Errorf("expected bad_input error, got: %s", stderr.String())
+	}
+}
+
+func TestSpnForksList_defaultOutputHasNoPriorFields(t *testing.T) {
+	t.Setenv("SPOON_NO_CONFIG", "1")
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	prev := providerFactory
+	defer func() { providerFactory = prev }()
+	providerFactory = func(_ context.Context, _, _, _ string) (forge.Forge, string, *agentio.Error) {
+		return &fakeForge{
+			parent: forge.ParentData{DefaultBranch: "main", PushedAt: time.Now()},
+			forks: []forge.T1Data{
+				{ID: "o/a", Owner: "o", Name: "a", PushedAt: time.Now()},
+				{ID: "o/b", Owner: "o", Name: "b", PushedAt: time.Now()},
+			},
+		}, "o/r", nil
+	}
+	var stdout, stderr bytes.Buffer
+	exit := runForksWith([]string{"list", "o/r", "--tier", "1", "--no-cluster"}, &stdout, &stderr)
+	if exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+	}
+	lines := strings.Split(strings.TrimSuffix(stdout.String(), "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 NDJSON lines, got %d:\n%s", len(lines), stdout.String())
+	}
+	for _, line := range lines {
+		var obj map[string]any
+		if err := json.Unmarshal([]byte(line), &obj); err != nil {
+			t.Fatalf("invalid JSON line %q: %v", line, err)
+		}
+		if _, ok := obj["priorScore"]; ok {
+			t.Errorf("default output must not contain priorScore: %s", line)
+		}
+		if _, ok := obj["priorReasons"]; ok {
+			t.Errorf("default output must not contain priorReasons: %s", line)
+		}
+		// profile is the one net-new always-on field and must be present.
+		if _, ok := obj["profile"]; !ok {
+			t.Errorf("every record should carry a profile: %s", line)
+		}
 	}
 }
