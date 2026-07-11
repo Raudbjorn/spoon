@@ -49,6 +49,6 @@ func (p *Provider) Contributors(ctx context.Context, fork forge.T1Data) (forge.T
 
 	return forge.T3Data{
 		Contributors:   contributors,
-		CommitSpanDays: 0, // set by the T3 worker from T2.Commits timestamps
+		CommitSpanDays: 0, // derived from T2.Commits in forksops.rescore()
 	}, nil
 }

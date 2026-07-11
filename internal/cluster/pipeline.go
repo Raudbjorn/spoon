@@ -26,11 +26,12 @@ import (
 // the `spoon --json/--csv` and TUI paths) and internal/forksops (used by
 // `spn forks list`).
 type PipelineOptions struct {
-	Enabled        bool // false → skip clustering entirely
-	TopN           int  // max forks to embed
-	Epsilon        float64
-	MinClusterSize int
-	Refresh        bool // true → skip LoadCache, force a fresh clustering pass
+	Enabled           bool // false → skip clustering entirely
+	TopN              int  // max forks to embed
+	Epsilon           float64
+	MinClusterSize    int
+	MinimumCandidates int  // default 10 if zero
+	Refresh           bool // true → skip LoadCache, force a fresh clustering pass
 
 	// Embedder, when non-nil, replaces the built-in lexical embedder. Used
 	// by the openvino backend (constructed in the CLI layer, which owns its
@@ -163,6 +164,9 @@ func RunPipeline(ctx context.Context, opts PipelineOptions, inputs PipelineInput
 	if !opts.Enabled {
 		return &SkipReason{Code: "disabled", Message: "clustering disabled"}, nil
 	}
+	if opts.MinimumCandidates == 0 {
+		opts.MinimumCandidates = 10
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -182,12 +186,52 @@ func RunPipeline(ctx context.Context, opts PipelineOptions, inputs PipelineInput
 		siblingMode = SiblingSimModeUpstreamReadme
 	}
 
-	// 0. Cache fast-path. Try to satisfy this pipeline from a previous run's
+	// 0. No embedder bootstrap is needed: both backends run in-process and
+	//    were constructed before the pipeline started.
+	var embedder embed.Embedder = embed.LocalEmbedder{}
+	if opts.Embedder != nil {
+		embedder = opts.Embedder
+	}
+
+	// 1. Gate top-N forks for embedding before consulting the cache. Tiny
+	//    candidate sets do not carry enough evidence for meaningful novelty.
+	candidates := SelectClusterCandidates(inputs.Forks, opts.TopN)
+	if len(candidates) == 0 {
+		fmt.Fprintln(logger, "[cluster] no eligible forks after filtering")
+		return &SkipReason{Code: "no_eligible_forks", Message: "no eligible forks"}, nil
+	}
+	if len(candidates) < opts.MinimumCandidates {
+		fmt.Fprintf(logger, "[cluster] insufficient candidates (%d < %d)\n", len(candidates), opts.MinimumCandidates)
+		return &SkipReason{
+			Code:    "insufficient_candidates",
+			Message: fmt.Sprintf("only %d eligible forks (minimum %d)", len(candidates), opts.MinimumCandidates),
+		}, nil
+	}
+
+	cfg := Config{
+		EmbedderID:        modelName,
+		PreprocessID:      "v1",
+		Weights:           [4]float32{0.3, 0.3, 0.2, 0.2},
+		WeakSignalsID:     "v1",
+		Epsilon:           opts.Epsilon,
+		MinClusterSize:    opts.MinClusterSize,
+		TopN:              opts.TopN,
+		MinimumCandidates: opts.MinimumCandidates,
+	}
+	if err := cfg.Validate(); err != nil {
+		return &SkipReason{
+			Code:    "invalid_config",
+			Message: err.Error(),
+		}, nil
+	}
+	fingerprint := cfg.Fingerprint()
+
+	// 2. Cache fast-path. Try to satisfy this pipeline from a previous run's
 	//    saved clusters before doing any expensive work.
 	skipClusterCache := opts.SiblingSimEnabled && siblingMode == SiblingSimModeForkIntent
 	if !opts.Refresh && !skipClusterCache {
 		if cached, ok := LoadCache(provider, inputs.UpstreamOwner, inputs.UpstreamRepo,
-			"", modelName); ok {
+			"", modelName, fingerprint); ok {
 			applyAssignmentsToForks(cached.Clusters, cached.Assignments, inputs.Forks)
 			fmt.Fprintf(logger, "[cluster] cache hit: %d clusters, %d assignments (skipping embed)\n",
 				len(cached.Clusters), len(cached.Assignments))
@@ -195,26 +239,13 @@ func RunPipeline(ctx context.Context, opts PipelineOptions, inputs PipelineInput
 		}
 	}
 
-	// 1. No embedder bootstrap is needed: both backends run in-process and
-	//    were constructed before the pipeline started.
-	var embedder embed.Embedder = embed.LocalEmbedder{}
-	if opts.Embedder != nil {
-		embedder = opts.Embedder
-	}
-
-	// 2. Compute (or load) centrality (directory proxy or MDG, per opts).
+	// 3. Compute (or load) centrality (directory proxy or MDG, per opts).
 	c, cOK, err := loadOrComputeCentrality(ctx, opts, inputs, logger)
 	if err != nil {
 		// StrictMDG: surface MDG failure as a non-fatal skip so callers
 		// can render the policy_violation envelope.
 		fmt.Fprintf(logger, "[cluster] strict mode: %v\n", err)
 		return &SkipReason{Code: "mdg_unavailable", Message: err.Error()}, nil
-	}
-	// 3. Gate top-N forks for embedding.
-	candidates := SelectClusterCandidates(inputs.Forks, opts.TopN)
-	if len(candidates) == 0 {
-		fmt.Fprintln(logger, "[cluster] no eligible forks after filtering")
-		return &SkipReason{Code: "no_eligible_forks", Message: "no eligible forks"}, nil
 	}
 
 	// 4. Build per-fork ForkFeatures (with optional README fetch).
@@ -400,18 +431,19 @@ func RunPipeline(ctx context.Context, opts PipelineOptions, inputs PipelineInput
 	applyAssignmentsToForks(clusters, assignments, candidates)
 	// 10. Persist a cache entry. Failures are logged but non-fatal.
 	if err := SaveCache(ClusterCache{
-		SchemaVersion:    SchemaVersion,
-		ComputedAt:       time.Now().UTC(),
-		EmbedderModel:    modelName,
-		EmbedderEndpoint: "",
-		Provider:         provider,
-		Owner:            inputs.UpstreamOwner,
-		Repo:             inputs.UpstreamRepo,
-		Epsilon:          opts.Epsilon,
-		MinClusterSize:   opts.MinClusterSize,
-		TopM:             opts.TopN,
-		Clusters:         clusters,
-		Assignments:      assignments,
+		SchemaVersion:     SchemaVersion,
+		ComputedAt:        time.Now().UTC(),
+		EmbedderModel:     modelName,
+		EmbedderEndpoint:  "",
+		ConfigFingerprint: fingerprint,
+		Provider:          provider,
+		Owner:             inputs.UpstreamOwner,
+		Repo:              inputs.UpstreamRepo,
+		Epsilon:           opts.Epsilon,
+		MinClusterSize:    opts.MinClusterSize,
+		TopM:              opts.TopN,
+		Clusters:          clusters,
+		Assignments:       assignments,
 	}); err != nil {
 		fmt.Fprintf(logger, "[cluster] cache save failed: %v (non-fatal)\n", err)
 	}

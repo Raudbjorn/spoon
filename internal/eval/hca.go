@@ -1,10 +1,9 @@
-// Package eval — HCA / ARI / ranking metrics.
+// Package eval implements binary novelty, ARI, and ranking metrics.
 //
-// The metrics here are intentionally small and self-contained. They
-// take a flat list of (judgment, clusterID) pairs and a list of
-// (judgment, novelty) pairs for ranking, and return a Report. No
-// network, no I/O, no time, no concurrency — easy to unit test and
-// to reuse from any caller.
+// The metrics here are intentionally small and self-contained. They take a
+// flat list of judgments and scored cluster assignments and return a Report.
+// There is no network, I/O, time, or concurrency, which keeps the computation
+// deterministic and easy to reuse.
 package eval
 
 import (
@@ -61,32 +60,34 @@ func Compute(upstream string, rows []ScoredFork, judgments Judgments) Report {
 		return report
 	}
 
-	// HCA: harmonic mean of AccSeen and AccNovel. The "seen" set is
-	// every fork labeled established or mixed; the "novel" set is
-	// every fork labeled novel. We treat the noise cluster as the
-	// "novel" bin and any non-noise cluster as the "seen" bin. The
-	// definition is ranker-adapted from the paper's harmonic-mean
-	// clustering accuracy: a perfect clusterer puts all seen forks
-	// in non-noise clusters and all novel forks in noise.
-	var seenCorrect, seenTotal, novelCorrect, novelTotal int
+	// Binary novelty classification: positive means labeled novel, and a
+	// noise or empty cluster assignment is the positive prediction.
+	var tp, fp, fn, tn int
 	for _, r := range labeled {
 		j := jtmtByID[r.ID]
 		isNovel := j.Novelty == NoveltyNovel
+		isNoise := r.ClusterID == "noise" || r.ClusterID == ""
+
 		if isNovel {
-			novelTotal++
-			if r.ClusterID == "noise" {
-				novelCorrect++
+			if isNoise {
+				tp++
+			} else {
+				fn++
 			}
+			continue
+		}
+		if isNoise {
+			fp++
 		} else {
-			seenTotal++
-			if r.ClusterID != "noise" && r.ClusterID != "" {
-				seenCorrect++
-			}
+			tn++
 		}
 	}
-	report.AccSeen = safeRatio(seenCorrect, seenTotal)
-	report.AccNovel = safeRatio(novelCorrect, novelTotal)
-	report.HCA = harmonicMean(report.AccSeen, report.AccNovel)
+
+	report.NoveltyPrecision = safeRatio(tp, tp+fp)
+	report.NoveltyRecall = safeRatio(tp, tp+fn)
+	report.NoveltyF1 = harmonicMean(report.NoveltyPrecision, report.NoveltyRecall)
+	specificity := safeRatio(tn, tn+fp)
+	report.BalancedAccuracy = (report.NoveltyRecall + specificity) / 2
 
 	// ARI: adjusted Rand index between cluster labels (group by
 	// ClusterID) and label pseudo-clusters (group by Novelty).

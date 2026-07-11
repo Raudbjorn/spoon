@@ -357,10 +357,13 @@ func TestStream_clusterPipelineEnabled(t *testing.T) {
 
 	now := time.Now()
 	parentPushed := now.Add(-7 * 24 * time.Hour)
-	ids := []string{"o/a1", "o/a2", "o/a3", "o/z1", "o/z2", "o/z3"}
+	ids := []string{
+		"o/a1", "o/a2", "o/a3", "o/a4", "o/a5",
+		"o/z1", "o/z2", "o/z3", "o/z4", "o/z5",
+	}
 	paths := map[string]string{
-		"o/a1": "Alpha/x.go", "o/a2": "Alpha/y.go", "o/a3": "Alpha/z.go",
-		"o/z1": "Zeta/p.go", "o/z2": "Zeta/q.go", "o/z3": "Zeta/r.go",
+		"o/a1": "Alpha/a.go", "o/a2": "Alpha/b.go", "o/a3": "Alpha/c.go", "o/a4": "Alpha/d.go", "o/a5": "Alpha/e.go",
+		"o/z1": "Zeta/a.go", "o/z2": "Zeta/b.go", "o/z3": "Zeta/c.go", "o/z4": "Zeta/d.go", "o/z5": "Zeta/e.go",
 	}
 	var forks []forge.T1Data
 	t2map := map[string]forge.T2Data{}
@@ -447,18 +450,23 @@ func TestStream_clusterBuiltinEmbedder_runsWithoutSkip(t *testing.T) {
 	// embedder and never surface a ClusterSkip for embedder availability.
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	now := time.Now()
+	forks := make([]forge.T1Data, 10)
+	t2 := make(map[string]forge.T2Data, len(forks))
+	for i := range forks {
+		name := fmt.Sprintf("fork-%d", i)
+		id := "o/" + name
+		forks[i] = forge.T1Data{
+			ID: id, Owner: "o", Name: name, PushedAt: now, DefaultBranch: "main",
+		}
+		t2[id] = forge.T2Data{
+			AheadCount: 1,
+			Diffs:      []forge.FileDiff{{Path: fmt.Sprintf("auth/%d.go", i), Additions: 1}},
+		}
+	}
 	ff := &fakeForge{
 		parent: forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
-		forks: []forge.T1Data{
-			{ID: "o/a", Owner: "o", Name: "a", PushedAt: now, DefaultBranch: "main"},
-			{ID: "o/b", Owner: "o", Name: "b", PushedAt: now, DefaultBranch: "main"},
-			{ID: "o/c", Owner: "o", Name: "c", PushedAt: now, DefaultBranch: "main"},
-		},
-		t2: map[string]forge.T2Data{
-			"o/a": {AheadCount: 1, Diffs: []forge.FileDiff{{Path: "auth/a.go", Additions: 1}}},
-			"o/b": {AheadCount: 1, Diffs: []forge.FileDiff{{Path: "auth/b.go", Additions: 1}}},
-			"o/c": {AheadCount: 1, Diffs: []forge.FileDiff{{Path: "auth/c.go", Additions: 1}}},
-		},
+		forks:  forks,
+		t2:     t2,
 	}
 	opts := Options{Tier: 2}
 	opts.Cluster = ClusterOptions{
@@ -595,6 +603,55 @@ func TestStream_contributorsTimeout_gracefulSkip(t *testing.T) {
 	// The fork's T2 data must survive — it was not dropped.
 	if r.T2 == nil || r.T2.AheadCount != 2 {
 		t.Errorf("expected T2 preserved, got %+v", r.T2)
+	}
+}
+
+func TestRescore_SpanFromT2(t *testing.T) {
+	now := time.Now()
+	ff := &fakeForge{
+		parent: forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-60 * 24 * time.Hour)},
+		forks: []forge.T1Data{
+			{ID: "o/a", Owner: "o", Name: "a", PushedAt: now, DefaultBranch: "main"},
+		},
+		t2: map[string]forge.T2Data{
+			"o/a": {
+				AheadCount: 2,
+				MNA:        100,
+				Commits: []forge.AheadCommit{
+					{SHA: "old", Timestamp: now.Add(-30 * 24 * time.Hour)},
+					{SHA: "new", Timestamp: now},
+				},
+			},
+		},
+		contribErrors: map[string]error{
+			"o/a": fmt.Errorf("contributors o/a: %w", github.ErrContributorsTimeout),
+		},
+	}
+
+	ch, err := Stream(context.Background(), ff, "o", "r", Options{Tier: 3, TopN: 1})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	r := <-ch
+	if r.Err != nil {
+		t.Fatalf("per-fork err: %+v", r.Err)
+	}
+	if r.T3 != nil {
+		t.Fatalf("expected contributor enrichment to be skipped, got T3=%+v", r.T3)
+	}
+
+	var span heat.Component
+	for _, component := range r.Heat.Components {
+		if component.Name == "span" {
+			span = component
+			break
+		}
+	}
+	if span.Raw != 30 {
+		t.Errorf("span raw value = %.1f, want 30", span.Raw)
+	}
+	if span.Points <= 0 {
+		t.Errorf("span points = %.1f, want non-zero", span.Points)
 	}
 }
 

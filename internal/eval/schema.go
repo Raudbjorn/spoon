@@ -1,14 +1,14 @@
-// Package eval computes clustering quality metrics (HCA, ARI, NDCG,
-// ROC-AUC) against a hand-labeled judgment file. It is the evaluation
-// surface for the GCD-for-code line of work: every change to the
-// cluster pipeline or the empty-fork novelty demotion should be checked
-// against the same judgment file so that regressions surface as
-// measurable drops in HCA or ARI, not as gut-feel diffs.
+// Package eval computes binary novelty, ARI, NDCG, and ROC-AUC metrics
+// against a hand-labeled judgment file. It is the evaluation surface for
+// structural-intelligence changes: every change to the cluster pipeline or
+// empty-fork novelty demotion should be checked against the same judgment
+// file so regressions surface as measurable metric changes rather than
+// gut-feel diffs.
 //
-// The package is intentionally side-effect-free: callers load the
-// judgment file, run the fork pipeline, hand the resulting HeatResult
-// rows to Compute, and emit the Report as JSON. The spn CLI verb in
-// cmd/spn/eval.go is a thin wrapper over this package.
+// The package is intentionally side-effect-free: callers load the judgment
+// file, run the fork pipeline, hand the resulting HeatResult rows to Compute,
+// and emit the Report as JSON. The spn CLI verb in cmd/spn/eval.go is a thin
+// wrapper over this package.
 package eval
 
 // NoveltyLabel is the hand-assigned novelty bucket for a single fork.
@@ -32,9 +32,8 @@ const (
 
 	// NoveltyMixed means the judgment is genuinely ambiguous — the
 	// fork both carries already-upstreamed work AND introduces
-	// something new. Treated as "seen" for HCA bookkeeping
-	// (since the cluster pipeline is unlikely to surface it as
-	// noise unless the novel portion dominates).
+	// something new. It is treated as the negative class for binary
+	// novelty metrics because the novel portion may not dominate.
 	NoveltyMixed NoveltyLabel = "mixed"
 )
 
@@ -58,34 +57,27 @@ type Judgments struct {
 // (no nested structs) so consumers can pipe them straight into a
 // pandas DataFrame or a SQL table without further parsing.
 //
-//   - Upstream: the owner/repo this report was generated against.
-//   - RankingNDCG / RankingROCAUC: standard ranking-quality metrics
-//     computed against the labeled set; useful for tracking drift in
-//     the ranker over time even when cluster assignment is unchanged.
-//   - HCA: the headline metric — harmonic mean of AccSeen and
-//     AccNovel, both in [0, 1]. 1.0 means every labeled fork was
-//     ranked correctly. 0.0 means total miss.
-//   - AccSeen / AccNovel: the two components of HCA. AccSeen is the
-//     fraction of "established" / "mixed" forks placed in their
-//     assigned cluster (or any non-noise cluster) by the pipeline.
-//     AccNovel is the fraction of "novel" forks placed in the noise
-//     cluster. A pipeline that collapses everyone to noise will
-//     score AccNovel=1.0 / AccSeen=0.0 / HCA=0.0 — a clear signal
-//     that it is over-segmenting.
-//   - ARI: Adjusted Rand Index between the cluster labels and a
-//     "label" pseudo-cluster derived from the novelty judgments.
-//     Adapted from the standard ARI formula for K vs K partitionings;
-//     1.0 is perfect agreement, 0.0 is chance.
-//   - NoveltyDist: histogram of NoveltyScore values in
-//     [0, 0.1), [0.1, 0.2), ..., [0.9, 1.0]. Useful for
-//     distribution-shift detection across runs.
+// Binary novelty treats a "novel" judgment as the positive class and
+// "established" or "mixed" as the negative class. A noise or empty cluster
+// assignment predicts novel; a non-noise assignment predicts non-novel.
+// These are binary classification metrics, not canonical globally matched
+// clustering accuracy (HCA).
+//
+//   - NoveltyPrecision: of forks predicted novel, the fraction labeled novel.
+//   - NoveltyRecall: of forks labeled novel, the fraction predicted novel.
+//   - NoveltyF1: harmonic mean of novelty precision and recall.
+//   - BalancedAccuracy: mean of novelty recall and true-negative rate.
+//   - ARI: Adjusted Rand Index between cluster labels and novelty labels.
+//   - RankingNDCG / RankingROCAUC: ranking quality against novelty labels.
+//   - NoveltyDist: histogram of NoveltyScore values in 0.1-wide buckets.
 type Report struct {
-	Upstream      string         `json:"upstream"`
-	RankingNDCG   float64        `json:"rankingNDCG"`
-	RankingROCAUC float64        `json:"rankingROCAUC"`
-	HCA           float64        `json:"hca"`
-	AccSeen       float64        `json:"accSeen"`
-	AccNovel      float64        `json:"accNovel"`
-	ARI           float64        `json:"ari"`
-	NoveltyDist   map[string]int `json:"noveltyDist"`
+	Upstream         string         `json:"upstream"`
+	RankingNDCG      float64        `json:"rankingNDCG"`
+	RankingROCAUC    float64        `json:"rankingROCAUC"`
+	NoveltyPrecision float64        `json:"noveltyPrecision"`
+	NoveltyRecall    float64        `json:"noveltyRecall"`
+	NoveltyF1        float64        `json:"noveltyF1"`
+	BalancedAccuracy float64        `json:"balancedAccuracy"`
+	ARI              float64        `json:"ari"`
+	NoveltyDist      map[string]int `json:"noveltyDist"`
 }

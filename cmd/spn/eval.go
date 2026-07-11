@@ -2,7 +2,7 @@
 //
 // Loads a hand-labeled judgment file, runs the same fork pipeline the
 // user would run for `spn forks list`, joins the resulting HeatResult
-// rows to the judgments by T1Data.ID, computes the HCA / ARI /
+// rows to the judgments by T1Data.ID, computes binary novelty / ARI /
 // ranking metrics in internal/eval, and emits a single JSON Report
 // to stdout.
 package main
@@ -176,7 +176,7 @@ func runEvalWith(args []string, stdout, stderr io.Writer) int {
 	//
 	// ClusterSkip and T3Skip warnings are surfaced on stderr via the
 	// same emitClusterWarning / emitStageSkipWarning helpers used by
-	// `spn forks list`. Without this, an HCA-of-0 report looks like
+	// `spn forks list`. Without this, an all-zero novelty report looks like
 	// "the eval is broken" when the real cause is "the cluster
 	// pipeline was skipped because the embedder failed". The emit
 	// helpers intentionally discard write errors (stderr is the
