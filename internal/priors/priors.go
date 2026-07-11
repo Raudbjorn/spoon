@@ -42,8 +42,9 @@ type Match struct {
 	Reasons []string // stable, sorted; e.g. "path:internal/auth", "keyword:oauth", "language:go", "owner_allow:trusted", "owner_deny:farmer"
 }
 
-// Load reads and validates a priors JSON file. A missing file returns a
-// wrapped os.ErrNotExist (test with errors.Is), mirroring config.Load.
+// Load reads and validates a priors JSON file. A missing file returns the
+// os.ReadFile error unchanged, which satisfies errors.Is(err, os.ErrNotExist)
+// (callers treat that as "no spec"), mirroring config.Load.
 // Languages and owner allow/deny lists are lowercased and de-duplicated;
 // blank entries are trimmed from every slice. An empty spec (no paths,
 // keywords, languages, or owners after trimming) is a validation error.

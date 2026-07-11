@@ -380,7 +380,7 @@ func RunPipeline(ctx context.Context, opts PipelineOptions, inputs PipelineInput
 			sims, n, serr := SearchForkIntentSiblings(ctx, opts.SiblingSearcher, inputs.Upstream, forkInputs, embedder, inputs.ReadmeFetcher, 50)
 			if serr != nil {
 				fmt.Fprintf(logger, "[sibling] fork-intent search failed: %v\n", serr)
-			} else {
+			} else if sims != nil {
 				assigned := 0
 				for i := range candidates {
 					sim := sims[candidates[i].T1.ID]

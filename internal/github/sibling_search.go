@@ -167,7 +167,7 @@ func (s *GHSiblingSearcher) SearchForkIntentSiblings(
 ) (map[string]float64, int, error) {
 	candidateReadmes, candidateCount, err := s.siblingReadmes(ctx, parent, readmeFetcher, candidateLimit)
 	if err != nil || candidateCount == 0 {
-		return map[string]float64{}, candidateCount, err
+		return nil, candidateCount, err
 	}
 	forkIDs := make([]string, 0, len(forks))
 	texts := make([]string, 0, len(forks)+len(candidateReadmes))
@@ -180,7 +180,7 @@ func (s *GHSiblingSearcher) SearchForkIntentSiblings(
 		texts = append(texts, text)
 	}
 	if len(forkIDs) == 0 {
-		return map[string]float64{}, candidateCount, nil
+		return nil, candidateCount, nil
 	}
 	texts = append(texts, candidateReadmes...)
 	vecs, err := emb.Embed(ctx, texts)

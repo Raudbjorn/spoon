@@ -192,12 +192,12 @@ func ResolveWithOptions(ctx context.Context, provider forge.Forge, topic string,
 	var cands []LaneCandidate
 	candidateCount := 0
 	for _, lane := range opts.Lanes {
-		repos, err := searcher.SearchTopicReposByLane(ctx, topic, lane, laneBudget)
+		laneRepos, err := searcher.SearchTopicReposByLane(ctx, topic, lane, laneBudget)
 		if err != nil {
 			return nil, err
 		}
-		candidateCount += len(repos)
-		for _, repo := range repos {
+		candidateCount += len(laneRepos)
+		for _, repo := range laneRepos {
 			cands = append(cands, LaneCandidate{Repo: repo, Lane: lane})
 		}
 	}
