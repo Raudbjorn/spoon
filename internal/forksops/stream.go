@@ -584,8 +584,13 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 						}
 					}
 					r.Heat = rescore(scorer, int64(i), s.fork, parent, now, r.T2, r.T3)
-					r.Visibility = deriveVisibility(r)
-					r.Degraded = collectDegradedStages(r)
+					if !batchMode {
+						// In batch mode these are derived in the tail, after the
+						// cluster pass sets final Heat and any ClusterSkip; deriving
+						// here is redundant and runs on soon-to-be-overwritten Heat.
+						r.Visibility = deriveVisibility(r)
+						r.Degraded = collectDegradedStages(r)
+					}
 					if batchMode {
 						collectedMu.Lock()
 						collected = append(collected, r)
