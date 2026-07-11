@@ -10,7 +10,7 @@ import (
 
 // SchemaVersion is the current on-disk schema version. Bump when the
 // ClusterCache shape changes in a way that invalidates older files.
-const SchemaVersion = 2
+const SchemaVersion = 3
 
 // cacheTTL is the maximum age of a cached cluster result before it is
 // considered stale.
@@ -19,18 +19,19 @@ const cacheTTL = 24 * time.Hour
 // ClusterCache is the serialized output of a clustering pass for a single
 // upstream repository. Stored as JSON.
 type ClusterCache struct {
-	SchemaVersion    int          `json:"schemaVersion"`
-	ComputedAt       time.Time    `json:"computedAt"`
-	EmbedderModel    string       `json:"embedderModel"`
-	EmbedderEndpoint string       `json:"embedderEndpoint"`
-	Provider         string       `json:"provider"`
-	Owner            string       `json:"owner"`
-	Repo             string       `json:"repo"`
-	Epsilon          float64      `json:"epsilon"`
-	MinClusterSize   int          `json:"minClusterSize"`
-	TopM             int          `json:"topM"`
-	Clusters         []Cluster    `json:"clusters"`
-	Assignments      []Assignment `json:"assignments"`
+	SchemaVersion     int          `json:"schemaVersion"`
+	ComputedAt        time.Time    `json:"computedAt"`
+	EmbedderModel     string       `json:"embedderModel"`
+	EmbedderEndpoint  string       `json:"embedderEndpoint"`
+	ConfigFingerprint string       `json:"configFingerprint"`
+	Provider          string       `json:"provider"`
+	Owner             string       `json:"owner"`
+	Repo              string       `json:"repo"`
+	Epsilon           float64      `json:"epsilon"`
+	MinClusterSize    int          `json:"minClusterSize"`
+	TopM              int          `json:"topM"`
+	Clusters          []Cluster    `json:"clusters"`
+	Assignments       []Assignment `json:"assignments"`
 }
 
 // CachePath returns the canonical cache location for a cluster result:
@@ -63,12 +64,13 @@ func CachePath(provider, owner, repo string) string {
 //   - file exists and parses
 //   - ComputedAt < 24h ago
 //   - SchemaVersion matches SchemaVersion
+//   - ConfigFingerprint matches the passed fingerprint
 //   - EmbedderModel matches the passed model (case-insensitive match on the
 //     base name; an empty passed model matches anything)
 //   - EmbedderEndpoint matches the passed endpoint (or either is empty)
 //
 // Otherwise returns (zero, false).
-func LoadCache(provider, owner, repo, endpoint, model string) (ClusterCache, bool) {
+func LoadCache(provider, owner, repo, endpoint, model, configFingerprint string) (ClusterCache, bool) {
 	path := CachePath(provider, owner, repo)
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -79,6 +81,9 @@ func LoadCache(provider, owner, repo, endpoint, model string) (ClusterCache, boo
 		return ClusterCache{}, false
 	}
 	if c.SchemaVersion != SchemaVersion {
+		return ClusterCache{}, false
+	}
+	if c.ConfigFingerprint != configFingerprint {
 		return ClusterCache{}, false
 	}
 	if c.ComputedAt.IsZero() {

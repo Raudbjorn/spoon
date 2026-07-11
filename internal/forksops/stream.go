@@ -759,6 +759,7 @@ func runForksClusterPipeline(
 		TopN:              opts.TopN,
 		Epsilon:           opts.Epsilon,
 		MinClusterSize:    opts.MinClusterSize,
+		MinimumCandidates: 10,
 		Refresh:           opts.Refresh,
 		CentralityBackend: opts.CentralityBackend,
 		CentralityHeadSHA: parent.HeadSHA,
@@ -862,9 +863,7 @@ func rescore(scorer *heat.Scorer, forkID int64, f forge.T1Data, parent forge.Par
 		}
 	}
 	if t3 != nil {
-		input.T3 = &heat.Tier3ParamsV2{
-			CommitSpanDays: float64(t3.CommitSpanDays),
-		}
+		input.T3 = &heat.Tier3ParamsV2{}
 	}
 	// Wire v2 lone wolf when we have commits to analyze.
 	if t2 != nil && len(t2.Commits) > 0 {
@@ -873,6 +872,7 @@ func rescore(scorer *heat.Scorer, forkID int64, f forge.T1Data, parent forge.Par
 			input.T3 = &heat.Tier3ParamsV2{}
 		}
 		input.T3.LoneWolf = heat.DetectLoneWolfV2(lw)
+		input.T3.CommitSpanDays = float64(forge.CommitSpanDays(t2.Commits))
 	}
 	result := scorer.ScoreRaw(input)
 	// Propagate the lone wolf result to the top-level HeatResult field so

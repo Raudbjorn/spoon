@@ -16,8 +16,8 @@ const maxContribCommits = 100
 // so contributors are derived from the fork's recent commit list: unique authors
 // keyed by login (falling back to email), with per-author commit counts. The
 // additions/deletions fields are left zero — Gitea's commit list doesn't carry
-// per-author line stats, and CommitSpanDays is filled by the worker from
-// T2.Commits.
+// per-author line stats, and CommitSpanDays is derived from T2.Commits in
+// forksops.rescore().
 func (p *Provider) Contributors(ctx context.Context, fork forge.T1Data) (forge.T3Data, error) {
 	owner, repo := splitFull(fork.ID)
 	branch := fork.DefaultBranch

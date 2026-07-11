@@ -49,7 +49,7 @@ func TestClusterCacheRoundTrip(t *testing.T) {
 	}
 
 	got, ok := LoadCache("github", "acme", "widget",
-		original.EmbedderEndpoint, original.EmbedderModel)
+		original.EmbedderEndpoint, original.EmbedderModel, "")
 	if !ok {
 		t.Fatal("expected cache hit, got miss")
 	}
@@ -83,7 +83,7 @@ func TestLoadCache_Miss(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", tmp)
 	t.Setenv("HOME", tmp)
 
-	c, ok := LoadCache("github", "nothing", "here", "ep", "model")
+	c, ok := LoadCache("github", "nothing", "here", "ep", "model", "")
 	if ok {
 		t.Errorf("expected miss, got hit: %+v", c)
 	}
@@ -99,7 +99,7 @@ func TestLoadCache_Stale(t *testing.T) {
 	if err := SaveCache(c); err != nil {
 		t.Fatalf("SaveCache: %v", err)
 	}
-	if _, ok := LoadCache("github", "acme", "widget", c.EmbedderEndpoint, c.EmbedderModel); ok {
+	if _, ok := LoadCache("github", "acme", "widget", c.EmbedderEndpoint, c.EmbedderModel, ""); ok {
 		t.Errorf("expected stale miss, got hit")
 	}
 }
@@ -114,7 +114,7 @@ func TestLoadCache_ModelMismatch(t *testing.T) {
 	if err := SaveCache(c); err != nil {
 		t.Fatalf("SaveCache: %v", err)
 	}
-	if _, ok := LoadCache("github", "acme", "widget", c.EmbedderEndpoint, "nomic-embed-text"); ok {
+	if _, ok := LoadCache("github", "acme", "widget", c.EmbedderEndpoint, "nomic-embed-text", ""); ok {
 		t.Errorf("expected model-mismatch miss, got hit")
 	}
 }
@@ -129,7 +129,7 @@ func TestLoadCache_ModelEmptyMatch(t *testing.T) {
 	if err := SaveCache(c); err != nil {
 		t.Fatalf("SaveCache: %v", err)
 	}
-	if _, ok := LoadCache("github", "acme", "widget", c.EmbedderEndpoint, ""); !ok {
+	if _, ok := LoadCache("github", "acme", "widget", c.EmbedderEndpoint, "", ""); !ok {
 		t.Errorf("expected hit when wanted model is empty")
 	}
 }
@@ -144,7 +144,7 @@ func TestLoadCache_EndpointMismatch(t *testing.T) {
 	if err := SaveCache(c); err != nil {
 		t.Fatalf("SaveCache: %v", err)
 	}
-	if _, ok := LoadCache("github", "acme", "widget", "B", c.EmbedderModel); ok {
+	if _, ok := LoadCache("github", "acme", "widget", "B", c.EmbedderModel, ""); ok {
 		t.Errorf("expected endpoint-mismatch miss, got hit")
 	}
 }
@@ -159,7 +159,7 @@ func TestLoadCache_EndpointEmptyMatch(t *testing.T) {
 	if err := SaveCache(c); err != nil {
 		t.Fatalf("SaveCache: %v", err)
 	}
-	if _, ok := LoadCache("github", "acme", "widget", "", c.EmbedderModel); !ok {
+	if _, ok := LoadCache("github", "acme", "widget", "", c.EmbedderModel, ""); !ok {
 		t.Errorf("expected hit when wanted endpoint is empty")
 	}
 }
@@ -184,8 +184,26 @@ func TestLoadCache_SchemaMismatch(t *testing.T) {
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	if _, ok := LoadCache(c.Provider, c.Owner, c.Repo, c.EmbedderEndpoint, c.EmbedderModel); ok {
+	if _, ok := LoadCache(c.Provider, c.Owner, c.Repo, c.EmbedderEndpoint, c.EmbedderModel, ""); ok {
 		t.Errorf("expected schema-mismatch miss, got hit")
+	}
+}
+
+func TestLoadCache_ConfigMismatch(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", tmp)
+	t.Setenv("HOME", tmp)
+
+	c := newFixtureCache()
+	c.ConfigFingerprint = "abc123"
+	if err := SaveCache(c); err != nil {
+		t.Fatalf("SaveCache: %v", err)
+	}
+	if _, ok := LoadCache("github", "acme", "widget", c.EmbedderEndpoint, c.EmbedderModel, "xyz789"); ok {
+		t.Error("expected config-fingerprint mismatch, got hit")
+	}
+	if _, ok := LoadCache("github", "acme", "widget", c.EmbedderEndpoint, c.EmbedderModel, "abc123"); !ok {
+		t.Error("expected config-fingerprint match, got miss")
 	}
 }
 

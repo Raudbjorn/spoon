@@ -3,6 +3,7 @@ package cluster
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -93,11 +94,12 @@ func TestPipeline_ClustersAndHeuristicLabels(t *testing.T) {
 	}
 
 	opts := PipelineOptions{
-		Enabled:        true,
-		TopN:           10,
-		Epsilon:        0.6,
-		MinClusterSize: 3,
-		Embedder:       pipelineStubEmbedder{},
+		Enabled:           true,
+		MinimumCandidates: 1,
+		TopN:              10,
+		Epsilon:           0.6,
+		MinClusterSize:    3,
+		Embedder:          pipelineStubEmbedder{},
 	}
 	inputs := PipelineInputs{
 		Provider:      "github",
@@ -146,10 +148,11 @@ func TestPipeline_BuiltinEmbedderEndToEnd(t *testing.T) {
 	}
 
 	opts := PipelineOptions{
-		Enabled:        true,
-		TopN:           10,
-		Epsilon:        0.55,
-		MinClusterSize: 3,
+		Enabled:           true,
+		MinimumCandidates: 1,
+		TopN:              10,
+		Epsilon:           0.55,
+		MinClusterSize:    3,
 	}
 	inputs := PipelineInputs{
 		Provider:      "github",
@@ -204,11 +207,12 @@ func TestPipeline_NoiseAssignment(t *testing.T) {
 	}
 
 	opts := PipelineOptions{
-		Enabled:        true,
-		TopN:           20,
-		Epsilon:        0.2,
-		MinClusterSize: 3,
-		Embedder:       pipelineStubEmbedder{},
+		Enabled:           true,
+		MinimumCandidates: 1,
+		TopN:              20,
+		Epsilon:           0.2,
+		MinClusterSize:    3,
+		Embedder:          pipelineStubEmbedder{},
 	}
 	inputs := PipelineInputs{
 		Provider:      "github",
@@ -317,7 +321,10 @@ func TestPipeline_CentralityHeadSHACacheHit(t *testing.T) {
 	}
 	opts := PipelineOptions{
 		Enabled:           true,
+		MinimumCandidates: 1,
 		TopN:              1,
+		Epsilon:           0.6,
+		MinClusterSize:    3,
 		CentralityBackend: "mdg",
 		CentralityHeadSHA: sha,
 		Embedder:          pipelineStubEmbedder{},
@@ -472,6 +479,7 @@ func TestPipeline_ForkIntentSiblingSimAssignsPerForkScores(t *testing.T) {
 	}}
 	opts := PipelineOptions{
 		Enabled:           true,
+		MinimumCandidates: 1,
 		TopN:              10,
 		Epsilon:           0.6,
 		MinClusterSize:    2,
@@ -506,16 +514,17 @@ func TestPipeline_ForkIntentSiblingSimBypassesClusterCache(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", tmp)
 	t.Setenv("HOME", tmp)
 	if err := SaveCache(ClusterCache{
-		SchemaVersion:  SchemaVersion,
-		ComputedAt:     time.Now().UTC(),
-		EmbedderModel:  embed.BuiltinModelName,
-		Provider:       "github",
-		Owner:          "up",
-		Repo:           "stream",
-		Epsilon:        0.6,
-		MinClusterSize: 2,
-		TopM:           10,
-		Clusters:       []Cluster{{ID: "cached", Members: []string{"o/a1", "o/a2"}, Label: "cached"}},
+		SchemaVersion:     SchemaVersion,
+		ComputedAt:        time.Now().UTC(),
+		EmbedderModel:     embed.BuiltinModelName,
+		ConfigFingerprint: "test-fingerprint",
+		Provider:          "github",
+		Owner:             "up",
+		Repo:              "stream",
+		Epsilon:           0.6,
+		MinClusterSize:    2,
+		TopM:              10,
+		Clusters:          []Cluster{{ID: "cached", Members: []string{"o/a1", "o/a2"}, Label: "cached"}},
 		Assignments: []Assignment{
 			{ForkID: "o/a1", Cluster: "cached", Novelty: 0.1},
 			{ForkID: "o/a2", Cluster: "cached", Novelty: 0.1},
@@ -530,6 +539,7 @@ func TestPipeline_ForkIntentSiblingSimBypassesClusterCache(t *testing.T) {
 	searcher := &pipelineSiblingSearcher{forkSims: map[string]float64{"o/a1": 0.6}}
 	opts := PipelineOptions{
 		Enabled:           true,
+		MinimumCandidates: 1,
 		TopN:              10,
 		Epsilon:           0.6,
 		MinClusterSize:    2,
@@ -568,6 +578,7 @@ func TestPipeline_UpstreamSiblingSimStillAssignsRunWideScore(t *testing.T) {
 	searcher := &pipelineSiblingSearcher{upstreamSim: 0.4}
 	opts := PipelineOptions{
 		Enabled:           true,
+		MinimumCandidates: 1,
 		TopN:              10,
 		Epsilon:           0.6,
 		MinClusterSize:    2,
@@ -591,6 +602,94 @@ func TestPipeline_UpstreamSiblingSimStillAssignsRunWideScore(t *testing.T) {
 	for _, fork := range forks {
 		if fork.Heat.SiblingSim != 0.4 {
 			t.Fatalf("%s SiblingSim=%v want 0.4", fork.T1.ID, fork.Heat.SiblingSim)
+		}
+	}
+}
+
+func TestRunPipeline_InsufficientCandidates(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	forks := make([]EnrichedFork, 8)
+	for i := range forks {
+		forks[i] = makePipelineFork(fmt.Sprintf("o/f%d", i), 3, []string{"Alpha/x.go"}, 10)
+	}
+	inputs := PipelineInputs{
+		Provider:      "github",
+		UpstreamOwner: "up",
+		UpstreamRepo:  "stream",
+		Forks:         forks,
+	}
+
+	var log bytes.Buffer
+	skip, err := RunPipeline(context.Background(), PipelineOptions{
+		Enabled:        true,
+		TopN:           10,
+		Epsilon:        0.6,
+		MinClusterSize: 3,
+	}, inputs, &log)
+	if err != nil {
+		t.Fatalf("RunPipeline: %v", err)
+	}
+	if skip == nil || skip.Code != "insufficient_candidates" {
+		t.Fatalf("skip = %+v, want insufficient_candidates; log: %s", skip, log.String())
+	}
+	for _, fork := range forks {
+		if fork.Heat.ClusterID != "" || fork.Heat.NoveltyScore != 0 {
+			t.Errorf("fork %s received assignment %+v", fork.T1.ID, fork.Heat)
+		}
+	}
+}
+
+func TestRunPipeline_CacheBypassedByThreshold(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", tmp)
+	t.Setenv("HOME", tmp)
+
+	forks := make([]EnrichedFork, 8)
+	assignments := make([]Assignment, 8)
+	members := make([]string, 8)
+	for i := range forks {
+		id := fmt.Sprintf("o/f%d", i)
+		forks[i] = makePipelineFork(id, 3, []string{"Alpha/x.go"}, 10)
+		assignments[i] = Assignment{ForkID: id, Cluster: "cached", Novelty: 0.5}
+		members[i] = id
+	}
+	if err := SaveCache(ClusterCache{
+		SchemaVersion:  SchemaVersion,
+		ComputedAt:     time.Now().UTC(),
+		EmbedderModel:  embed.BuiltinModelName,
+		Provider:       "github",
+		Owner:          "up",
+		Repo:           "stream",
+		Epsilon:        0.6,
+		MinClusterSize: 3,
+		TopM:           10,
+		Clusters:       []Cluster{{ID: "cached", Members: members}},
+		Assignments:    assignments,
+	}); err != nil {
+		t.Fatalf("SaveCache: %v", err)
+	}
+
+	var log bytes.Buffer
+	skip, err := RunPipeline(context.Background(), PipelineOptions{
+		Enabled:        true,
+		TopN:           10,
+		Epsilon:        0.6,
+		MinClusterSize: 3,
+	}, PipelineInputs{
+		Provider:      "github",
+		UpstreamOwner: "up",
+		UpstreamRepo:  "stream",
+		Forks:         forks,
+	}, &log)
+	if err != nil {
+		t.Fatalf("RunPipeline: %v", err)
+	}
+	if skip == nil || skip.Code != "insufficient_candidates" {
+		t.Fatalf("skip = %+v, want insufficient_candidates; log: %s", skip, log.String())
+	}
+	for _, fork := range forks {
+		if fork.Heat.ClusterID != "" || fork.Heat.NoveltyScore != 0 {
+			t.Errorf("cached assignment applied to %s: %+v", fork.T1.ID, fork.Heat)
 		}
 	}
 }

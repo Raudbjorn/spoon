@@ -12,22 +12,21 @@ import (
 // a non-nil NoveltyDist map (so JSON encoders don't choke on nil).
 func TestCompute_EmptyInputs(t *testing.T) {
 	r := Compute("o/r", nil, Judgments{})
-	if r.HCA != 0 || r.AccSeen != 0 || r.AccNovel != 0 || r.ARI != 0 {
+	if r.NoveltyPrecision != 0 || r.NoveltyRecall != 0 || r.NoveltyF1 != 0 ||
+		r.BalancedAccuracy != 0 || r.ARI != 0 {
 		t.Errorf("empty input: expected all-zero metrics, got %+v", r)
 	}
 	if r.NoveltyDist == nil {
-		t.Errorf("empty input: NoveltyDist must be non-nil, got nil")
+		t.Error("empty input: NoveltyDist must be non-nil")
 	}
 	r2 := Compute("o/r", []ScoredFork{{ID: "x"}}, Judgments{})
-	if r2.HCA != 0 || r2.AccSeen != 0 {
+	if r2.NoveltyPrecision != 0 || r2.NoveltyRecall != 0 || r2.NoveltyF1 != 0 {
 		t.Errorf("empty judgments: expected zero, got %+v", r2)
 	}
 }
 
-// TestCompute_HCAPerfect is the canonical "everything correct" case.
-// 4 established forks land in non-noise clusters; 1 novel fork lands
-// in the noise cluster. AccSeen = 1.0, AccNovel = 1.0, HCA = 1.0.
-func TestCompute_HCAPerfect(t *testing.T) {
+// TestCompute_BinaryNoveltyPerfect is the canonical all-correct case.
+func TestCompute_BinaryNoveltyPerfect(t *testing.T) {
 	rows := []ScoredFork{
 		{ID: "o/seen-1", ClusterID: "c0", Score: 80, Novelty: 0.1},
 		{ID: "o/seen-2", ClusterID: "c0", Score: 70, Novelty: 0.2},
@@ -43,21 +42,16 @@ func TestCompute_HCAPerfect(t *testing.T) {
 		{ID: "o/novel-1", Novelty: NoveltyNovel},
 	}}
 	r := Compute("o/r", rows, judgments)
-	if math.Abs(r.AccSeen-1.0) > 1e-9 {
-		t.Errorf("AccSeen = %v, want 1.0", r.AccSeen)
-	}
-	if math.Abs(r.AccNovel-1.0) > 1e-9 {
-		t.Errorf("AccNovel = %v, want 1.0", r.AccNovel)
-	}
-	if math.Abs(r.HCA-1.0) > 1e-9 {
-		t.Errorf("HCA = %v, want 1.0", r.HCA)
+	if math.Abs(r.NoveltyPrecision-1) > 1e-9 ||
+		math.Abs(r.NoveltyRecall-1) > 1e-9 ||
+		math.Abs(r.NoveltyF1-1) > 1e-9 ||
+		math.Abs(r.BalancedAccuracy-1) > 1e-9 {
+		t.Errorf("perfect classification: got %+v", r)
 	}
 }
 
-// TestCompute_HCATotalMiss: every fork ends up in the wrong bin.
-// 4 seen in noise, 1 novel in a non-noise cluster. AccSeen = 0,
-// AccNovel = 0, HCA = 0 (the harmonic-mean convention).
-func TestCompute_HCATotalMiss(t *testing.T) {
+// TestCompute_BinaryNoveltyTotalMiss puts every fork in the wrong binary class.
+func TestCompute_BinaryNoveltyTotalMiss(t *testing.T) {
 	rows := []ScoredFork{
 		{ID: "o/seen-1", ClusterID: "noise", Score: 80},
 		{ID: "o/seen-2", ClusterID: "noise", Score: 70},
@@ -69,21 +63,15 @@ func TestCompute_HCATotalMiss(t *testing.T) {
 		{ID: "o/novel-1", Novelty: NoveltyNovel},
 	}}
 	r := Compute("o/r", rows, judgments)
-	if r.HCA != 0 {
-		t.Errorf("HCA = %v, want 0", r.HCA)
-	}
-	if r.AccSeen != 0 {
-		t.Errorf("AccSeen = %v, want 0", r.AccSeen)
-	}
-	if r.AccNovel != 0 {
-		t.Errorf("AccNovel = %v, want 0", r.AccNovel)
+	if r.NoveltyPrecision != 0 || r.NoveltyRecall != 0 ||
+		r.NoveltyF1 != 0 || r.BalancedAccuracy != 0 {
+		t.Errorf("total miss: expected zero metrics, got %+v", r)
 	}
 }
 
-// TestCompute_AccSeenPartial: 2 of 4 seen forks correctly placed in
-// non-noise; 0 of 1 novel correctly placed. AccSeen = 0.5, AccNovel
-// = 0.0, HCA = 0 (harmonic of 0.5 and 0 is 0).
-func TestCompute_AccSeenPartial(t *testing.T) {
+// TestCompute_BinaryNoveltyPartial has half the negatives correct and no
+// positives correct, yielding balanced accuracy 0.25.
+func TestCompute_BinaryNoveltyPartial(t *testing.T) {
 	rows := []ScoredFork{
 		{ID: "a", ClusterID: "c0", Score: 50},
 		{ID: "b", ClusterID: "noise", Score: 49},
@@ -99,14 +87,62 @@ func TestCompute_AccSeenPartial(t *testing.T) {
 		{ID: "e", Novelty: NoveltyNovel},
 	}}
 	r := Compute("o/r", rows, judgments)
-	if math.Abs(r.AccSeen-0.5) > 1e-9 {
-		t.Errorf("AccSeen = %v, want 0.5", r.AccSeen)
+	if r.NoveltyPrecision != 0 || r.NoveltyRecall != 0 || r.NoveltyF1 != 0 {
+		t.Errorf("partial classification: expected zero P/R/F1, got %+v", r)
 	}
-	if r.AccNovel != 0 {
-		t.Errorf("AccNovel = %v, want 0", r.AccNovel)
+	if math.Abs(r.BalancedAccuracy-0.25) > 1e-9 {
+		t.Errorf("BalancedAccuracy = %v, want 0.25", r.BalancedAccuracy)
 	}
-	if r.HCA != 0 {
-		t.Errorf("HCA = %v, want 0", r.HCA)
+}
+
+func TestCompute_BinaryNovelty_Collapse(t *testing.T) {
+	rows := []ScoredFork{
+		{ID: "o/novel1", ClusterID: "c0", Novelty: 1.0, Score: 90},
+		{ID: "o/novel2", ClusterID: "c0", Novelty: 1.0, Score: 85},
+		{ID: "o/est1", ClusterID: "c0", Novelty: 0.2, Score: 80},
+		{ID: "o/est2", ClusterID: "c0", Novelty: 0.3, Score: 75},
+	}
+	judgments := Judgments{Forks: []Judgment{
+		{ID: "o/novel1", Novelty: NoveltyNovel},
+		{ID: "o/novel2", Novelty: NoveltyNovel},
+		{ID: "o/est1", Novelty: NoveltyEstablished},
+		{ID: "o/est2", Novelty: NoveltyEstablished},
+	}}
+	r := Compute("o/r", rows, judgments)
+	if r.NoveltyPrecision != 0 || r.NoveltyRecall != 0 || r.NoveltyF1 != 0 {
+		t.Errorf("collapsed classification: expected zero P/R/F1, got %+v", r)
+	}
+	if r.BalancedAccuracy != 0.5 {
+		t.Errorf("BalancedAccuracy = %.3f, want 0.5", r.BalancedAccuracy)
+	}
+}
+
+func TestCompute_BinaryNovelty_AllNoise(t *testing.T) {
+	rows := []ScoredFork{
+		{ID: "o/novel1", ClusterID: "noise", Novelty: 1.0, Score: 90},
+		{ID: "o/novel2", ClusterID: "noise", Novelty: 1.0, Score: 85},
+		{ID: "o/est1", ClusterID: "noise", Novelty: 1.0, Score: 80},
+		{ID: "o/est2", ClusterID: "noise", Novelty: 1.0, Score: 75},
+	}
+	judgments := Judgments{Forks: []Judgment{
+		{ID: "o/novel1", Novelty: NoveltyNovel},
+		{ID: "o/novel2", Novelty: NoveltyNovel},
+		{ID: "o/est1", Novelty: NoveltyEstablished},
+		{ID: "o/est2", Novelty: NoveltyEstablished},
+	}}
+	r := Compute("o/r", rows, judgments)
+	if r.NoveltyPrecision != 0.5 {
+		t.Errorf("NoveltyPrecision = %.3f, want 0.5", r.NoveltyPrecision)
+	}
+	if r.NoveltyRecall != 1 {
+		t.Errorf("NoveltyRecall = %.3f, want 1.0", r.NoveltyRecall)
+	}
+	expectedF1 := 2 * 0.5 / 1.5
+	if math.Abs(r.NoveltyF1-expectedF1) > 1e-9 {
+		t.Errorf("NoveltyF1 = %.3f, want %.3f", r.NoveltyF1, expectedF1)
+	}
+	if r.BalancedAccuracy != 0.5 {
+		t.Errorf("BalancedAccuracy = %.3f, want 0.5", r.BalancedAccuracy)
 	}
 }
 
@@ -157,9 +193,8 @@ func TestCompute_RankingWorst(t *testing.T) {
 	}
 }
 
-// TestCompute_NoNovelLabels: when every fork is "seen" there are no
-// positives, so ranking metrics are 0 (undefined). HCA also drops to
-// 0 because AccNovel is 0/0.
+// TestCompute_NoNovelLabels: when every fork is non-novel there are no
+// positives, so ranking and positive-class metrics are 0 (undefined).
 func TestCompute_NoNovelLabels(t *testing.T) {
 	rows := []ScoredFork{
 		{ID: "a", ClusterID: "c0", Score: 50},
@@ -174,8 +209,8 @@ func TestCompute_NoNovelLabels(t *testing.T) {
 		t.Errorf("no-positives ranking: expected 0/0, got %v/%v",
 			r.RankingNDCG, r.RankingROCAUC)
 	}
-	if r.HCA != 0 {
-		t.Errorf("no-novel labels: HCA = %v, want 0", r.HCA)
+	if r.NoveltyPrecision != 0 || r.NoveltyRecall != 0 || r.NoveltyF1 != 0 {
+		t.Errorf("no-novel labels: expected zero P/R/F1, got %+v", r)
 	}
 }
 
@@ -251,9 +286,8 @@ func TestCompute_NoveltyDistBuckets(t *testing.T) {
 	}
 }
 
-// TestHarmonicMean pins the math: 2*a*b/(a+b) when both > 0; 0 when
-// either is 0. A defensive unit test for the helper itself, since
-// every other HCA test depends on it.
+// TestHarmonicMean pins the F1 helper math: 2*a*b/(a+b) when both
+// inputs are positive, and 0 when either is 0.
 func TestHarmonicMean(t *testing.T) {
 	cases := []struct {
 		a, b, want float64
@@ -363,16 +397,17 @@ func TestEval_FixtureEndToEnd(t *testing.T) {
 	if report.Upstream != "charmbracelet/bubbletea" {
 		t.Errorf("Upstream = %q, want %q", report.Upstream, "charmbracelet/bubbletea")
 	}
-	// We must have 1 novel, 1 mixed, 18 established. HCA depends on
-	// the assignment, but must be in [0, 1].
-	if report.HCA < 0 || report.HCA > 1 {
-		t.Errorf("HCA out of [0,1]: %v", report.HCA)
+	// Every binary novelty metric must remain in [0, 1].
+	metrics := map[string]float64{
+		"NoveltyPrecision": report.NoveltyPrecision,
+		"NoveltyRecall":    report.NoveltyRecall,
+		"NoveltyF1":        report.NoveltyF1,
+		"BalancedAccuracy": report.BalancedAccuracy,
 	}
-	if report.AccSeen < 0 || report.AccSeen > 1 {
-		t.Errorf("AccSeen out of [0,1]: %v", report.AccSeen)
-	}
-	if report.AccNovel < 0 || report.AccNovel > 1 {
-		t.Errorf("AccNovel out of [0,1]: %v", report.AccNovel)
+	for name, metric := range metrics {
+		if metric < 0 || metric > 1 {
+			t.Errorf("%s out of [0,1]: %v", name, metric)
+		}
 	}
 	if report.RankingNDCG < 0 || report.RankingNDCG > 1 {
 		t.Errorf("NDCG out of [0,1]: %v", report.RankingNDCG)
@@ -387,5 +422,28 @@ func TestEval_FixtureEndToEnd(t *testing.T) {
 	}
 	if sum != 20 {
 		t.Errorf("NoveltyDist total = %d, want 20", sum)
+	}
+}
+
+func TestReportJSONUsesBinaryNoveltyNames(t *testing.T) {
+	data, err := json.Marshal(Report{})
+	if err != nil {
+		t.Fatalf("marshal report: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		t.Fatalf("unmarshal report: %v", err)
+	}
+	for _, name := range []string{
+		"noveltyPrecision", "noveltyRecall", "noveltyF1", "balancedAccuracy",
+	} {
+		if _, ok := fields[name]; !ok {
+			t.Errorf("missing JSON field %q in %s", name, data)
+		}
+	}
+	for _, name := range []string{"hca", "accSeen", "accNovel"} {
+		if _, ok := fields[name]; ok {
+			t.Errorf("obsolete JSON field %q present in %s", name, data)
+		}
 	}
 }
