@@ -44,12 +44,13 @@ func TestClusterCacheRoundTrip(t *testing.T) {
 	t.Setenv("HOME", tmp)
 
 	original := newFixtureCache()
+	original.ConfigFingerprint = "fp-roundtrip"
 	if err := SaveCache(original); err != nil {
 		t.Fatalf("SaveCache: %v", err)
 	}
 
 	got, ok := LoadCache("github", "acme", "widget",
-		original.EmbedderEndpoint, original.EmbedderModel, "")
+		original.EmbedderEndpoint, original.EmbedderModel, original.ConfigFingerprint)
 	if !ok {
 		t.Fatal("expected cache hit, got miss")
 	}
@@ -65,6 +66,9 @@ func TestClusterCacheRoundTrip(t *testing.T) {
 	}
 	if got.Provider != original.Provider || got.Owner != original.Owner || got.Repo != original.Repo {
 		t.Errorf("identity mismatch: got %+v", got)
+	}
+	if got.ConfigFingerprint != original.ConfigFingerprint {
+		t.Errorf("ConfigFingerprint mismatch: got %q, want %q", got.ConfigFingerprint, original.ConfigFingerprint)
 	}
 	if got.Epsilon != original.Epsilon || got.MinClusterSize != original.MinClusterSize ||
 		got.TopM != original.TopM {

@@ -161,11 +161,23 @@ type SkipReason struct {
 //
 //nolint:revive // function is large by design — it's the integration layer.
 func RunPipeline(ctx context.Context, opts PipelineOptions, inputs PipelineInputs, logger io.Writer) (*SkipReason, error) {
+	if logger == nil {
+		logger = io.Discard
+	}
 	if !opts.Enabled {
 		return &SkipReason{Code: "disabled", Message: "clustering disabled"}, nil
 	}
+	// Zero-value options mean "use the default" so programmatic callers
+	// that predate a field (or leave it unset) keep working instead of
+	// tripping the config validation below.
 	if opts.MinimumCandidates == 0 {
 		opts.MinimumCandidates = 10
+	}
+	if opts.Epsilon == 0 {
+		opts.Epsilon = 0.55
+	}
+	if opts.MinClusterSize == 0 {
+		opts.MinClusterSize = 3
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -208,6 +220,13 @@ func RunPipeline(ctx context.Context, opts PipelineOptions, inputs PipelineInput
 		}, nil
 	}
 
+	// TopN <= 0 means "uncapped" in SelectClusterCandidates; pin the
+	// effective cap to the selected candidate count so the config
+	// fingerprint is concrete and validation accepts the uncapped form.
+	if opts.TopN <= 0 {
+		opts.TopN = len(candidates)
+	}
+
 	cfg := Config{
 		EmbedderID:        modelName,
 		PreprocessID:      "v1",
@@ -219,6 +238,7 @@ func RunPipeline(ctx context.Context, opts PipelineOptions, inputs PipelineInput
 		MinimumCandidates: opts.MinimumCandidates,
 	}
 	if err := cfg.Validate(); err != nil {
+		fmt.Fprintf(logger, "[cluster] invalid config: %v\n", err)
 		return &SkipReason{
 			Code:    "invalid_config",
 			Message: err.Error(),

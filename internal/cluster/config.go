@@ -27,7 +27,10 @@ type Config struct {
 
 // Validate checks that config is internally consistent.
 func (c Config) Validate() error {
-	if c.Epsilon <= 0 || c.Epsilon >= 2 {
+	// Negated range so NaN (which fails every comparison) is rejected too;
+	// a NaN epsilon would otherwise slip through and break json.Marshal in
+	// Fingerprint.
+	if !(c.Epsilon > 0 && c.Epsilon < 2) {
 		return fmt.Errorf("epsilon %.3f out of range (0, 2)", c.Epsilon)
 	}
 	if c.MinClusterSize < 2 {
@@ -43,7 +46,8 @@ func (c Config) Validate() error {
 	for _, weight := range c.Weights {
 		sum += weight
 	}
-	if sum <= 0 {
+	// Negated comparison so a NaN weight (sum becomes NaN) is rejected.
+	if !(sum > 0) {
 		return fmt.Errorf("modality weights sum to %.3f, want >0", sum)
 	}
 	return nil
