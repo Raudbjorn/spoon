@@ -48,6 +48,11 @@ prepare() {
 
 build() {
     cd "${srcdir}/${_pkgname}"
+
+    # go-tree-sitter (the --full-mdg centrality backend) is cgo, so the
+    # build needs a working C compiler; keep cgo on explicitly so a
+    # CGO_ENABLED=0 in the builder's environment can't silently drop it.
+    export CGO_ENABLED=1
     export CGO_CPPFLAGS="${CPPFLAGS}"
     export CGO_CFLAGS="${CFLAGS}"
     export CGO_CXXFLAGS="${CXXFLAGS}"
@@ -55,12 +60,13 @@ build() {
     export GOPATH="${srcdir}/gopath"
     export GOFLAGS="-mod=readonly -modcacherw -trimpath -buildmode=pie"
 
-    # spoon's `version` is a `var`, so embed the package version.
-    # spn's `version` is a `const`, so we leave it as the in-source default.
+    # Both `version` symbols are package-level `var`s (spoon 0.3.0-dev,
+    # spn 0.1.0-dev), so embed the package version into each binary.
     go build \
         -ldflags="-X 'main.version=${pkgver}'" \
         -o spoon ./cmd/spoon
     go build \
+        -ldflags="-X 'main.version=${pkgver}'" \
         -o spn ./cmd/spn
 }
 
