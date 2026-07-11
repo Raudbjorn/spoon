@@ -13,8 +13,8 @@ _post() {
 
     To enable for Claude Code (per user), symlink each into your skills dir:
       mkdir -p ~/.claude/skills
-      ln -s /usr/share/spoon/skills/using-spn       ~/.claude/skills/using-spn
-      ln -s /usr/share/spoon/skills/using-spn-forks ~/.claude/skills/using-spn-forks
+      ln -sfn /usr/share/spoon/skills/using-spn       ~/.claude/skills/using-spn
+      ln -sfn /usr/share/spoon/skills/using-spn-forks ~/.claude/skills/using-spn-forks
 
 EOF
 }

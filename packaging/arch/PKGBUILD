@@ -72,6 +72,10 @@ build() {
 
 check() {
     cd "${srcdir}/${_pkgname}"
+    # go test ./... compiles the cgo tree-sitter package too; force cgo on
+    # for the same reason build() does — makepkg runs each phase in its own
+    # subshell, so build()'s CGO_ENABLED export does not reach here.
+    export CGO_ENABLED=1
     export GOPATH="${srcdir}/gopath"
     export GOFLAGS="-mod=readonly -modcacherw"
     go test ./...

@@ -23,8 +23,8 @@ The skills ship under `/usr/share/spoon/skills/` because Claude Code doesn't aut
 
 ```sh
 mkdir -p ~/.claude/skills
-ln -s /usr/share/spoon/skills/using-spn       ~/.claude/skills/using-spn
-ln -s /usr/share/spoon/skills/using-spn-forks ~/.claude/skills/using-spn-forks
+ln -sfn /usr/share/spoon/skills/using-spn       ~/.claude/skills/using-spn
+ln -sfn /usr/share/spoon/skills/using-spn-forks ~/.claude/skills/using-spn-forks
 ```
 
 ## Publishing to AUR
