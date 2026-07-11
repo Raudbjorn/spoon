@@ -693,3 +693,37 @@ func TestRunPipeline_CacheBypassedByThreshold(t *testing.T) {
 		}
 	}
 }
+
+// TestRunPipeline_ZeroValueOptionDefaults pins the review contract that
+// zero-value options (uncapped TopN, unset Epsilon / MinClusterSize) and a
+// nil logger are defaulted rather than skipped as invalid_config.
+func TestRunPipeline_ZeroValueOptionDefaults(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	forks := []EnrichedFork{
+		makePipelineFork("o/a1", 3, []string{"Alpha/x.go"}, 90),
+		makePipelineFork("o/a2", 4, []string{"Alpha/y.go"}, 85),
+		makePipelineFork("o/a3", 5, []string{"Alpha/z.go"}, 80),
+	}
+	skip, err := RunPipeline(context.Background(), PipelineOptions{
+		Enabled:           true,
+		MinimumCandidates: 1,
+		Embedder:          pipelineStubEmbedder{},
+	}, PipelineInputs{
+		Provider:      "github",
+		UpstreamOwner: "up",
+		UpstreamRepo:  "stream",
+		Upstream:      parentDataFixture(),
+		Forks:         forks,
+	}, nil)
+	if err != nil {
+		t.Fatalf("RunPipeline: %v", err)
+	}
+	if skip != nil {
+		t.Fatalf("zero-value options must not skip, got %+v", skip)
+	}
+	for _, fork := range forks {
+		if fork.Heat.ClusterID == "" {
+			t.Errorf("fork %s: no cluster assignment", fork.T1.ID)
+		}
+	}
+}
