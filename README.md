@@ -4,24 +4,27 @@ Find useful forks of a Git repository.
 
 `spoon` enumerates the forks of a GitHub or GitLab repo, enriches each with signals about activity and divergence (recency, stars, sub-forks, releases, ahead/behind counts, contributor mix), and ranks them so the interesting ones surface first. It works either as an interactive TUI or as JSON/CSV output for scripting.
 
-## Install
+## Build
 
-```sh
-go install github.com/svnbjrn/spoon/cmd/spoon@latest
-```
-
-Or build from source:
+Two binaries: `spoon` (interactive TUI) and `spn` (the agent-shaped
+JSON/NDJSON CLI). Build both from a clone:
 
 ```sh
 git clone https://github.com/Raudbjorn/spoon.git
 cd spoon
-go build -o spoon ./cmd/spoon
+go build -o spoon ./cmd/spoon      # interactive TUI
+go build -o spn   ./cmd/spn        # agent CLI (JSON/NDJSON)
 ```
 
-Requires Go 1.26+. The MDG centrality backend (`--full-mdg`) uses
-tree-sitter parsers via cgo, so building also needs a working C compiler on
-PATH (`gcc`/`clang` on Linux/macOS, MinGW or MSVC on Windows). `CGO_ENABLED=1`
-is the Go default; do not unset it.
+Requires Go 1.26+ (the module targets `go 1.26.2`). The MDG centrality backend
+(`--full-mdg`) uses tree-sitter parsers via cgo, so building also needs a
+working C compiler on PATH (`gcc`/`clang` on Linux/macOS, MinGW or MSVC on
+Windows). `CGO_ENABLED=1` is the Go default; do not unset it.
+
+> **`go install …@latest` does not work.** The module path is
+> `github.com/svnbjrn/spoon`, but no repository is published there — the code
+> lives at [`github.com/Raudbjorn/spoon`](https://github.com/Raudbjorn/spoon).
+> Until the module path is renamed to match, build from a clone as above.
 
 ## Auth
 
@@ -111,9 +114,7 @@ for `--json` / `--next` so stdout stays pure JSON. Suppress with
 TUI, no color, structured error envelope with remediation hints, NDJSON
 streaming for long-running queries.
 
-```sh
-go install github.com/svnbjrn/spoon/cmd/spn@latest
-```
+`spn` is the second binary from [Build](#build) above.
 
 Verbs:
 
@@ -125,8 +126,10 @@ spn threads resolve <pr-ref> <id> [--body T]
 spn threads resolve-all <pr-ref>     # skips human-raised threads (returned in `skipped`)
 spn threads unresolve-all <pr-ref>
 spn pr status <pr-ref>
-spn forks list <repo> [--tier N] [--top N] [...]   # NDJSON
-spn forks list topic:zig [--topic-repos 5] [...]   # whole-topic prospecting
+spn forks list <repo> [--tier N] [--top N] [--budget N] [--shortlist N] [--query "T"] [--priors PATH] [...]   # NDJSON
+spn forks list topic:zig [--topic-repos 5] [...]                        # whole-topic prospecting
+spn forks eval <repo> --judgments FILE                                  # score ranking vs a labeled set -> JSON report
+spn repo centrality <owner/repo>                                        # upstream module/dir centrality
 ```
 
 Success: bare JSON to stdout. Failure: structured envelope to stderr:
@@ -162,6 +165,59 @@ skip the percentile trust (too few samples).
 
 Override component weights with `--heat-weights path/to/weights.json`
 (each value in `[0.0, 2.0]`; works on both `spoon` and `spn forks list`).
+
+## Curated priors (`--priors`)
+
+Bias the ordering toward a subsystem you care about — without hiding any fork
+or changing its heat. Pass a JSON interest spec to `spn forks list`:
+
+```json
+{
+  "paths": ["internal/auth", "cmd/*.go"],
+  "keywords": ["oauth", "rate limit"],
+  "languages": ["Go", "Rust"],
+  "owners": {"allow": ["torvalds"], "deny": ["fork-farmer"]}
+}
+```
+
+```sh
+spn forks list golang/go --priors interest.json
+```
+
+Each fork gains a `priorScore` (0–1) and `priorReasons` — e.g.
+`path:internal/auth`, `keyword:oauth`, `language:go`, `owner_allow:torvalds`,
+`owner_deny:fork-farmer` — computed from already-fetched data at zero extra API
+cost. When neither `--query` nor `--shortlist` is active, matched forks are
+listed before unmatched ones (heat order within each lane). Priors never hide a
+fork or touch heat; a denied owner scores 0 but is still emitted, carrying its
+`owner_deny` reason.
+
+Path matching is deliberately simple: a wildcard-free entry matches by exact
+file or **directory prefix** (`internal/auth` covers everything beneath it),
+while an entry containing a glob uses single-segment `path.Match` (`cmd/*.go`
+matches `cmd/main.go` but not `cmd/sub/x.go`). Recursive `**` is not supported.
+
+## Fork profiles
+
+Every `spn forks list` record also carries a `profile`: a deterministic,
+one-word label derived only from fields already on the record (visibility,
+lone-wolf archetype, momentum, penalties, priors). It is presentation-only —
+never affecting scoring, ordering, or visibility — and exists purely to make
+records easier to skim. First match wins, with `standard` as the floor:
+
+| `profile` | when |
+| --- | --- |
+| `hidden` | upstreamed / no commits ahead (non-actionable) |
+| `focused_change` | lone-wolf Sniper archetype |
+| `focused_feature` | lone-wolf Feature Builder archetype |
+| `broad_maintenance` | lone-wolf Drifter archetype |
+| `emerging_active` | momentum rising or newly observed |
+| `stale` | archived / low-recency penalty |
+| `matches_priors` | matched a `--priors` spec (nothing higher fired) |
+| `standard` | everything else |
+
+A `profileReasons` array accompanies the label when it carries explanatory
+facts (e.g. `archetype:feature_builder`, `momentum:rising`).
 
 ## Topic mode
 
