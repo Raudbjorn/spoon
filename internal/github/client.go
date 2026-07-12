@@ -14,70 +14,115 @@ import (
 	"time"
 
 	ghAPI "github.com/cli/go-gh/v2/pkg/api"
+	"github.com/svnbjrn/spoon/internal/github/webdiff"
 )
 
-// Client wraps go-gh's REST and GraphQL clients with rate limit tracking.
-type Client struct {
-	rest             *ghAPI.RESTClient
-	gql              *ghAPI.GraphQLClient
-	authenticated    bool
-	currentUserLogin string // populated lazily by CurrentUserLogin (gated by currentUserLoginOnce)
+type ProxyOptions struct {
+	Enabled           bool
+	APIKeyFile        string
+	StaticFile        string
+	WhitelistPublicIP bool
+	CacheTTL          time.Duration
+}
 
+type ClientOptions struct {
+	Tokens            []string
+	RequestsPerMinute float64
+	Proxy             ProxyOptions
+}
+
+type apiResource uint8
+
+const (
+	resourceREST apiResource = iota
+	resourceGraphQL
+)
+
+type budgetState struct {
+	RateLimit RateLimit
+	Cost      int
+	Limiter   *limiter
+}
+
+type backend struct {
+	Rest          *ghAPI.RESTClient
+	GraphQL       *ghAPI.GraphQLClient
+	Login         string
+	REST          budgetState
+	GraphQLBudget budgetState
+	Successes     uint64
+	Failures      uint64
+	Disabled      bool
+	DisabledUntil time.Time
+}
+
+// Client dispatches GitHub requests across distinct authenticated identities.
+// The legacy fields remain private aliases for package tests and are folded into
+// one backend lazily; production traffic always passes through a backend pool.
+type Client struct {
+	backends []*backend
+	pool     *backendPool
+	proxies  *proxyPool
+	global   *limiter
+	webDiff  *webdiff.Client
+
+	rest                *ghAPI.RESTClient
+	gql                 *ghAPI.GraphQLClient
+	authenticated       bool
+	duplicateIdentities int
+
+	currentUserLogin     string
 	currentUserLoginOnce sync.Once
 	currentUserLoginErr  error
 
 	mu        sync.Mutex
 	rateLimit RateLimit
+	lim       *limiter
 
-	// Rate controls (Feature: rate-limit hardening). lim paces requests; the
-	// bounded Retry-After retry uses maxRateWait + sleepFn (injectable in tests).
-	lim         *limiter
 	maxRateWait time.Duration
 	sleepFn     func(context.Context, time.Duration) error
 }
 
-// Rate-control tuning.
 const (
-	minRefillRate   = 0.05             // never fully stall
-	refillBurst     = 8.0              // allow short parallelism spikes
-	lowHeadroom     = 0.20             // matches branches.go's gate
-	lowHeadroomSlow = 0.25             // multiplicative slowdown under pressure
-	defaultMaxWait  = 30 * time.Second // cap on Retry-After sleep before failing fast
+	minRefillRate   = 0.05
+	refillBurst     = 8.0
+	lowHeadroom     = 0.20
+	lowHeadroomSlow = 0.25
+	defaultMaxWait  = 30 * time.Second
+	defaultRPM      = 300.0
+	globalBurst     = 5.0
 )
 
-// initRateControls sets up the token bucket + retry knobs. Called by NewClient
-// after `authenticated` is set (the default rate depends on it).
 func (c *Client) initRateControls() {
 	c.maxRateWait = defaultMaxWait
 	c.sleepFn = ctxSleep
 	c.lim = newLimiter(c.refillRate(), refillBurst)
+	if c.global == nil {
+		c.global = newLimiterRPM(defaultRPM, globalBurst)
+	}
 }
 
-// refillRate computes the token-bucket rate (req/sec): pace Remaining over the
-// time until Reset, clamped to [minRefillRate, refillBurst]. Before the first
-// response (Limit==0) — and while headroom is healthy — it runs at refillBurst
-// so small scans aren't slowed. Slows hard when headroom is low to avoid
-// tripping secondary limits.
+// refillRate is retained for compatibility with existing focused tests.
 func (c *Client) refillRate() float64 {
 	c.mu.Lock()
-	limit, remaining, reset := c.rateLimit.Limit, c.rateLimit.Remaining, c.rateLimit.Reset
+	rl := c.rateLimit
 	c.mu.Unlock()
+	return rateForREST(rl) / 60
+}
 
-	// Unknown budget, or plenty of headroom: run at the burst cap (fast) so
-	// small scans aren't needlessly slowed. Only pace down as the window nears
-	// exhaustion — that's when throttling actually prevents hitting the limit.
-	if limit == 0 || float64(remaining)/float64(limit) >= 0.5 {
-		return refillBurst
+func restRPM(b *backend) float64 { return rateForREST(b.REST.RateLimit) }
+
+func rateForREST(rl RateLimit) float64 {
+	if rl.Limit == 0 || float64(rl.Remaining)/float64(rl.Limit) >= 0.5 {
+		return refillBurst * 60
 	}
-	secs := time.Until(reset).Seconds()
-	var rate float64
-	if secs < 1 || remaining <= 0 {
-		rate = minRefillRate
-	} else {
-		rate = float64(remaining) / secs // pace to land near the reset boundary
+	secs := time.Until(rl.Reset).Seconds()
+	rate := minRefillRate
+	if secs >= 1 && rl.Remaining > 0 {
+		rate = float64(rl.Remaining) / secs
 	}
-	if float64(remaining)/float64(limit) < lowHeadroom {
-		rate *= lowHeadroomSlow // extra slowdown when very low, dodge secondary limits
+	if float64(rl.Remaining)/float64(rl.Limit) < lowHeadroom {
+		rate *= lowHeadroomSlow
 	}
 	if rate < minRefillRate {
 		rate = minRefillRate
@@ -85,44 +130,111 @@ func (c *Client) refillRate() float64 {
 	if rate > refillBurst {
 		rate = refillBurst
 	}
-	return rate
+	return rate * 60
 }
 
-// NewClient creates a new GitHub client. It tries go-gh's default client first
-// (which reuses gh CLI tokens). If that fails, it falls back to an
-// unauthenticated client using raw HTTP.
-func NewClient() (*Client, error) {
-	rest, err := ghAPI.DefaultRESTClient()
-	if err == nil {
-		client := &Client{rest: rest, authenticated: true}
-		// Also create GraphQL client for batched T1 queries
-		if gql, gqlErr := ghAPI.DefaultGraphQLClient(); gqlErr == nil {
-			client.gql = gql
+func NewClient() (*Client, error) { return NewClientWithOptions(ClientOptions{}) }
+
+func NewClientWithOptions(opts ClientOptions) (*Client, error) {
+	rpm := opts.RequestsPerMinute
+	if rpm == 0 {
+		rpm = defaultRPM
+	}
+	if rpm <= 0 || rpm > 900 {
+		return nil, fmt.Errorf("requests per minute must be in (0, 900]")
+	}
+	proxies, _ := bootstrapProxyPool(context.Background(), opts.Proxy)
+	rotating := newRotatingProxyTransport(proxies)
+	c := &Client{proxies: proxies, global: newLimiterRPM(rpm, globalBurst), authenticated: len(opts.Tokens) > 0}
+
+	if len(opts.Tokens) == 0 {
+		rest, err := ghAPI.DefaultRESTClient()
+		if err == nil {
+			b := &backend{Rest: rest, REST: newBudget(), GraphQLBudget: newBudget()}
+			if gql, gqlErr := ghAPI.DefaultGraphQLClient(); gqlErr == nil {
+				b.GraphQL = gql
+			}
+			c.authenticated = true
+			c.installBackends([]*backend{b})
+			c.initRateControls()
+			return c, nil
 		}
-		client.initRateControls()
-		return client, nil
+		rest, err = ghAPI.NewRESTClient(ghAPI.ClientOptions{AuthToken: "x", Host: "github.com", Transport: &unauthTransport{base: rotating}})
+		if err != nil {
+			return nil, fmt.Errorf("creating unauthenticated client: %w", err)
+		}
+		c.authenticated = false
+		c.installBackends([]*backend{{Rest: rest, REST: newBudget(), GraphQLBudget: newBudget()}})
+		c.initRateControls()
+		return c, nil
 	}
 
-	// Fall back to unauthenticated client.
-	// go-gh requires AuthToken, Host, and Transport all set to skip resolution.
-	// We set a dummy token "x" and use a custom transport that strips the auth header.
-	rest, err = ghAPI.NewRESTClient(ghAPI.ClientOptions{
-		AuthToken: "x",
-		Host:      "github.com",
-		Transport: &unauthTransport{base: http.DefaultTransport},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("creating unauthenticated client: %w", err)
+	backends := make([]*backend, 0, len(opts.Tokens))
+	for _, raw := range opts.Tokens {
+		token := strings.TrimSpace(raw)
+		if token == "" {
+			return nil, fmt.Errorf("github token list contains an empty entry")
+		}
+		clientOpts := ghAPI.ClientOptions{AuthToken: token, Host: "github.com", Transport: rotating}
+		rest, err := ghAPI.NewRESTClient(clientOpts)
+		if err != nil {
+			return nil, fmt.Errorf("creating GitHub REST backend: %w", err)
+		}
+		gql, err := ghAPI.NewGraphQLClient(clientOpts)
+		if err != nil {
+			return nil, fmt.Errorf("creating GitHub GraphQL backend: %w", err)
+		}
+		backends = append(backends, &backend{Rest: rest, GraphQL: gql, REST: newBudget(), GraphQLBudget: newBudget()})
 	}
-	c := &Client{rest: rest, authenticated: false}
+	c.installBackends(backends)
 	c.initRateControls()
 	return c, nil
 }
 
-// unauthTransport strips the Authorization header so requests are unauthenticated.
-type unauthTransport struct {
-	base http.RoundTripper
+func newBudget() budgetState {
+	return budgetState{Cost: 1, Limiter: newLimiterRPM(refillBurst*60, refillBurst)}
 }
+
+func (c *Client) installBackends(backends []*backend) {
+	c.backends = backends
+	c.pool = &backendPool{backends: backends}
+	if len(backends) > 0 {
+		c.rest = backends[0].Rest
+		c.gql = backends[0].GraphQL
+	}
+}
+
+func (c *Client) ensurePool() {
+	if c.pool != nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.pool != nil {
+		return
+	}
+	b := &backend{Rest: c.rest, GraphQL: c.gql, REST: newBudget(), GraphQLBudget: newBudget()}
+	c.backends = []*backend{b}
+	c.pool = &backendPool{backends: c.backends}
+	if c.global == nil {
+		c.global = newLimiterRPM(defaultRPM, globalBurst)
+	}
+}
+
+func (c *Client) Close() { newRotatingProxyTransport(c.proxies).CloseIdleConnections() }
+
+// EnableWebDiff enables the explicitly unstable, cookie-authenticated HTML
+// fallback. The cookie remains memory-only.
+func (c *Client) EnableWebDiff(cookie string) {
+	c.webDiff = webdiff.New(cookie, func(ctx context.Context) error {
+		if c.global == nil {
+			return nil
+		}
+		return c.global.Wait(ctx)
+	})
+}
+
+type unauthTransport struct{ base http.RoundTripper }
 
 func (t *unauthTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	req = req.Clone(req.Context())
@@ -130,87 +242,135 @@ func (t *unauthTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return t.base.RoundTrip(req)
 }
 
-// IsAuthenticated returns whether the client has a valid auth token.
-func (c *Client) IsAuthenticated() bool {
-	return c.authenticated
-}
+func (c *Client) IsAuthenticated() bool { return c.authenticated }
 
-// GetRateLimit returns the current known rate limit state.
+func (c *Client) DuplicateIdentities() int { return c.duplicateIdentities }
+
 func (c *Client) GetRateLimit() RateLimit {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.rateLimit
+	c.ensurePool()
+	c.pool.mu.Lock()
+	defer c.pool.mu.Unlock()
+	return aggregateRateLimit(c.backends, resourceREST)
 }
 
-// Headroom returns the fraction of rate limit remaining (0.0-1.0).
-// Returns 1.0 if rate limit hasn't been fetched yet.
 func (c *Client) Headroom() float64 {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.rateLimit.Limit == 0 {
-		return 1.0
-	}
-	return float64(c.rateLimit.Remaining) / float64(c.rateLimit.Limit)
-}
-
-// HasGraphQL returns true if the GraphQL client is available.
-func (c *Client) HasGraphQL() bool {
-	return c.gql != nil
-}
-
-// HasBudget returns true if there is remaining rate limit budget.
-func (c *Client) HasBudget() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.rateLimit.Limit == 0 {
-		return true // haven't fetched rate limit yet
-	}
-	threshold := c.rateLimit.Limit / 10
-	if threshold < 10 {
-		threshold = 10
-	}
-	return c.rateLimit.Remaining > threshold
-}
-
-// doGet runs a throttled GET (token bucket + bounded Retry-After retry),
-// returning the raw response on success and updating rate-limit state/pacing.
-func (c *Client) doGet(ctx context.Context, path string) (*http.Response, error) {
-	// lim is nil for Client literals constructed in tests (no NewClient); the
-	// throttle is simply absent there.
-	if c.lim != nil {
-		if err := c.lim.Wait(ctx); err != nil {
-			return nil, err
+	rest := c.resourceHeadroom(resourceREST)
+	if c.HasGraphQL() {
+		if gql := c.resourceHeadroom(resourceGraphQL); gql < rest {
+			return gql
 		}
+	}
+	return rest
+}
+
+func (c *Client) resourceHeadroom(resource apiResource) float64 {
+	c.ensurePool()
+	c.pool.mu.Lock()
+	defer c.pool.mu.Unlock()
+	rl := aggregateRateLimit(c.backends, resource)
+	if rl.Limit == 0 {
+		return 1
+	}
+	return float64(rl.Remaining) / float64(rl.Limit)
+}
+
+func aggregateRateLimit(backends []*backend, resource apiResource) RateLimit {
+	var out RateLimit
+	for _, b := range backends {
+		if b.Disabled {
+			continue
+		}
+		rl := b.REST.RateLimit
+		if resource == resourceGraphQL {
+			rl = b.GraphQLBudget.RateLimit
+		}
+		out.Limit += rl.Limit
+		out.Remaining += rl.Remaining
+		out.Used += rl.Used
+		if rl.Reset.After(out.Reset) {
+			out.Reset = rl.Reset
+		}
+	}
+	return out
+}
+
+func (c *Client) HasGraphQL() bool {
+	c.ensurePool()
+	for _, b := range c.backends {
+		if !b.Disabled && b.GraphQL != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Client) HasBudget() bool {
+	rl := c.GetRateLimit()
+	if rl.Limit == 0 {
+		return true
+	}
+	threshold := max(10, rl.Limit/10)
+	return rl.Remaining > threshold
+}
+
+func (c *Client) waitRequest(ctx context.Context, lim *limiter) error {
+	if lim != nil {
+		if err := lim.Wait(ctx); err != nil {
+			return err
+		}
+	}
+	if c.global != nil {
+		return c.global.Wait(ctx)
+	}
+	return nil
+}
+
+func (c *Client) doGet(ctx context.Context, path string) (*http.Response, error) {
+	c.ensurePool()
+	b, err := c.pool.nextBackend(time.Now())
+	if err != nil {
+		return nil, err
 	}
 	var resp *http.Response
-	err := c.doWithRetry(ctx, func() error {
-		r, e := c.rest.RequestWithContext(ctx, http.MethodGet, path, nil)
-		if e != nil {
-			if rl := detectRateLimitFromHTTPError(e); rl != nil {
+	err = c.doWithRetry(ctx, func() error {
+		var requestErr error
+		for attempt := range 3 {
+			if err := c.waitRequest(ctx, b.REST.Limiter); err != nil {
+				return err
+			}
+			resp, requestErr = b.Rest.RequestWithContext(ctx, http.MethodGet, path, nil)
+			if requestErr == nil || !isGatewayOrTransportError(requestErr) || attempt == 2 {
+				break
+			}
+			if err := proxyBackoff(ctx, c.sleep(), attempt); err != nil {
+				return err
+			}
+		}
+		if requestErr != nil {
+			if rl := detectRateLimitFromHTTPError(requestErr); rl != nil {
+				c.pool.disableUntil(b, rl.ResetAt, false)
 				return rl
 			}
-			return e
+			if statusCode(requestErr) == http.StatusUnauthorized {
+				c.pool.disableUntil(b, time.Time{}, true)
+			} else if !isGatewayOrTransportError(requestErr) {
+				c.pool.reportFailure(b)
+			}
+			return requestErr
 		}
-		resp = r
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	c.updateRateLimit(resp)
-	if c.lim != nil {
-		c.lim.SetRate(c.refillRate()) // two sequential statements: never nest c.mu and lim.mu
-	}
+	c.pool.reportSuccess(b)
+	c.updateRateLimitFor(b, resp)
 	return resp, nil
 }
 
-// Get performs a GET request and unmarshals the JSON response.
 func (c *Client) Get(ctx context.Context, path string, result interface{}) error {
 	resp, err := c.doGet(ctx, path)
 	if err != nil {
-		// doGet already converts rate-limit HTTPErrors into *RateLimitError;
-		// re-detecting would re-wrap the same cause, so short-circuit if the
-		// error already carries one.
 		var rlErr *RateLimitError
 		if errors.As(err, &rlErr) {
 			return err
@@ -228,75 +388,151 @@ func (c *Client) Get(ctx context.Context, path string, result interface{}) error
 	return json.Unmarshal(body, result)
 }
 
-// GetRaw performs a GET request and returns the raw response for header inspection.
 func (c *Client) GetRaw(ctx context.Context, path string) (*http.Response, error) {
 	return c.doGet(ctx, path)
 }
 
-// GetPaginated fetches all pages of a paginated endpoint.
-// The resultFactory should return a pointer to a slice that JSON can unmarshal into.
-// onPage is called for each page of results.
 func (c *Client) GetPaginated(ctx context.Context, path string, onPage func(json.RawMessage) error) error {
-	url := path
-	for url != "" {
-		resp, err := c.doGet(ctx, url)
+	for path != "" {
+		resp, err := c.doGet(ctx, path)
 		if err != nil {
-			// doGet already converts rate-limit HTTPErrors; avoid re-wrapping.
-			var rlErr *RateLimitError
-			if errors.As(err, &rlErr) {
-				return err
-			}
-			if rl := detectRateLimitFromHTTPError(err); rl != nil {
-				return rl
-			}
 			return err
 		}
-
-		body, err := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		if err != nil {
-			return fmt.Errorf("reading response: %w", err)
+		if readErr != nil {
+			return fmt.Errorf("reading response: %w", readErr)
 		}
-
-		if err := onPage(json.RawMessage(body)); err != nil {
+		if err := onPage(body); err != nil {
 			return err
 		}
-
-		url = nextPageURL(resp.Header.Get("Link"))
+		path = nextPageURL(resp.Header.Get("Link"))
 	}
 	return nil
 }
 
-// updateRateLimit extracts rate limit info from response headers.
-func (c *Client) updateRateLimit(resp *http.Response) {
+func (c *Client) updateRateLimitFor(b *backend, resp *http.Response) {
+	c.pool.mu.Lock()
+	defer c.pool.mu.Unlock()
+	updateRateLimitHeaders(&b.REST.RateLimit, resp.Header)
+	b.REST.Limiter.SetRPM(restRPM(b))
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.rateLimit = aggregateRateLimit(c.backends, resourceREST)
+	c.mu.Unlock()
+}
 
-	if v := resp.Header.Get("X-RateLimit-Limit"); v != "" {
-		c.rateLimit.Limit, _ = strconv.Atoi(v)
+func updateRateLimitHeaders(rl *RateLimit, h http.Header) {
+	if v := h.Get("X-RateLimit-Limit"); v != "" {
+		rl.Limit, _ = strconv.Atoi(v)
 	}
-	if v := resp.Header.Get("X-RateLimit-Remaining"); v != "" {
-		c.rateLimit.Remaining, _ = strconv.Atoi(v)
+	if v := h.Get("X-RateLimit-Remaining"); v != "" {
+		rl.Remaining, _ = strconv.Atoi(v)
 	}
-	if v := resp.Header.Get("X-RateLimit-Used"); v != "" {
-		c.rateLimit.Used, _ = strconv.Atoi(v)
+	if v := h.Get("X-RateLimit-Used"); v != "" {
+		rl.Used, _ = strconv.Atoi(v)
 	}
-	if v := resp.Header.Get("X-RateLimit-Reset"); v != "" {
+	if v := h.Get("X-RateLimit-Reset"); v != "" {
 		ts, _ := strconv.ParseInt(v, 10, 64)
-		c.rateLimit.Reset = time.Unix(ts, 0)
+		rl.Reset = time.Unix(ts, 0)
 	}
+}
+
+func (c *Client) updateRateLimit(resp *http.Response) {
+	c.ensurePool()
+	c.updateRateLimitFor(c.backends[0], resp)
+}
+
+type gqlRateLimit struct {
+	Limit     int       `json:"limit"`
+	Remaining int       `json:"remaining"`
+	Used      int       `json:"used"`
+	ResetAt   time.Time `json:"resetAt"`
+	Cost      int       `json:"cost"`
+}
+
+type gqlRateLimitCarrier interface {
+	graphqlRateLimit() *gqlRateLimit
+}
+
+func (c *Client) doGraphQL(ctx context.Context, query string, variables map[string]interface{}, out interface{}) error {
+	c.ensurePool()
+	b, err := c.pool.nextBackend(time.Now())
+	if err != nil {
+		return err
+	}
+	if b.GraphQL == nil {
+		return fmt.Errorf("GraphQL client not available")
+	}
+	if err := c.waitRequest(ctx, b.GraphQLBudget.Limiter); err != nil {
+		return err
+	}
+	if err := b.GraphQL.DoWithContext(ctx, query, variables, out); err != nil {
+		if rl := detectRateLimitFromHTTPError(err); rl != nil {
+			c.pool.disableUntil(b, rl.ResetAt, false)
+			return rl
+		}
+		if statusCode(err) == http.StatusUnauthorized {
+			c.pool.disableUntil(b, time.Time{}, true)
+		} else if !isGatewayOrTransportError(err) {
+			c.pool.reportFailure(b)
+		}
+		return err
+	}
+	c.pool.reportSuccess(b)
+	if carrier, ok := out.(gqlRateLimitCarrier); ok {
+		c.updateGraphQLBudget(b, carrier.graphqlRateLimit())
+	}
+	return nil
+}
+
+func (c *Client) updateGraphQLBudget(b *backend, observed *gqlRateLimit) {
+	if observed == nil || observed.Limit == 0 {
+		return
+	}
+	cost := max(1, observed.Cost)
+	minutes := time.Until(observed.ResetAt).Minutes()
+	rpm := minRefillRate * 60
+	if minutes > 0 && observed.Remaining > 0 {
+		rpm = (float64(observed.Remaining) / float64(cost)) / minutes
+	}
+	c.global.mu.Lock()
+	globalRPM := c.global.rate * 60
+	c.global.mu.Unlock()
+	if rpm > globalRPM {
+		rpm = globalRPM
+	}
+	c.pool.mu.Lock()
+	b.GraphQLBudget.RateLimit = RateLimit{Limit: observed.Limit, Remaining: observed.Remaining, Used: observed.Used, Reset: observed.ResetAt}
+	b.GraphQLBudget.Cost = cost
+	b.GraphQLBudget.Limiter.SetRPM(rpm)
+	c.pool.mu.Unlock()
+}
+
+func (c *Client) sleep() func(context.Context, time.Duration) error {
+	if c.sleepFn != nil {
+		return c.sleepFn
+	}
+	return ctxSleep
+}
+
+func statusCode(err error) int {
+	var httpErr *ghAPI.HTTPError
+	if errors.As(err, &httpErr) {
+		return httpErr.StatusCode
+	}
+	return 0
+}
+
+func isGatewayOrTransportError(err error) bool {
+	code := statusCode(err)
+	return code == 0 || code == http.StatusBadGateway || code == http.StatusServiceUnavailable || code == http.StatusGatewayTimeout
 }
 
 var linkNextRe = regexp.MustCompile(`<([^>]+)>;\s*rel="next"`)
 
-// nextPageURL extracts the next page URL from the Link header.
 func nextPageURL(linkHeader string) string {
-	if linkHeader == "" {
-		return ""
-	}
 	for _, part := range strings.Split(linkHeader, ",") {
-		matches := linkNextRe.FindStringSubmatch(strings.TrimSpace(part))
-		if len(matches) == 2 {
+		if matches := linkNextRe.FindStringSubmatch(strings.TrimSpace(part)); len(matches) == 2 {
 			return matches[1]
 		}
 	}

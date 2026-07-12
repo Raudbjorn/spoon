@@ -2,8 +2,10 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -118,5 +120,43 @@ func TestSave_RejectsInvalid(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 		t.Error("invalid config must not be written")
+	}
+}
+
+func TestConfigPermissionsRejectCredentialBearingFiles(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(`{"version":1,"github":{"tokens":["secret"]}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "chmod 600") {
+		t.Fatalf("expected chmod remediation, got %v", err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	credential := filepath.Join(dir, "proxy.txt")
+	if err := os.WriteFile(credential, []byte("not-read-by-test"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(fmt.Sprintf(`{"version":1,"github":{"proxy":{"staticFile":%q}}}`, credential)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "chmod 600") {
+		t.Fatalf("expected referenced-file remediation, got %v", err)
+	}
+}
+
+func TestConfigPermissionsSaveIsOwnerOnly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := Save(path, &Config{GitHub: GitHubConfig{Tokens: []string{"secret"}}}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("mode=%o want=600", got)
 	}
 }

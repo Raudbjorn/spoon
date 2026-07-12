@@ -399,7 +399,7 @@ func runThreads(args []string) int {
 		flags.interactive = false
 	}
 
-	client, status, err := gh.CheckAuth()
+	client, status, err := gh.CheckAuthConfigured(0)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "❌ Error: GitHub auth:", err)
 		return 1

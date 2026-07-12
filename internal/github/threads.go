@@ -87,7 +87,10 @@ type listThreadsData struct {
 			} `json:"reviewThreads"`
 		} `json:"pullRequest"`
 	} `json:"repository"`
+	RateLimit gqlRateLimit `json:"rateLimit"`
 }
+
+func (d *listThreadsData) graphqlRateLimit() *gqlRateLimit { return &d.RateLimit }
 
 type rawThread struct {
 	ID         string `json:"id"`
@@ -193,7 +196,7 @@ func (t ReviewThread) RequiresBody() bool {
 // ReplyToThread appends a reply comment to a review thread. Returns the new
 // comment with body, author, and createdAt populated.
 func (c *Client) ReplyToThread(ctx context.Context, threadID, body string) (ThreadComment, error) {
-	if c.gql == nil {
+	if !c.HasGraphQL() {
 		return ThreadComment{}, fmt.Errorf("GraphQL client not available (auth required)")
 	}
 	const mutation = `
@@ -227,7 +230,7 @@ mutation($threadId: ID!, $body: String!) {
 		} `json:"addPullRequestReviewThreadReply"`
 	}
 	vars := map[string]interface{}{"threadId": threadID, "body": body}
-	if err := c.gql.DoWithContext(ctx, mutation, vars, &resp); err != nil {
+	if err := c.doGraphQL(ctx, mutation, vars, &resp); err != nil {
 		return ThreadComment{}, fmt.Errorf("reply to thread %s: %w", threadID, err)
 	}
 	c2 := resp.AddPullRequestReviewThreadReply.Comment
@@ -253,7 +256,7 @@ func (c *Client) UnresolveThread(ctx context.Context, threadID string) error {
 }
 
 func (c *Client) flipResolve(ctx context.Context, threadID string, resolved bool) error {
-	if c.gql == nil {
+	if !c.HasGraphQL() {
 		return fmt.Errorf("GraphQL client not available (auth required)")
 	}
 	mutation := `
@@ -270,7 +273,7 @@ mutation($threadId: ID!) {
 	}
 	resp := struct{}{}
 	vars := map[string]interface{}{"threadId": threadID}
-	if err := c.gql.DoWithContext(ctx, mutation, vars, &resp); err != nil {
+	if err := c.doGraphQL(ctx, mutation, vars, &resp); err != nil {
 		return fmt.Errorf("%s thread %s: %w", verb, threadID, err)
 	}
 	return nil
@@ -361,7 +364,7 @@ func (c *Client) bulkFlip(ctx context.Context, ids []string, resolved bool, work
 // resolvedStates filter on reviewThreads). UnresolvedThreads in the returned
 // status is computed from ALL threads, not just the filtered subset.
 func (c *Client) FetchPR(ctx context.Context, owner, repo string, number int, resolvedStates string) (PullRequestStatus, []ReviewThread, error) {
-	if c.gql == nil {
+	if !c.HasGraphQL() {
 		return PullRequestStatus{}, nil, fmt.Errorf("GraphQL client not available (auth required)")
 	}
 	const query = `
@@ -405,6 +408,7 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
       }
     }
   }
+  rateLimit { limit remaining used resetAt cost }
 }`
 	var status PullRequestStatus
 	var all []ReviewThread
@@ -418,7 +422,7 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
 			"after":  cursor,
 		}
 		var resp listThreadsData
-		if err := c.gql.DoWithContext(ctx, query, vars, &resp); err != nil {
+		if err := c.doGraphQLWithRetry(ctx, query, vars, &resp); err != nil {
 			return PullRequestStatus{}, nil, fmt.Errorf("fetch PR: %w", err)
 		}
 		pageStatus, pageThreads := parseFetchPRResponse(resp)

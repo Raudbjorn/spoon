@@ -86,8 +86,7 @@ func buildDiffChunk(diffs []forge.FileDiff, maxChars int) string {
 	if len(diffs) == 0 || maxChars <= 0 {
 		return ""
 	}
-	ranked := make([]forge.FileDiff, len(diffs))
-	copy(ranked, diffs)
+	ranked := append([]forge.FileDiff(nil), diffs...)
 	sort.SliceStable(ranked, func(i, j int) bool {
 		ci := ranked[i].Additions + ranked[i].Deletions
 		cj := ranked[j].Additions + ranked[j].Deletions
@@ -96,32 +95,35 @@ func buildDiffChunk(diffs []forge.FileDiff, maxChars int) string {
 		}
 		return ci > cj
 	})
-	var b strings.Builder
-	first := true
+	var out []rune
 	for _, d := range ranked {
-		line := diffLine(d)
-		if line == "" {
+		chunk := diffLine(d)
+		if chunk == "" {
 			continue
 		}
-		// Always include the first (largest) entry, even when it exceeds the
-		// budget. Subsequent entries are gated on the budget so callers still
-		// get *some* signal for the dominant change.
-		if !first {
-			extra := len(line) + 1 // for the separating newline
-			if b.Len()+extra > maxChars {
-				break
-			}
-			b.WriteByte('\n')
+		if len(out) > 0 {
+			out = append(out, '\n')
 		}
-		b.WriteString(line)
-		first = false
+		remaining := maxChars - len(out)
+		if remaining <= 0 {
+			break
+		}
+		runes := []rune(chunk)
+		if len(runes) > remaining {
+			out = append(out, runes[:remaining]...)
+			break
+		}
+		out = append(out, runes...)
 	}
-	return b.String()
+	return string(out)
 }
 
 func diffLine(d forge.FileDiff) string {
 	if d.Path == "" {
 		return ""
+	}
+	if d.Patch != "" {
+		return d.Patch
 	}
 	del := d.Deletions
 	if del < 0 {

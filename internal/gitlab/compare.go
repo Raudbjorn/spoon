@@ -51,10 +51,18 @@ func (p *Provider) Compare(ctx context.Context, fork forge.T1Data, branch string
 		add, del := d.parseDiffStats()
 		totalAdd += add
 		totalDel += del
+		status := "modified"
+		if d.OldPath != d.NewPath {
+			status = "renamed"
+		}
 		diffs = append(diffs, forge.FileDiff{
-			Path:      d.NewPath,
-			Additions: add,
-			Deletions: del,
+			Path:         d.NewPath,
+			PreviousPath: d.OldPath,
+			Status:       status,
+			Additions:    add,
+			Deletions:    del,
+			Patch:        d.Diff,
+			PatchSource:  "compare_rest",
 		})
 	}
 

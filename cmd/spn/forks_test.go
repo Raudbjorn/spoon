@@ -115,17 +115,17 @@ func (s *stubEmbedder) Dim() int {
 	return s.dim
 }
 
-// makeClusterForks returns a fakeForge with 6 forks split across two axes so
-// the stub embedder forms two clusters.
+// makeClusterForks returns ten fake forks split across two axes so the
+// cluster pipeline's minimum-candidate gate is satisfied.
 func makeClusterForks(now time.Time, parentPushed time.Time) *fakeForge {
-	ids := []string{"o/a1", "o/a2", "o/a3", "o/z1", "o/z2", "o/z3"}
-	paths := map[string]string{
-		"o/a1": "Alpha/x.go",
-		"o/a2": "Alpha/y.go",
-		"o/a3": "Alpha/z.go",
-		"o/z1": "Zeta/p.go",
-		"o/z2": "Zeta/q.go",
-		"o/z3": "Zeta/r.go",
+	ids := []string{"o/a1", "o/a2", "o/a3", "o/a4", "o/a5", "o/z1", "o/z2", "o/z3", "o/z4", "o/z5"}
+	paths := map[string]string{}
+	for _, id := range ids {
+		if strings.Contains(id, "/a") {
+			paths[id] = "Alpha/" + id[3:] + ".go"
+		} else {
+			paths[id] = "Zeta/" + id[3:] + ".go"
+		}
 	}
 	t2 := map[string]forge.T2Data{}
 	forks := []forge.T1Data{}
@@ -186,8 +186,8 @@ func TestSpnForksList_clusterFieldsPopulated(t *testing.T) {
 		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
 	}
 	lines := strings.Split(strings.TrimSuffix(stdout.String(), "\n"), "\n")
-	if len(lines) != 6 {
-		t.Fatalf("expected 6 NDJSON lines, got %d:\n%s", len(lines), stdout.String())
+	if len(lines) != 10 {
+		t.Fatalf("expected 10 NDJSON lines, got %d:\n%s", len(lines), stdout.String())
 	}
 	gotCluster := 0
 	for _, line := range lines {

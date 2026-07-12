@@ -57,22 +57,26 @@ type OwnerInfo struct {
 
 // CompareResult represents the response from the compare endpoint.
 type CompareResult struct {
-	Status       string       `json:"status"` // "ahead", "behind", "diverged", "identical"
-	AheadBy      int          `json:"ahead_by"`
-	BehindBy     int          `json:"behind_by"`
-	TotalCommits int          `json:"total_commits"`
-	Files        []FileChange `json:"files"`
-	Commits      []Commit     `json:"commits"`
-	HTMLURL      string       `json:"html_url"`
+	Status          string       `json:"status"` // "ahead", "behind", "diverged", "identical"
+	AheadBy         int          `json:"ahead_by"`
+	BehindBy        int          `json:"behind_by"`
+	TotalCommits    int          `json:"total_commits"`
+	Files           []FileChange `json:"files"`
+	Commits         []Commit     `json:"commits"`
+	BaseCommit      Commit       `json:"base_commit"`
+	MergeBaseCommit Commit       `json:"merge_base_commit"`
+	HTMLURL         string       `json:"html_url"`
 }
 
 // FileChange represents a changed file in a compare response.
 type FileChange struct {
-	Filename  string `json:"filename"`
-	Status    string `json:"status"` // added, removed, modified, renamed, copied
-	Additions int    `json:"additions"`
-	Deletions int    `json:"deletions"`
-	Changes   int    `json:"changes"`
+	Filename         string `json:"filename"`
+	PreviousFilename string `json:"previous_filename"`
+	Status           string `json:"status"` // added, removed, modified, renamed, copied
+	Additions        int    `json:"additions"`
+	Deletions        int    `json:"deletions"`
+	Changes          int    `json:"changes"`
+	Patch            string `json:"patch"`
 }
 
 // Commit represents a commit in a compare response.
@@ -120,11 +124,12 @@ type RateLimit struct {
 
 // AuthStatus describes the authentication state.
 type AuthStatus struct {
-	Authenticated bool
-	Host          string
-	TokenSource   string   // "gh", "env", "none"
-	Scopes        []string // OAuth scopes attached to the token (empty if unauthenticated)
-	RateLimit     RateLimit
+	Authenticated       bool
+	Host                string
+	TokenSource         string   // "gh", "env", "none"
+	Scopes              []string // OAuth scopes attached to the token (empty if unauthenticated)
+	RateLimit           RateLimit
+	DuplicateIdentities int // configured tokens collapsed because they resolve to the same login
 }
 
 // T1Extra holds additional data from the GraphQL T1 query not in the REST ForkInfo.

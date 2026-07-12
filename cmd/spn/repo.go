@@ -21,7 +21,7 @@ var repoCentralityFn = func(ctx context.Context, treeSrc repo.TreeSource, commit
 
 // repoCheckAuthFn is indirected so tests can stub GitHub auth.
 var repoCheckAuthFn = func() (*gh.Client, gh.AuthStatus, error) {
-	return gh.CheckAuth()
+	return gh.CheckAuthConfigured(0)
 }
 
 // repoMDGCentralityFn is the test-stubbable MDG centrality entry. Production

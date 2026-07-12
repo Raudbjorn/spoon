@@ -127,7 +127,7 @@ func runEvalWith(args []string, stdout, stderr io.Writer) int {
 	// same plumbing as forks list — flag > env > config > builtin.
 	embedderBackend, ovCfg := resolveSpnEmbedderConfig(embedderBackend, openvinoModel, openvinoDevice, openvinoPooling, stderr)
 	if embedderHookForTest == nil {
-		embedder, embedderID, closeEmbedder, err := embed.SelectBackend(embedderBackend, ovCfg)
+		embedder, embedderID, closeEmbedder, err := embed.SelectBackendConfig(embedderBackend, embed.BackendConfig{OpenVINO: ovCfg, FastEmbed: resolveFastEmbedConfig("", "")})
 		if err != nil {
 			return agentio.NewError(agentio.CodeBadInput, err.Error(),
 				"Check --embedder-backend/--openvino-model, or omit them to use the built-in embedder.").Emit(stderr)

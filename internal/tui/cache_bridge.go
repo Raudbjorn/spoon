@@ -131,9 +131,13 @@ func ghCompareToForgeT2(c gh.CompareResult) forge.T2Data {
 		totalAdd += f.Additions
 		totalDel += f.Deletions
 		diffs = append(diffs, forge.FileDiff{
-			Path:      f.Filename,
-			Additions: f.Additions,
-			Deletions: f.Deletions,
+			Path:         f.Filename,
+			PreviousPath: f.PreviousFilename,
+			Status:       f.Status,
+			Additions:    f.Additions,
+			Deletions:    f.Deletions,
+			Patch:        f.Patch,
+			PatchSource:  "compare_rest",
 		})
 	}
 

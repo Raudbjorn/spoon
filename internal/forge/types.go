@@ -141,9 +141,13 @@ type OwnerProfile struct {
 
 // FileDiff is a single file's change statistics from a compare call.
 type FileDiff struct {
-	Path      string
-	Additions int
-	Deletions int
+	Path         string
+	PreviousPath string
+	Status       string
+	Additions    int
+	Deletions    int
+	Patch        string
+	PatchSource  string
 }
 
 // AheadCommit is a commit present in the fork but not in the upstream.
@@ -170,6 +174,7 @@ type T2Data struct {
 	UpstreamedPR       int     // the merged upstream PR number when Upstreamed == true
 	Diffs              []FileDiff
 	Commits            []AheadCommit // used by the T3 lone-wolf gate
+	PatchSkipReason    string
 }
 
 // Contributor is a single contributor to a fork.
@@ -217,6 +222,12 @@ type Forge interface {
 
 	// Headroom returns the current rate-limit headroom in [0.0, 1.0].
 	Headroom() float64
+}
+
+// CommitFileProvider is an optional provider capability for per-commit file
+// attribution. Providers that do not implement it remain valid Forge values.
+type CommitFileProvider interface {
+	CommitFiles(context.Context, T1Data, string) ([]FileDiff, error)
 }
 
 type TopicLane string

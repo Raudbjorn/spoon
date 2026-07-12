@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // CurrentVersion is the schema version written into new/updated config files.
@@ -21,6 +22,7 @@ const CurrentVersion = 1
 type Config struct {
 	Version  int            `json:"version"`
 	Forge    ForgeConfig    `json:"forge,omitempty"`
+	GitHub   GitHubConfig   `json:"github,omitempty"`
 	Embedder EmbedderConfig `json:"embedder,omitempty"`
 	Reranker ModelConfig    `json:"reranker,omitempty"`
 	Labeler  ModelConfig    `json:"labeler,omitempty"`
@@ -39,9 +41,8 @@ type ModelConfig struct {
 // used for fork clustering. Both backends run inside the spoon process;
 // there are no external services.
 type EmbedderConfig struct {
-	// Backend is "builtin" (zero-setup lexical embedder, the default) or
-	// "openvino" (transformer encoder via the OpenVINO runtime; requires the
-	// OpenVINO C runtime to be loadable at run time).
+	// Backend is "builtin" (zero-setup lexical embedder, the default),
+	// "openvino", or "fastembed".
 	Backend string `json:"backend,omitempty"`
 	// ModelPath is the OVMS-style model directory for the openvino backend
 	// (openvino_model.xml + openvino_tokenizer.xml).
@@ -52,6 +53,28 @@ type EmbedderConfig struct {
 	// Pooling overrides the hidden-state pooling: "cls", "mean", or
 	// "last". Empty → the model dir's graph.pbtxt, else CLS.
 	Pooling string `json:"pooling,omitempty"`
+	// FastEmbed settings. The persistent semantic model remains fixed; these
+	// fields record its cache and batching configuration.
+	Model     string `json:"model,omitempty"`
+	CacheDir  string `json:"cacheDir,omitempty"`
+	MaxLength int    `json:"maxLength,omitempty"`
+	BatchSize int    `json:"batchSize,omitempty"`
+}
+
+// GitHubConfig configures authenticated identities, process pacing, and
+// optional ProxyScrape-backed transport routing.
+type GitHubConfig struct {
+	Tokens            []string    `json:"tokens,omitempty"`
+	RequestsPerMinute float64     `json:"requestsPerMinute,omitempty"`
+	Proxy             ProxyConfig `json:"proxy,omitempty"`
+}
+
+type ProxyConfig struct {
+	Enabled           bool   `json:"enabled,omitempty"`
+	APIKeyFile        string `json:"apiKeyFile,omitempty"`
+	StaticFile        string `json:"staticFile,omitempty"`
+	WhitelistPublicIP *bool  `json:"whitelistPublicIp,omitempty"`
+	CacheTTL          string `json:"cacheTtl,omitempty"`
 }
 
 // ForgeConfig records the default forge provider.
@@ -78,6 +101,10 @@ func DefaultPath() (string, error) {
 // returns a wrapped os.ErrNotExist (test with errors.Is); callers treat that as
 // "no config yet".
 func Load(path string) (*Config, error) {
+	info, err := os.Stat(path)
+	if err == nil && configContainsCredentials(path) && info.Mode().Perm()&0o077 != 0 {
+		return nil, fmt.Errorf("config %s contains credentials and is readable by group/other; run chmod 600 %s", path, path)
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -93,6 +120,12 @@ func Load(path string) (*Config, error) {
 	if err := c.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config %s: %w", path, err)
 	}
+	if err := validateCredentialFile(c.GitHub.Proxy.APIKeyFile, "github.proxy.apiKeyFile"); err != nil {
+		return nil, fmt.Errorf("invalid config %s: %w", path, err)
+	}
+	if err := validateCredentialFile(c.GitHub.Proxy.StaticFile, "github.proxy.staticFile"); err != nil {
+		return nil, fmt.Errorf("invalid config %s: %w", path, err)
+	}
 	return &c, nil
 }
 
@@ -105,7 +138,7 @@ func Save(path string, c *Config) error {
 	if c.Version == 0 {
 		c.Version = CurrentVersion
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
 	}
 	data, err := json.MarshalIndent(c, "", "  ")
@@ -114,11 +147,56 @@ func Save(path string, c *Config) error {
 	}
 	data = append(data, '\n')
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", tmp, err)
+	}
+	if err := os.Chmod(tmp, 0o600); err != nil {
+		return fmt.Errorf("secure %s: %w", tmp, err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		return fmt.Errorf("rename %s -> %s: %w", tmp, path, err)
+	}
+	return nil
+}
+
+func configContainsCredentials(path string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var raw struct {
+		GitHub struct {
+			Tokens []string `json:"tokens"`
+			Proxy  struct {
+				APIKeyFile string `json:"apiKeyFile"`
+			} `json:"proxy"`
+		} `json:"github"`
+	}
+	if json.Unmarshal(data, &raw) != nil {
+		return false
+	}
+	return len(raw.GitHub.Tokens) > 0 || raw.GitHub.Proxy.APIKeyFile != ""
+}
+
+func validateCredentialFile(path, field string) error {
+	if path == "" {
+		return nil
+	}
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("%s %q: %w", field, path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s %q must reference a regular file", field, path)
+	}
+	if info.Mode().Perm()&0o400 == 0 {
+		return fmt.Errorf("%s %q must be owner-readable", field, path)
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		return fmt.Errorf("%s %q contains credentials and is readable by group/other; run chmod 600 %s", field, path, path)
 	}
 	return nil
 }
@@ -166,7 +244,7 @@ func (c *Config) normalizeLegacy() {
 
 var (
 	validProviders = map[string]bool{"": true, "github": true, "gitlab": true}
-	validBackends  = map[string]bool{"": true, "builtin": true, "lexical": true, "openvino": true}
+	validBackends  = map[string]bool{"": true, "builtin": true, "lexical": true, "openvino": true, "fastembed": true}
 	validPoolings  = map[string]bool{"": true, "cls": true, "mean": true, "last": true}
 )
 
@@ -176,7 +254,15 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("forge.provider %q must be 'github' or 'gitlab'", c.Forge.Provider)
 	}
 	if !validBackends[strings.ToLower(c.Embedder.Backend)] {
-		return fmt.Errorf("embedder.backend %q must be 'builtin', 'lexical', or 'openvino'", c.Embedder.Backend)
+		return fmt.Errorf("embedder.backend %q must be 'builtin', 'lexical', 'openvino', or 'fastembed'", c.Embedder.Backend)
+	}
+	if c.GitHub.RequestsPerMinute < 0 || c.GitHub.RequestsPerMinute > 900 {
+		return fmt.Errorf("github.requestsPerMinute must be in (0, 900] when set")
+	}
+	if c.GitHub.Proxy.CacheTTL != "" {
+		if _, err := time.ParseDuration(c.GitHub.Proxy.CacheTTL); err != nil {
+			return fmt.Errorf("github.proxy.cacheTtl: %w", err)
+		}
 	}
 	if !validPoolings[strings.ToLower(c.Embedder.Pooling)] {
 		return fmt.Errorf("embedder.pooling %q must be 'cls', 'mean', or 'last'", c.Embedder.Pooling)

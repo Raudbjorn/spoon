@@ -32,6 +32,8 @@ func main() {
 			os.Exit(runEval(os.Args[3:]))
 		}
 		os.Exit(runForks(os.Args[2:]))
+	case "search":
+		os.Exit(runSearch(os.Args[2:]))
 	case "repo":
 		os.Exit(runRepo(os.Args[2:]))
 	default:
@@ -65,11 +67,15 @@ Nouns and verbs:
             (or unresolveReviewThread) is issued. Output is marked dryRun=true.
   pr status <pr-ref>
   forks list <repo|topic:NAME> [--tier 1|2|3] [--top N] [--budget N] [--shortlist N] [--bot-allowlist L] [--refresh] [--csv] [--forge github|gitlab] [--forge-host H]
+                    [--rpm N] [--files] [--commits] [--commit-files]
+                    [--commit-file-budget N] [--web-diff]
                     [--no-cluster] [--cluster-top N] [--cluster-epsilon F] [--cluster-min-size N]
-                    [--embedder-backend builtin|openvino] [--openvino-model PATH]
-                    [--openvino-device DEV] [--openvino-pooling cls|mean|last]
+                    [--embedder-backend builtin|openvino|fastembed]
+                    [--openvino-model PATH] [--openvino-device DEV] [--openvino-pooling cls|mean|last]
+                    [--fastembed-model fast-bge-small-en-v1.5] [--fastembed-cache PATH]
                     [--query "intent"] [--priors PATH] [--full-mdg] [--no-mdg]
                     [--sibling-sim | --no-sibling-sim] [--owner-cache-ttl DUR]
+  search "query" [--repo owner/repo] [--top N]
         --budget N caps the expensive per-fork compare/contributors calls to N,
         cache. --top N instead deep-scans the top N by surface score.
         --shortlist N emits only the top N forks by Robbins expected rank (lower
@@ -81,6 +87,10 @@ Nouns and verbs:
         at run time; set SPOON_OPENVINO_LIB if it is not on the default
         path). Run 'spoon setup' once to download default models
         and persist the configuration.
+        FastEmbed requires ONNX_PATH and is the only backend used for durable
+        semantic indexing and 'spn search'. --commit-files implies --files and
+        --commits and defaults to a 100-commit run budget. --web-diff is an
+        unstable SPOON_GH_COOKIE-gated HTML fallback, not a supported API.
         topic:NAME evaluates the fork networks of the best repositories
         representing a GitHub topic (selection by stars + fork-network size +
         recency; cap with --topic-repos N, default 5). Each record gains an

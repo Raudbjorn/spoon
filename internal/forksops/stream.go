@@ -38,6 +38,11 @@ type Options struct {
 	// cap (the TopN / full-tier behavior applies).
 	Budget int
 
+	// CommitFiles enriches each ahead commit with its changed files. It forces
+	// collect-then-emit semantics so one global budget can be applied by heat.
+	CommitFiles      bool
+	CommitFileBudget int
+
 	// ShortlistN, when > 0, buffers all results, computes each fork's Robbins
 	// expected rank (with confidence) over the enriched set, and emits only the
 	// top-N by expected rank. Forces collect-then-emit semantics.
@@ -232,7 +237,9 @@ type Result struct {
 	// unavailable, or the run reached the cluster pass without
 	// SiblingSimEnabled). The fork is emitted with Heat.SiblingSim = 0;
 	// no post-hoc bonus is applied.
-	SiblingSimSkip *StageSkip
+	SiblingSimSkip      *StageSkip
+	CommitFilesComplete bool
+	CommitFilesSkip     *StageSkip
 }
 
 // StageSkip describes a non-fatal, per-fork enrichment skip. Unlike Error it
@@ -423,7 +430,7 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 		// them into `collected` (mu-guarded) and emit at the end.
 		// Clustering and the expected-rank shortlist both require all enriched
 		// results in hand, so either forces collect-then-emit.
-		batchMode := opts.Cluster.Enabled || opts.ShortlistN > 0 || opts.Query != "" || opts.Priors != nil
+		batchMode := opts.Cluster.Enabled || opts.ShortlistN > 0 || opts.Query != "" || opts.Priors != nil || opts.CommitFiles
 		var (
 			collectedMu sync.Mutex
 			collected   []Result
@@ -616,6 +623,10 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 			return
 		}
 
+		if opts.CommitFiles {
+			enrichCommitFiles(ctx, provider, collected, opts)
+		}
+
 		// Cluster pass: build EnrichedFork pointers over `collected`, run the
 		// shared pipeline, then emit each Result. Heat is mutated in place via
 		// the EnrichedFork pointer back into collected[i].Heat.
@@ -719,6 +730,60 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 // runForksClusterPipeline runs the cluster pipeline over collected forks.
 // Heat is mutated in place via the EnrichedFork pointer back into collected[i].Heat.
 // Returns a non-nil ClusterSkip when the pipeline was non-fatally skipped.
+func enrichCommitFiles(ctx context.Context, provider forge.Forge, collected []Result, opts Options) {
+	fileProvider, supported := provider.(forge.CommitFileProvider)
+	if !supported {
+		for i := range collected {
+			collected[i].CommitFilesSkip = &StageSkip{Stage: "commit_files", ForkID: collected[i].Fork.ID, Reason: "provider does not support per-commit file enrichment"}
+		}
+		return
+	}
+	budget := opts.CommitFileBudget
+	if budget <= 0 {
+		budget = 100
+	}
+	order := make([]int, len(collected))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(i, j int) bool {
+		return collected[order[i]].Heat.Score > collected[order[j]].Heat.Score
+	})
+	used := 0
+	for _, index := range order {
+		result := &collected[index]
+		if result.T2 == nil {
+			result.CommitFilesSkip = &StageSkip{Stage: "commit_files", ForkID: result.Fork.ID, Reason: "compare data unavailable"}
+			continue
+		}
+		sort.SliceStable(result.T2.Commits, func(i, j int) bool {
+			return result.T2.Commits[i].Timestamp.Before(result.T2.Commits[j].Timestamp)
+		})
+		complete := true
+		for commitIndex := range result.T2.Commits {
+			if used >= budget {
+				complete = false
+				result.CommitFilesSkip = &StageSkip{Stage: "commit_files", ForkID: result.Fork.ID, Reason: fmt.Sprintf("global commit-file budget (%d) exhausted", budget)}
+				break
+			}
+			if !opts.ReserveDisabled && provider.Headroom() < ReserveHeadroom {
+				complete = false
+				result.CommitFilesSkip = &StageSkip{Stage: "commit_files", ForkID: result.Fork.ID, Reason: "rate-limit reserve reached"}
+				break
+			}
+			used++
+			files, err := fileProvider.CommitFiles(ctx, result.Fork, result.T2.Commits[commitIndex].SHA)
+			if err != nil {
+				complete = false
+				result.CommitFilesSkip = &StageSkip{Stage: "commit_files", ForkID: result.Fork.ID, Reason: err.Error()}
+				break
+			}
+			result.T2.Commits[commitIndex].Files = files
+		}
+		result.CommitFilesComplete = complete
+	}
+}
+
 func runForksClusterPipeline(
 	ctx context.Context,
 	provider forge.Forge,

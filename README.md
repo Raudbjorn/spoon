@@ -126,11 +126,33 @@ spn threads resolve <pr-ref> <id> [--body T]
 spn threads resolve-all <pr-ref>     # skips human-raised threads (returned in `skipped`)
 spn threads unresolve-all <pr-ref>
 spn pr status <pr-ref>
-spn forks list <repo> [--tier N] [--top N] [--budget N] [--shortlist N] [--query "T"] [--priors PATH] [...]   # NDJSON
+spn forks list <repo> [--tier N] [--top N] [--budget N] [--shortlist N] [--query "T"] [--priors PATH] [...]
+    [--rpm N] [--files] [--commits] [--commit-files] [--commit-file-budget N] [--web-diff]   # NDJSON
 spn forks list topic:zig [--topic-repos 5] [...]                        # whole-topic prospecting
+spn search "oauth rate limiting" [--repo owner/repo] [--top N]          # persistent semantic search
 spn forks eval <repo> --judgments FILE                                  # score ranking vs a labeled set -> JSON report
 spn repo centrality <owner/repo>                                        # upstream module/dir centrality
 ```
+
+`spn forks list` writes every emitted fork snapshot to
+`$XDG_DATA_HOME/spoon/spoon.db` (default
+`~/.local/share/spoon/spoon.db`) before printing it. `--files` and
+`--commits` opt into detailed wire output without changing what SQLite
+retains. `--commit-files` implies both and attributes files to at most 100
+commits per run by default; override with `--commit-file-budget N`.
+
+GitHub traffic is capped at 300 requests/minute by default. Set `--rpm`,
+`SPOON_GITHUB_RPM`, or `github.requestsPerMinute` (maximum 900). Configured
+PATs are probed at startup and round-robin only across distinct GitHub
+logins: several PATs for one login still share that user's 5,000-request/hour
+primary budget and are deduplicated. REST and GraphQL primary budgets remain
+separate. A config containing raw PATs or credential-file references must be
+mode `0600`.
+
+`--web-diff` is an explicitly unstable HTML fallback for missing REST patch
+text. It reads a cookie only from `SPOON_GH_COOKIE`, never persists it, and is
+not a supported GitHub API. REST metadata remains authoritative if the HTML
+adapter fails.
 
 Success: bare JSON to stdout. Failure: structured envelope to stderr:
 
@@ -250,12 +272,26 @@ external services either way:
   polish) and persists the config. The same backend also gives each fork a
   zero-shot `category` facet. If the libraries live off the default path,
   point `SPOON_OPENVINO_LIB` / `SPOON_OPENVINO_GENAI_LIB` at them.
+- **fastembed**: the fixed `fast-bge-small-en-v1.5` BGE model (384
+  dimensions, max length 512) through native Go and ONNX Runtime. Set
+  `ONNX_PATH=/path/to/libonnxruntime.so`, then run
+  `spoon setup --embedder-backend fastembed`. Models cache under
+  `$XDG_CACHE_HOME/spoon/models/fastembed`; the exact semantic identity is
+  `fastembed:fast-bge-small-en-v1.5:maxlen=512`. Unlike optional OpenVINO
+  clustering/reranking, persistent indexing and `spn search` use only this
+  FastEmbed backend.
 
 Clusters get deterministic heuristic labels (dominant directory prefix +
 the most discriminative commit/path tokens). Tune with `--cluster-epsilon`
 / `--cluster-min-size`, cap the embedded set with `--cluster-top`, or
 disable with `--no-cluster`. See [`docs/embedders.md`](docs/embedders.md)
 for both algorithms and the OpenVINO setup.
+
+When FastEmbed is selected, each completed list run embeds only new or changed
+documents in batches of 32. `spn search "<query>" --top 20` queries every
+indexed fork (or one upstream with `--repo owner/repo`) and emits deterministic
+score-descending NDJSON. An empty index is a successful empty result with a
+`semantic_index_empty` warning.
 
 ## Project layout
 
@@ -264,13 +300,15 @@ cmd/spoon/         Interactive CLI entry point
 cmd/spn/           Agent-shaped CLI (JSON/NDJSON)
 internal/forge/    Provider abstraction (GitHub + GitLab + Gitea)
 internal/genai/    OpenVINO GenAI label polisher for cluster labels
-internal/github/   GitHub client (REST + GraphQL via gh CLI)
+internal/github/   GitHub REST/GraphQL dispatcher, token/proxy pools, web-diff adapter
 internal/gitlab/   GitLab client
 internal/heat/     Scoring, percentiles, filters
 internal/mdg/      Module Dependency Graph centrality backend (opt-in via --full-mdg)
 internal/threadsops/ PR thread ops shared by `spoon threads` and `spn threads`
 internal/agentio/  Structured error envelope + JSON writers for `spn`
-internal/embed/    Built-in lexical embedder + per-fork features
+internal/embed/    Built-in, OpenVINO, and fixed FastEmbed backends
+internal/semantic/ Deterministic documents, vector codec, incremental indexing
+internal/store/    Durable SQLite snapshots and embeddings
 internal/cluster/  Clustering, novelty, heuristic labels
 internal/forksops/ Streaming fork enumeration/enrichment
 internal/tui/      Bubbletea TUI

@@ -18,7 +18,7 @@ import (
 // apiFactory builds the threadsops.API used by every threads handler.
 // Overridable for tests.
 var apiFactory = func() (threadsops.API, *agentio.Error) {
-	client, status, err := gh.CheckAuth()
+	client, status, err := gh.CheckAuthConfigured(0)
 	if err != nil {
 		return nil, agentio.NewError(agentio.CodeAuthRequired, "github auth: "+err.Error(), agentio.RemediationAuthRequired())
 	}
