@@ -101,19 +101,34 @@ func buildDiffChunk(diffs []forge.FileDiff, maxChars int) string {
 		if chunk == "" {
 			continue
 		}
+		// Reserve the separating newline's slot before spending the budget, so
+		// an exact-fit first entry can't push the result to maxChars+1.
+		sep := 0
 		if len(out) > 0 {
-			out = append(out, '\n')
+			sep = 1
 		}
-		remaining := maxChars - len(out)
+		remaining := maxChars - len(out) - sep
 		if remaining <= 0 {
 			break
 		}
-		runes := []rune(chunk)
-		if len(runes) > remaining {
-			out = append(out, runes[:remaining]...)
+		if sep == 1 {
+			out = append(out, '\n')
+		}
+		// Decode only up to `remaining` runes directly from the string, avoiding
+		// a full []rune(chunk) allocation for a potentially large patch.
+		count := 0
+		truncated := false
+		for _, r := range chunk {
+			if count >= remaining {
+				truncated = true
+				break
+			}
+			out = append(out, r)
+			count++
+		}
+		if truncated {
 			break
 		}
-		out = append(out, runes...)
 	}
 	return string(out)
 }
@@ -147,7 +162,10 @@ func diffLine(d forge.FileDiff) string {
 }
 
 var (
-	hunkHeader = regexp.MustCompile(`@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@`)
+	// Anchored to the start of a line (multiline) so a real hunk header is
+	// stripped but a source line that merely contains "@@ -10,5 +10,5 @@" is not
+	// corrupted.
+	hunkHeader = regexp.MustCompile(`(?m)^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@`)
 	wsRun      = regexp.MustCompile(`[ \t]+`)
 	identTok   = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 )

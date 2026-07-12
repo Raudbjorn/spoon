@@ -18,6 +18,7 @@ func TestSnapshotReplaceRemovesStaleRows(t *testing.T) {
 	snapshot := Snapshot{
 		Repo:         RepoRecord{Provider: "github", Host: "github.com", Owner: "up", Name: "repo", FirstSeen: now, LastSeen: now},
 		Fork:         ForkRecord{ForgeID: "fork/repo", Owner: "fork", Name: "repo", Topics: []string{"z", "a"}, UpdatedAt: now},
+		T2Present:    true, // authoritative compare/commit data — exercises the replace path
 		CompareFiles: []FileRecord{{Path: "a.go", Status: "modified", Patch: &patch, PatchSource: "compare_rest"}, {Path: "stale.go"}},
 		Commits: []CommitRecord{
 			{SHA: "keep", CommittedAt: now, Files: []FileRecord{{Path: "a.go", Patch: &patch, PatchSource: "commit_rest"}}},
@@ -45,6 +46,39 @@ func TestSnapshotReplaceRemovesStaleRows(t *testing.T) {
 		}
 		if got != want {
 			t.Fatalf("%s rows=%d want=%d", table, got, want)
+		}
+	}
+}
+
+func TestDegradedSnapshotPreservesPriorEnrichment(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "spoon.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	now := time.Now().UTC()
+	repo := RepoRecord{Provider: "github", Host: "github.com", Owner: "up", Name: "repo", FirstSeen: now, LastSeen: now}
+	fork := ForkRecord{ForgeID: "fork/repo", Owner: "fork", Name: "repo", UpdatedAt: now}
+	// First: an authoritative scan populates compare/commit rows.
+	if err := db.UpsertSnapshot(context.Background(), Snapshot{
+		Repo: repo, Fork: fork, T2Present: true,
+		CompareFiles: []FileRecord{{Path: "a.go", Status: "modified"}},
+		Commits:      []CommitRecord{{SHA: "keep", CommittedAt: now}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Then: a degraded scan (T2 absent) must NOT erase the prior enrichment.
+	if err := db.UpsertSnapshot(context.Background(), Snapshot{Repo: repo, Fork: fork}); err != nil {
+		t.Fatal(err)
+	}
+	forkKey := ForkKey(RepoKey("github", "github.com", "up", "repo"), "fork/repo")
+	for table, want := range map[string]int{"compare_files": 1, "commits": 1} {
+		var got int
+		if err := db.db.QueryRow("SELECT count(*) FROM "+table+" WHERE fork_key=?", forkKey).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("%s rows=%d want=%d (degraded scan must preserve prior data)", table, got, want)
 		}
 	}
 }

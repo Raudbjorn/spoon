@@ -2,6 +2,7 @@ package github
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"time"
@@ -47,8 +48,8 @@ func ResolveClientOptions(rpmOverride float64) (ClientOptions, error) {
 	if rpmOverride != 0 {
 		opts.RequestsPerMinute = rpmOverride
 	}
-	if opts.RequestsPerMinute <= 0 || opts.RequestsPerMinute > 900 {
-		return ClientOptions{}, fmt.Errorf("github requests per minute must be in (0, 900]")
+	if math.IsNaN(opts.RequestsPerMinute) || math.IsInf(opts.RequestsPerMinute, 0) || opts.RequestsPerMinute <= 0 || opts.RequestsPerMinute > 900 {
+		return ClientOptions{}, fmt.Errorf("github requests per minute must be a finite value in (0, 900]")
 	}
 	return opts, nil
 }

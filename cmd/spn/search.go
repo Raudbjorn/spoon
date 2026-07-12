@@ -37,6 +37,9 @@ func runSearchWith(args []string, stdout, stderr io.Writer) int {
 			}
 			i++
 			repoFilter = strings.TrimSpace(args[i])
+			if repoFilter == "" {
+				return agentio.NewError(agentio.CodeBadInput, "--repo must not be empty", "Pass --repo owner/repo.").Emit(stderr)
+			}
 		case "--top":
 			if i+1 >= len(args) {
 				return agentio.NewError(agentio.CodeBadInput, "--top requires a value", "Pass --top N with N > 0.").Emit(stderr)
@@ -68,6 +71,19 @@ func runSearchWith(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return agentio.NewError(agentio.CodeBadInput, "embedder_unavailable: "+err.Error(), "Secure and repair the spoon config, then retry.").Emit(stderr)
 	}
+
+	// An absent store is a successful empty result — checked before loading the
+	// embedder so a fresh install without onnxruntime still reports
+	// semantic_index_empty rather than embedder_unavailable.
+	path, pathErr := store.DefaultPath()
+	if pathErr != nil {
+		return agentio.NewError(agentio.CodeInternal, pathErr.Error(), agentio.RemediationInternal()).Emit(stderr)
+	}
+	if _, statErr := os.Stat(path); errors.Is(statErr, os.ErrNotExist) {
+		emitSemanticEmpty(stderr)
+		return 0
+	}
+
 	var embCfg config.EmbedderConfig
 	if cfg != nil {
 		embCfg = cfg.Embedder
@@ -81,14 +97,6 @@ func runSearchWith(args []string, stdout, stderr io.Writer) int {
 	}
 	defer model.Close()
 
-	path, pathErr := store.DefaultPath()
-	if pathErr != nil {
-		return agentio.NewError(agentio.CodeInternal, pathErr.Error(), agentio.RemediationInternal()).Emit(stderr)
-	}
-	if _, statErr := os.Stat(path); errors.Is(statErr, os.ErrNotExist) {
-		emitSemanticEmpty(stderr)
-		return 0
-	}
 	db, err := store.OpenDefault()
 	if err != nil {
 		return agentio.NewError(agentio.CodeInternal, "store_unavailable: "+err.Error(), agentio.RemediationInternal()).Emit(stderr)
@@ -105,12 +113,15 @@ func runSearchWith(args []string, stdout, stderr io.Writer) int {
 		if owner == "" || name == "" {
 			return agentio.NewError(agentio.CodeBadInput, "--repo must be owner/repo", "Pass --repo owner/repo.").Emit(stderr)
 		}
+		// cfg may be nil (no config file); fall back to GitHub defaults.
 		provider, host := "github", "github.com"
-		if cfg.Forge.Provider != "" {
-			provider = strings.ToLower(cfg.Forge.Provider)
-		}
-		if cfg.Forge.Host != "" {
-			host = cfg.Forge.Host
+		if cfg != nil {
+			if cfg.Forge.Provider != "" {
+				provider = strings.ToLower(cfg.Forge.Provider)
+			}
+			if cfg.Forge.Host != "" {
+				host = cfg.Forge.Host
+			}
 		}
 		repoKey = store.RepoKey(provider, host, owner, name)
 	}

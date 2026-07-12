@@ -57,6 +57,11 @@ type Snapshot struct {
 	CompareFiles []FileRecord
 	Commits      []CommitRecord
 	Document     DocumentRecord
+	// T2Present indicates the compare/commit data is authoritative (T2 was
+	// fetched). When false, UpsertSnapshot preserves any previously stored
+	// compare_files/commits rather than deleting them — a degraded scan must
+	// not erase prior enrichment.
+	T2Present bool
 }
 
 type PendingDocument struct {
@@ -205,23 +210,27 @@ func (s *Store) UpsertSnapshot(ctx context.Context, snap Snapshot) error {
 		forkKey, repoKey, snap.Fork.ForgeID, snap.Fork.Owner, snap.Fork.Name, snap.Fork.URL, snap.Fork.Description, snap.Fork.Language, string(topicsJSON), snap.Fork.Stars, ts(snap.Fork.PushedAt), snap.Fork.Heat, snap.Fork.Tier, ts(snap.Fork.UpdatedAt)); err != nil {
 		return fmt.Errorf("upsert fork: %w", err)
 	}
-	for _, q := range []string{"DELETE FROM compare_files WHERE fork_key=?", "DELETE FROM commits WHERE fork_key=?"} {
-		if _, err = tx.ExecContext(ctx, q, forkKey); err != nil {
-			return fmt.Errorf("replace snapshot: %w", err)
+	// Only replace compare/commit rows when the incoming data is authoritative
+	// (T2 was fetched). Otherwise a degraded scan would erase prior enrichment.
+	if snap.T2Present {
+		for _, q := range []string{"DELETE FROM compare_files WHERE fork_key=?", "DELETE FROM commits WHERE fork_key=?"} {
+			if _, err = tx.ExecContext(ctx, q, forkKey); err != nil {
+				return fmt.Errorf("replace snapshot: %w", err)
+			}
 		}
-	}
-	for _, f := range snap.CompareFiles {
-		if err = insertFile(ctx, tx, "compare_files", forkKey, "", f); err != nil {
-			return err
-		}
-	}
-	for _, c := range snap.Commits {
-		if _, err = tx.ExecContext(ctx, `INSERT INTO commits(fork_key,sha,message,author_login,author_email,committed_at) VALUES(?,?,?,?,?,?)`, forkKey, c.SHA, c.Message, c.AuthorLogin, c.AuthorEmail, ts(c.CommittedAt)); err != nil {
-			return fmt.Errorf("insert commit: %w", err)
-		}
-		for _, f := range c.Files {
-			if err = insertFile(ctx, tx, "commit_files", forkKey, c.SHA, f); err != nil {
+		for _, f := range snap.CompareFiles {
+			if err = insertFile(ctx, tx, "compare_files", forkKey, "", f); err != nil {
 				return err
+			}
+		}
+		for _, c := range snap.Commits {
+			if _, err = tx.ExecContext(ctx, `INSERT INTO commits(fork_key,sha,message,author_login,author_email,committed_at) VALUES(?,?,?,?,?,?)`, forkKey, c.SHA, c.Message, c.AuthorLogin, c.AuthorEmail, ts(c.CommittedAt)); err != nil {
+				return fmt.Errorf("insert commit: %w", err)
+			}
+			for _, f := range c.Files {
+				if err = insertFile(ctx, tx, "commit_files", forkKey, c.SHA, f); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -287,8 +296,14 @@ func (s *Store) UpsertEmbeddings(ctx context.Context, records []EmbeddingRecord)
 		if r.Dim <= 0 || len(r.Vector) != r.Dim*4 {
 			return fmt.Errorf("invalid embedding %s: dim=%d bytes=%d", r.DocumentID, r.Dim, len(r.Vector))
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO embeddings(document_id,model,dim,vector,content_hash,created_at) VALUES(?,?,?,?,?,?)
-			ON CONFLICT(document_id,model) DO UPDATE SET dim=excluded.dim,vector=excluded.vector,content_hash=excluded.content_hash,created_at=excluded.created_at`, r.DocumentID, r.Model, r.Dim, r.Vector, r.ContentHash, ts(r.CreatedAt)); err != nil {
+		// Guard against overwriting a newer vector with an older in-flight
+		// result: only write when this embedding's content_hash still matches
+		// the document's current hash. The INSERT ... SELECT ... WHERE EXISTS
+		// inserts nothing (and triggers no conflict update) otherwise.
+		if _, err := tx.ExecContext(ctx, `INSERT INTO embeddings(document_id,model,dim,vector,content_hash,created_at)
+			SELECT ?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM documents d WHERE d.document_id=? AND d.content_hash=?)
+			ON CONFLICT(document_id,model) DO UPDATE SET dim=excluded.dim,vector=excluded.vector,content_hash=excluded.content_hash,created_at=excluded.created_at`,
+			r.DocumentID, r.Model, r.Dim, r.Vector, r.ContentHash, ts(r.CreatedAt), r.DocumentID, r.ContentHash); err != nil {
 			return err
 		}
 	}
@@ -296,8 +311,11 @@ func (s *Store) UpsertEmbeddings(ctx context.Context, records []EmbeddingRecord)
 }
 
 func (s *Store) SearchRows(ctx context.Context, model, repoKey string) ([]SearchRow, error) {
+	// e.content_hash = d.content_hash excludes vectors that are stale relative to
+	// the current document (re-indexing pending or failed), so search never
+	// ranks against an embedding of superseded content.
 	q := `SELECT d.document_id,f.fork_key,r.repo_key,r.owner||'/'||r.name,f.owner||'/'||f.name,f.url,e.model,e.dim,e.vector,e.created_at
-		FROM embeddings e JOIN documents d ON d.document_id=e.document_id JOIN forks f ON f.fork_key=d.fork_key JOIN repos r ON r.repo_key=f.repo_key WHERE e.model=?`
+		FROM embeddings e JOIN documents d ON d.document_id=e.document_id AND e.content_hash=d.content_hash JOIN forks f ON f.fork_key=d.fork_key JOIN repos r ON r.repo_key=f.repo_key WHERE e.model=?`
 	args := []any{model}
 	if repoKey != "" {
 		q += " AND r.repo_key=?"

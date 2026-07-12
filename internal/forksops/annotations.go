@@ -94,6 +94,9 @@ func collectDegradedStages(r Result) []DegradedStage {
 	if r.SiblingSimSkip != nil {
 		degraded = append(degraded, DegradedStage{Stage: "sibling_sim", Reason: r.SiblingSimSkip.Reason})
 	}
+	if r.CommitFilesSkip != nil {
+		degraded = append(degraded, DegradedStage{Stage: "commit_files", Reason: r.CommitFilesSkip.Reason})
+	}
 	return degraded
 }
 

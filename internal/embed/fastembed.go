@@ -87,6 +87,11 @@ func (e *FastEmbedEmbedder) EmbedPassages(ctx context.Context, texts []string) (
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	// Re-check after acquiring the lock: a request canceled while queued behind
+	// another embed call must not still perform the ONNX work.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if e.model == nil {
 		return nil, fmt.Errorf("fastembed is closed")
 	}
@@ -106,6 +111,9 @@ func (e *FastEmbedEmbedder) EmbedQuery(ctx context.Context, text string) (Vector
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if e.model == nil {
 		return nil, fmt.Errorf("fastembed is closed")
 	}

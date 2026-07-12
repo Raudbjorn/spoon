@@ -89,7 +89,10 @@ func parseProxyLines(body string) []*url.URL {
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 			continue
 		}
-		if _, _, err := net.SplitHostPort(u.Host); err != nil {
+		// A missing port is valid — http.ProxyURL uses the scheme's default
+		// port. Only a genuinely malformed host (any other SplitHostPort error)
+		// is skipped.
+		if _, _, err := net.SplitHostPort(u.Host); err != nil && !strings.Contains(err.Error(), "missing port") {
 			continue
 		}
 		if !seen[u.String()] {
@@ -222,5 +225,7 @@ func saveProxyCache(urls []*url.URL) error {
 	if err := os.WriteFile(path+".tmp", data, 0o600); err != nil {
 		return fmt.Errorf("write proxy cache: %w", err)
 	}
+	// os.Rename cannot overwrite an existing destination on Windows.
+	_ = os.Remove(path)
 	return os.Rename(path+".tmp", path)
 }

@@ -154,8 +154,8 @@ func runSetupWith(ctx context.Context, args []string, stdin io.Reader, interacti
 	// optional reranker + labeler features.
 	cfg.Embedder.Backend = embed.BackendFastEmbed
 	ovOK := setupOpenVINO(ctx, f, cfg, interactive, stdin, stdout)
-	fastOK := setupFastEmbed(cfg, f.fastembedCache, stdout)
-	setupProxyReferences(cfg, stdout)
+	fastOK := setupFastEmbed(cfg, f.fastembedCache, f.noColor, stdout)
+	setupProxyReferences(cfg, f.noColor, stdout)
 
 	// --- Persist config -------------------------------------------------------
 	if !f.noConfig && configPath != "" {
@@ -394,7 +394,7 @@ func setupOpenVINO(ctx context.Context, f setupFlags, cfg *config.Config, intera
 	return ok
 }
 
-func setupFastEmbed(cfg *config.Config, cacheDir string, out io.Writer) bool {
+func setupFastEmbed(cfg *config.Config, cacheDir string, noColor bool, out io.Writer) bool {
 	// Record fastembed as the embedder regardless of runtime availability, so
 	// the written config is correct and the feature activates as soon as
 	// onnxruntime is installed.
@@ -414,24 +414,30 @@ func setupFastEmbed(cfg *config.Config, cacheDir string, out io.Writer) bool {
 		printCheck(out, "FastEmbed", false, []string{
 			"Embedder unavailable until onnxruntime is installed: " + err.Error(),
 			"Set ONNX_PATH to libonnxruntime.so; semantic search/persistence activates automatically once present.",
-		}, false)
+		}, noColor)
 		return false
 	}
 	_ = model.Close()
 	printCheck(out, "FastEmbed", true, []string{
 		"Model ready: fast-bge-small-en-v1.5 (384 dimensions, max length 512).",
 		"Cache: " + cfg.Embedder.CacheDir,
-	}, false)
+	}, noColor)
 	return true
 }
 
-func setupProxyReferences(cfg *config.Config, out io.Writer) {
-	const (
-		apiKeyPath = "/home/svnbjrn/projects/spoon-4/sources/.key.txt"
-		staticPath = "/home/svnbjrn/projects/spoon-4/sources/proxyscrape_premium_http_proxies.txt"
-	)
-	apiOK := secureRegularFile(apiKeyPath)
-	staticOK := secureRegularFile(staticPath)
+// setupProxyReferences wires ProxyScrape credential *paths* (never their
+// contents) into the config. It is strictly opt-in: paths come only from the
+// SPOON_PROXY_KEY_PATH / SPOON_PROXY_STATIC_PATH environment variables — no
+// hard-coded, user-specific locations — and an existing whitelist / TTL choice
+// is preserved rather than overwritten.
+func setupProxyReferences(cfg *config.Config, noColor bool, out io.Writer) {
+	apiKeyPath := strings.TrimSpace(os.Getenv("SPOON_PROXY_KEY_PATH"))
+	staticPath := strings.TrimSpace(os.Getenv("SPOON_PROXY_STATIC_PATH"))
+	if apiKeyPath == "" && staticPath == "" {
+		return
+	}
+	apiOK := apiKeyPath != "" && secureRegularFile(apiKeyPath)
+	staticOK := staticPath != "" && secureRegularFile(staticPath)
 	if !apiOK && !staticOK {
 		return
 	}
@@ -442,14 +448,18 @@ func setupProxyReferences(cfg *config.Config, out io.Writer) {
 	if staticOK {
 		cfg.GitHub.Proxy.StaticFile = staticPath
 	}
-	whitelist := true
-	cfg.GitHub.Proxy.WhitelistPublicIP = &whitelist
-	cfg.GitHub.Proxy.CacheTTL = "1h"
+	if cfg.GitHub.Proxy.WhitelistPublicIP == nil {
+		whitelist := true
+		cfg.GitHub.Proxy.WhitelistPublicIP = &whitelist
+	}
+	if cfg.GitHub.Proxy.CacheTTL == "" {
+		cfg.GitHub.Proxy.CacheTTL = "1h"
+	}
 	printCheck(out, "ProxyScrape", true, []string{
 		"Reusing credential paths without copying their contents.",
 		"API key: " + cfg.GitHub.Proxy.APIKeyFile,
 		"Static pool: " + cfg.GitHub.Proxy.StaticFile,
-	}, false)
+	}, noColor)
 }
 
 func secureRegularFile(path string) bool {

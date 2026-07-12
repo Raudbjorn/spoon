@@ -617,7 +617,12 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 		return agentio.NewError(agentio.CodeUpstream, streamErr.Error(), agentio.RemediationUpstream()).Emit(stderr)
 	}
 	if csvMode {
-		return emitForksCSV(ctx, db, auth, owner, name, semanticModelID, stdout, stderr, ch)
+		code := emitForksCSV(ctx, db, auth, owner, name, semanticModelID, stdout, stderr, ch)
+		if code == 0 {
+			// CSV scans persist documents too; index them like the NDJSON path.
+			emitSemanticIndexWarning(ctx, db, searchEmbedder, stderr)
+		}
+		return code
 	}
 	degraded, total := 0, 0
 	storeWarned := false
@@ -697,6 +702,11 @@ func persistForkSnapshot(ctx context.Context, db *store.Store, auth forge.AuthIn
 		},
 	}
 	if r.T2 != nil {
+		// T2 was fetched: its compare/commit data is authoritative and replaces
+		// any stored rows. A degraded scan (r.T2 == nil) leaves T2Present false
+		// so UpsertSnapshot preserves previously stored enrichment instead of
+		// erasing it.
+		snapshot.T2Present = true
 		snapshot.CompareFiles = storeFiles(r.T2.Diffs)
 		snapshot.Commits = make([]store.CommitRecord, 0, len(r.T2.Commits))
 		for _, commit := range r.T2.Commits {
