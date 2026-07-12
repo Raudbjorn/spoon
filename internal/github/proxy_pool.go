@@ -133,7 +133,9 @@ func (t *rotatingProxyTransport) RoundTrip(req *http.Request) (*http.Response, e
 		transport = entry.transport
 	}
 	resp, err := transport.RoundTrip(req)
-	if entry != nil {
+	// Don't charge caller cancellation / deadline to proxy health — that's not
+	// the proxy's fault and would wrongly disable good proxies under load.
+	if entry != nil && req.Context().Err() == nil {
 		success := err == nil && resp.StatusCode != http.StatusProxyAuthRequired && resp.StatusCode != http.StatusBadGateway && resp.StatusCode != http.StatusServiceUnavailable && resp.StatusCode != http.StatusGatewayTimeout
 		t.pool.report(entry, success)
 	}
@@ -163,6 +165,9 @@ func (p *backendPool) nextBackend(now time.Time) (*backend, error) {
 	var earliest time.Time
 	statisticalOnly := true
 	for _, b := range p.backends {
+		if b.Permanent {
+			continue // confirmed auth failure — never dispatch or recover
+		}
 		if !b.Disabled && (b.DisabledUntil.IsZero() || !now.Before(b.DisabledUntil)) {
 			active = append(active, b)
 			continue
@@ -175,10 +180,15 @@ func (p *backendPool) nextBackend(now time.Time) (*backend, error) {
 		}
 	}
 	if len(active) == 0 && statisticalOnly {
+		// Reset the circuit breaker for statistically-disabled identities only;
+		// permanently-rejected (401) credentials stay excluded.
 		for _, b := range p.backends {
+			if b.Permanent {
+				continue
+			}
 			b.Disabled = false
+			active = append(active, b)
 		}
-		active = append(active, p.backends...)
 	}
 	if len(active) == 0 {
 		return nil, &RateLimitError{ResetAt: earliest}
@@ -208,11 +218,16 @@ func (p *backendPool) disableUntil(b *backend, until time.Time, permanent bool) 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	b.DisabledUntil = until
-	b.Disabled = permanent
+	if permanent {
+		b.Permanent = true
+	}
 }
 
 func (p *backendPool) rehabilitateLocked() {
 	for _, b := range p.backends {
+		if b.Permanent {
+			continue // never rehabilitate a confirmed auth failure
+		}
 		b.Successes /= 2
 		b.Failures /= 2
 		if b.Disabled && b.DisabledUntil.IsZero() && b.Failures <= 5 {

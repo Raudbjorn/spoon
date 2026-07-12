@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -131,6 +132,14 @@ func Save(path string, c *Config) error {
 	if err := c.Validate(); err != nil {
 		return err
 	}
+	// Apply the same credential-file checks Load performs, so setup can never
+	// write a config that the next command refuses to load.
+	if err := validateCredentialFile(c.GitHub.Proxy.APIKeyFile, "github.proxy.apiKeyFile"); err != nil {
+		return err
+	}
+	if err := validateCredentialFile(c.GitHub.Proxy.StaticFile, "github.proxy.staticFile"); err != nil {
+		return err
+	}
 	if c.Version == 0 {
 		c.Version = CurrentVersion
 	}
@@ -149,6 +158,9 @@ func Save(path string, c *Config) error {
 	if err := os.Chmod(tmp, 0o600); err != nil {
 		return fmt.Errorf("secure %s: %w", tmp, err)
 	}
+	// os.Rename cannot overwrite an existing destination on Windows; remove it
+	// first (no-op / ignorable when absent).
+	_ = os.Remove(path)
 	if err := os.Rename(tmp, path); err != nil {
 		return fmt.Errorf("rename %s -> %s: %w", tmp, path, err)
 	}
@@ -254,8 +266,8 @@ func (c *Config) Validate() error {
 	if !validBackends[strings.ToLower(c.Embedder.Backend)] {
 		return fmt.Errorf("embedder.backend %q must be 'fastembed' (or empty)", c.Embedder.Backend)
 	}
-	if c.GitHub.RequestsPerMinute < 0 || c.GitHub.RequestsPerMinute > 900 {
-		return fmt.Errorf("github.requestsPerMinute must be in (0, 900] when set")
+	if math.IsNaN(c.GitHub.RequestsPerMinute) || math.IsInf(c.GitHub.RequestsPerMinute, 0) || c.GitHub.RequestsPerMinute < 0 || c.GitHub.RequestsPerMinute > 900 {
+		return fmt.Errorf("github.requestsPerMinute must be a finite value in (0, 900] when set")
 	}
 	if c.GitHub.Proxy.CacheTTL != "" {
 		if _, err := time.ParseDuration(c.GitHub.Proxy.CacheTTL); err != nil {

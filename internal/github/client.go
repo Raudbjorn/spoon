@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -53,8 +54,9 @@ type backend struct {
 	GraphQLBudget budgetState
 	Successes     uint64
 	Failures      uint64
-	Disabled      bool
-	DisabledUntil time.Time
+	Disabled      bool      // statistical circuit-breaker (recoverable)
+	Permanent     bool      // confirmed auth failure (401); never rehabilitated
+	DisabledUntil time.Time // timed rate-limit cooldown
 }
 
 // Client dispatches GitHub requests across distinct authenticated identities.
@@ -64,6 +66,7 @@ type Client struct {
 	backends []*backend
 	pool     *backendPool
 	proxies  *proxyPool
+	rotating *rotatingProxyTransport
 	global   *limiter
 	webDiff  *webdiff.Client
 
@@ -141,12 +144,12 @@ func NewClientWithOptions(opts ClientOptions) (*Client, error) {
 	if rpm == 0 {
 		rpm = defaultRPM
 	}
-	if rpm <= 0 || rpm > 900 {
-		return nil, fmt.Errorf("requests per minute must be in (0, 900]")
+	if math.IsNaN(rpm) || math.IsInf(rpm, 0) || rpm <= 0 || rpm > 900 {
+		return nil, fmt.Errorf("requests per minute must be a finite value in (0, 900]")
 	}
 	proxies, _ := bootstrapProxyPool(context.Background(), opts.Proxy)
 	rotating := newRotatingProxyTransport(proxies)
-	c := &Client{proxies: proxies, global: newLimiterRPM(rpm, globalBurst), authenticated: len(opts.Tokens) > 0}
+	c := &Client{proxies: proxies, rotating: rotating, global: newLimiterRPM(rpm, globalBurst), authenticated: len(opts.Tokens) > 0}
 
 	if len(opts.Tokens) == 0 {
 		// Proxy routing only attaches to explicit config-token backends (and the
@@ -229,7 +232,11 @@ func (c *Client) ensurePool() {
 	}
 }
 
-func (c *Client) Close() { newRotatingProxyTransport(c.proxies).CloseIdleConnections() }
+func (c *Client) Close() {
+	if c.rotating != nil {
+		c.rotating.CloseIdleConnections()
+	}
+}
 
 // EnableWebDiff enables the explicitly unstable, cookie-authenticated HTML
 // fallback. The cookie remains memory-only.
@@ -285,7 +292,7 @@ func (c *Client) resourceHeadroom(resource apiResource) float64 {
 func aggregateRateLimit(backends []*backend, resource apiResource) RateLimit {
 	var out RateLimit
 	for _, b := range backends {
-		if b.Disabled {
+		if b.Disabled || b.Permanent {
 			continue
 		}
 		rl := b.REST.RateLimit
@@ -304,8 +311,10 @@ func aggregateRateLimit(backends []*backend, resource apiResource) RateLimit {
 
 func (c *Client) HasGraphQL() bool {
 	c.ensurePool()
+	c.pool.mu.Lock()
+	defer c.pool.mu.Unlock()
 	for _, b := range c.backends {
-		if !b.Disabled && b.GraphQL != nil {
+		if !b.Disabled && !b.Permanent && b.GraphQL != nil {
 			return true
 		}
 	}
