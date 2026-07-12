@@ -121,7 +121,9 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 		},
 		MomentumSnapshots: true,
 	}
-	var embedderBackend, openvinoModel, openvinoDevice, openvinoPooling, fastembedModel, fastembedCache string
+	// fastembed runs by default (persistence + semantic index); --no-embed
+	// opts out. There is no backend selection — fastembed is the only embedder.
+	noEmbed := os.Getenv("SPOON_NO_EMBED") == "1"
 	query := ""
 	topicRepos := 0
 	topicLanesRaw := ""
@@ -317,45 +319,8 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 			}
 			i++
 			query = args[i]
-		case "--embedder-backend":
-			if i+1 >= len(args) {
-				return agentio.NewError(agentio.CodeBadInput, "--embedder-backend requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
-			}
-			i++
-			embedderBackend = strings.ToLower(args[i])
-		case "--fastembed-model":
-			if i+1 >= len(args) {
-				return agentio.NewError(agentio.CodeBadInput, "--fastembed-model requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
-			}
-			i++
-			fastembedModel = args[i]
-		case "--fastembed-cache":
-			if i+1 >= len(args) {
-				return agentio.NewError(agentio.CodeBadInput, "--fastembed-cache requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
-			}
-			i++
-			fastembedCache = args[i]
-		case "--openvino-model":
-			if i+1 >= len(args) {
-				return agentio.NewError(agentio.CodeBadInput, "--openvino-model requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
-			}
-			i++
-			openvinoModel = args[i]
-		case "--openvino-device":
-			if i+1 >= len(args) {
-				return agentio.NewError(agentio.CodeBadInput, "--openvino-device requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
-			}
-			i++
-			openvinoDevice = args[i]
-		case "--openvino-pooling":
-			if i+1 >= len(args) {
-				return agentio.NewError(agentio.CodeBadInput, "--openvino-pooling requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
-			}
-			i++
-			openvinoPooling = strings.ToLower(args[i])
-			if _, ok := embed.ParsePooling(openvinoPooling); !ok {
-				return agentio.NewError(agentio.CodeBadInput, "--openvino-pooling must be 'cls', 'mean', or 'last'", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
-			}
+		case "--no-embed":
+			noEmbed = true
 		case "--full-mdg":
 			opts.Cluster.CentralityBackend = "mdg"
 		case "--no-mdg":
@@ -438,32 +403,37 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 		opts.OwnerCacheTTL = 24 * time.Hour
 	}
 
-	// Resolve and construct the embedder backend (flag > env > config) so a
-	// misconfigured openvino setup fails fast with a structured error.
+	// fastembed is the only embedder and runs by default: it powers
+	// persistence, the semantic index, and — when available — clustering plus
+	// zero-shot categories. --no-embed (or SPOON_NO_EMBED=1) opts out. If
+	// onnxruntime/fastembed cannot initialize, the run degrades with a warning
+	// (clustering falls back to the built-in lexical embedder) rather than
+	// aborting — a missing native runtime must never kill fork listing.
 	var searchEmbedder embed.SearchEmbedder
 	var semanticModelID string
-	embedderBackend, ovCfg := resolveSpnEmbedderConfig(embedderBackend, openvinoModel, openvinoDevice, openvinoPooling, stderr)
-	fastCfg := resolveFastEmbedConfig(fastembedModel, fastembedCache)
-	if embedderHookForTest == nil {
-		embedderBackendInstance, embedderID, closeEmbedder, err := embed.SelectBackendConfig(embedderBackend, embed.BackendConfig{OpenVINO: ovCfg, FastEmbed: fastCfg})
+	fastembedActive := false
+	if embedderHookForTest == nil && !noEmbed {
+		instance, embedderID, closeEmbedder, err := embed.SelectBackendConfig(embed.BackendFastEmbed, embed.BackendConfig{FastEmbed: resolveFastEmbedConfig("", "")})
 		if err != nil {
-			return agentio.NewError(agentio.CodeBadInput, err.Error(),
-				"Check --embedder-backend/--openvino-model (or $SPOON_EMBEDDER_BACKEND/$SPOON_OPENVINO_MODEL), or omit them to use the built-in embedder.").Emit(stderr)
-		}
-		defer closeEmbedder()
-		if searchable, ok := embedderBackendInstance.(embed.SearchEmbedder); ok {
-			searchEmbedder = searchable
-			semanticModelID = searchable.ModelID()
-		}
-		if embedderBackend != "" && embedderBackend != embed.BackendBuiltin {
-			opts.Cluster.Embedder = embedderBackendInstance
+			_ = json.NewEncoder(stderr).Encode(map[string]any{"warning": map[string]any{
+				"code":        "embed_unavailable",
+				"message":     "fastembed embedder unavailable; continuing without semantic indexing (clustering uses the built-in lexical embedder)",
+				"remediation": "Set ONNX_PATH to libonnxruntime.so and run 'spoon setup', or pass --no-embed to silence this.",
+			}})
+		} else {
+			defer closeEmbedder()
+			fastembedActive = true
+			if searchable, ok := instance.(embed.SearchEmbedder); ok {
+				searchEmbedder = searchable
+				semanticModelID = searchable.ModelID()
+			}
+			opts.Cluster.Embedder = instance
 			opts.Cluster.EmbedderID = embedderID
-			// Zero-shot categories need a semantic embedder.
-			opts.Cluster.Categorize = embedderBackend == embed.BackendOpenVINO || embedderBackend == embed.BackendFastEmbed
+			opts.Cluster.Categorize = true // zero-shot categories need a semantic embedder
 		}
 	}
 	if opts.Cluster.Epsilon == 0 {
-		if embedderBackend == embed.BackendOpenVINO || embedderBackend == embed.BackendFastEmbed {
+		if fastembedActive {
 			opts.Cluster.Epsilon = 0.35
 		} else {
 			opts.Cluster.Epsilon = 0.55
@@ -524,11 +494,20 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 		}})
 	}
 
+	// The durable store enhances a run (persistence + semantic index) but is
+	// never a prerequisite for listing forks: a locked DB, full disk, or
+	// read-only data dir degrades to a warning, not a failed run.
 	db, storeErr := store.OpenDefault()
 	if storeErr != nil {
-		return agentio.NewError(agentio.CodeInternal, "store_unavailable: "+storeErr.Error(), agentio.RemediationInternal()).Emit(stderr)
+		_ = json.NewEncoder(stderr).Encode(map[string]any{"warning": map[string]any{
+			"code":        "store_unavailable",
+			"message":     "durable store unavailable; continuing without persistence/semantic index: " + storeErr.Error(),
+			"remediation": "Check disk space and permissions on ~/.local/share/spoon; listing/output is unaffected.",
+		}})
+		db = nil
+	} else {
+		defer db.Close()
 	}
-	defer db.Close()
 
 	if topicName, isTopic := strings.CutPrefix(repo, "topic:"); isTopic {
 		if csvMode {
@@ -641,6 +620,7 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 		return emitForksCSV(ctx, db, auth, owner, name, semanticModelID, stdout, stderr, ch)
 	}
 	degraded, total := 0, 0
+	storeWarned := false
 	for r := range ch {
 		if r.ClusterSkip != nil {
 			if r.ClusterSkip.Code == "mdg_unavailable" {
@@ -669,9 +649,7 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 		if r.BudgetSkip != nil {
 			degraded++
 		}
-		if err := persistForkSnapshot(ctx, db, auth, owner, name, semanticModelID, r); err != nil {
-			return agentio.NewError(agentio.CodeInternal, "store_unavailable: "+err.Error(), agentio.RemediationInternal()).Emit(stderr)
-		}
+		persistSnapshotBestEffort(ctx, db, auth, owner, name, semanticModelID, r, &storeWarned, stderr)
 		if err := agentio.WriteNDJSON(stdout, forkToJSONDetailedUpstream(r, details, "")); err != nil {
 			return agentio.NewError(agentio.CodeInternal, err.Error(), agentio.RemediationInternal()).Emit(stderr)
 		}
@@ -748,10 +726,32 @@ func emitDuplicateIdentityWarning(stderr io.Writer, client *gh.Client) {
 }
 
 func emitSemanticIndexWarning(ctx context.Context, db *store.Store, model embed.SearchEmbedder, stderr io.Writer) {
+	if db == nil || model == nil {
+		return
+	}
 	if _, err := semantic.IndexPending(ctx, db, model); err != nil {
 		_ = json.NewEncoder(stderr).Encode(map[string]any{"warning": map[string]any{
 			"code": "semantic_index_failed", "message": err.Error(),
 			"remediation": "The relational snapshot was saved; rerun the same command after fixing FastEmbed to retry missing embeddings.",
+		}})
+	}
+}
+
+// persistSnapshotBestEffort stores a fork snapshot without ever failing the
+// run — the durable store is an enhancement, not a prerequisite for listing
+// forks. It no-ops when the store is unavailable (db == nil) and emits at most
+// one structured warning per run (via warned) so a persistent write failure
+// can't flood stderr.
+func persistSnapshotBestEffort(ctx context.Context, db *store.Store, auth forge.AuthInfo, owner, name, modelID string, r forksops.Result, warned *bool, stderr io.Writer) {
+	if db == nil {
+		return
+	}
+	if err := persistForkSnapshot(ctx, db, auth, owner, name, modelID, r); err != nil && !*warned {
+		*warned = true
+		_ = json.NewEncoder(stderr).Encode(map[string]any{"warning": map[string]any{
+			"code":        "store_unavailable",
+			"message":     "failed to persist fork snapshot; continuing without persistence: " + err.Error(),
+			"remediation": "Check disk space and permissions on ~/.local/share/spoon; listing/output is unaffected.",
 		}})
 	}
 }
@@ -995,6 +995,7 @@ func emitForksCSV(ctx context.Context, db *store.Store, auth forge.AuthInfo, own
 	if err := w.Write(header); err != nil {
 		return agentio.NewError(agentio.CodeInternal, "write csv header: "+err.Error(), agentio.RemediationInternal()).Emit(stderr)
 	}
+	storeWarned := false
 	for r := range ch {
 		if r.ClusterSkip != nil {
 			emitClusterWarning(stderr, r.ClusterSkip)
@@ -1018,9 +1019,7 @@ func emitForksCSV(ctx context.Context, db *store.Store, auth forge.AuthInfo, own
 			})
 			continue
 		}
-		if err := persistForkSnapshot(ctx, db, auth, owner, name, modelID, r); err != nil {
-			return agentio.NewError(agentio.CodeInternal, "store_unavailable: "+err.Error(), agentio.RemediationInternal()).Emit(stderr)
-		}
+		persistSnapshotBestEffort(ctx, db, auth, owner, name, modelID, r, &storeWarned, stderr)
 		if err := w.Write(forkToCSVRow(r)); err != nil {
 			return agentio.NewError(agentio.CodeInternal, "write csv row: "+err.Error(), agentio.RemediationInternal()).Emit(stderr)
 		}
@@ -1111,29 +1110,6 @@ func emitClusterWarning(stderr io.Writer, skip *forksops.ClusterSkip) {
 	_ = enc.Encode(envelope)
 }
 
-// resolveSpnEmbedderConfig layers the embedder backend settings: flag > env >
-// config file. A bad config file warns (structured) and is otherwise ignored.
-func resolveSpnEmbedderConfig(backend, model, device, pooling string, stderr io.Writer) (string, embed.OpenVINOConfig) {
-	var fileCfg config.EmbedderConfig
-	if cfg, cerr := config.LoadDefault(); cerr != nil {
-		envelope := map[string]any{"warning": map[string]any{
-			"code":    "config_invalid",
-			"message": cerr.Error(),
-		}}
-		_ = json.NewEncoder(stderr).Encode(envelope)
-	} else if cfg != nil {
-		fileCfg = cfg.Embedder
-	}
-	backend = strings.ToLower(config.Coalesce(backend, os.Getenv("SPOON_EMBEDDER_BACKEND"), fileCfg.Backend))
-	model = config.Coalesce(model, os.Getenv("SPOON_OPENVINO_MODEL"), fileCfg.ModelPath)
-	device = config.Coalesce(device, os.Getenv("SPOON_OPENVINO_DEVICE"), fileCfg.Device)
-	pooling = strings.ToLower(config.Coalesce(pooling, fileCfg.Pooling))
-	var p embed.Pooling
-	if pooling != "" {
-		p, _ = embed.ParsePooling(pooling)
-	}
-	return backend, embed.OpenVINOConfig{ModelPath: model, Device: device, Pooling: p}
-}
 
 func resolveFastEmbedConfig(model, cacheDir string) embed.FastEmbedConfig {
 	var fileCfg config.EmbedderConfig
@@ -1229,6 +1205,7 @@ func streamAndEmit(ctx context.Context, db *store.Store, auth forge.AuthInfo, pr
 		return 0
 	}
 	degraded, total := 0, 0
+	storeWarned := false
 	for r := range ch {
 		if r.ClusterSkip != nil {
 			emitClusterWarning(stderr, r.ClusterSkip)
@@ -1259,9 +1236,7 @@ func streamAndEmit(ctx context.Context, db *store.Store, auth forge.AuthInfo, pr
 		if r.BudgetSkip != nil {
 			degraded++
 		}
-		if err := persistForkSnapshot(ctx, db, auth, owner, name, modelID, r); err != nil {
-			return agentio.NewError(agentio.CodeInternal, "store_unavailable: "+err.Error(), agentio.RemediationInternal()).Emit(stderr)
-		}
+		persistSnapshotBestEffort(ctx, db, auth, owner, name, modelID, r, &storeWarned, stderr)
 		if err := agentio.WriteNDJSON(stdout, forkToJSONDetailedUpstream(r, details, upstream)); err != nil {
 			return agentio.NewError(agentio.CodeInternal, err.Error(), agentio.RemediationInternal()).Emit(stderr)
 		}

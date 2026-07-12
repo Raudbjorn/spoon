@@ -17,7 +17,6 @@ import (
 	"strings"
 
 	"github.com/svnbjrn/spoon/internal/agentio"
-	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/eval"
 	"github.com/svnbjrn/spoon/internal/forksops"
 )
@@ -34,7 +33,6 @@ func runEvalWith(args []string, stdout, stderr io.Writer) int {
 			MinClusterSize: 3,
 		},
 	}
-	var embedderBackend, openvinoModel, openvinoDevice, openvinoPooling string
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -72,33 +70,6 @@ func runEvalWith(args []string, stdout, stderr io.Writer) int {
 			opts.Cluster.CentralityBackend = "mdg"
 		case "--no-mdg":
 			opts.Cluster.CentralityBackend = ""
-		case "--embedder-backend":
-			if i+1 >= len(args) {
-				return agentio.NewError(agentio.CodeBadInput, "--embedder-backend requires a value", agentio.RemediationBadInput("forks", "eval")).Emit(stderr)
-			}
-			i++
-			embedderBackend = strings.ToLower(args[i])
-		case "--openvino-model":
-			if i+1 >= len(args) {
-				return agentio.NewError(agentio.CodeBadInput, "--openvino-model requires a value", agentio.RemediationBadInput("forks", "eval")).Emit(stderr)
-			}
-			i++
-			openvinoModel = args[i]
-		case "--openvino-device":
-			if i+1 >= len(args) {
-				return agentio.NewError(agentio.CodeBadInput, "--openvino-device requires a value", agentio.RemediationBadInput("forks", "eval")).Emit(stderr)
-			}
-			i++
-			openvinoDevice = args[i]
-		case "--openvino-pooling":
-			if i+1 >= len(args) {
-				return agentio.NewError(agentio.CodeBadInput, "--openvino-pooling requires a value", agentio.RemediationBadInput("forks", "eval")).Emit(stderr)
-			}
-			i++
-			openvinoPooling = strings.ToLower(args[i])
-			if _, ok := embed.ParsePooling(openvinoPooling); !ok {
-				return agentio.NewError(agentio.CodeBadInput, "--openvino-pooling must be 'cls', 'mean', or 'last'", agentio.RemediationBadInput("forks", "eval")).Emit(stderr)
-			}
 		default:
 			if strings.HasPrefix(args[i], "--") {
 				return agentio.NewError(agentio.CodeBadInput, "unknown flag: "+args[i], agentio.RemediationBadInput("forks", "eval")).Emit(stderr)
@@ -123,28 +94,11 @@ func runEvalWith(args []string, stdout, stderr io.Writer) int {
 		return agentio.NewError(agentio.CodeBadInput, err.Error(), agentio.RemediationBadInput("forks", "eval")).Emit(stderr)
 	}
 
-	// Resolve the embedder backend. The eval subcommand reuses the
-	// same plumbing as forks list — flag > env > config > builtin.
-	embedderBackend, ovCfg := resolveSpnEmbedderConfig(embedderBackend, openvinoModel, openvinoDevice, openvinoPooling, stderr)
-	if embedderHookForTest == nil {
-		embedder, embedderID, closeEmbedder, err := embed.SelectBackendConfig(embedderBackend, embed.BackendConfig{OpenVINO: ovCfg, FastEmbed: resolveFastEmbedConfig("", "")})
-		if err != nil {
-			return agentio.NewError(agentio.CodeBadInput, err.Error(),
-				"Check --embedder-backend/--openvino-model, or omit them to use the built-in embedder.").Emit(stderr)
-		}
-		defer closeEmbedder()
-		if embedderBackend != "" && embedderBackend != embed.BackendBuiltin {
-			opts.Cluster.Embedder = embedder
-			opts.Cluster.EmbedderID = embedderID
-			opts.Cluster.Categorize = embedderBackend == embed.BackendOpenVINO
-		}
-	}
+	// Clustering here uses the built-in lexical embedder (zero-setup,
+	// deterministic) so eval never depends on a native runtime; leaving
+	// opts.Cluster.Embedder nil selects it in the pipeline.
 	if opts.Cluster.Epsilon == 0 {
-		if embedderBackend == embed.BackendOpenVINO {
-			opts.Cluster.Epsilon = 0.35
-		} else {
-			opts.Cluster.Epsilon = 0.55
-		}
+		opts.Cluster.Epsilon = 0.55
 	}
 	if embedderHookForTest != nil {
 		opts.Cluster.SetEmbedderForTest(embedderHookForTest)

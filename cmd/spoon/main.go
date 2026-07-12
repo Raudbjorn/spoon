@@ -11,7 +11,6 @@ import (
 
 	"github.com/svnbjrn/spoon/internal/cluster"
 	"github.com/svnbjrn/spoon/internal/config"
-	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/forge"
 	"github.com/svnbjrn/spoon/internal/genai"
 	"github.com/svnbjrn/spoon/internal/gitea"
@@ -45,12 +44,8 @@ func main() {
 	noCluster := false
 	var heatWeights map[string]float64
 	clusterTop := 50
-	clusterEpsilon := 0.0 // resolved per backend below unless set explicitly
+	clusterEpsilon := 0.0 // 0.55 (lexical) unless set explicitly
 	clusterMinSize := 3
-	embedderBackend := ""
-	openvinoModel := ""
-	openvinoDevice := ""
-	openvinoPooling := ""
 
 	// MDG centrality backend. Off by default; --full-mdg opts in. --no-mdg
 	// reverts to off (useful for users who set the env var elsewhere).
@@ -141,38 +136,6 @@ func main() {
 				os.Exit(1)
 			}
 			clusterMinSize = n
-		case "--embedder-backend":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "Error: --embedder-backend requires a value")
-				os.Exit(1)
-			}
-			i++
-			embedderBackend = strings.ToLower(args[i])
-		case "--openvino-model":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "Error: --openvino-model requires a value")
-				os.Exit(1)
-			}
-			i++
-			openvinoModel = args[i]
-		case "--openvino-device":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "Error: --openvino-device requires a value")
-				os.Exit(1)
-			}
-			i++
-			openvinoDevice = args[i]
-		case "--openvino-pooling":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "Error: --openvino-pooling requires a value")
-				os.Exit(1)
-			}
-			i++
-			openvinoPooling = strings.ToLower(args[i])
-			if _, ok := embed.ParsePooling(openvinoPooling); !ok {
-				fmt.Fprintln(os.Stderr, "Error: --openvino-pooling must be 'cls', 'mean', or 'last'")
-				os.Exit(1)
-			}
 		case "--full-mdg":
 			fullMDG = true
 		case "--no-mdg":
@@ -197,25 +160,11 @@ func main() {
 
 	ctx := context.Background()
 
-	// Resolve the embedder backend (flag > env > config > builtin) and
-	// construct it up front so a misconfigured openvino setup fails fast
-	// instead of silently degrading clustering mid-run.
-	embedderBackend, ovCfg := resolveEmbedderConfig(embedderBackend, openvinoModel, openvinoDevice, openvinoPooling)
-	var fastCfg embed.FastEmbedConfig
-	if cfg, cfgErr := config.LoadDefault(); cfgErr == nil && cfg != nil {
-		fastCfg = embed.FastEmbedConfig{
-			Model: cfg.Embedder.Model, CacheDir: cfg.Embedder.CacheDir,
-			MaxLength: cfg.Embedder.MaxLength, BatchSize: cfg.Embedder.BatchSize,
-		}
-	}
-	embedder, embedderID, closeEmbedder, err := embed.SelectBackendConfig(embedderBackend, embed.BackendConfig{OpenVINO: ovCfg, FastEmbed: fastCfg})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-	defer closeEmbedder()
+	// The interactive TUI clusters with the built-in lexical embedder
+	// (zero-setup, portable, no native runtime). Semantic search and
+	// persistence — the fastembed paths — live in the `spn` agent CLI.
 	if clusterEpsilon == 0 {
-		clusterEpsilon = defaultEpsilonFor(embedderBackend)
+		clusterEpsilon = 0.55
 	}
 
 	// Detect provider from repo URL and flags
@@ -233,12 +182,6 @@ func main() {
 		Refresh:           refresh,
 		CentralityBackend: backendFor(fullMDG),
 		StrictMDG:         strictMDG,
-	}
-	if embedderBackend != "" && embedderBackend != embed.BackendBuiltin {
-		tuiClusterOpts.Embedder = embedder
-		tuiClusterOpts.EmbedderID = embedderID
-		// Zero-shot categories need a semantic embedder.
-		tuiClusterOpts.Categorize = embedderBackend == embed.BackendOpenVINO
 	}
 	if !noCluster {
 		polisher, closePolisher, lerr := newLabelPolisher()
@@ -289,35 +232,6 @@ func newLabelPolisher() (cluster.LabelPolisher, func(), error) {
 	return p, p.Close, nil
 }
 
-// resolveEmbedderConfig layers the embedder backend settings: flag > env >
-// config file. Returns the resolved backend name and OpenVINO config.
-func resolveEmbedderConfig(backend, model, device, pooling string) (string, embed.OpenVINOConfig) {
-	var fileCfg config.EmbedderConfig
-	if cfg, cerr := config.LoadDefault(); cerr != nil {
-		fmt.Fprintf(os.Stderr, "warning: ignoring spoon config: %v\n", cerr)
-	} else if cfg != nil {
-		fileCfg = cfg.Embedder
-	}
-	backend = strings.ToLower(config.Coalesce(backend, os.Getenv("SPOON_EMBEDDER_BACKEND"), fileCfg.Backend))
-	model = config.Coalesce(model, os.Getenv("SPOON_OPENVINO_MODEL"), fileCfg.ModelPath)
-	device = config.Coalesce(device, os.Getenv("SPOON_OPENVINO_DEVICE"), fileCfg.Device)
-	pooling = strings.ToLower(config.Coalesce(pooling, fileCfg.Pooling))
-	var p embed.Pooling
-	if pooling != "" {
-		p, _ = embed.ParsePooling(pooling)
-	}
-	return backend, embed.OpenVINOConfig{ModelPath: model, Device: device, Pooling: p}
-}
-
-// defaultEpsilonFor returns the per-backend default cosine-distance cutoff:
-// neural embeddings (openvino) separate at a tighter scale than the lexical
-// embedder.
-func defaultEpsilonFor(backend string) float64 {
-	if backend == embed.BackendOpenVINO {
-		return 0.35
-	}
-	return 0.55
-}
 
 // createProvider detects the forge provider from the repo URL and flags,
 // creates the appropriate Forge implementation, and returns it with auth info.
@@ -420,21 +334,11 @@ Flags:
   --heat-weights path      Path to JSON weight override file
   --no-cluster             Disable the embedding + clustering pass
   --cluster-top N          Max forks fed to the embedder (default 50)
-  --cluster-epsilon F      Cosine distance cutoff (default 0.55 builtin,
-                           0.35 openvino)
+  --cluster-epsilon F      Cosine distance cutoff (default 0.55)
   --cluster-min-size N     Minimum cluster size (default 3)
-  --embedder-backend NAME  'builtin' (default; zero-setup lexical embedder)
-                           or 'openvino' (in-process transformer encoder on
-                           an Intel GPU; needs the OpenVINO runtime at run
-                           time). Env: $SPOON_EMBEDDER_BACKEND
-  --openvino-model PATH    Model dir with openvino_model.xml +
-                           openvino_tokenizer.xml (export via
-                           'ovms --pull --task embeddings' or optimum-cli).
-                           Env: $SPOON_OPENVINO_MODEL
-  --openvino-device DEV    OpenVINO device for the encoder (default GPU).
-                           Env: $SPOON_OPENVINO_DEVICE
-  --openvino-pooling MODE  cls|mean|last (default: the model dir's
-                           graph.pbtxt, else cls)
+                           (The interactive TUI clusters with the built-in
+                           lexical embedder — zero-setup, no native runtime.
+                           Semantic search + persistence live in the 'spn' CLI.)
   --full-mdg               Build a real Module Dependency Graph for the upstream
                            using personalized PageRank centrality. Phase A
                            supports Go repositories; other languages silently
@@ -488,15 +392,9 @@ Concepts:
                      token, or the glab CLI / GITLAB_TOKEN.
 
   Clustering         spoon turns each fork into a vector and groups similar
-                     forks. Two in-process backends (no external services):
-                       builtin   (default) deterministic lexical embedder
-                                 over paths/commits/README/diff. Zero setup.
-                       openvino  a transformer encoder (e.g. arctic-embed)
-                                 run via the OpenVINO runtime on an Intel
-                                 GPU. Needs an exported model dir
-                                 (--openvino-model) and the OpenVINO +
-                                 tokenizers runtime libs at run time.
-                     Tune with --cluster-epsilon / --cluster-min-size;
+                     forks using an in-process deterministic lexical embedder
+                     over paths/commits/README/diff. Zero setup, no external
+                     services. Tune with --cluster-epsilon / --cluster-min-size;
                      disable with --no-cluster.
 
 Tip: Run 'gh auth login' (GitHub) or set GITLAB_TOKEN (GitLab) for higher rate limits.

@@ -61,16 +61,20 @@ func runSearchWith(args []string, stdout, stderr io.Writer) int {
 		return agentio.NewError(agentio.CodeBadInput, "search query must not be empty", "Usage: spn search \"query\" [--repo owner/repo] [--top N]").Emit(stderr)
 	}
 
+	// fastembed is the only embedder; an absent or empty config is valid and
+	// resolves to the fixed default model. A config that fails to load (bad
+	// permissions/JSON) is surfaced.
 	cfg, err := config.LoadDefault()
 	if err != nil {
 		return agentio.NewError(agentio.CodeBadInput, "embedder_unavailable: "+err.Error(), "Secure and repair the spoon config, then retry.").Emit(stderr)
 	}
-	if cfg == nil || strings.ToLower(cfg.Embedder.Backend) != embed.BackendFastEmbed {
-		return agentio.NewError(agentio.CodeBadInput, "embedder_unavailable: configure the fastembed backend", "Run spoon setup and select FastEmbed.").Emit(stderr)
+	var embCfg config.EmbedderConfig
+	if cfg != nil {
+		embCfg = cfg.Embedder
 	}
 	model, err := embed.NewFastEmbedEmbedder(embed.FastEmbedConfig{
-		Model: cfg.Embedder.Model, CacheDir: cfg.Embedder.CacheDir,
-		MaxLength: cfg.Embedder.MaxLength, BatchSize: cfg.Embedder.BatchSize,
+		Model: embCfg.Model, CacheDir: embCfg.CacheDir,
+		MaxLength: embCfg.MaxLength, BatchSize: embCfg.BatchSize,
 	})
 	if err != nil {
 		return agentio.NewError(agentio.CodeInternal, "embedder_unavailable: "+err.Error(), "Set ONNX_PATH to libonnxruntime.so and verify the FastEmbed cache.").Emit(stderr)
@@ -120,7 +124,7 @@ func runSearchWith(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			return agentio.NewError(agentio.CodeInternal, fmt.Sprintf("invalid stored embedding %s: %v", row.DocumentID, err), agentio.RemediationInternal()).Emit(stderr)
 		}
-		score, err := semantic.Dot(queryVector, vector)
+		score, err := semantic.Cosine(queryVector, vector)
 		if err != nil {
 			return agentio.NewError(agentio.CodeInternal, err.Error(), agentio.RemediationInternal()).Emit(stderr)
 		}
@@ -156,6 +160,6 @@ func runSearchWith(args []string, stdout, stderr io.Writer) int {
 func emitSemanticEmpty(stderr io.Writer) {
 	_ = json.NewEncoder(stderr).Encode(map[string]any{"warning": map[string]any{
 		"code": "semantic_index_empty", "message": "no matching semantic embeddings are indexed",
-		"remediation": "Run spn forks list with --embedder-backend fastembed first.",
+		"remediation": "Run 'spn forks list <repo>' first (with fastembed available) to build the index.",
 	}})
 }

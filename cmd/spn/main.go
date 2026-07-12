@@ -70,9 +70,7 @@ Nouns and verbs:
                     [--rpm N] [--files] [--commits] [--commit-files]
                     [--commit-file-budget N] [--web-diff]
                     [--no-cluster] [--cluster-top N] [--cluster-epsilon F] [--cluster-min-size N]
-                    [--embedder-backend builtin|openvino|fastembed]
-                    [--openvino-model PATH] [--openvino-device DEV] [--openvino-pooling cls|mean|last]
-                    [--fastembed-model fast-bge-small-en-v1.5] [--fastembed-cache PATH]
+                    [--no-embed]
                     [--query "intent"] [--priors PATH] [--full-mdg] [--no-mdg]
                     [--sibling-sim | --no-sibling-sim] [--owner-cache-ttl DUR]
   search "query" [--repo owner/repo] [--top N]
@@ -80,13 +78,12 @@ Nouns and verbs:
         cache. --top N instead deep-scans the top N by surface score.
         --shortlist N emits only the top N forks by Robbins expected rank (lower
         = more likely best), adding expectedRank + rankConfidence to each.
-        Flags go AFTER 'forks list <repo>'. Clustering runs in-process:
-        the default 'builtin' lexical embedder needs nothing installed;
-        '--embedder-backend openvino --openvino-model DIR' runs a
-        transformer encoder on an Intel GPU (requires the OpenVINO runtime
-        at run time; set SPOON_OPENVINO_LIB if it is not on the default
-        path). Run 'spoon setup' once to download default models
-        and persist the configuration.
+        Flags go AFTER 'forks list <repo>'. The fastembed embedder powers
+        persistence + semantic indexing (and 'spn search') by default; it
+        needs onnxruntime (set ONNX_PATH to libonnxruntime.so, run 'spoon
+        setup'). If it is unavailable the run degrades with a warning rather
+        than failing. Pass --no-embed (or SPOON_NO_EMBED=1) to skip embedding.
+        Clustering runs in-process and needs nothing installed.
         FastEmbed requires ONNX_PATH and is the only backend used for durable
         semantic indexing and 'spn search'. --commit-files implies --files and
         --commits and defaults to a 100-commit run budget. --web-diff is an
