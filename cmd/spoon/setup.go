@@ -35,13 +35,15 @@ func runSetup(args []string) int {
 }
 
 type setupFlags struct {
-	forgeFlag  string
-	forgeHost  string
-	configPath string
-	noConfig   bool
-	noColor    bool
-	autoPull   bool
-	noPrompt   bool
+	forgeFlag       string
+	forgeHost       string
+	configPath      string
+	embedderBackend string
+	fastembedCache  string
+	noConfig        bool
+	noColor         bool
+	autoPull        bool
+	noPrompt        bool
 }
 
 func runSetupWith(ctx context.Context, args []string, stdin io.Reader, interactive bool, stdout, stderr io.Writer) int {
@@ -77,6 +79,21 @@ func runSetupWith(ctx context.Context, args []string, stdin io.Reader, interacti
 			}
 			i++
 			f.forgeHost = args[i]
+		case "--embedder-backend":
+			if needsValue(i) {
+				return setupErr(stderr, "--embedder-backend requires a value")
+			}
+			i++
+			f.embedderBackend = strings.ToLower(args[i])
+			if f.embedderBackend != embed.BackendBuiltin && f.embedderBackend != embed.BackendOpenVINO && f.embedderBackend != embed.BackendFastEmbed {
+				return setupErr(stderr, "--embedder-backend must be builtin, openvino, or fastembed")
+			}
+		case "--fastembed-cache":
+			if needsValue(i) {
+				return setupErr(stderr, "--fastembed-cache requires a value")
+			}
+			i++
+			f.fastembedCache = args[i]
 		case "--config":
 			if needsValue(i) {
 				return setupErr(stderr, "--config requires a value")
@@ -133,7 +150,15 @@ func runSetupWith(ctx context.Context, args []string, stdin io.Reader, interacti
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
+	if f.embedderBackend != "" {
+		cfg.Embedder.Backend = f.embedderBackend
+	}
 	ovOK := setupOpenVINO(ctx, f, cfg, interactive, stdin, stdout)
+	fastOK := true
+	if cfg.Embedder.Backend == embed.BackendFastEmbed {
+		fastOK = setupFastEmbed(cfg, f.fastembedCache, stdout)
+	}
+	setupProxyReferences(cfg, stdout)
 
 	// --- Persist config -------------------------------------------------------
 	if !f.noConfig && configPath != "" {
@@ -141,11 +166,11 @@ func runSetupWith(ctx context.Context, args []string, stdin io.Reader, interacti
 	}
 
 	// --- Summary --------------------------------------------------------------
-	if provOK && ovOK {
+	if provOK && ovOK && fastOK {
 		fmt.Fprintln(stdout, colorize("✓ All set — credentials and OpenVINO features are ready.", "\033[32m", f.noColor))
 		return 0
 	}
-	if provOK {
+	if provOK && fastOK {
 		fmt.Fprintln(stdout, colorize("Credentials ready; some OpenVINO features need attention — see above.", "\033[33m", f.noColor))
 		return 0
 	}
@@ -161,6 +186,12 @@ func mergeConfigDefaults(f *setupFlags, c *config.Config) {
 	}
 	if f.forgeHost == "" {
 		f.forgeHost = c.Forge.Host
+	}
+	if f.embedderBackend == "" {
+		f.embedderBackend = strings.ToLower(c.Embedder.Backend)
+	}
+	if f.fastembedCache == "" {
+		f.fastembedCache = c.Embedder.CacheDir
 	}
 }
 
@@ -257,14 +288,13 @@ func setupMark(ok bool, noColor bool) string {
 }
 
 func printSetupHelp(w io.Writer) {
-	fmt.Fprint(w, `spoon setup — verify credentials and provision OpenVINO features
+	fmt.Fprint(w, `spoon setup — verify credentials and provision embedding features
 
-Checks that the active forge provider has credentials (for higher rate
-limits) and that the in-process OpenVINO features (semantic embedder,
---query reranker, cluster label polish) have models. Features with no model
-configured get the default model downloaded from HuggingFace (with consent)
-and recorded in the config file. All features run in-process; nothing else
-to install or run. Exits 0 when ready, 1 when credentials need attention.
+Checks forge credentials, optional OpenVINO features, and the configured
+embedding backend. FastEmbed uses fixed BGE small EN v1.5 through ONNX Runtime;
+set ONNX_PATH before selecting it. Existing ProxyScrape files are referenced by
+path only and their contents are never copied into spoon's config. Exits 0 when
+ready, 1 when credentials or the selected runtime need attention.
 
 Usage:
   spoon setup [flags]
@@ -272,7 +302,9 @@ Usage:
 Flags:
   --forge github|gitlab    Provider to check (default: github)
   --forge-host HOSTNAME    Self-hosted GitLab/GHES hostname
-  --auto-pull              Download missing default models without asking
+  --embedder-backend B     builtin, openvino, or fastembed
+  --fastembed-cache PATH   FastEmbed model cache directory
+  --auto-pull              Download missing default OpenVINO models without asking
                            (also: SPOON_AUTO_PULL=1)
   --no-prompt              Never prompt (report only; don't download)
   --config PATH            Config file to read/write (default
@@ -285,6 +317,7 @@ Default models (downloaded to ~/.local/share/spoon/models when missing):
   embedder  OpenVINO/bge-base-en-v1.5-fp16-ov            (~440 MB)
   reranker  OpenVINO/bge-reranker-base-fp16-ov           (~560 MB)
   labeler   OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov       (~1.1 GB)
+  fastembed BGE fast-bge-small-en-v1.5 (384 dimensions, max length 512)
 
 setup reads the config file (if present) as defaults, re-validates the
 settings, and writes the validated result back — so re-running keeps it
@@ -312,7 +345,7 @@ func setupOpenVINO(ctx context.Context, f setupFlags, cfg *config.Config, intera
 			"For GPU semantic embeddings, reranking, and label polish:",
 			"  • install OpenVINO, or set SPOON_OPENVINO_LIB to libopenvino_c.so",
 		}, f.noColor)
-		return true // advisory — the lexical embedder needs nothing
+		return true
 	}
 
 	devices := setupDevicesFn()
@@ -337,10 +370,12 @@ func setupOpenVINO(ctx context.Context, f setupFlags, cfg *config.Config, intera
 		hint      string
 	}
 	slots := []featureSlot{
-		{models.FeatureEmbedder, "Embedder (semantic clustering)", &cfg.Embedder.ModelPath, true, ""},
 		{models.FeatureReranker, "Reranker (--query relevance)", &cfg.Reranker.ModelPath, true, ""},
 		{models.FeatureLabeler, "Labeler (cluster label polish)", &cfg.Labeler.ModelPath, genai.Available(),
 			"install openvino-genai (or set SPOON_OPENVINO_GENAI_LIB) to enable"},
+	}
+	if cfg.Embedder.Backend != embed.BackendFastEmbed {
+		slots = append([]featureSlot{{models.FeatureEmbedder, "Embedder (semantic clustering)", &cfg.Embedder.ModelPath, true, ""}}, slots...)
 	}
 	for _, slot := range slots {
 		if !slot.usable {
@@ -353,13 +388,68 @@ func setupOpenVINO(ctx context.Context, f setupFlags, cfg *config.Config, intera
 		ready := ensureFeatureModel(ctx, f, slot.feature, slot.name, slot.modelPath, interactive, stdin, out)
 		ok = ok && ready
 	}
-
-	// Adopt the openvino backend once the embedder model is in place, so a
-	// plain `spoon repo` run uses it without flags.
 	if cfg.Embedder.ModelPath != "" && cfg.Embedder.Backend == "" {
-		cfg.Embedder.Backend = "openvino"
+		cfg.Embedder.Backend = embed.BackendOpenVINO
 	}
 	return ok
+}
+
+func setupFastEmbed(cfg *config.Config, cacheDir string, out io.Writer) bool {
+	fastCfg := embed.FastEmbedConfig{Model: "fast-bge-small-en-v1.5", CacheDir: cacheDir, MaxLength: 512, BatchSize: 32}
+	model, err := embed.NewFastEmbedEmbedder(fastCfg)
+	if err != nil {
+		printCheck(out, "FastEmbed", false, []string{
+			"Could not initialize BGE small EN v1.5: " + err.Error(),
+			"Set ONNX_PATH to libonnxruntime.so and retry.",
+		}, false)
+		return false
+	}
+	_ = model.Close()
+	cfg.Embedder.Backend = embed.BackendFastEmbed
+	cfg.Embedder.Model = fastCfg.Model
+	cfg.Embedder.CacheDir = cacheDir
+	if cfg.Embedder.CacheDir == "" {
+		cfg.Embedder.CacheDir, _ = embed.DefaultFastEmbedCacheDir()
+	}
+	cfg.Embedder.MaxLength = 512
+	cfg.Embedder.BatchSize = 32
+	printCheck(out, "FastEmbed", true, []string{
+		"Model ready: fast-bge-small-en-v1.5 (384 dimensions, max length 512).",
+		"Cache: " + cfg.Embedder.CacheDir,
+	}, false)
+	return true
+}
+
+func setupProxyReferences(cfg *config.Config, out io.Writer) {
+	const (
+		apiKeyPath = "/home/svnbjrn/projects/spoon-4/sources/.key.txt"
+		staticPath = "/home/svnbjrn/projects/spoon-4/sources/proxyscrape_premium_http_proxies.txt"
+	)
+	apiOK := secureRegularFile(apiKeyPath)
+	staticOK := secureRegularFile(staticPath)
+	if !apiOK && !staticOK {
+		return
+	}
+	cfg.GitHub.Proxy.Enabled = true
+	if apiOK {
+		cfg.GitHub.Proxy.APIKeyFile = apiKeyPath
+	}
+	if staticOK {
+		cfg.GitHub.Proxy.StaticFile = staticPath
+	}
+	whitelist := true
+	cfg.GitHub.Proxy.WhitelistPublicIP = &whitelist
+	cfg.GitHub.Proxy.CacheTTL = "1h"
+	printCheck(out, "ProxyScrape", true, []string{
+		"Reusing credential paths without copying their contents.",
+		"API key: " + cfg.GitHub.Proxy.APIKeyFile,
+		"Static pool: " + cfg.GitHub.Proxy.StaticFile,
+	}, false)
+}
+
+func secureRegularFile(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o400 != 0 && info.Mode().Perm()&0o077 == 0
 }
 
 // ensureFeatureModel checks one feature's model configuration and downloads

@@ -178,6 +178,38 @@ func (p *GHProvider) Compare(ctx context.Context, fork forge.T1Data, branch stri
 
 	t2 := compareToT2(scan.Compare)
 
+	if p.client.webDiff != nil {
+		missing := false
+		for _, diff := range t2.Diffs {
+			if diff.Patch == "" {
+				missing = true
+				break
+			}
+		}
+		if missing {
+			base := scan.Compare.MergeBaseCommit.SHA
+			if base == "" {
+				base = scan.Compare.BaseCommit.SHA
+			}
+			head := ""
+			if n := len(scan.Compare.Commits); n > 0 {
+				head = scan.Compare.Commits[n-1].SHA
+			}
+			if base == "" || head == "" {
+				t2.PatchSkipReason = "web diff unavailable: compare response omitted base/head SHA"
+			} else if patches, webErr := p.client.webDiff.Fetch(ctx, p.sourceOwner, p.sourceRepo, base, head); webErr != nil {
+				t2.PatchSkipReason = webErr.Error()
+			} else {
+				for i := range t2.Diffs {
+					if t2.Diffs[i].Patch == "" && patches[t2.Diffs[i].Path] != "" {
+						t2.Diffs[i].Patch = patches[t2.Diffs[i].Path]
+						t2.Diffs[i].PatchSource = "github_web"
+					}
+				}
+			}
+		}
+	}
+
 	// Track branch work
 	if scan.Branch != "" && scan.Branch != fork.DefaultBranch {
 		t2.IsBranchWork = true
@@ -273,9 +305,13 @@ func compareToT2(r CompareResult) forge.T2Data {
 		totalAdd += f.Additions
 		totalDel += f.Deletions
 		diffs = append(diffs, forge.FileDiff{
-			Path:      f.Filename,
-			Additions: f.Additions,
-			Deletions: f.Deletions,
+			Path:         f.Filename,
+			PreviousPath: f.PreviousFilename,
+			Status:       f.Status,
+			Additions:    f.Additions,
+			Deletions:    f.Deletions,
+			Patch:        f.Patch,
+			PatchSource:  "compare_rest",
 		})
 	}
 

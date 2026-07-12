@@ -25,6 +25,8 @@ import (
 	"github.com/svnbjrn/spoon/internal/gitlab"
 	"github.com/svnbjrn/spoon/internal/heat"
 	"github.com/svnbjrn/spoon/internal/priors"
+	"github.com/svnbjrn/spoon/internal/semantic"
+	"github.com/svnbjrn/spoon/internal/store"
 	"github.com/svnbjrn/spoon/internal/topics"
 )
 
@@ -33,6 +35,13 @@ import (
 // cluster pipeline deterministically. Production code leaves this nil so the
 // built-in embedder runs as usual.
 var embedderHookForTest embed.Embedder
+
+type githubRPMContextKey struct{}
+
+func githubRPMFromContext(ctx context.Context) float64 {
+	rpm, _ := ctx.Value(githubRPMContextKey{}).(float64)
+	return rpm
+}
 
 // providerFactory creates the forge provider for the given repo. Overridable in tests.
 var providerFactory = func(ctx context.Context, repo, forgeFlag, forgeHost string) (forge.Forge, string, *agentio.Error) {
@@ -51,7 +60,7 @@ var providerFactory = func(ctx context.Context, repo, forgeFlag, forgeHost strin
 	}
 	switch parsed.Provider {
 	case forge.ProviderGitHub:
-		client, status, cerr := gh.CheckAuth()
+		client, status, cerr := gh.CheckAuthConfigured(githubRPMFromContext(ctx))
 		if cerr != nil {
 			return nil, "", agentio.NewError(agentio.CodeAuthRequired, cerr.Error(), agentio.RemediationAuthRequired())
 		}
@@ -86,8 +95,17 @@ func runForksWith(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
+type detailOptions struct {
+	files       bool
+	commits     bool
+	commitFiles bool
+}
+
 func doForksList(args []string, stdout, stderr io.Writer) int {
 	var repo, forgeFlag, forgeHost, botList string
+	details := detailOptions{}
+	var githubRPM float64
+	webDiffEnabled := false
 	csvMode := false
 	opts := forksops.Options{
 		// Default: clustering enabled — the built-in embedder is always
@@ -103,7 +121,7 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 		},
 		MomentumSnapshots: true,
 	}
-	var embedderBackend, openvinoModel, openvinoDevice, openvinoPooling string
+	var embedderBackend, openvinoModel, openvinoDevice, openvinoPooling, fastembedModel, fastembedCache string
 	query := ""
 	topicRepos := 0
 	topicLanesRaw := ""
@@ -121,6 +139,37 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 	topicLaneBudgetSet := false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
+		case "--rpm":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--rpm requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			value, err := strconv.ParseFloat(args[i], 64)
+			if err != nil || value <= 0 || value > 900 {
+				return agentio.NewError(agentio.CodeBadInput, "--rpm must be in (0, 900]", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			githubRPM = value
+		case "--files":
+			details.files = true
+		case "--commits":
+			details.commits = true
+		case "--commit-files":
+			details.files = true
+			details.commits = true
+			details.commitFiles = true
+			opts.CommitFiles = true
+		case "--commit-file-budget":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--commit-file-budget requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			value, err := strconv.Atoi(args[i])
+			if err != nil || value <= 0 {
+				return agentio.NewError(agentio.CodeBadInput, "--commit-file-budget must be a positive integer", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			opts.CommitFileBudget = value
+		case "--web-diff":
+			webDiffEnabled = true
 		case "--tier":
 			if i+1 >= len(args) {
 				return agentio.NewError(agentio.CodeBadInput, "--tier requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
@@ -274,6 +323,18 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 			}
 			i++
 			embedderBackend = strings.ToLower(args[i])
+		case "--fastembed-model":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--fastembed-model requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			fastembedModel = args[i]
+		case "--fastembed-cache":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--fastembed-cache requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			fastembedCache = args[i]
 		case "--openvino-model":
 			if i+1 >= len(args) {
 				return agentio.NewError(agentio.CodeBadInput, "--openvino-model requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
@@ -379,23 +440,30 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 
 	// Resolve and construct the embedder backend (flag > env > config) so a
 	// misconfigured openvino setup fails fast with a structured error.
+	var searchEmbedder embed.SearchEmbedder
+	var semanticModelID string
 	embedderBackend, ovCfg := resolveSpnEmbedderConfig(embedderBackend, openvinoModel, openvinoDevice, openvinoPooling, stderr)
+	fastCfg := resolveFastEmbedConfig(fastembedModel, fastembedCache)
 	if embedderHookForTest == nil {
-		embedder, embedderID, closeEmbedder, err := embed.SelectBackend(embedderBackend, ovCfg)
+		embedderBackendInstance, embedderID, closeEmbedder, err := embed.SelectBackendConfig(embedderBackend, embed.BackendConfig{OpenVINO: ovCfg, FastEmbed: fastCfg})
 		if err != nil {
 			return agentio.NewError(agentio.CodeBadInput, err.Error(),
 				"Check --embedder-backend/--openvino-model (or $SPOON_EMBEDDER_BACKEND/$SPOON_OPENVINO_MODEL), or omit them to use the built-in embedder.").Emit(stderr)
 		}
 		defer closeEmbedder()
+		if searchable, ok := embedderBackendInstance.(embed.SearchEmbedder); ok {
+			searchEmbedder = searchable
+			semanticModelID = searchable.ModelID()
+		}
 		if embedderBackend != "" && embedderBackend != embed.BackendBuiltin {
-			opts.Cluster.Embedder = embedder
+			opts.Cluster.Embedder = embedderBackendInstance
 			opts.Cluster.EmbedderID = embedderID
 			// Zero-shot categories need a semantic embedder.
-			opts.Cluster.Categorize = embedderBackend == embed.BackendOpenVINO
+			opts.Cluster.Categorize = embedderBackend == embed.BackendOpenVINO || embedderBackend == embed.BackendFastEmbed
 		}
 	}
 	if opts.Cluster.Epsilon == 0 {
-		if embedderBackend == embed.BackendOpenVINO {
+		if embedderBackend == embed.BackendOpenVINO || embedderBackend == embed.BackendFastEmbed {
 			opts.Cluster.Epsilon = 0.35
 		} else {
 			opts.Cluster.Epsilon = 0.55
@@ -427,7 +495,7 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 		defer closeScorer()
 	}
 
-	ctx := context.Background()
+	ctx := context.WithValue(context.Background(), githubRPMContextKey{}, githubRPM)
 
 	// Cluster-pipeline progress logs are silenced to keep NDJSON stable;
 	// only structured ClusterSkip warnings are emitted on stderr via
@@ -450,6 +518,18 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 	// GitHub topic and evaluates each one's fork network in sequence. Every
 	// record carries an "upstream" field so consumers can tell the networks
 	// apart.
+	if webDiffEnabled {
+		_ = json.NewEncoder(stderr).Encode(map[string]any{"warning": map[string]any{
+			"code": "web_diff_unstable", "message": "GitHub web diff HTML is an unsupported, unstable fallback",
+		}})
+	}
+
+	db, storeErr := store.OpenDefault()
+	if storeErr != nil {
+		return agentio.NewError(agentio.CodeInternal, "store_unavailable: "+storeErr.Error(), agentio.RemediationInternal()).Emit(stderr)
+	}
+	defer db.Close()
+
 	if topicName, isTopic := strings.CutPrefix(repo, "topic:"); isTopic {
 		if csvMode {
 			return agentio.NewError(agentio.CodeBadInput, "topic mode emits NDJSON only (records span multiple upstreams)",
@@ -466,6 +546,11 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 		if e != nil {
 			return e.Emit(stderr)
 		}
+		if webDiffEnabled {
+			if ghp, ok := provider.(*gh.GHProvider); ok && ghp.Client() != nil {
+				ghp.Client().EnableWebDiff(os.Getenv("SPOON_GH_COOKIE"))
+			}
+		}
 		parsedLanes, perr := topics.ParseLanes(topicLanesRaw)
 		if perr != nil {
 			return agentio.NewError(agentio.CodeBadInput, perr.Error(),
@@ -476,37 +561,39 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 			Lanes:      parsedLanes,
 			LaneBudget: topicLaneBudget,
 		})
+		if ghp, ok := provider.(*gh.GHProvider); ok {
+			emitDuplicateIdentityWarning(stderr, ghp.Client())
+		}
 		if terr != nil {
 			return agentio.NewError(agentio.CodeBadInput, terr.Error(),
 				"Topic mode needs a GitHub topic with forkable repositories, e.g. `spn forks list topic:terminal`.").Emit(stderr)
 		}
+		auth, _ := provider.Auth(ctx)
 		for _, sel := range selections {
-			details := map[string]any{
-				"repo":       sel.FullName,
-				"score":      sel.Score,
-				"components": sel.Components,
-				"stars":      sel.Stars,
-				"forks":      sel.ForkCount,
+			info := map[string]any{
+				"repo": sel.FullName, "score": sel.Score, "components": sel.Components,
+				"stars": sel.Stars, "forks": sel.ForkCount,
 			}
 			if len(parsedLanes) > 0 {
-				details["lanes"] = sel.Lanes
+				info["lanes"] = sel.Lanes
 			}
-			_ = json.NewEncoder(stderr).Encode(map[string]any{
-				"info": map[string]any{
-					"code":    "topic_repo_selected",
-					"message": fmt.Sprintf("evaluating %s (score %.1f)", sel.FullName, sel.Score),
-					"details": details,
-				},
-			})
+			_ = json.NewEncoder(stderr).Encode(map[string]any{"info": map[string]any{
+				"code":    "topic_repo_selected",
+				"message": fmt.Sprintf("evaluating %s (score %.1f)", sel.FullName, sel.Score),
+				"details": info,
+			}})
 		}
 		for _, sel := range selections {
 			owner, name := splitRepoArg(sel.FullName)
 			if owner == "" || name == "" {
 				continue
 			}
-			if code := streamAndEmit(ctx, provider, owner, name, sel.FullName, opts, stdout, stderr); code != 0 {
+			if code := streamAndEmit(ctx, db, auth, provider, owner, name, sel.FullName, opts, details, semanticModelID, stdout, stderr); code != 0 {
 				return code
 			}
+		}
+		if searchEmbedder != nil {
+			emitSemanticIndexWarning(ctx, db, searchEmbedder, stderr)
 		}
 		return 0
 	}
@@ -515,25 +602,24 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 	if e != nil {
 		return e.Emit(stderr)
 	}
+	if webDiffEnabled {
+		if ghp, ok := provider.(*gh.GHProvider); ok && ghp.Client() != nil {
+			ghp.Client().EnableWebDiff(os.Getenv("SPOON_GH_COOKIE"))
+		}
+	}
 	owner, name := splitRepoArg(repoArg)
+	if ghp, ok := provider.(*gh.GHProvider); ok {
+		emitDuplicateIdentityWarning(stderr, ghp.Client())
+	}
 	if owner == "" || name == "" {
 		return agentio.NewError(agentio.CodeBadInput, "invalid repo: "+repo, agentio.RemediationBadInput("forks", "list")).Emit(stderr)
 	}
-	// P2 distant-relation discovery: when the provider is GitHub, wire
-	// a real GHSiblingSearcher that uses the same REST client. The
-	// cluster pipeline calls it when opts.Cluster.SiblingSimEnabled
-	// is true; otherwise the no-op default in the searcher path
-	// short-circuits the call.
+	auth, _ := provider.Auth(ctx)
 	if ghp, ok := provider.(*gh.GHProvider); ok {
 		if client := ghp.Client(); client != nil {
 			opts.Cluster.SiblingSearcher = gh.NewGHSiblingSearcher(client)
 		}
 	}
-	// error in the CSV or NDJSON path) aborts the upstream Stream goroutine
-	// instead of leaking it blocked on a channel send. opts.Logger,
-	// ReserveDisabled, and the test embedder hook are already configured above
-	// (hoisted before the topic/single-repo split), so they are not repeated
-	// here.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	ch, streamErr := forksops.Stream(ctx, provider, owner, name, opts)
@@ -543,11 +629,7 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 			resetAt := rl.ResetAt.UTC().Format("2006-01-02T15:04:05Z07:00")
 			secs := rl.RetryAfterSeconds()
 			e := agentio.NewError(agentio.CodeRateLimited, streamErr.Error(), agentio.RemediationRateLimited(resetAt, secs)).
-				WithDetails(map[string]any{
-					"reset_at":            resetAt,
-					"retry_after_seconds": secs,
-					"remaining":           rl.Remaining,
-				})
+				WithDetails(map[string]any{"reset_at": resetAt, "retry_after_seconds": secs, "remaining": rl.Remaining})
 			if secs > 0 {
 				e = e.WithRetryAfter(secs)
 			}
@@ -556,14 +638,12 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 		return agentio.NewError(agentio.CodeUpstream, streamErr.Error(), agentio.RemediationUpstream()).Emit(stderr)
 	}
 	if csvMode {
-		return emitForksCSV(stdout, stderr, ch)
+		return emitForksCSV(ctx, db, auth, owner, name, semanticModelID, stdout, stderr, ch)
 	}
-	// NDJSON streaming path.
 	degraded, total := 0, 0
 	for r := range ch {
 		if r.ClusterSkip != nil {
 			if r.ClusterSkip.Code == "mdg_unavailable" {
-				// Strict-mode failure: surface as policy_violation and exit non-zero.
 				return agentio.NewError(agentio.CodePolicy, r.ClusterSkip.Message,
 					"--strict-mdg: MDG centrality is unavailable; rerun without --strict-mdg to allow silent fallback, or omit --full-mdg to use the directory proxy.").Emit(stderr)
 			}
@@ -578,10 +658,10 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 		if r.SiblingSimSkip != nil {
 			emitStageSkipWarning(stderr, r.SiblingSimSkip)
 		}
+		if r.CommitFilesSkip != nil {
+			emitStageSkipWarning(stderr, r.CommitFilesSkip)
+		}
 		if r.Err != nil {
-			// agentio envelope contract (remediation + retryable) applies
-			// even on the stream so agents can branch consistently with
-			// the fatal-error path above.
 			_ = agentio.WriteNDJSON(stderr, perForkErrorEnvelope(r.Err))
 			continue
 		}
@@ -589,20 +669,107 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 		if r.BudgetSkip != nil {
 			degraded++
 		}
-		if err := agentio.WriteNDJSON(stdout, forkToJSONUpstream(r, "")); err != nil {
+		if err := persistForkSnapshot(ctx, db, auth, owner, name, semanticModelID, r); err != nil {
+			return agentio.NewError(agentio.CodeInternal, "store_unavailable: "+err.Error(), agentio.RemediationInternal()).Emit(stderr)
+		}
+		if err := agentio.WriteNDJSON(stdout, forkToJSONDetailedUpstream(r, details, "")); err != nil {
 			return agentio.NewError(agentio.CodeInternal, err.Error(), agentio.RemediationInternal()).Emit(stderr)
 		}
 	}
 	if degraded > 0 {
-		_ = json.NewEncoder(stderr).Encode(map[string]any{
-			"warning": map[string]any{
-				"code":        "degraded_rate_reserve",
-				"message":     fmt.Sprintf("%d/%d forks left un-enriched at the rate-limit reserve; their divergence is absent, not zero", degraded, total),
-				"remediation": "Re-run after the rate window resets to backfill (cached compares resume), or set SPOON_NO_RESERVE=1 to drain the full budget.",
-			},
-		})
+		_ = json.NewEncoder(stderr).Encode(map[string]any{"warning": map[string]any{
+			"code":        "degraded_rate_reserve",
+			"message":     fmt.Sprintf("%d/%d forks left un-enriched at the rate-limit reserve; their divergence is absent, not zero", degraded, total),
+			"remediation": "Re-run after the rate window resets to backfill (cached compares resume), or set SPOON_NO_RESERVE=1 to drain the full budget.",
+		}})
+	}
+	if searchEmbedder != nil {
+		emitSemanticIndexWarning(ctx, db, searchEmbedder, stderr)
 	}
 	return 0
+}
+
+func persistForkSnapshot(ctx context.Context, db *store.Store, auth forge.AuthInfo, owner, name, modelID string, r forksops.Result) error {
+	now := time.Now().UTC()
+	host := auth.Host
+	if host == "" {
+		switch auth.Provider {
+		case forge.ProviderGitLab:
+			host = "gitlab.com"
+		case forge.ProviderGitea:
+			host = "codeberg.org"
+		default:
+			host = "github.com"
+		}
+	}
+	firstSeen := r.Fork.CreatedAt
+	if firstSeen.IsZero() {
+		firstSeen = now
+	}
+	snapshot := store.Snapshot{
+		Repo: store.RepoRecord{
+			Provider: auth.Provider.String(), Host: host, Owner: owner, Name: name,
+			FirstSeen: firstSeen, LastSeen: now,
+		},
+		Fork: store.ForkRecord{
+			ForgeID: r.Fork.ID, Owner: r.Fork.Owner, Name: r.Fork.Name, URL: r.Fork.URL,
+			Description: r.Fork.Description, Language: r.Fork.Language, Topics: r.Fork.Topics,
+			Stars: r.Fork.Stars, PushedAt: r.Fork.PushedAt, Heat: r.Heat.Score,
+			Tier: r.Heat.Tier, UpdatedAt: now,
+		},
+	}
+	if r.T2 != nil {
+		snapshot.CompareFiles = storeFiles(r.T2.Diffs)
+		snapshot.Commits = make([]store.CommitRecord, 0, len(r.T2.Commits))
+		for _, commit := range r.T2.Commits {
+			snapshot.Commits = append(snapshot.Commits, store.CommitRecord{
+				SHA: commit.SHA, Message: commit.Message, AuthorLogin: commit.AuthorLogin,
+				AuthorEmail: commit.AuthorEmail, CommittedAt: commit.Timestamp, Files: storeFiles(commit.Files),
+			})
+		}
+	}
+	if modelID != "" {
+		repoKey := store.RepoKey(snapshot.Repo.Provider, snapshot.Repo.Host, owner, name)
+		forkKey := store.ForkKey(repoKey, r.Fork.ID)
+		snapshot.Document = semantic.BuildDocument(modelID, forkKey, r.Fork, r.T2)
+	}
+	return db.UpsertSnapshot(ctx, snapshot)
+}
+
+func emitDuplicateIdentityWarning(stderr io.Writer, client *gh.Client) {
+	if client == nil || client.DuplicateIdentities() == 0 {
+		return
+	}
+	_ = json.NewEncoder(stderr).Encode(map[string]any{"warning": map[string]any{
+		"code":        "duplicate_github_identity",
+		"message":     fmt.Sprintf("%d configured token(s) were deduplicated because they resolve to an already-active GitHub login", client.DuplicateIdentities()),
+		"remediation": "Use credentials for distinct GitHub users to gain independent primary budgets; REST and GraphQL quotas remain separate.",
+	}})
+}
+
+func emitSemanticIndexWarning(ctx context.Context, db *store.Store, model embed.SearchEmbedder, stderr io.Writer) {
+	if _, err := semantic.IndexPending(ctx, db, model); err != nil {
+		_ = json.NewEncoder(stderr).Encode(map[string]any{"warning": map[string]any{
+			"code": "semantic_index_failed", "message": err.Error(),
+			"remediation": "The relational snapshot was saved; rerun the same command after fixing FastEmbed to retry missing embeddings.",
+		}})
+	}
+}
+
+func storeFiles(files []forge.FileDiff) []store.FileRecord {
+	out := make([]store.FileRecord, 0, len(files))
+	for _, file := range files {
+		var patch *string
+		if file.Patch != "" {
+			value := file.Patch
+			patch = &value
+		}
+		out = append(out, store.FileRecord{
+			Path: file.Path, PreviousPath: file.PreviousPath, Status: file.Status,
+			Additions: file.Additions, Deletions: file.Deletions, Patch: patch, PatchSource: file.PatchSource,
+		})
+	}
+	return out
 }
 
 func splitRepoArg(s string) (owner, repo string) {
@@ -614,6 +781,10 @@ func splitRepoArg(s string) (owner, repo string) {
 }
 
 func forkToJSON(r forksops.Result) map[string]any {
+	return forkToJSONDetailed(r, detailOptions{})
+}
+
+func forkToJSONDetailed(r forksops.Result, details detailOptions) map[string]any {
 	out := map[string]any{
 		"id":          r.Fork.ID,
 		"owner":       r.Fork.Owner,
@@ -645,11 +816,39 @@ func forkToJSON(r forksops.Result) map[string]any {
 		out["categoryScore"] = r.Heat.CategoryScore
 	}
 	if r.T2 != nil {
-		out["t2"] = map[string]any{
+		t2 := map[string]any{
 			"ahead":  r.T2.AheadCount,
 			"behind": r.T2.BehindCount,
 			"mna":    r.T2.MNA,
 		}
+		if details.files {
+			t2["files"] = fileDiffsToJSON(r.T2.Diffs)
+		}
+		if r.T2.PatchSkipReason != "" {
+			t2["patch_skipped_reason"] = r.T2.PatchSkipReason
+		}
+		if details.commits {
+			commits := make([]map[string]any, 0, len(r.T2.Commits))
+			for _, commit := range r.T2.Commits {
+				row := map[string]any{
+					"sha": commit.SHA, "message": commit.Message,
+					"authorLogin": commit.AuthorLogin, "authorEmail": commit.AuthorEmail,
+					"timestamp": commit.Timestamp,
+				}
+				if details.commitFiles {
+					row["files"] = fileDiffsToJSON(commit.Files)
+				}
+				commits = append(commits, row)
+			}
+			t2["commits"] = commits
+		}
+		if details.commitFiles {
+			t2["commit_files_complete"] = r.CommitFilesComplete
+			if r.CommitFilesSkip != nil {
+				t2["commit_files_skipped_reason"] = r.CommitFilesSkip.Reason
+			}
+		}
+		out["t2"] = t2
 	} else if r.BudgetSkip != nil {
 		// Compare was skipped at the rate-limit reserve. Flag it so the absence
 		// of "t2" reads as "not computed" (re-run to backfill), not "no divergence".
@@ -726,6 +925,22 @@ func forkToJSON(r forksops.Result) map[string]any {
 	return out
 }
 
+func fileDiffsToJSON(files []forge.FileDiff) []map[string]any {
+	out := make([]map[string]any, 0, len(files))
+	for _, file := range files {
+		var patch any
+		if file.Patch != "" {
+			patch = file.Patch
+		}
+		out = append(out, map[string]any{
+			"path": file.Path, "previousPath": file.PreviousPath, "status": file.Status,
+			"additions": file.Additions, "deletions": file.Deletions,
+			"patch": patch, "patchSource": file.PatchSource,
+		})
+	}
+	return out
+}
+
 func visibilityToJSON(r forksops.Result) map[string]any {
 	visibility := r.Visibility
 	if visibility.Status == "" {
@@ -768,7 +983,7 @@ func momentumToJSON(momentum forksops.MomentumInfo) map[string]any {
 	}
 }
 
-func emitForksCSV(stdout, stderr io.Writer, ch <-chan forksops.Result) int {
+func emitForksCSV(ctx context.Context, db *store.Store, auth forge.AuthInfo, owner, name, modelID string, stdout, stderr io.Writer, ch <-chan forksops.Result) int {
 	w := csv.NewWriter(stdout)
 	header := []string{
 		"id", "owner", "name", "url", "stars", "pushed_at", "is_archived",
@@ -802,6 +1017,9 @@ func emitForksCSV(stdout, stderr io.Writer, ch <-chan forksops.Result) int {
 				},
 			})
 			continue
+		}
+		if err := persistForkSnapshot(ctx, db, auth, owner, name, modelID, r); err != nil {
+			return agentio.NewError(agentio.CodeInternal, "store_unavailable: "+err.Error(), agentio.RemediationInternal()).Emit(stderr)
 		}
 		if err := w.Write(forkToCSVRow(r)); err != nil {
 			return agentio.NewError(agentio.CodeInternal, "write csv row: "+err.Error(), agentio.RemediationInternal()).Emit(stderr)
@@ -917,6 +1135,18 @@ func resolveSpnEmbedderConfig(backend, model, device, pooling string, stderr io.
 	return backend, embed.OpenVINOConfig{ModelPath: model, Device: device, Pooling: p}
 }
 
+func resolveFastEmbedConfig(model, cacheDir string) embed.FastEmbedConfig {
+	var fileCfg config.EmbedderConfig
+	if cfg, err := config.LoadDefault(); err == nil && cfg != nil {
+		fileCfg = cfg.Embedder
+	}
+	model = config.Coalesce(model, os.Getenv("SPOON_FASTEMBED_MODEL"), fileCfg.Model)
+	cacheDir = config.Coalesce(cacheDir, os.Getenv("SPOON_FASTEMBED_CACHE"), fileCfg.CacheDir)
+	return embed.FastEmbedConfig{
+		Model: model, CacheDir: cacheDir, MaxLength: fileCfg.MaxLength, BatchSize: fileCfg.BatchSize,
+	}
+}
+
 // newQueryScorer builds the query relevance scorer: the OpenVINO
 // cross-encoder when a reranker model is configured (config file or
 // $SPOON_OPENVINO_RERANKER) and this binary supports it; otherwise nil so
@@ -962,7 +1192,7 @@ func newLabelPolisher() (cluster.LabelPolisher, func(), error) {
 // streamAndEmit runs the fork pipeline for one upstream and emits NDJSON
 // records tagged with the upstream's full name. Used by topic mode, where
 // several upstreams share one output stream.
-func streamAndEmit(ctx context.Context, provider forge.Forge, owner, name, upstream string, opts forksops.Options, stdout, stderr io.Writer) int {
+func streamAndEmit(ctx context.Context, db *store.Store, auth forge.AuthInfo, provider forge.Forge, owner, name, upstream string, opts forksops.Options, details detailOptions, modelID string, stdout, stderr io.Writer) int {
 	// P2 distant-relation discovery: wire a real GHSiblingSearcher for
 	// the GitHub provider. Topic mode reaches this path once per
 	// selected upstream; the per-upstream cost is 1 search + 1 embed.
@@ -1012,6 +1242,9 @@ func streamAndEmit(ctx context.Context, provider forge.Forge, owner, name, upstr
 		if r.SiblingSimSkip != nil {
 			emitStageSkipWarning(stderr, r.SiblingSimSkip)
 		}
+		if r.CommitFilesSkip != nil {
+			emitStageSkipWarning(stderr, r.CommitFilesSkip)
+		}
 		if r.Err != nil {
 			_ = agentio.WriteNDJSON(stderr, map[string]any{
 				"error": map[string]any{
@@ -1026,7 +1259,10 @@ func streamAndEmit(ctx context.Context, provider forge.Forge, owner, name, upstr
 		if r.BudgetSkip != nil {
 			degraded++
 		}
-		if err := agentio.WriteNDJSON(stdout, forkToJSONUpstream(r, upstream)); err != nil {
+		if err := persistForkSnapshot(ctx, db, auth, owner, name, modelID, r); err != nil {
+			return agentio.NewError(agentio.CodeInternal, "store_unavailable: "+err.Error(), agentio.RemediationInternal()).Emit(stderr)
+		}
+		if err := agentio.WriteNDJSON(stdout, forkToJSONDetailedUpstream(r, details, upstream)); err != nil {
 			return agentio.NewError(agentio.CodeInternal, err.Error(), agentio.RemediationInternal()).Emit(stderr)
 		}
 	}
@@ -1044,7 +1280,11 @@ func streamAndEmit(ctx context.Context, provider forge.Forge, owner, name, upstr
 
 // forkToJSONUpstream is forkToJSON plus an optional upstream tag (topic mode).
 func forkToJSONUpstream(r forksops.Result, upstream string) map[string]any {
-	out := forkToJSON(r)
+	return forkToJSONDetailedUpstream(r, detailOptions{}, upstream)
+}
+
+func forkToJSONDetailedUpstream(r forksops.Result, details detailOptions, upstream string) map[string]any {
+	out := forkToJSONDetailed(r, details)
 	if upstream != "" {
 		out["upstream"] = upstream
 	}

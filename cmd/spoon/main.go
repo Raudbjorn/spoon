@@ -201,7 +201,14 @@ func main() {
 	// construct it up front so a misconfigured openvino setup fails fast
 	// instead of silently degrading clustering mid-run.
 	embedderBackend, ovCfg := resolveEmbedderConfig(embedderBackend, openvinoModel, openvinoDevice, openvinoPooling)
-	embedder, embedderID, closeEmbedder, err := embed.SelectBackend(embedderBackend, ovCfg)
+	var fastCfg embed.FastEmbedConfig
+	if cfg, cfgErr := config.LoadDefault(); cfgErr == nil && cfg != nil {
+		fastCfg = embed.FastEmbedConfig{
+			Model: cfg.Embedder.Model, CacheDir: cfg.Embedder.CacheDir,
+			MaxLength: cfg.Embedder.MaxLength, BatchSize: cfg.Embedder.BatchSize,
+		}
+	}
+	embedder, embedderID, closeEmbedder, err := embed.SelectBackendConfig(embedderBackend, embed.BackendConfig{OpenVINO: ovCfg, FastEmbed: fastCfg})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -351,7 +358,7 @@ func createProvider(ctx context.Context, repo, forgeFlag, forgeHost string) (for
 			return gitlab.NewProvider(client, auth), auth, "", nil
 		}
 		// Default: GitHub
-		client, status, err := gh.CheckAuth()
+		client, status, err := gh.CheckAuthConfigured(0)
 		if err != nil {
 			return nil, forge.AuthInfo{}, "", fmt.Errorf("GitHub auth: %w", err)
 		}
@@ -383,7 +390,7 @@ func createProvider(ctx context.Context, repo, forgeFlag, forgeHost string) (for
 		return gitlab.NewProvider(client, auth), auth, repoArg, nil
 
 	case forge.ProviderGitHub:
-		client, status, err := gh.CheckAuth()
+		client, status, err := gh.CheckAuthConfigured(0)
 		if err != nil {
 			return nil, forge.AuthInfo{}, "", fmt.Errorf("GitHub auth: %w", err)
 		}

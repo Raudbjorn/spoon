@@ -18,3 +18,10 @@ type Embedder interface {
 	Embed(ctx context.Context, texts []string) ([]Vector, error)
 	Dim() int
 }
+
+type SearchEmbedder interface {
+	Embedder
+	EmbedQuery(context.Context, string) (Vector, error)
+	EmbedPassages(context.Context, []string) ([]Vector, error)
+	ModelID() string
+}

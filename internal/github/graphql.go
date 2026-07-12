@@ -22,6 +22,7 @@ const defaultBranchTipQuery = `query($owner: String!, $name: String!) {
   repository(owner: $owner, name: $name) {
     defaultBranchRef { target { oid } }
   }
+  rateLimit { limit remaining used resetAt cost }
 }`
 
 // defaultBranchTipSHA returns the upstream default-branch tip SHA using
@@ -29,20 +30,25 @@ const defaultBranchTipQuery = `query($owner: String!, $name: String!) {
 // repository has no default branch (e.g., empty repo) — the caller treats
 // that as a soft miss and continues without pinning. Other errors
 // (network, 5xx) are propagated.
+type defaultBranchTipResponse struct {
+	Repository struct {
+		DefaultBranchRef *struct {
+			Target struct {
+				OID string `json:"oid"`
+			} `json:"target"`
+		} `json:"defaultBranchRef"`
+	} `json:"repository"`
+	RateLimit gqlRateLimit `json:"rateLimit"`
+}
+
+func (r *defaultBranchTipResponse) graphqlRateLimit() *gqlRateLimit { return &r.RateLimit }
+
 func (c *Client) defaultBranchTipSHA(ctx context.Context, owner, repo string) (string, error) {
-	if c.gql == nil {
+	if !c.HasGraphQL() {
 		return "", nil
 	}
-	var resp struct {
-		Repository struct {
-			DefaultBranchRef *struct {
-				Target struct {
-					OID string `json:"oid"`
-				} `json:"target"`
-			} `json:"defaultBranchRef"`
-		} `json:"repository"`
-	}
-	if err := c.gql.DoWithContext(ctx, defaultBranchTipQuery, map[string]interface{}{
+	var resp defaultBranchTipResponse
+	if err := c.doGraphQLWithRetry(ctx, defaultBranchTipQuery, map[string]interface{}{
 		"owner": owner,
 		"name":  repo,
 	}, &resp); err != nil {
@@ -87,6 +93,7 @@ query($owner: String!, $name: String!, $cursor: String) {
       }
     }
   }
+  rateLimit { limit remaining used resetAt cost }
 }
 `
 
@@ -101,7 +108,10 @@ type gqlResponse struct {
 			Nodes []gqlForkNode `json:"nodes"`
 		} `json:"forks"`
 	} `json:"repository"`
+	RateLimit gqlRateLimit `json:"rateLimit"`
 }
+
+func (r *gqlResponse) graphqlRateLimit() *gqlRateLimit { return &r.RateLimit }
 
 type gqlForkNode struct {
 	DatabaseID      int64  `json:"databaseId"`
@@ -153,7 +163,7 @@ type gqlRefNode struct {
 // Returns ForkInfo (REST-compatible) and T1Extra for each fork.
 // onPage is called with each batch for progressive display.
 func (c *Client) FetchForksGraphQL(ctx context.Context, owner, repo string, onPage func(forks []ForkInfo, extras []T1Extra, page int)) ([]ForkInfo, []T1Extra, error) {
-	if c.gql == nil {
+	if !c.HasGraphQL() {
 		return nil, nil, fmt.Errorf("GraphQL client not available")
 	}
 
@@ -210,7 +220,7 @@ func (c *Client) FetchForksGraphQL(ctx context.Context, owner, repo string, onPa
 const gqlMaxAttempts = 3
 
 // gqlRetryBackoff is the base linear backoff between GraphQL retry attempts.
-const gqlRetryBackoff = 500 * time.Millisecond
+const gqlRetryBackoff = time.Second
 
 // doGraphQLWithRetry runs a GraphQL query, retrying on transient server errors
 // (HTTP 502/503/504) with linear backoff. Context cancellation aborts early.
@@ -218,12 +228,12 @@ const gqlRetryBackoff = 500 * time.Millisecond
 // immediately without retrying.
 func (c *Client) doGraphQLWithRetry(ctx context.Context, query string, variables map[string]interface{}, out interface{}) error {
 	var err error
-	for attempt := 1; attempt <= gqlMaxAttempts; attempt++ {
-		err = c.gql.DoWithContext(ctx, query, variables, out)
+	for attempt := range gqlMaxAttempts {
+		err = c.doGraphQL(ctx, query, variables, out)
 		if err == nil || !isTransientServerError(err) {
 			return err
 		}
-		if attempt == gqlMaxAttempts {
+		if attempt == gqlMaxAttempts-1 {
 			break
 		}
 		// Debug, not Warn: in `spn forks list` stderr carries structured NDJSON
@@ -231,11 +241,11 @@ func (c *Client) doGraphQLWithRetry(ctx context.Context, query string, variables
 		// and break machine consumers. The CLI layer surfaces a structured
 		// warning if the run ultimately degrades.
 		slog.Debug("forks: transient GraphQL error, retrying",
-			"attempt", attempt, "max", gqlMaxAttempts, "err", err)
+			"attempt", attempt+1, "max", gqlMaxAttempts, "err", err)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(time.Duration(attempt) * gqlRetryBackoff):
+		case <-time.After(time.Duration(attempt+1) * gqlRetryBackoff):
 		}
 	}
 	return err

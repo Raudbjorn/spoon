@@ -49,20 +49,18 @@ func TestBuildFeatures_Basic(t *testing.T) {
 	}
 }
 
-func TestBuildFeatures_AlwaysIncludesLargestEvenWhenOverBudget(t *testing.T) {
-	// With a tight budget below the size of a single diff line, the first
-	// (largest) entry must still appear in DiffChunk — never silently dropped.
+func TestBuildFeatures_CapsLargestAtRuneBudget(t *testing.T) {
 	t2 := forge.T2Data{
 		Diffs: []forge.FileDiff{
 			{Path: "some/long/path/to/file.go", Additions: 1000, Deletions: 1000},
 		},
 	}
-	f := BuildFeatures(t2, "", 10) // 10 chars is way under the minimum diff-line length
+	f := BuildFeatures(t2, "", 10)
 	if f.DiffChunk == "" {
-		t.Fatal("DiffChunk must contain at least the largest entry, got empty")
+		t.Fatal("DiffChunk must retain a prefix of the largest entry")
 	}
-	if !strings.Contains(f.DiffChunk, "some/long/path/to/file.go") {
-		t.Errorf("DiffChunk missing the only entry: %q", f.DiffChunk)
+	if got := len([]rune(f.DiffChunk)); got > 10 {
+		t.Fatalf("DiffChunk has %d runes, want at most 10", got)
 	}
 }
 

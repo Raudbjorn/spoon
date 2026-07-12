@@ -3,69 +3,145 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"net/http"
 	"os/exec"
 	"strings"
+	"time"
 )
 
-// CheckAuth creates a client and probes its authentication state.
 func CheckAuth() (*Client, AuthStatus, error) {
-	client, err := NewClient()
+	return CheckAuthWithOptions(ClientOptions{})
+}
+
+// CheckAuthWithOptions constructs and probes every explicit identity before it
+// becomes dispatchable. Tokens resolving to the same GitHub login share a
+// primary budget and are therefore collapsed to one backend.
+func CheckAuthWithOptions(opts ClientOptions) (*Client, AuthStatus, error) {
+	client, err := NewClientWithOptions(opts)
 	if err != nil {
 		return nil, AuthStatus{}, err
 	}
-
-	status := AuthStatus{
-		Authenticated: client.IsAuthenticated(),
-	}
-
+	status := AuthStatus{Authenticated: client.IsAuthenticated(), TokenSource: "none"}
 	if client.authenticated {
 		status.TokenSource = "gh"
+		if len(opts.Tokens) > 0 {
+			status.TokenSource = "config"
+		}
+	}
+	if len(opts.Tokens) > 0 {
+		if err := client.probeExplicitBackends(context.Background(), &status); err != nil {
+			return nil, AuthStatus{}, err
+		}
 	} else {
-		status.TokenSource = "none"
+		client.probeDefaultBackend(context.Background(), &status)
 	}
-
-	// Probe rate limit to get actual numbers
-	var rl struct {
-		Resources struct {
-			Core struct {
-				Limit     int   `json:"limit"`
-				Remaining int   `json:"remaining"`
-				Reset     int64 `json:"reset"`
-				Used      int   `json:"used"`
-			} `json:"core"`
-		} `json:"resources"`
-	}
-	if resp, err := client.GetRaw(context.Background(), "rate_limit"); err == nil {
-		body, readErr := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if readErr == nil {
-			if err := json.Unmarshal(body, &rl); err == nil {
-				status.RateLimit = RateLimit{
-					Limit:     rl.Resources.Core.Limit,
-					Remaining: rl.Resources.Core.Remaining,
-					Used:      rl.Resources.Core.Used,
-				}
-				client.mu.Lock()
-				client.rateLimit = status.RateLimit
-				client.mu.Unlock()
-			}
-		}
-		// Parse OAuth scopes from response header.
-		if scopesHeader := resp.Header.Get("X-OAuth-Scopes"); scopesHeader != "" {
-			for _, s := range strings.Split(scopesHeader, ",") {
-				s = strings.TrimSpace(s)
-				if s != "" {
-					status.Scopes = append(status.Scopes, s)
-				}
-			}
-		}
-	}
-
+	client.duplicateIdentities = status.DuplicateIdentities
+	status.RateLimit = client.GetRateLimit()
 	return client, status, nil
 }
 
-// IsGHInstalled checks if the gh CLI is available on PATH.
+func (c *Client) probeExplicitBackends(ctx context.Context, status *AuthStatus) error {
+	probed := make([]*backend, 0, len(c.backends))
+	for _, b := range c.backends {
+		login, err := c.probeLogin(ctx, b)
+		if err != nil || login == "" {
+			c.pool.disableUntil(b, time.Time{}, true)
+			continue
+		}
+		b.Login = login
+		probed = append(probed, b)
+	}
+	unique, duplicates := dedupeBackendsByLogin(probed)
+	status.DuplicateIdentities = duplicates
+	for _, b := range unique {
+		c.probeRateLimit(ctx, b, status)
+	}
+	if len(unique) == 0 {
+		return fmt.Errorf("no configured GitHub identity passed /user and /rate_limit probes")
+	}
+	c.installBackends(unique)
+	c.authenticated = true
+	return nil
+}
+
+func dedupeBackendsByLogin(backends []*backend) ([]*backend, int) {
+	unique := make([]*backend, 0, len(backends))
+	seen := make(map[string]bool, len(backends))
+	duplicates := 0
+	for _, b := range backends {
+		key := strings.ToLower(strings.TrimSpace(b.Login))
+		if seen[key] {
+			b.Disabled = true
+			duplicates++
+			continue
+		}
+		seen[key] = true
+		unique = append(unique, b)
+	}
+	return unique, duplicates
+}
+
+func (c *Client) probeLogin(ctx context.Context, b *backend) (string, error) {
+	if err := c.waitRequest(ctx, b.REST.Limiter); err != nil {
+		return "", err
+	}
+	resp, err := b.Rest.RequestWithContext(ctx, http.MethodGet, "user", nil)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", err
+	}
+	var user struct {
+		Login string `json:"login"`
+	}
+	if err := json.Unmarshal(body, &user); err != nil {
+		return "", fmt.Errorf("decode GitHub user probe: %w", err)
+	}
+	return strings.TrimSpace(user.Login), nil
+}
+
+func (c *Client) probeRateLimit(ctx context.Context, b *backend, status *AuthStatus) {
+	if err := c.waitRequest(ctx, b.REST.Limiter); err != nil {
+		return
+	}
+	resp, err := b.Rest.RequestWithContext(ctx, http.MethodGet, "rate_limit", nil)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	var envelope struct {
+		Resources struct {
+			Core struct {
+				Limit, Remaining, Used int
+				Reset                  int64
+			} `json:"core"`
+		} `json:"resources"`
+	}
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if readErr == nil && json.Unmarshal(body, &envelope) == nil {
+		core := envelope.Resources.Core
+		b.REST.RateLimit = RateLimit{Limit: core.Limit, Remaining: core.Remaining, Used: core.Used, Reset: time.Unix(core.Reset, 0)}
+		b.REST.Limiter.SetRPM(restRPM(b))
+	}
+	for _, raw := range strings.Split(resp.Header.Get("X-OAuth-Scopes"), ",") {
+		if scope := strings.TrimSpace(raw); scope != "" {
+			status.Scopes = append(status.Scopes, scope)
+		}
+	}
+}
+
+func (c *Client) probeDefaultBackend(ctx context.Context, status *AuthStatus) {
+	if len(c.backends) == 0 {
+		return
+	}
+	c.probeRateLimit(ctx, c.backends[0], status)
+}
+
 func IsGHInstalled() bool {
 	_, err := exec.LookPath("gh")
 	return err == nil
