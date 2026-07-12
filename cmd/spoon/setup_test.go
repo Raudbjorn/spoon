@@ -62,7 +62,9 @@ func TestRunSetup_allGreenExitsZero(t *testing.T) {
 	if exit != 0 {
 		t.Fatalf("exit=%d\n%s\n%s", exit, stdout.String(), stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "All set") {
+	// The success summary text depends on whether onnxruntime is present
+	// (fastembed is advisory). Both variants report OpenVINO features ready.
+	if !strings.Contains(stdout.String(), "OpenVINO features") {
 		t.Errorf("missing success summary:\n%s", stdout.String())
 	}
 }

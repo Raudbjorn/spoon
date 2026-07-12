@@ -28,7 +28,9 @@ Windows). `CGO_ENABLED=1` is the Go default; do not unset it.
 
 ## Auth
 
-- **GitHub**: `gh auth login` (uses the `gh` CLI's stored token)
+- **GitHub**: `gh auth login` (uses the `gh` CLI's stored token). For the
+  round-robin dispatcher, add one or more PATs under `github.tokens` in the
+  config file (mode `0600`) — see the rate-limit note below.
 - **GitLab**: `glab auth login`, or set `GITLAB_TOKEN`
 
 Unauthenticated requests work but hit much lower rate limits.
@@ -255,43 +257,45 @@ its normal fork evaluation over each.
   each tagged with an `upstream` field; selections are emitted as structured
   info envelopes on stderr. Cap the set with `--topic-repos N` (default 5).
 
-## Clustering
+## Embedding, clustering & semantic search
 
-Forks are also grouped by what they changed. Two in-process backends — no
-external services either way:
+spoon uses a single embedder — **fastembed** — the fixed
+`fast-bge-small-en-v1.5` BGE model (384 dimensions, max length 512) run
+in-process via native Go and ONNX Runtime. It powers persistence, the semantic
+index (`spn search`), and — when available — clustering plus the zero-shot
+`category` facet.
 
-- **builtin** (default): a deterministic lexical embedder over each fork's
-  touched paths, commit messages, README, and diff shape. No model
-  downloads, no setup.
-- **openvino**: a transformer encoder run inside the binary via the
-  OpenVINO runtime, on an Intel GPU or CPU. No build tags — the OpenVINO and
-  openvino-genai libraries are loaded at run time via `dlopen` (so the
-  default build stays portable and needs no OpenVINO SDK). Install the
-  runtime, then run `spoon setup` — it downloads default models for every
-  OpenVINO feature (semantic embedder, `--query` reranker, LLM cluster-label
-  polish) and persists the config. The same backend also gives each fork a
-  zero-shot `category` facet. If the libraries live off the default path,
-  point `SPOON_OPENVINO_LIB` / `SPOON_OPENVINO_GENAI_LIB` at them.
-- **fastembed**: the fixed `fast-bge-small-en-v1.5` BGE model (384
-  dimensions, max length 512) through native Go and ONNX Runtime. Set
-  `ONNX_PATH=/path/to/libonnxruntime.so`, then run
-  `spoon setup --embedder-backend fastembed`. Models cache under
-  `$XDG_CACHE_HOME/spoon/models/fastembed`; the exact semantic identity is
-  `fastembed:fast-bge-small-en-v1.5:maxlen=512`. Unlike optional OpenVINO
-  clustering/reranking, persistent indexing and `spn search` use only this
-  FastEmbed backend.
+FastEmbed runs by **default** on every `spn forks list` (it is opt-out, not
+opt-in):
 
-Clusters get deterministic heuristic labels (dominant directory prefix +
-the most discriminative commit/path tokens). Tune with `--cluster-epsilon`
-/ `--cluster-min-size`, cap the embedded set with `--cluster-top`, or
-disable with `--no-cluster`. See [`docs/embedders.md`](docs/embedders.md)
-for both algorithms and the OpenVINO setup.
+- It needs ONNX Runtime. Set `ONNX_PATH=/path/to/libonnxruntime.so` and run
+  `spoon setup` once — it downloads the model (cached under
+  `$XDG_CACHE_HOME/spoon/models/fastembed`) and persists the config. The exact
+  semantic identity is `fastembed:fast-bge-small-en-v1.5:maxlen=512`.
+- If ONNX Runtime is unavailable, the run **degrades gracefully**: it emits an
+  `embed_unavailable` warning and continues without semantic indexing —
+  listing, scoring, and clustering are unaffected.
+- Pass `--no-embed` (or `SPOON_NO_EMBED=1`) to skip embedding entirely.
 
-When FastEmbed is selected, each completed list run embeds only new or changed
-documents in batches of 32. `spn search "<query>" --top 20` queries every
-indexed fork (or one upstream with `--repo owner/repo`) and emits deterministic
-score-descending NDJSON. An empty index is a successful empty result with a
-`semantic_index_empty` warning.
+Clustering itself never requires a native runtime: when FastEmbed is active it
+is used for clustering; otherwise clustering falls back to a **built-in
+deterministic lexical embedder** over each fork's touched paths, commit
+messages, README, and diff shape (zero setup). The interactive `spoon` TUI
+always clusters with this lexical engine — semantic search and persistence live
+in the `spn` agent CLI. Clusters get deterministic heuristic labels (dominant
+directory prefix + the most discriminative commit/path tokens). Tune with
+`--cluster-epsilon` / `--cluster-min-size`, cap the embedded set with
+`--cluster-top`, or disable with `--no-cluster`.
+
+The optional `--query` reranker and the LLM cluster-label polisher still use the
+OpenVINO runtime (loaded at run time via `dlopen`, no OpenVINO SDK needed for
+the default build); `spoon setup` provisions them, and
+`SPOON_OPENVINO_LIB` / `SPOON_OPENVINO_GENAI_LIB` point at off-path libraries.
+
+Each completed list run embeds only new or changed documents in batches of 32.
+`spn search "<query>" --top 20` queries every indexed fork (or one upstream with
+`--repo owner/repo`) and emits deterministic score-descending NDJSON. An empty
+index is a successful empty result with a `semantic_index_empty` warning.
 
 ## Project layout
 
@@ -306,7 +310,7 @@ internal/heat/     Scoring, percentiles, filters
 internal/mdg/      Module Dependency Graph centrality backend (opt-in via --full-mdg)
 internal/threadsops/ PR thread ops shared by `spoon threads` and `spn threads`
 internal/agentio/  Structured error envelope + JSON writers for `spn`
-internal/embed/    Built-in, OpenVINO, and fixed FastEmbed backends
+internal/embed/    Fixed FastEmbed embedder + built-in lexical fallback
 internal/semantic/ Deterministic documents, vector codec, incremental indexing
 internal/store/    Durable SQLite snapshots and embeddings
 internal/cluster/  Clustering, novelty, heuristic labels

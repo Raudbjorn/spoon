@@ -85,8 +85,8 @@ func runSetupWith(ctx context.Context, args []string, stdin io.Reader, interacti
 			}
 			i++
 			f.embedderBackend = strings.ToLower(args[i])
-			if f.embedderBackend != embed.BackendBuiltin && f.embedderBackend != embed.BackendOpenVINO && f.embedderBackend != embed.BackendFastEmbed {
-				return setupErr(stderr, "--embedder-backend must be builtin, openvino, or fastembed")
+			if f.embedderBackend != embed.BackendFastEmbed {
+				return setupErr(stderr, "--embedder-backend must be fastembed (the only embedder)")
 			}
 		case "--fastembed-cache":
 			if needsValue(i) {
@@ -150,14 +150,11 @@ func runSetupWith(ctx context.Context, args []string, stdin io.Reader, interacti
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
-	if f.embedderBackend != "" {
-		cfg.Embedder.Backend = f.embedderBackend
-	}
+	// fastembed is the only embedder. setupOpenVINO now provisions just the
+	// optional reranker + labeler features.
+	cfg.Embedder.Backend = embed.BackendFastEmbed
 	ovOK := setupOpenVINO(ctx, f, cfg, interactive, stdin, stdout)
-	fastOK := true
-	if cfg.Embedder.Backend == embed.BackendFastEmbed {
-		fastOK = setupFastEmbed(cfg, f.fastembedCache, stdout)
-	}
+	fastOK := setupFastEmbed(cfg, f.fastembedCache, stdout)
 	setupProxyReferences(cfg, stdout)
 
 	// --- Persist config -------------------------------------------------------
@@ -166,11 +163,18 @@ func runSetupWith(ctx context.Context, args []string, stdin io.Reader, interacti
 	}
 
 	// --- Summary --------------------------------------------------------------
-	if provOK && ovOK && fastOK {
-		fmt.Fprintln(stdout, colorize("✓ All set — credentials and OpenVINO features are ready.", "\033[32m", f.noColor))
+	// FastEmbed is advisory: a missing onnxruntime does not fail setup (the
+	// config still records fastembed and the feature activates once the runtime
+	// is installed). Credentials + OpenVINO features gate the exit code.
+	if provOK && ovOK {
+		if fastOK {
+			fmt.Fprintln(stdout, colorize("✓ All set — credentials, OpenVINO features, and FastEmbed are ready.", "\033[32m", f.noColor))
+		} else {
+			fmt.Fprintln(stdout, colorize("✓ Credentials and OpenVINO features ready; FastEmbed needs onnxruntime — semantic search stays off until it is installed (see above).", "\033[33m", f.noColor))
+		}
 		return 0
 	}
-	if provOK && fastOK {
+	if provOK {
 		fmt.Fprintln(stdout, colorize("Credentials ready; some OpenVINO features need attention — see above.", "\033[33m", f.noColor))
 		return 0
 	}
@@ -369,13 +373,12 @@ func setupOpenVINO(ctx context.Context, f setupFlags, cfg *config.Config, intera
 		usable    bool
 		hint      string
 	}
+	// Embedding is handled by fastembed (setupFastEmbed); OpenVINO here
+	// provisions only the optional reranker + labeler features.
 	slots := []featureSlot{
 		{models.FeatureReranker, "Reranker (--query relevance)", &cfg.Reranker.ModelPath, true, ""},
 		{models.FeatureLabeler, "Labeler (cluster label polish)", &cfg.Labeler.ModelPath, genai.Available(),
 			"install openvino-genai (or set SPOON_OPENVINO_GENAI_LIB) to enable"},
-	}
-	if cfg.Embedder.Backend != embed.BackendFastEmbed {
-		slots = append([]featureSlot{{models.FeatureEmbedder, "Embedder (semantic clustering)", &cfg.Embedder.ModelPath, true, ""}}, slots...)
 	}
 	for _, slot := range slots {
 		if !slot.usable {
@@ -388,31 +391,33 @@ func setupOpenVINO(ctx context.Context, f setupFlags, cfg *config.Config, intera
 		ready := ensureFeatureModel(ctx, f, slot.feature, slot.name, slot.modelPath, interactive, stdin, out)
 		ok = ok && ready
 	}
-	if cfg.Embedder.ModelPath != "" && cfg.Embedder.Backend == "" {
-		cfg.Embedder.Backend = embed.BackendOpenVINO
-	}
 	return ok
 }
 
 func setupFastEmbed(cfg *config.Config, cacheDir string, out io.Writer) bool {
-	fastCfg := embed.FastEmbedConfig{Model: "fast-bge-small-en-v1.5", CacheDir: cacheDir, MaxLength: 512, BatchSize: 32}
-	model, err := embed.NewFastEmbedEmbedder(fastCfg)
-	if err != nil {
-		printCheck(out, "FastEmbed", false, []string{
-			"Could not initialize BGE small EN v1.5: " + err.Error(),
-			"Set ONNX_PATH to libonnxruntime.so and retry.",
-		}, false)
-		return false
-	}
-	_ = model.Close()
+	// Record fastembed as the embedder regardless of runtime availability, so
+	// the written config is correct and the feature activates as soon as
+	// onnxruntime is installed.
 	cfg.Embedder.Backend = embed.BackendFastEmbed
-	cfg.Embedder.Model = fastCfg.Model
+	cfg.Embedder.Model = "fast-bge-small-en-v1.5"
 	cfg.Embedder.CacheDir = cacheDir
 	if cfg.Embedder.CacheDir == "" {
 		cfg.Embedder.CacheDir, _ = embed.DefaultFastEmbedCacheDir()
 	}
 	cfg.Embedder.MaxLength = 512
 	cfg.Embedder.BatchSize = 32
+	fastCfg := embed.FastEmbedConfig{Model: cfg.Embedder.Model, CacheDir: cfg.Embedder.CacheDir, MaxLength: 512, BatchSize: 32}
+	model, err := embed.NewFastEmbedEmbedder(fastCfg)
+	if err != nil {
+		// Advisory, not fatal: semantic search/persistence simply stays off
+		// until the native runtime is present.
+		printCheck(out, "FastEmbed", false, []string{
+			"Embedder unavailable until onnxruntime is installed: " + err.Error(),
+			"Set ONNX_PATH to libonnxruntime.so; semantic search/persistence activates automatically once present.",
+		}, false)
+		return false
+	}
+	_ = model.Close()
 	printCheck(out, "FastEmbed", true, []string{
 		"Model ready: fast-bge-small-en-v1.5 (384 dimensions, max length 512).",
 		"Cache: " + cfg.Embedder.CacheDir,

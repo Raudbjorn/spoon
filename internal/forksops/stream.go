@@ -831,10 +831,10 @@ func runForksClusterPipeline(
 		StrictMDG:         opts.StrictMDG,
 	}
 	// Forward the optional embedder / categorizer / label-polisher hooks
-	// from the spn-side options into the cluster pipeline. Without these,
-	// `--embedder-backend openvino` would fall back silently to the
-	// built-in embedder, the cache key would lose its backend identity,
-	// and label polishing would never run.
+	// from the spn-side options into the cluster pipeline. When fastembed is
+	// active it is passed here (clustering + zero-shot categories use it);
+	// otherwise these stay nil and the pipeline uses the built-in lexical
+	// embedder, keeping the cache key's backend identity correct.
 	pipelineOpts.Embedder = opts.Embedder
 	pipelineOpts.EmbedderID = opts.EmbedderID
 	pipelineOpts.Categorize = opts.Categorize

@@ -5,49 +5,39 @@ import (
 	"strings"
 )
 
-// Backend names accepted by SelectBackend (and the --embedder-backend flag).
+// Backend names. fastembed is the only user-selectable persistent/semantic
+// embedder; builtin remains available to internal callers (clustering, the
+// --query lexical fallback) as the zero-setup, portable engine.
 const (
 	BackendBuiltin   = "builtin"
-	BackendOpenVINO  = "openvino"
 	BackendFastEmbed = "fastembed"
 )
 
 type BackendConfig struct {
-	OpenVINO  OpenVINOConfig
 	FastEmbed FastEmbedConfig
 }
 
-// SelectBackend constructs the embedder for the named backend.
+// SelectBackendConfig constructs an embedder for the named backend.
 //
-//	"" / "builtin" / "lexical" → the zero-setup lexical embedder
-//	"openvino"                 → in-process OpenVINO encoder (cfg required)
+//	"" / "fastembed"      → the fixed fastembed model (semantic search default)
+//	"builtin" / "lexical" → the zero-setup lexical embedder (internal use)
 //
 // It returns the embedder, its cache-identity string (used to key cluster
-// caches), and a close func (no-op for the builtin backend). Errors are
-// fail-fast: an openvino backend that cannot load its model must abort the
-// run rather than silently fall back, so a misconfigured GPU setup is never
-// mistaken for lexical clustering.
-func SelectBackend(backend string, cfg OpenVINOConfig) (Embedder, string, func(), error) {
-	return SelectBackendConfig(backend, BackendConfig{OpenVINO: cfg})
-}
-
+// caches), and a close func (no-op for the builtin backend). A fastembed
+// backend that cannot initialize (e.g. onnxruntime not installed) is a
+// fail-fast error; callers that want to degrade catch it and fall back to the
+// lexical engine.
 func SelectBackendConfig(backend string, cfg BackendConfig) (Embedder, string, func(), error) {
 	switch strings.ToLower(backend) {
-	case "", BackendBuiltin, "lexical":
+	case BackendBuiltin, "lexical":
 		return LocalEmbedder{}, BuiltinModelName, func() {}, nil
-	case BackendOpenVINO:
-		e, err := NewOpenVINOEmbedder(cfg.OpenVINO)
-		if err != nil {
-			return nil, "", nil, err
-		}
-		return e, cfg.OpenVINO.EmbedderID(), e.Close, nil
-	case BackendFastEmbed:
+	case "", BackendFastEmbed:
 		e, err := NewFastEmbedEmbedder(cfg.FastEmbed)
 		if err != nil {
 			return nil, "", nil, err
 		}
 		return e, e.ModelID(), func() { _ = e.Close() }, nil
 	default:
-		return nil, "", nil, fmt.Errorf("unknown embedder backend %q (want %q, %q, %q, or %q)", backend, BackendBuiltin, "lexical", BackendOpenVINO, BackendFastEmbed)
+		return nil, "", nil, fmt.Errorf("unknown embedder backend %q (want %q or %q)", backend, BackendFastEmbed, BackendBuiltin)
 	}
 }

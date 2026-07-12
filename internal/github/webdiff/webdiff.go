@@ -97,6 +97,13 @@ func (c *Client) Fetch(ctx context.Context, owner, repo, base, head string) (map
 		}
 		patches, next, err := ParseHTML(strings.NewReader(string(body)))
 		if err != nil {
+			// A later page that yields no parseable files is treated as the end
+			// of the diff (markup drift or an empty tail) rather than discarding
+			// the patches already collected. The first page still fails loudly —
+			// an unparseable opening page means the whole scrape is unreliable.
+			if len(out) > 0 {
+				break
+			}
 			return nil, err
 		}
 		for path, patch := range patches {

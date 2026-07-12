@@ -37,22 +37,18 @@ type ModelConfig struct {
 	Device string `json:"device,omitempty"`
 }
 
-// EmbedderConfig selects and configures the in-process embedding backend
-// used for fork clustering. Both backends run inside the spoon process;
-// there are no external services.
+// EmbedderConfig configures the in-process fastembed embedder that powers
+// persistence and semantic search. fastembed is the only backend; an empty
+// Backend means fastembed. It runs inside the spoon process — no external
+// services. (The legacy ModelPath/Device/Pooling fields are retained only so
+// old config files still parse; they are ignored.)
 type EmbedderConfig struct {
-	// Backend is "builtin" (zero-setup lexical embedder, the default),
-	// "openvino", or "fastembed".
+	// Backend is "fastembed" (the default) or empty, which means fastembed.
 	Backend string `json:"backend,omitempty"`
-	// ModelPath is the OVMS-style model directory for the openvino backend
-	// (openvino_model.xml + openvino_tokenizer.xml).
+	// Deprecated: openvino embedder fields, ignored. Kept for back-compat parse.
 	ModelPath string `json:"modelPath,omitempty"`
-	// Device is the OpenVINO device for the encoder, e.g. "GPU" (default)
-	// or "CPU".
-	Device string `json:"device,omitempty"`
-	// Pooling overrides the hidden-state pooling: "cls", "mean", or
-	// "last". Empty → the model dir's graph.pbtxt, else CLS.
-	Pooling string `json:"pooling,omitempty"`
+	Device    string `json:"device,omitempty"`
+	Pooling   string `json:"pooling,omitempty"`
 	// FastEmbed settings. The persistent semantic model remains fixed; these
 	// fields record its cache and batching configuration.
 	Model     string `json:"model,omitempty"`
@@ -232,20 +228,22 @@ func Coalesce(vals ...string) string {
 	return ""
 }
 
-// normalizeLegacy clears embedder sections written by older spoon versions
-// for since-removed external backends (ollama, sidecar, openai), so a stale
-// config file degrades to the builtin backend instead of failing every load.
+// normalizeLegacy rewrites embedder backends written by older spoon versions
+// to the empty backend (which resolves to fastembed), so a stale config file
+// degrades cleanly instead of failing every load. Covers since-removed
+// external backends (ollama, sidecar, openai) and the retired in-process
+// backends (builtin, lexical, openvino). Non-backend embedder fields (fastembed
+// model/cache) are preserved.
 func (c *Config) normalizeLegacy() {
 	switch strings.ToLower(c.Embedder.Backend) {
-	case "ollama", "sidecar", "openai":
-		c.Embedder = EmbedderConfig{}
+	case "ollama", "sidecar", "openai", "builtin", "lexical", "openvino":
+		c.Embedder.Backend = ""
 	}
 }
 
 var (
 	validProviders = map[string]bool{"": true, "github": true, "gitlab": true}
-	validBackends  = map[string]bool{"": true, "builtin": true, "lexical": true, "openvino": true, "fastembed": true}
-	validPoolings  = map[string]bool{"": true, "cls": true, "mean": true, "last": true}
+	validBackends  = map[string]bool{"": true, "fastembed": true}
 )
 
 // Validate checks enum fields. Empty values are allowed (mean "unset").
@@ -254,7 +252,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("forge.provider %q must be 'github' or 'gitlab'", c.Forge.Provider)
 	}
 	if !validBackends[strings.ToLower(c.Embedder.Backend)] {
-		return fmt.Errorf("embedder.backend %q must be 'builtin', 'lexical', 'openvino', or 'fastembed'", c.Embedder.Backend)
+		return fmt.Errorf("embedder.backend %q must be 'fastembed' (or empty)", c.Embedder.Backend)
 	}
 	if c.GitHub.RequestsPerMinute < 0 || c.GitHub.RequestsPerMinute > 900 {
 		return fmt.Errorf("github.requestsPerMinute must be in (0, 900] when set")
@@ -263,9 +261,6 @@ func (c *Config) Validate() error {
 		if _, err := time.ParseDuration(c.GitHub.Proxy.CacheTTL); err != nil {
 			return fmt.Errorf("github.proxy.cacheTtl: %w", err)
 		}
-	}
-	if !validPoolings[strings.ToLower(c.Embedder.Pooling)] {
-		return fmt.Errorf("embedder.pooling %q must be 'cls', 'mean', or 'last'", c.Embedder.Pooling)
 	}
 	return nil
 }

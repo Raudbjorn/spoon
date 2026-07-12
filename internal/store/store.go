@@ -240,11 +240,16 @@ func (s *Store) UpsertSnapshot(ctx context.Context, snap Snapshot) error {
 func insertFile(ctx context.Context, tx *sql.Tx, table, forkKey, sha string, f FileRecord) error {
 	var q string
 	var args []any
+	// ON CONFLICT ... DO UPDATE guards against a compare/commit that lists the
+	// same path twice (rename representations, duplicate entries): the last
+	// write wins instead of the whole snapshot transaction aborting.
 	if table == "compare_files" {
-		q = `INSERT INTO compare_files(fork_key,path,previous_path,status,additions,deletions,patch,patch_source) VALUES(?,?,?,?,?,?,?,?)`
+		q = `INSERT INTO compare_files(fork_key,path,previous_path,status,additions,deletions,patch,patch_source) VALUES(?,?,?,?,?,?,?,?)
+			ON CONFLICT(fork_key,path) DO UPDATE SET previous_path=excluded.previous_path,status=excluded.status,additions=excluded.additions,deletions=excluded.deletions,patch=excluded.patch,patch_source=excluded.patch_source`
 		args = []any{forkKey, f.Path, f.PreviousPath, f.Status, f.Additions, f.Deletions, f.Patch, f.PatchSource}
 	} else {
-		q = `INSERT INTO commit_files(fork_key,sha,path,previous_path,status,additions,deletions,patch,patch_source) VALUES(?,?,?,?,?,?,?,?,?)`
+		q = `INSERT INTO commit_files(fork_key,sha,path,previous_path,status,additions,deletions,patch,patch_source) VALUES(?,?,?,?,?,?,?,?,?)
+			ON CONFLICT(fork_key,sha,path) DO UPDATE SET previous_path=excluded.previous_path,status=excluded.status,additions=excluded.additions,deletions=excluded.deletions,patch=excluded.patch,patch_source=excluded.patch_source`
 		args = []any{forkKey, sha, f.Path, f.PreviousPath, f.Status, f.Additions, f.Deletions, f.Patch, f.PatchSource}
 	}
 	if _, err := tx.ExecContext(ctx, q, args...); err != nil {

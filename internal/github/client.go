@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -77,7 +78,6 @@ type Client struct {
 
 	mu        sync.Mutex
 	rateLimit RateLimit
-	lim       *limiter
 
 	maxRateWait time.Duration
 	sleepFn     func(context.Context, time.Duration) error
@@ -96,13 +96,14 @@ const (
 func (c *Client) initRateControls() {
 	c.maxRateWait = defaultMaxWait
 	c.sleepFn = ctxSleep
-	c.lim = newLimiter(c.refillRate(), refillBurst)
 	if c.global == nil {
 		c.global = newLimiterRPM(defaultRPM, globalBurst)
 	}
 }
 
-// refillRate is retained for compatibility with existing focused tests.
+// refillRate maps observed REST rate-limit headroom to a per-second refill
+// rate. Production pacing uses the per-backend limiters (restRPM); this method
+// is retained as the unit-tested reference for the headroom→rate curve.
 func (c *Client) refillRate() float64 {
 	c.mu.Lock()
 	rl := c.rateLimit
@@ -148,6 +149,13 @@ func NewClientWithOptions(opts ClientOptions) (*Client, error) {
 	c := &Client{proxies: proxies, global: newLimiterRPM(rpm, globalBurst), authenticated: len(opts.Tokens) > 0}
 
 	if len(opts.Tokens) == 0 {
+		// Proxy routing only attaches to explicit config-token backends (and the
+		// unauthenticated fallback). go-gh's DefaultRESTClient builds its own
+		// transport, so a proxy configured without config tokens silently does
+		// nothing — warn rather than mislead.
+		if opts.Proxy.Enabled {
+			slog.Warn("github: proxy configured but no github.tokens set; proxy routing is inactive on the gh-default token path (add github.tokens to enable it)")
+		}
 		rest, err := ghAPI.DefaultRESTClient()
 		if err == nil {
 			b := &backend{Rest: rest, REST: newBudget(), GraphQLBudget: newBudget()}
