@@ -422,7 +422,13 @@ func (s *Store) UpsertEmbeddings(ctx context.Context, records []EmbeddingRecord)
 			return err
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// Every write path that can materialise -wal/-shm has to secure them: a
+	// backfill run may only ever call UpsertEmbeddings, and SQLite removes
+	// those files when the last connection closes.
+	return s.secureArtifactsOnce()
 }
 
 func (s *Store) SearchRows(ctx context.Context, model, repoKey string) ([]SearchRow, error) {

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 // Reproduces the pre-fix "migrate store to v1: SQL logic error: table repos
@@ -138,4 +139,48 @@ func TestOpenPathWithMetacharacters(t *testing.T) {
 			}
 		})
 	}
+}
+
+// UpsertEmbeddings can be the first write of a process: SQLite removes
+// -wal/-shm when the last connection closes, so a backfill run that only
+// writes embeddings recreates them at default permissions. Every write path
+// that can create them must secure them.
+func TestUpsertEmbeddingsSecuresArtifacts(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "spoon.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+	// Open already secures whatever exists at that point. Loosen the artifacts
+	// so this asserts the *write path* re-secures them, which is what matters
+	// when SQLite recreates -wal/-shm during the process's lifetime.
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		if _, err := os.Stat(path + suffix); err == nil {
+			if err := os.Chmod(path+suffix, 0o644); err != nil {
+				t.Fatalf("chmod: %v", err)
+			}
+		}
+	}
+	if err := UpsertEmbeddingsOnly(s); err != nil {
+		t.Fatalf("upsert embeddings: %v", err)
+	}
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		p := path + suffix
+		info, err := os.Stat(p)
+		if err != nil {
+			continue // not materialised on this platform/run
+		}
+		if mode := info.Mode().Perm(); mode != 0o600 {
+			t.Fatalf("%s has mode %o, want 600", p, mode)
+		}
+	}
+}
+
+// UpsertEmbeddingsOnly exercises the embeddings write path in isolation.
+func UpsertEmbeddingsOnly(s *Store) error {
+	return s.UpsertEmbeddings(context.Background(), []EmbeddingRecord{{
+		DocumentID: "fork:missing", Model: "m", Dim: 1,
+		Vector: []byte{0, 0, 0, 0}, ContentHash: "h", CreatedAt: time.Unix(0, 0),
+	}})
 }
