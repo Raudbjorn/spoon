@@ -319,7 +319,6 @@ Flags:
   -h, --help               Show this help
 
 Default models (downloaded to ~/.local/share/spoon/models when missing):
-  embedder  OpenVINO/bge-base-en-v1.5-fp16-ov            (~440 MB)
   reranker  OpenVINO/bge-reranker-base-fp16-ov           (~560 MB)
   labeler   OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov       (~1.1 GB)
   fastembed BGE fast-bge-small-en-v1.5 (384 dimensions, max length 512)
@@ -347,7 +346,7 @@ func setupOpenVINO(ctx context.Context, f setupFlags, cfg *config.Config, intera
 		printCheck(out, "OpenVINO", false, []string{
 			"OpenVINO runtime (libopenvino_c.so) not found.",
 			"Clustering uses the built-in lexical embedder (zero setup, works fine).",
-			"For GPU semantic embeddings, reranking, and label polish:",
+			"For reranking and label polish (embedding is fastembed's job):",
 			"  • install OpenVINO, or set SPOON_OPENVINO_LIB to libopenvino_c.so",
 		}, f.noColor)
 		return true
