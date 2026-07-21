@@ -3,8 +3,10 @@ package store
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -183,4 +185,30 @@ func UpsertEmbeddingsOnly(s *Store) error {
 		DocumentID: "fork:missing", Model: "m", Dim: 1,
 		Vector: []byte{0, 0, 0, 0}, ContentHash: "h", CreatedAt: time.Unix(0, 0),
 	}})
+}
+
+// storeDSN must produce a valid file: URI on both platforms. POSIX paths stay
+// byte-identical to the pre-helper form; Windows drive paths become rooted
+// slash form (C:\a\b -> file:///C:/a/b) instead of escaping backslashes to %5C.
+func TestStoreDSN(t *testing.T) {
+	q := url.Values{}
+	q.Set("_pragma", "busy_timeout(5000)")
+
+	// POSIX shape, always exercised regardless of host OS.
+	posix := (&url.URL{Scheme: "file", Path: "/home/u/spoon.db", RawQuery: q.Encode()}).String()
+	if got := storeDSNFor("linux", "/home/u/spoon.db", q); got != posix {
+		t.Fatalf("posix DSN changed: got %q want %q", got, posix)
+	}
+
+	got := storeDSNFor("windows", `C:\Users\u\spoon.db`, q)
+	if strings.Contains(got, "%5C") {
+		t.Fatalf("windows DSN escaped backslashes: %q", got)
+	}
+	u, err := url.Parse(got)
+	if err != nil {
+		t.Fatalf("windows DSN is not a valid URI: %q (%v)", got, err)
+	}
+	if u.Scheme != "file" || u.Path != "/C:/Users/u/spoon.db" {
+		t.Fatalf("windows DSN path = %q, want /C:/Users/u/spoon.db (from %q)", u.Path, got)
+	}
 }

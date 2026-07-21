@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -146,13 +147,7 @@ func Open(path string) (*Store, error) {
 	// migration; with it the loser blocks for busy_timeout and then sees the
 	// winner's committed schema.
 	q.Set("_txlock", "immediate")
-	// Build the URI through url.URL rather than concatenating. A "file:" prefix
-	// activates percent-decoding and #/? metacharacter handling that a bare
-	// path never got, so a store path containing '#' would otherwise open a
-	// database at a silently different location, and '%' would fail outright.
-	// XDG_DATA_HOME is user-settable, so neither needs an exotic username.
-	dsn := (&url.URL{Scheme: "file", Path: path, RawQuery: q.Encode()}).String()
-	db, err := sql.Open("sqlite", dsn)
+	db, err := sql.Open("sqlite", storeDSN(path, q))
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite store: %w", err)
 	}
@@ -174,6 +169,39 @@ func Open(path string) (*Store, error) {
 }
 
 func (s *Store) Close() error { return s.db.Close() }
+
+// storeDSN builds the SQLite "file:" URI. Going through url.URL rather than
+// concatenating matters because a "file:" prefix activates percent-decoding and
+// #/? metacharacter handling a bare path never got, so a store path containing
+// '#' would otherwise open a database at a silently different location and '%'
+// would fail outright — and XDG_DATA_HOME is user-settable, so neither needs an
+// exotic username.
+//
+// On Windows the path has to be slash-form and rooted (C:\a\b -> /C:/a/b,
+// yielding file:///C:/a/b); handing url.URL a backslash path would escape the
+// separators to %5C and produce an invalid URI. POSIX paths are already
+// absolute and slash-form, so that branch is byte-identical to the old code.
+func storeDSN(path string, q url.Values) string {
+	return storeDSNFor(runtime.GOOS, path, q)
+}
+
+func storeDSNFor(goos, path string, q url.Values) string {
+	u := url.URL{Scheme: "file", RawQuery: q.Encode()}
+	if goos == "windows" {
+		// Convert backslashes explicitly rather than via filepath.ToSlash: that
+		// helper keys on the host's separator, so on a non-Windows builder it is
+		// a no-op and this branch could not be tested. Replacing '\' directly is
+		// what ToSlash does on Windows anyway.
+		p := strings.ReplaceAll(path, `\`, "/")
+		if !strings.HasPrefix(p, "/") {
+			p = "/" + p
+		}
+		u.Path = p
+	} else {
+		u.Path = path
+	}
+	return u.String()
+}
 
 // ensureWAL switches the database to WAL, tolerating the cold-start race.
 //

@@ -6,8 +6,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -50,6 +52,10 @@ func provisionFastEmbedModel(ctx context.Context, cacheDir string) error {
 	dest := filepath.Join(cacheDir, fastEmbedModelName)
 	if _, err := os.Stat(dest); err == nil {
 		return nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		// A permission or I/O error is not "absent" — surface it rather than
+		// falling through to a full download that would then fail at rename.
+		return fmt.Errorf("inspect fastembed cache %s: %w", dest, err)
 	}
 	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
 		return fmt.Errorf("create fastembed cache dir: %w", err)
