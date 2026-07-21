@@ -306,7 +306,8 @@ Usage:
 Flags:
   --forge github|gitlab    Provider to check (default: github)
   --forge-host HOSTNAME    Self-hosted GitLab/GHES hostname
-  --embedder-backend B     builtin, openvino, or fastembed
+  --embedder-backend B     fastembed (the only embedder; accepted for
+                           compatibility)
   --fastembed-cache PATH   FastEmbed model cache directory
   --auto-pull              Download missing default OpenVINO models without asking
                            (also: SPOON_AUTO_PULL=1)
@@ -318,7 +319,6 @@ Flags:
   -h, --help               Show this help
 
 Default models (downloaded to ~/.local/share/spoon/models when missing):
-  embedder  OpenVINO/bge-base-en-v1.5-fp16-ov            (~440 MB)
   reranker  OpenVINO/bge-reranker-base-fp16-ov           (~560 MB)
   labeler   OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov       (~1.1 GB)
   fastembed BGE fast-bge-small-en-v1.5 (384 dimensions, max length 512)
@@ -346,7 +346,7 @@ func setupOpenVINO(ctx context.Context, f setupFlags, cfg *config.Config, intera
 		printCheck(out, "OpenVINO", false, []string{
 			"OpenVINO runtime (libopenvino_c.so) not found.",
 			"Clustering uses the built-in lexical embedder (zero setup, works fine).",
-			"For GPU semantic embeddings, reranking, and label polish:",
+			"For reranking and label polish (embedding is fastembed's job):",
 			"  • install OpenVINO, or set SPOON_OPENVINO_LIB to libopenvino_c.so",
 		}, f.noColor)
 		return true
@@ -438,14 +438,15 @@ func setupProxyReferences(cfg *config.Config, noColor bool, out io.Writer) {
 	}
 	apiOK := apiKeyPath != "" && secureRegularFile(apiKeyPath)
 	staticOK := staticPath != "" && secureRegularFile(staticPath)
-	// Setting the variable is an explicit request to use that file. Rejecting it
-	// silently reads as "proxying is broken" with nothing to go on, so name the
-	// file and the requirement.
+	// A path the user explicitly exported must never be dropped in silence.
+	// Warn per path, before the combined gate, so the half-secure case — one
+	// good path, one rejected — still reports what was discarded instead of
+	// quietly enabling proxying with only half the intended credentials.
 	if apiKeyPath != "" && !apiOK {
-		fmt.Fprintln(out, colorize("⚠ ProxyScrape API key file ignored: "+apiKeyPath+" must be a regular file with 0600 permissions.", "\033[33m", noColor))
+		fmt.Fprintln(out, colorize("! ProxyScrape API key path is not a regular file with 0600 permissions; ignoring "+apiKeyPath, "\033[33m", noColor))
 	}
 	if staticPath != "" && !staticOK {
-		fmt.Fprintln(out, colorize("⚠ ProxyScrape static pool file ignored: "+staticPath+" must be a regular file with 0600 permissions.", "\033[33m", noColor))
+		fmt.Fprintln(out, colorize("! ProxyScrape static pool path is not a regular file with 0600 permissions; ignoring "+staticPath, "\033[33m", noColor))
 	}
 	if !apiOK && !staticOK {
 		return
@@ -458,7 +459,10 @@ func setupProxyReferences(cfg *config.Config, noColor bool, out io.Writer) {
 		cfg.GitHub.Proxy.StaticFile = staticPath
 	}
 	if cfg.GitHub.Proxy.WhitelistPublicIP == nil {
-		whitelist := true
+		// Off by default: opting into proxy routing is not opting into
+		// publishing this machine's public IP to api.ipify.org and registering
+		// it against a ProxyScrape account.
+		whitelist := false
 		cfg.GitHub.Proxy.WhitelistPublicIP = &whitelist
 	}
 	if cfg.GitHub.Proxy.CacheTTL == "" {

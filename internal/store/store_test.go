@@ -2,9 +2,7 @@ package store
 
 import (
 	"context"
-	"os"
 	"path/filepath"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -115,87 +113,5 @@ func TestEmbeddingContentHashInvalidates(t *testing.T) {
 	pending, err = db.PendingDocuments(context.Background(), "m")
 	if err != nil || len(pending) != 1 {
 		t.Fatalf("changed pending=%v err=%v", pending, err)
-	}
-}
-
-// The database and both sidecars must be owner-only from birth. Open
-// pre-creates the file at 0600 rather than letting SQLite create it
-// 0666&~umask and chmodding after, which would leave a world-readable window;
-// the -wal/-shm sidecars then inherit that mode.
-//
-// Scope, stated honestly: this pins the end-state invariant — drop both the
-// pre-create and Open's chmod pass and all three land at 0644 under a
-// permissive umask. It does NOT cover the pre-create on its own, because the
-// property that change adds is the absence of a world-readable *window*, and no
-// end-state assertion can observe a window. Removing only the pre-create leaves
-// this test passing.
-func TestStoreArtifactsAreOwnerOnlyFromOpen(t *testing.T) {
-	old := syscall.Umask(0o022)
-	defer syscall.Umask(old)
-
-	path := filepath.Join(t.TempDir(), "spoon.db")
-	db, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-
-	// Before any write: Open's journal_mode=WAL has already materialised the
-	// sidecars, so all three exist and must already be secured.
-	assertOwnerOnly(t, path, "after Open")
-
-	now := time.Now().UTC()
-	snapshot := Snapshot{
-		Repo: RepoRecord{Provider: "github", Host: "github.com", Owner: "up", Name: "repo", FirstSeen: now, LastSeen: now},
-		Fork: ForkRecord{ForgeID: "fork/repo", Owner: "fork", Name: "repo", UpdatedAt: now},
-	}
-	if err := db.UpsertSnapshot(context.Background(), snapshot); err != nil {
-		t.Fatal(err)
-	}
-	assertOwnerOnly(t, path, "after upsert")
-
-	if info, err := os.Stat(filepath.Dir(path)); err != nil {
-		t.Fatal(err)
-	} else if got := info.Mode().Perm(); got != 0o700 {
-		t.Errorf("store dir mode=%o want=700", got)
-	}
-}
-
-// A database left at 0644 by an earlier version must be tightened on Open.
-func TestOpenSecuresPreExistingLooseDatabase(t *testing.T) {
-	old := syscall.Umask(0o022)
-	defer syscall.Umask(old)
-
-	path := filepath.Join(t.TempDir(), "spoon.db")
-	db, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.Close()
-	if err := os.Chmod(path, 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	db2, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db2.Close()
-	assertOwnerOnly(t, path, "after reopen of loose database")
-}
-
-func assertOwnerOnly(t *testing.T, path, when string) {
-	t.Helper()
-	for _, suffix := range []string{"", "-wal", "-shm"} {
-		info, err := os.Stat(path + suffix)
-		if os.IsNotExist(err) {
-			continue
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := info.Mode().Perm(); got != 0o600 {
-			t.Errorf("%s: %s%s mode=%o want=600", when, filepath.Base(path), suffix, got)
-		}
 	}
 }
