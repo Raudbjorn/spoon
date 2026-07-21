@@ -170,8 +170,10 @@ func (p *backendPool) nextBackend(now time.Time) (*backend, error) {
 	active := make([]*backend, 0, len(p.backends))
 	var earliest time.Time
 	statisticalOnly := true
+	permanent := 0
 	for _, b := range p.backends {
 		if b.Permanent {
+			permanent++
 			continue // confirmed auth failure — never dispatch or recover
 		}
 		if !b.Disabled && (b.DisabledUntil.IsZero() || !now.Before(b.DisabledUntil)) {
@@ -197,6 +199,13 @@ func (p *backendPool) nextBackend(now time.Time) (*backend, error) {
 		}
 	}
 	if len(active) == 0 {
+		if earliest.IsZero() {
+			// No usable identity and no timed cooldown pending: every backend is
+			// permanently rejected (401), or the pool is empty. This is an auth
+			// failure, not a rate limit — reporting it as the latter yields a
+			// zero ResetAt and a retry_after_seconds=0 tight retry loop.
+			return nil, &AllBackendsRejectedError{Rejected: permanent}
+		}
 		return nil, &RateLimitError{ResetAt: earliest}
 	}
 	b := active[p.cursor%len(active)]

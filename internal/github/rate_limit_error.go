@@ -31,6 +31,28 @@ func (e *RateLimitError) Error() string {
 // Unwrap supports errors.Is/errors.As walking the cause chain.
 func (e *RateLimitError) Unwrap() error { return e.cause }
 
+// AllBackendsRejectedError is returned by the backend pool when there is no
+// usable identity to dispatch on: every configured token has been permanently
+// rejected (HTTP 401), or the pool is empty. It is deliberately distinct from
+// RateLimitError — there is no reset window to wait for, and retrying is futile
+// until the operator re-authenticates. Surfacing this case as a rate limit
+// yields a zero ResetAt and a retry_after_seconds=0 tight retry loop (#79).
+type AllBackendsRejectedError struct {
+	Rejected int // number of permanently-rejected (401) identities
+}
+
+// Error implements the error interface.
+func (e *AllBackendsRejectedError) Error() string {
+	switch e.Rejected {
+	case 0:
+		return "no github identity available for dispatch"
+	case 1:
+		return "github authentication failed: the configured token was rejected (401)"
+	default:
+		return fmt.Sprintf("github authentication failed: all %d configured tokens were rejected (401)", e.Rejected)
+	}
+}
+
 // RetryAfterSeconds returns the number of seconds until ResetAt, clamped
 // at zero when ResetAt is in the past.
 func (e *RateLimitError) RetryAfterSeconds() int {

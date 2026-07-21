@@ -591,6 +591,13 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 	defer cancel()
 	ch, streamErr := forksops.Stream(ctx, provider, owner, name, opts)
 	if streamErr != nil {
+		var rejected *gh.AllBackendsRejectedError
+		if errors.As(streamErr, &rejected) {
+			// Every configured token was rejected (401): a non-retryable auth
+			// failure, not a rate limit. Surfacing it as rate_limited yields
+			// retry_after_seconds=0 and an agent tight-retry loop (#79).
+			return agentio.NewError(agentio.CodeAuthRequired, streamErr.Error(), agentio.RemediationAuthRequired()).Emit(stderr)
+		}
 		var rl *gh.RateLimitError
 		if errors.As(streamErr, &rl) {
 			resetAt := rl.ResetAt.UTC().Format("2006-01-02T15:04:05Z07:00")
@@ -1201,6 +1208,13 @@ func streamAndEmit(ctx context.Context, db *store.Store, auth forge.AuthInfo, pr
 	defer cancel()
 	ch, streamErr := forksops.Stream(ctx, provider, owner, name, opts)
 	if streamErr != nil {
+		var rejected *gh.AllBackendsRejectedError
+		if errors.As(streamErr, &rejected) {
+			// No usable identity: every token was rejected (401). This affects
+			// every repo in the topic set, so fail the whole run rather than
+			// degrading per-repo and hammering dead credentials (#79).
+			return agentio.NewError(agentio.CodeAuthRequired, streamErr.Error(), agentio.RemediationAuthRequired()).Emit(stderr)
+		}
 		var rl *gh.RateLimitError
 		if errors.As(streamErr, &rl) {
 			resetAt := rl.ResetAt.UTC().Format("2006-01-02T15:04:05Z07:00")
