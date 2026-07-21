@@ -481,26 +481,37 @@ type gqlRateLimitCarrier interface {
 
 func (c *Client) doGraphQL(ctx context.Context, query string, variables map[string]interface{}, out interface{}) error {
 	c.ensurePool()
-	b, err := c.pool.nextBackend(time.Now())
+	var b *backend
+	// Wrapped in doWithRetry for the same reason as doGet, and selecting inside
+	// the closure so the retry lands on a different identity. Without this a
+	// 429 aborted GraphQL pagination outright while other tokens sat at full
+	// budget, discarding the remaining pages.
+	err := c.doWithRetry(ctx, func() error {
+		var berr error
+		if b, berr = c.pool.nextBackend(time.Now()); berr != nil {
+			return berr
+		}
+		if b.GraphQL == nil {
+			return fmt.Errorf("GraphQL client not available")
+		}
+		if err := c.waitRequest(ctx, b.GraphQLBudget.Limiter); err != nil {
+			return err
+		}
+		if err := b.GraphQL.DoWithContext(ctx, query, variables, out); err != nil {
+			if rl := detectRateLimitFromHTTPError(err); rl != nil {
+				c.pool.disableUntil(b, rl.ResetAt, false)
+				return rl
+			}
+			if statusCode(err) == http.StatusUnauthorized {
+				c.pool.disableUntil(b, time.Time{}, true)
+			} else if !isGatewayOrTransportError(err) {
+				c.pool.reportFailure(b)
+			}
+			return err
+		}
+		return nil
+	})
 	if err != nil {
-		return err
-	}
-	if b.GraphQL == nil {
-		return fmt.Errorf("GraphQL client not available")
-	}
-	if err := c.waitRequest(ctx, b.GraphQLBudget.Limiter); err != nil {
-		return err
-	}
-	if err := b.GraphQL.DoWithContext(ctx, query, variables, out); err != nil {
-		if rl := detectRateLimitFromHTTPError(err); rl != nil {
-			c.pool.disableUntil(b, rl.ResetAt, false)
-			return rl
-		}
-		if statusCode(err) == http.StatusUnauthorized {
-			c.pool.disableUntil(b, time.Time{}, true)
-		} else if !isGatewayOrTransportError(err) {
-			c.pool.reportFailure(b)
-		}
 		return err
 	}
 	c.pool.reportSuccess(b)

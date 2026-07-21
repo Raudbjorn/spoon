@@ -27,8 +27,16 @@ func backendForServer(t *testing.T, login string, srv *httptest.Server) *backend
 	if err != nil {
 		t.Fatalf("NewRESTClient: %v", err)
 	}
-	b := &backend{Rest: rest, Login: login}
+	gql, err := ghAPI.NewGraphQLClient(ghAPI.ClientOptions{
+		AuthToken: "x", Host: "github.com",
+		Transport: &rewriteTransport{target: u, base: http.DefaultTransport},
+	})
+	if err != nil {
+		t.Fatalf("NewGraphQLClient: %v", err)
+	}
+	b := &backend{Rest: rest, GraphQL: gql, Login: login}
 	b.REST.Limiter = newLimiterRPM(6000, 100)
+	b.GraphQLBudget.Limiter = newLimiterRPM(6000, 100)
 	return b
 }
 
@@ -129,5 +137,39 @@ func TestProbeExplicitBackendsBurnsOnUnauthorized(t *testing.T) {
 	}
 	if !bad.Permanent {
 		t.Fatal("a 401 must permanently disable the credential")
+	}
+}
+
+// doGraphQL had no retry wrapper at all: it selected one identity and returned
+// its error, so a 429 aborted pagination mid-way while other tokens sat at full
+// budget. FetchForksGraphQL then discarded the remaining pages.
+func TestDoGraphQLRotatesToHealthyBackendOnRateLimit(t *testing.T) {
+	var exhaustedHits, healthyHits atomic.Int64
+	exhausted := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		exhaustedHits.Add(1)
+		w.Header().Set("Retry-After", "5")
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer exhausted.Close()
+	healthy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		healthyHits.Add(1)
+		_, _ = io.WriteString(w, `{"data":{"viewer":{"login":"octocat"}}}`)
+	}))
+	defer healthy.Close()
+
+	c := newPooledTestClient(t,
+		backendForServer(t, "spent", exhausted),
+		backendForServer(t, "fresh", healthy),
+	)
+
+	var out struct {
+		Viewer struct{ Login string }
+	}
+	if err := c.doGraphQL(context.Background(), "query{viewer{login}}", nil, &out); err != nil {
+		t.Fatalf("doGraphQL failed: %v (exhausted=%d healthy=%d)", err, exhaustedHits.Load(), healthyHits.Load())
+	}
+	if healthyHits.Load() == 0 {
+		t.Fatalf("healthy backend never received a GraphQL request (exhausted=%d)", exhaustedHits.Load())
 	}
 }
