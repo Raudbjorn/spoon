@@ -525,11 +525,7 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 		if e != nil {
 			return e.Emit(stderr)
 		}
-		if webDiffEnabled {
-			if ghp, ok := provider.(*gh.GHProvider); ok && ghp.Client() != nil {
-				ghp.Client().EnableWebDiff(os.Getenv("SPOON_GH_COOKIE"))
-			}
-		}
+		enableWebDiffIfRequested(provider, webDiffEnabled)
 		parsedLanes, perr := topics.ParseLanes(topicLanesRaw)
 		if perr != nil {
 			return agentio.NewError(agentio.CodeBadInput, perr.Error(),
@@ -540,9 +536,7 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 			Lanes:      parsedLanes,
 			LaneBudget: topicLaneBudget,
 		})
-		if ghp, ok := provider.(*gh.GHProvider); ok {
-			emitDuplicateIdentityWarning(stderr, ghp.Client())
-		}
+		warnDuplicateIdentityFor(provider, stderr)
 		if terr != nil {
 			return agentio.NewError(agentio.CodeBadInput, terr.Error(),
 				"Topic mode needs a GitHub topic with forkable repositories, e.g. `spn forks list topic:terminal`.").Emit(stderr)
@@ -581,15 +575,9 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 	if e != nil {
 		return e.Emit(stderr)
 	}
-	if webDiffEnabled {
-		if ghp, ok := provider.(*gh.GHProvider); ok && ghp.Client() != nil {
-			ghp.Client().EnableWebDiff(os.Getenv("SPOON_GH_COOKIE"))
-		}
-	}
+	enableWebDiffIfRequested(provider, webDiffEnabled)
 	owner, name := splitRepoArg(repoArg)
-	if ghp, ok := provider.(*gh.GHProvider); ok {
-		emitDuplicateIdentityWarning(stderr, ghp.Client())
-	}
+	warnDuplicateIdentityFor(provider, stderr)
 	if owner == "" || name == "" {
 		return agentio.NewError(agentio.CodeBadInput, "invalid repo: "+repo, agentio.RemediationBadInput("forks", "list")).Emit(stderr)
 	}
@@ -722,6 +710,26 @@ func persistForkSnapshot(ctx context.Context, db *store.Store, auth forge.AuthIn
 		snapshot.Document = semantic.BuildDocument(modelID, forkKey, r.Fork, r.T2)
 	}
 	return db.UpsertSnapshot(ctx, snapshot)
+}
+
+// enableWebDiffIfRequested turns on cookie-authenticated web diff scraping for
+// GitHub providers. Non-GitHub forges have no equivalent and are left alone.
+func enableWebDiffIfRequested(provider forge.Forge, enabled bool) {
+	if !enabled {
+		return
+	}
+	if ghp, ok := provider.(*gh.GHProvider); ok && ghp.Client() != nil {
+		ghp.Client().EnableWebDiff(os.Getenv("SPOON_GH_COOKIE"))
+	}
+}
+
+// warnDuplicateIdentityFor emits the duplicate-token warning for GitHub
+// providers. Call it only after the credentials have actually been resolved —
+// the count it reports is client state accumulated during authentication.
+func warnDuplicateIdentityFor(provider forge.Forge, stderr io.Writer) {
+	if ghp, ok := provider.(*gh.GHProvider); ok {
+		emitDuplicateIdentityWarning(stderr, ghp.Client())
+	}
 }
 
 func emitDuplicateIdentityWarning(stderr io.Writer, client *gh.Client) {
@@ -1119,7 +1127,6 @@ func emitClusterWarning(stderr io.Writer, skip *forksops.ClusterSkip) {
 	enc := json.NewEncoder(stderr)
 	_ = enc.Encode(envelope)
 }
-
 
 func resolveFastEmbedConfig(model, cacheDir string) embed.FastEmbedConfig {
 	var fileCfg config.EmbedderConfig
