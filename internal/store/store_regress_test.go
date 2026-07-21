@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -32,8 +34,10 @@ func TestReinitializeOverExistingSchema(t *testing.T) {
 	s.Close()
 }
 
-// busy_timeout must be live on every pooled connection, otherwise the
-// journal_mode=WAL switch cannot wait for an exclusive lock.
+// busy_timeout must be live on every pooled connection, not just the first.
+// With SetMaxOpenConns(1) a single-query assertion cannot distinguish DSN
+// pragmas from the old apply-once-at-startup bug, so this raises the cap and
+// forces several connections open concurrently before asserting.
 func TestBusyTimeoutApplied(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "spoon.db")
 	s, err := Open(path)
@@ -41,12 +45,38 @@ func TestBusyTimeoutApplied(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 	defer s.Close()
-	var ms int
-	if err := s.db.QueryRowContext(context.Background(), "PRAGMA busy_timeout").Scan(&ms); err != nil {
-		t.Fatalf("read busy_timeout: %v", err)
+	const conns = 4
+	s.db.SetMaxOpenConns(conns)
+	start := make(chan struct{})
+	errs := make(chan error, conns)
+	var wg sync.WaitGroup
+	for range conns {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			var ms int
+			// Hold the connection so the pool is forced to open a fresh one for
+			// each goroutine rather than handing back the same conn.
+			if err := s.db.QueryRowContext(context.Background(),
+				"PRAGMA busy_timeout").Scan(&ms); err != nil {
+				errs <- err
+				return
+			}
+			if ms != 5000 {
+				errs <- fmt.Errorf("busy_timeout = %d, want 5000", ms)
+				return
+			}
+			errs <- nil
+		}()
 	}
-	if ms != 5000 {
-		t.Fatalf("busy_timeout = %d, want 5000", ms)
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("pooled connection: %v", err)
+		}
 	}
 	var mode string
 	if err := s.db.QueryRowContext(context.Background(), "PRAGMA journal_mode").Scan(&mode); err != nil {
@@ -82,5 +112,30 @@ func TestConcurrentColdStartOpen(t *testing.T) {
 		if err != nil {
 			t.Fatalf("concurrent cold-start open: %v", err)
 		}
+	}
+}
+
+// A "file:" DSN activates percent-decoding and #/? handling that a bare path
+// never got, so store paths containing metacharacters must survive the round
+// trip — '#' previously opened a database at a silently different location.
+func TestOpenPathWithMetacharacters(t *testing.T) {
+	for _, dir := range []string{"plain", "with space", "with#hash", "with%pct", "with?q"} {
+		t.Run(dir, func(t *testing.T) {
+			base := filepath.Join(t.TempDir(), dir)
+			if err := os.MkdirAll(base, 0o700); err != nil {
+				t.Fatalf("mkdir: %v", err)
+			}
+			path := filepath.Join(base, "spoon.db")
+			s, err := Open(path)
+			if err != nil {
+				t.Fatalf("open %q: %v", path, err)
+			}
+			defer s.Close()
+			// The database must land exactly where we asked, not at a
+			// metacharacter-truncated variant of it.
+			if _, err := os.Stat(path); err != nil {
+				t.Fatalf("database not created at requested path %q: %v", path, err)
+			}
+		})
 	}
 }

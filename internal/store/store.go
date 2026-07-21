@@ -12,13 +12,16 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
 
-const SchemaVersion = 1
+// SchemaVersion is derived from the migration list so a bump cannot silently
+// desynchronise from it: a SchemaVersion above the last migration would make
+// every Open take the write lock and commit an empty transaction forever.
+var SchemaVersion = migrations[len(migrations)-1].version
 
 type RepoRecord struct {
 	Provider, Host, Owner, Name string
@@ -90,9 +93,10 @@ type Store struct {
 	path string
 	// SQLite creates -wal/-shm lazily on first write, so Open's chmod pass
 	// cannot see them. Latch a single post-write pass instead of paying
-	// 3 Stat + up to 3 Chmod on every snapshot upsert.
-	securedOnce sync.Once
-	securedErr  error
+	// 3 Stat + up to 3 Chmod on every snapshot upsert. Only success latches:
+	// caching a transient chmod failure would make every later upsert report
+	// it, for snapshots that were in fact committed.
+	secured atomic.Bool
 }
 
 func DefaultPath() (string, error) {
@@ -138,7 +142,13 @@ func Open(path string) (*Store, error) {
 	// migration; with it the loser blocks for busy_timeout and then sees the
 	// winner's committed schema.
 	q.Set("_txlock", "immediate")
-	db, err := sql.Open("sqlite", "file:"+path+"?"+q.Encode())
+	// Build the URI through url.URL rather than concatenating. A "file:" prefix
+	// activates percent-decoding and #/? metacharacter handling that a bare
+	// path never got, so a store path containing '#' would otherwise open a
+	// database at a silently different location, and '%' would fail outright.
+	// XDG_DATA_HOME is user-settable, so neither needs an exotic username.
+	dsn := (&url.URL{Scheme: "file", Path: path, RawQuery: q.Encode()}).String()
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite store: %w", err)
 	}
@@ -175,10 +185,13 @@ func ensureWAL(ctx context.Context, db *sql.DB) error {
 	for i := range attempts {
 		var mode string
 		if err := db.QueryRowContext(ctx, "PRAGMA journal_mode=WAL").Scan(&mode); err == nil {
-			if strings.EqualFold(mode, "wal") {
-				return nil
-			}
-			lastErr = fmt.Errorf("journal_mode is %q, want wal", mode)
+			// The pragma reports the resulting mode and does not error when the
+			// switch is impossible: WAL needs shared memory, which NFS and many
+			// SMB mounts do not provide, and XDG_DATA_HOME commonly lives under
+			// a network-mounted home. Rollback-journal mode is slower but
+			// correct, so degrade rather than refusing to open the store — the
+			// caller treats an Open failure as "no persistence at all".
+			return nil
 		} else {
 			lastErr = err
 		}
@@ -250,8 +263,14 @@ func (s *Store) initialize(ctx context.Context) error {
 // materialises -wal/-shm on first write, so the pass has to happen after a
 // write, but repeating it per upsert costs 3 Stat + up to 3 Chmod each time.
 func (s *Store) secureArtifactsOnce() error {
-	s.securedOnce.Do(func() { s.securedErr = s.secureArtifacts() })
-	return s.securedErr
+	if s.secured.Load() {
+		return nil
+	}
+	if err := s.secureArtifacts(); err != nil {
+		return err
+	}
+	s.secured.Store(true)
+	return nil
 }
 
 func (s *Store) secureArtifacts() error {
