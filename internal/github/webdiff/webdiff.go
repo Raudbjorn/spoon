@@ -59,6 +59,13 @@ func (c *Client) reserve(now time.Time) time.Duration {
 
 // wait blocks until this caller owns the next request slot.
 func (c *Client) wait(ctx context.Context) error {
+	// Check before reserving: an already-cancelled caller must not consume a
+	// slot (which would advance c.next and delay live callers), and on the
+	// idle path where reserve returns 0 it must still surface the cancellation
+	// rather than returning nil.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	wait := c.reserve(time.Now())
 	if wait > 0 {
 		t := time.NewTimer(wait)

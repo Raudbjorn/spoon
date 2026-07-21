@@ -1,6 +1,7 @@
 package webdiff
 
 import (
+	"context"
 	"strings"
 	"sync"
 	"testing"
@@ -95,5 +96,22 @@ func TestReserveIsRaceFree(t *testing.T) {
 	}
 	if len(seen) != n {
 		t.Errorf("got %d distinct slots, want %d", len(seen), n)
+	}
+}
+
+// An already-cancelled context must not consume a rate-limit slot — reserving
+// one would advance c.next and delay live callers — and on the idle path where
+// reserve returns 0, wait must still surface the cancellation, not nil.
+func TestWaitCancelledContextReservesNoSlot(t *testing.T) {
+	c := New("cookie", nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	before := c.next
+	if err := c.wait(ctx); err == nil {
+		t.Error("wait returned nil for a cancelled context")
+	}
+	if c.next != before {
+		t.Errorf("cancelled wait advanced c.next from %v to %v; it consumed a slot", before, c.next)
 	}
 }
