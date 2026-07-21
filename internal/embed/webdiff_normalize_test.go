@@ -27,8 +27,10 @@ func TestDiffChunkCanonicalizesHeaderlessPatches(t *testing.T) {
 		Patch:       body,
 	}
 
-	gotRest := NormalizeDiff(buildDiffChunk([]forge.FileDiff{rest}, 4096))
-	gotWeb := NormalizeDiff(buildDiffChunk([]forge.FileDiff{web}, 4096))
+	restChunk, _ := buildDiffChunk([]forge.FileDiff{rest}, 4096)
+	webChunk, _ := buildDiffChunk([]forge.FileDiff{web}, 4096)
+	gotRest := NormalizeDiff(restChunk)
+	gotWeb := NormalizeDiff(webChunk)
 
 	if !strings.Contains(gotWeb, "@@@@") {
 		t.Fatalf("web patch has no normalized hunk marker:\n%s", gotWeb)

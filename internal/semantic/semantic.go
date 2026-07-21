@@ -16,27 +16,44 @@ import (
 	"github.com/svnbjrn/spoon/internal/store"
 )
 
-func BuildDocument(modelID, forkKey string, fork forge.T1Data, t2 *forge.T2Data) store.DocumentRecord {
+// BuildDocument composes the single embedding document for a fork and reports
+// whether its diff section was truncated. Section order is deliberate: the whole
+// body is embedded as one passage against fastembed's 512-token window, so the
+// tail is dropped on truncation. The diff — the most discriminative section — is
+// placed right after description so a fork with a long commit list can no longer
+// push the diff out of the window entirely.
+func BuildDocument(forkKey string, fork forge.T1Data, t2 *forge.T2Data) (store.DocumentRecord, bool) {
 	sections := []string{
 		strings.TrimSpace(fork.Owner + "/" + fork.Name),
 		strings.TrimSpace(fork.Description),
-		strings.TrimSpace(fork.Language),
 	}
-	topics := append([]string(nil), fork.Topics...)
-	sort.Strings(topics)
-	sections = append(sections, strings.Join(topics, " "))
+	truncated := false
 	if t2 != nil {
-		features := embed.BuildFeatures(*t2, "", 4000)
-		sections = append(sections, features.Commits, features.Paths, features.DiffChunk)
+		features := embed.BuildFeatures(*t2, "", 0)
+		truncated = features.DiffTruncated
+		sections = append(sections, features.DiffChunk, features.Commits, features.Paths)
 	} else {
 		sections = append(sections, "", "", "")
 	}
+	sections = append(sections, strings.TrimSpace(fork.Language))
+	topics := append([]string(nil), fork.Topics...)
+	sort.Strings(topics)
+	sections = append(sections, strings.Join(topics, " "))
+
 	body := strings.TrimSpace(strings.Join(sections, "\n\n"))
-	sum := sha256.Sum256([]byte(modelID + "\x00" + body))
+	// Hash the body alone, NOT modelID+body: documents is keyed by fork
+	// (document_id PRIMARY KEY) while embeddings is keyed (document_id, model),
+	// so model identity already lives on the embedding row. Folding modelID into
+	// the shared document hash makes a run under model B rewrite the hash and
+	// orphan every model-A embedding via the content_hash join. The hash is a
+	// content-identity check, not a claim of bit-exact vector reproducibility:
+	// fastembed's BatchLongest padding makes a vector depend on its batch-mates
+	// at the ~1e-6 level, below ranking resolution.
+	sum := sha256.Sum256([]byte(body))
 	return store.DocumentRecord{
 		DocumentID: store.DocumentID(forkKey), ContentHash: hex.EncodeToString(sum[:]),
 		Body: body, UpdatedAt: time.Now().UTC(),
-	}
+	}, truncated
 }
 
 func IndexPending(ctx context.Context, db *store.Store, model embed.SearchEmbedder) (int, error) {

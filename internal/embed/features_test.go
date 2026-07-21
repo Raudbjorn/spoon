@@ -88,6 +88,20 @@ func TestBuildFeatures_DiffTruncationByLargest(t *testing.T) {
 	}
 }
 
+func TestBuildFeatures_DiffTruncatedFlag(t *testing.T) {
+	big := forge.T2Data{Diffs: []forge.FileDiff{{Path: "huge.go", Additions: 10000, Deletions: 10000}}}
+	if f := BuildFeatures(big, "", 20); !f.DiffTruncated {
+		t.Error("DiffTruncated should be true when the diff exceeds the budget")
+	}
+	small := forge.T2Data{Diffs: []forge.FileDiff{{Path: "x.go", Additions: 1, Deletions: 1}}}
+	if f := BuildFeatures(small, "", 4000); f.DiffTruncated {
+		t.Error("DiffTruncated should be false when the diff fits")
+	}
+	if f := BuildFeatures(forge.T2Data{}, "", 0); f.DiffTruncated {
+		t.Error("DiffTruncated should be false with no diffs")
+	}
+}
+
 func TestBuildFeatures_EmptyReadmeStillBuildsRest(t *testing.T) {
 	t2 := forge.T2Data{
 		Diffs: []forge.FileDiff{{Path: "x.go", Additions: 1, Deletions: 1}},

@@ -9,10 +9,15 @@ import (
 var modalityWeights = [4]float32{0.3, 0.3, 0.2, 0.2}
 
 // maxEmbedModalityChars caps each modality blob (paths/commits/readme/diff)
-// before it is embedded. The built-in lexical embedder has no context window,
-// so the cap only bounds worst-case tokenization cost on pathological inputs
-// (multi-megabyte READMEs); the leading chunk is representative for
-// similarity clustering.
+// before it is embedded. Each modality is embedded as its OWN vector here (not a
+// shared document), so this path is distinct from the semantic index, whose
+// single-document budget lives in features.go/semantic.go. The built-in lexical
+// embedder — MultiModalEmbed's default — has no context window, so the cap only
+// bounds worst-case tokenization cost on pathological inputs (multi-megabyte
+// READMEs). When a windowed embedder (fastembed) runs this path instead, it
+// truncates each modality token-safely at 512 tokens internally; the excess is
+// simply unused, never corrupting a neighbouring section, so the larger cap is
+// intentional and safe.
 const maxEmbedModalityChars = 16000
 
 // truncateForEmbed caps s to maxEmbedModalityChars runes (rune-safe).

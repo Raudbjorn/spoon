@@ -621,6 +621,7 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 	}
 	degraded, total := 0, 0
 	storeWarned := false
+	truncWarned := false
 	for r := range ch {
 		if r.ClusterSkip != nil {
 			if r.ClusterSkip.Code == "mdg_unavailable" {
@@ -649,7 +650,7 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 		if r.BudgetSkip != nil {
 			degraded++
 		}
-		persistSnapshotBestEffort(ctx, db, auth, owner, name, semanticModelID, r, &storeWarned, stderr)
+		persistSnapshotBestEffort(ctx, db, auth, owner, name, semanticModelID, r, &storeWarned, &truncWarned, stderr)
 		if err := agentio.WriteNDJSON(stdout, forkToJSONDetailedUpstream(r, details, "")); err != nil {
 			return agentio.NewError(agentio.CodeInternal, err.Error(), agentio.RemediationInternal()).Emit(stderr)
 		}
@@ -667,7 +668,9 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func persistForkSnapshot(ctx context.Context, db *store.Store, auth forge.AuthInfo, owner, name, modelID string, r forksops.Result) error {
+// persistForkSnapshot stores a fork snapshot and reports whether the fork's
+// embedding document had its diff section truncated to fit the model window.
+func persistForkSnapshot(ctx context.Context, db *store.Store, auth forge.AuthInfo, owner, name, modelID string, r forksops.Result) (diffTruncated bool, err error) {
 	now := time.Now().UTC()
 	host := auth.Host
 	if host == "" {
@@ -714,9 +717,9 @@ func persistForkSnapshot(ctx context.Context, db *store.Store, auth forge.AuthIn
 	if modelID != "" {
 		repoKey := store.RepoKey(snapshot.Repo.Provider, snapshot.Repo.Host, owner, name)
 		forkKey := store.ForkKey(repoKey, r.Fork.ID)
-		snapshot.Document = semantic.BuildDocument(modelID, forkKey, r.Fork, r.T2)
+		snapshot.Document, diffTruncated = semantic.BuildDocument(forkKey, r.Fork, r.T2)
 	}
-	return db.UpsertSnapshot(ctx, snapshot)
+	return diffTruncated, db.UpsertSnapshot(ctx, snapshot)
 }
 
 // enableWebDiffIfRequested turns on cookie-authenticated web diff scraping for
@@ -767,16 +770,25 @@ func emitSemanticIndexWarning(ctx context.Context, db *store.Store, model embed.
 // forks. It no-ops when the store is unavailable (db == nil) and emits at most
 // one structured warning per run (via warned) so a persistent write failure
 // can't flood stderr.
-func persistSnapshotBestEffort(ctx context.Context, db *store.Store, auth forge.AuthInfo, owner, name, modelID string, r forksops.Result, warned *bool, stderr io.Writer) {
+func persistSnapshotBestEffort(ctx context.Context, db *store.Store, auth forge.AuthInfo, owner, name, modelID string, r forksops.Result, warned, truncWarned *bool, stderr io.Writer) {
 	if db == nil {
 		return
 	}
-	if err := persistForkSnapshot(ctx, db, auth, owner, name, modelID, r); err != nil && !*warned {
+	diffTruncated, err := persistForkSnapshot(ctx, db, auth, owner, name, modelID, r)
+	if err != nil && !*warned {
 		*warned = true
 		_ = json.NewEncoder(stderr).Encode(map[string]any{"warning": map[string]any{
 			"code":        "store_unavailable",
 			"message":     "failed to persist fork snapshot; continuing without persistence: " + err.Error(),
 			"remediation": "Check disk space and permissions on ~/.local/share/spoon; listing/output is unaffected.",
+		}})
+	}
+	if diffTruncated && !*truncWarned {
+		*truncWarned = true
+		_ = json.NewEncoder(stderr).Encode(map[string]any{"warning": map[string]any{
+			"code":        "embed_diff_truncated",
+			"message":     "one or more fork diffs exceeded the embedding window and were truncated for indexing",
+			"remediation": "Semantic ranking uses the leading portion of large diffs; no action needed unless recall on big changes matters.",
 		}})
 	}
 }
@@ -1021,6 +1033,7 @@ func emitForksCSV(ctx context.Context, db *store.Store, auth forge.AuthInfo, own
 		return agentio.NewError(agentio.CodeInternal, "write csv header: "+err.Error(), agentio.RemediationInternal()).Emit(stderr)
 	}
 	storeWarned := false
+	truncWarned := false
 	for r := range ch {
 		if r.ClusterSkip != nil {
 			emitClusterWarning(stderr, r.ClusterSkip)
@@ -1044,7 +1057,7 @@ func emitForksCSV(ctx context.Context, db *store.Store, auth forge.AuthInfo, own
 			})
 			continue
 		}
-		persistSnapshotBestEffort(ctx, db, auth, owner, name, modelID, r, &storeWarned, stderr)
+		persistSnapshotBestEffort(ctx, db, auth, owner, name, modelID, r, &storeWarned, &truncWarned, stderr)
 		if err := w.Write(forkToCSVRow(r)); err != nil {
 			return agentio.NewError(agentio.CodeInternal, "write csv row: "+err.Error(), agentio.RemediationInternal()).Emit(stderr)
 		}
@@ -1237,6 +1250,7 @@ func streamAndEmit(ctx context.Context, db *store.Store, auth forge.AuthInfo, pr
 	}
 	degraded, total := 0, 0
 	storeWarned := false
+	truncWarned := false
 	for r := range ch {
 		if r.ClusterSkip != nil {
 			emitClusterWarning(stderr, r.ClusterSkip)
@@ -1267,7 +1281,7 @@ func streamAndEmit(ctx context.Context, db *store.Store, auth forge.AuthInfo, pr
 		if r.BudgetSkip != nil {
 			degraded++
 		}
-		persistSnapshotBestEffort(ctx, db, auth, owner, name, modelID, r, &storeWarned, stderr)
+		persistSnapshotBestEffort(ctx, db, auth, owner, name, modelID, r, &storeWarned, &truncWarned, stderr)
 		if err := agentio.WriteNDJSON(stdout, forkToJSONDetailedUpstream(r, details, upstream)); err != nil {
 			return agentio.NewError(agentio.CodeInternal, err.Error(), agentio.RemediationInternal()).Emit(stderr)
 		}
