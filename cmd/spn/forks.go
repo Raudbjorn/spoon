@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/svnbjrn/spoon/internal/agentio"
@@ -438,6 +439,18 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 		} else {
 			opts.Cluster.Epsilon = 0.55
 		}
+	}
+	// A single run-scoped commit-file budget, shared across every repo. Topic
+	// mode calls Stream once per selected repo, so without this each repo would
+	// get a fresh budget and issue up to N x the documented cap (#88).
+	if opts.CommitFiles {
+		budget := opts.CommitFileBudget
+		if budget <= 0 {
+			budget = 100
+		}
+		remaining := &atomic.Int64{}
+		remaining.Store(int64(budget))
+		opts.CommitFileRunBudget = remaining
 	}
 	// Label polishing: only when a labeler model is configured and the
 	// openvino-genai runtime loads. Like the reranker, a configured but
