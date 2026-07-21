@@ -60,6 +60,13 @@ func NewFastEmbedEmbedder(cfg FastEmbedConfig) (*FastEmbedEmbedder, error) {
 			return nil, err
 		}
 	}
+	// Populate the cache ourselves before handing off. The vendored downloader
+	// extracts without a containment check, so a crafted archive entry could
+	// write outside CacheDir; retrieveModel skips it entirely once the model
+	// directory exists.
+	if err := provisionFastEmbedModel(context.Background(), cfg.CacheDir); err != nil {
+		return nil, err
+	}
 	showProgress := false
 	model, err := fastembed.NewFlagEmbedding(&fastembed.InitOptions{
 		Model: fastembed.BGESmallENV15, MaxLength: 512, CacheDir: cfg.CacheDir,
