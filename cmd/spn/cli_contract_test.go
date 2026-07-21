@@ -106,6 +106,9 @@ func TestForksListParseErrors(t *testing.T) {
 // --no-sibling-sim followed by --sibling-sim clears the latch, so a later
 // --sibling-sim-mode no longer reports a phantom conflict (#86).
 func TestForksSiblingSimLatchCleared(t *testing.T) {
+	// Reaches past parsing into embedder selection; block the cache so it
+	// degrades instead of initializing real ONNX (keeps the test hermetic).
+	blockEmbedderCache(t)
 	prev := providerFactory
 	defer func() { providerFactory = prev }()
 	// Stub the provider so parsing reaches dispatch; a distinctive error proves
