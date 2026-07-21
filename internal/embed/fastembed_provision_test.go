@@ -145,3 +145,32 @@ func TestContainedPath(t *testing.T) {
 		}
 	}
 }
+
+// discardFastEmbedCache must remove only the model directory, never the cache
+// root, so a misconfigured CacheDir cannot become a recursive delete.
+func TestDiscardFastEmbedCacheGuards(t *testing.T) {
+	if err := discardFastEmbedCache(""); err == nil {
+		t.Fatal("empty cache dir accepted")
+	}
+	root := t.TempDir()
+	dest := filepath.Join(root, fastEmbedModelName)
+	if err := os.MkdirAll(dest, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := filepath.Join(root, "unrelated.txt")
+	if err := os.WriteFile(sentinel, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := discardFastEmbedCache(root); err != nil {
+		t.Fatalf("discard: %v", err)
+	}
+	if _, err := os.Stat(dest); !os.IsNotExist(err) {
+		t.Fatal("model directory was not removed")
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("discard removed unrelated cache contents: %v", err)
+	}
+	if _, err := os.Stat(root); err != nil {
+		t.Fatalf("discard removed the cache root: %v", err)
+	}
+}

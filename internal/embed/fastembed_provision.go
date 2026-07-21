@@ -225,3 +225,21 @@ func containedPath(root, name string) (string, error) {
 	}
 	return path, nil
 }
+
+// discardFastEmbedCache removes the cached model directory so the next
+// provision re-fetches it. Guarded so a misconfigured CacheDir cannot turn
+// into a recursive delete of something unrelated: only the model directory
+// beneath it is removed, never the cache root itself.
+func discardFastEmbedCache(cacheDir string) error {
+	if strings.TrimSpace(cacheDir) == "" {
+		return fmt.Errorf("refusing to discard an empty fastembed cache dir")
+	}
+	dest := filepath.Join(cacheDir, fastEmbedModelName)
+	if filepath.Clean(dest) == filepath.Clean(cacheDir) {
+		return fmt.Errorf("refusing to discard the fastembed cache root %q", cacheDir)
+	}
+	if err := os.RemoveAll(dest); err != nil {
+		return fmt.Errorf("discard fastembed cache %s: %w", dest, err)
+	}
+	return nil
+}

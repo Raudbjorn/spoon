@@ -68,12 +68,28 @@ func NewFastEmbedEmbedder(cfg FastEmbedConfig) (*FastEmbedEmbedder, error) {
 		return nil, err
 	}
 	showProgress := false
-	model, err := fastembed.NewFlagEmbedding(&fastembed.InitOptions{
-		Model: fastembed.BGESmallENV15, MaxLength: 512, CacheDir: cfg.CacheDir,
-		ShowDownloadProgress: &showProgress,
-	})
+	newModel := func() (*fastembed.FlagEmbedding, error) {
+		return fastembed.NewFlagEmbedding(&fastembed.InitOptions{
+			Model: fastembed.BGESmallENV15, MaxLength: 512, CacheDir: cfg.CacheDir,
+			ShowDownloadProgress: &showProgress,
+		})
+	}
+	model, err := newModel()
 	if err != nil {
-		return nil, fmt.Errorf("initialize fastembed: %w", err)
+		// The upstream cache check is directory existence alone, so a fetch
+		// interrupted by Ctrl-C, a network drop or ENOSPC leaves a truncated
+		// model that fails on every later run with no automatic recovery.
+		// Treat a failed session construction as proof the cache is bad,
+		// discard it, and re-provision once.
+		if rmErr := discardFastEmbedCache(cfg.CacheDir); rmErr != nil {
+			return nil, fmt.Errorf("initialize fastembed: %w (and discarding the cache failed: %v)", err, rmErr)
+		}
+		if perr := provisionFastEmbedModel(context.Background(), cfg.CacheDir); perr != nil {
+			return nil, fmt.Errorf("initialize fastembed: %w (re-provisioning failed: %v)", err, perr)
+		}
+		if model, err = newModel(); err != nil {
+			return nil, fmt.Errorf("initialize fastembed after re-provisioning: %w", err)
+		}
 	}
 	return &FastEmbedEmbedder{model: model, batchSize: cfg.BatchSize}, nil
 }
