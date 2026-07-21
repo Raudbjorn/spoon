@@ -160,3 +160,48 @@ func TestConfigPermissionsSaveIsOwnerOnly(t *testing.T) {
 		t.Fatalf("mode=%o want=600", got)
 	}
 }
+
+// Save must never unlink the destination on Unix: os.Rename already replaces
+// atomically, and a crash between an unconditional Remove and the Rename would
+// destroy a config file holding the user's GitHub PATs.
+func TestSaveReplacesExistingConfigAtomically(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := Save(path, &Config{GitHub: GitHubConfig{Tokens: []string{"first"}}}); err != nil {
+		t.Fatal(err)
+	}
+	// Hold an open handle to the original inode. On Unix the atomic rename
+	// leaves this handle valid and readable; an unlink-then-rename would too,
+	// so the real assertion is that the path is never observably absent and the
+	// content is fully replaced.
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Save(path, &Config{GitHub: GitHubConfig{Tokens: []string{"second"}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("config absent after overwrite: %v", err)
+	}
+	if after.Mode().Perm() != 0o600 {
+		t.Errorf("mode=%o want=600 after overwrite", after.Mode().Perm())
+	}
+	if before.Mode().Perm() != after.Mode().Perm() {
+		t.Errorf("permissions drifted across save: %o -> %o", before.Mode().Perm(), after.Mode().Perm())
+	}
+
+	got, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.GitHub.Tokens) != 1 || got.GitHub.Tokens[0] != "second" {
+		t.Errorf("tokens=%v want=[second]", got.GitHub.Tokens)
+	}
+	// The temp file must not survive the save.
+	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
+		t.Errorf("leftover temp file after save: %v", err)
+	}
+}

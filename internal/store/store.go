@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -86,6 +87,14 @@ type SearchRow struct {
 type Store struct {
 	db   *sql.DB
 	path string
+	// securedWrite guards the one post-write chmod pass. SQLite creates the
+	// -wal and -shm sidecars lazily on first write, so Open cannot secure files
+	// that do not exist yet — but re-running the pass on every upsert costs a
+	// Stat plus a Chmod per artifact per fork, which is real I/O across a large
+	// fork set. Once after the first write is enough: the set of artifacts is
+	// fixed from then on.
+	securedWrite sync.Once
+	secureErr    error
 }
 
 func DefaultPath() (string, error) {
@@ -243,7 +252,9 @@ func (s *Store) UpsertSnapshot(ctx context.Context, snap Snapshot) error {
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	return s.secureArtifacts()
+	// First write is when SQLite materialises -wal/-shm; secure them once.
+	s.securedWrite.Do(func() { s.secureErr = s.secureArtifacts() })
+	return s.secureErr
 }
 
 func insertFile(ctx context.Context, tx *sql.Tx, table, forkKey, sha string, f FileRecord) error {

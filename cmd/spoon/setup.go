@@ -438,6 +438,15 @@ func setupProxyReferences(cfg *config.Config, noColor bool, out io.Writer) {
 	}
 	apiOK := apiKeyPath != "" && secureRegularFile(apiKeyPath)
 	staticOK := staticPath != "" && secureRegularFile(staticPath)
+	// Setting the variable is an explicit request to use that file. Rejecting it
+	// silently reads as "proxying is broken" with nothing to go on, so name the
+	// file and the requirement.
+	if apiKeyPath != "" && !apiOK {
+		fmt.Fprintln(out, colorize("⚠ ProxyScrape API key file ignored: "+apiKeyPath+" must be a regular file with 0600 permissions.", "\033[33m", noColor))
+	}
+	if staticPath != "" && !staticOK {
+		fmt.Fprintln(out, colorize("⚠ ProxyScrape static pool file ignored: "+staticPath+" must be a regular file with 0600 permissions.", "\033[33m", noColor))
+	}
 	if !apiOK && !staticOK {
 		return
 	}

@@ -143,8 +143,11 @@ func fetchProxyScrape(ctx context.Context, apiKey string, whitelist bool) []*url
 		return nil
 	}
 	body, err = io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	statusOK := resp.StatusCode/100 == 2
 	resp.Body.Close()
-	if err != nil {
+	if err != nil || !statusOK {
+		// A 401/403/5xx body is an error page, not a proxy list; feeding it to
+		// parseProxyLines would mine garbage out of HTML.
 		return nil
 	}
 	return parseProxyLines(string(body))

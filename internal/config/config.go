@@ -11,6 +11,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -158,9 +159,14 @@ func Save(path string, c *Config) error {
 	if err := os.Chmod(tmp, 0o600); err != nil {
 		return fmt.Errorf("secure %s: %w", tmp, err)
 	}
-	// os.Rename cannot overwrite an existing destination on Windows; remove it
-	// first (no-op / ignorable when absent).
-	_ = os.Remove(path)
+	// On Unix os.Rename atomically replaces the destination, so the config is
+	// never absent from disk. Only Windows refuses to overwrite, and only there
+	// do we unlink first — doing it unconditionally would open a window where a
+	// crash between Remove and Rename destroys the file, and this file holds the
+	// user's GitHub PATs.
+	if runtime.GOOS == "windows" {
+		_ = os.Remove(path)
+	}
 	if err := os.Rename(tmp, path); err != nil {
 		return fmt.Errorf("rename %s -> %s: %w", tmp, path, err)
 	}

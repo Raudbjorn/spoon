@@ -33,15 +33,33 @@ func New(cookie string, gate func(context.Context) error) *Client {
 	return &Client{http: &http.Client{Timeout: 30 * time.Second}, cookie: strings.TrimSpace(cookie), gate: gate}
 }
 
-func (c *Client) wait(ctx context.Context) error {
+// minInterval paces web-diff requests at 60 RPM. These hit github.com's HTML
+// endpoints with a session cookie rather than the API, so bursts are what get a
+// session flagged — the spacing matters more here than for the REST client.
+const minInterval = time.Second
+
+// reserve claims the next request slot and reports how long the caller must
+// sleep before using it. Slots are handed out by advancing c.next rather than
+// overwriting it: concurrent callers must each take a distinct slot, otherwise
+// they all sleep until roughly the same instant and then fire together, which
+// is the exact burst the pacing exists to prevent.
+func (c *Client) reserve(now time.Time) time.Duration {
 	c.mu.Lock()
-	now := time.Now()
-	wait := c.next.Sub(now)
-	if wait < 0 {
-		wait = 0
+	defer c.mu.Unlock()
+	if c.next.After(now) {
+		// Queue behind the callers already holding later slots.
+		wait := c.next.Sub(now)
+		c.next = c.next.Add(minInterval)
+		return wait
 	}
-	c.next = now.Add(time.Second) // 60 RPM
-	c.mu.Unlock()
+	// Idle long enough that the previous slot has passed; take it now.
+	c.next = now.Add(minInterval)
+	return 0
+}
+
+// wait blocks until this caller owns the next request slot.
+func (c *Client) wait(ctx context.Context) error {
+	wait := c.reserve(time.Now())
 	if wait > 0 {
 		t := time.NewTimer(wait)
 		defer t.Stop()

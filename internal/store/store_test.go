@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -113,5 +115,50 @@ func TestEmbeddingContentHashInvalidates(t *testing.T) {
 	pending, err = db.PendingDocuments(context.Background(), "m")
 	if err != nil || len(pending) != 1 {
 		t.Fatalf("changed pending=%v err=%v", pending, err)
+	}
+}
+
+// SQLite creates the -wal and -shm sidecars lazily on first write, so Open
+// alone cannot secure them. Securing moved from every-upsert to once-after-
+// first-write; this pins the property that matters — every artifact on disk is
+// owner-only once data has been written.
+func TestStoreArtifactsAreOwnerOnlyAfterWrites(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "spoon.db")
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Now().UTC()
+	snapshot := Snapshot{
+		Repo: RepoRecord{Provider: "github", Host: "github.com", Owner: "up", Name: "repo", FirstSeen: now, LastSeen: now},
+		Fork: ForkRecord{ForgeID: "fork/repo", Owner: "fork", Name: "repo", UpdatedAt: now},
+	}
+	// More than one upsert: securing is once-only, so later writes must not
+	// leave a freshly created artifact unprotected.
+	for i := range 3 {
+		snapshot.Fork.ForgeID = "fork/repo" + strconv.Itoa(i)
+		if err := db.UpsertSnapshot(context.Background(), snapshot); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		info, err := os.Stat(path + suffix)
+		if os.IsNotExist(err) {
+			continue // sidecar not materialised in this mode
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Errorf("%s mode=%o want=600", path+suffix, got)
+		}
+	}
+	if info, err := os.Stat(filepath.Dir(path)); err != nil {
+		t.Fatal(err)
+	} else if got := info.Mode().Perm(); got != 0o700 {
+		t.Errorf("store dir mode=%o want=700", got)
 	}
 }
