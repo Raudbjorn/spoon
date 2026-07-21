@@ -144,7 +144,9 @@ func fetchProxyScrape(ctx context.Context, apiKey string, whitelist bool) []*url
 	}
 	body, err = io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	resp.Body.Close()
-	if err != nil {
+	// Mirror the /api-keys status check above: on 401/403/500 the body is an
+	// error page, not a proxy list, and must not reach parseProxyLines.
+	if err != nil || resp.StatusCode/100 != 2 {
 		return nil
 	}
 	return parseProxyLines(string(body))

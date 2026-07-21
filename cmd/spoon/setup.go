@@ -438,6 +438,16 @@ func setupProxyReferences(cfg *config.Config, noColor bool, out io.Writer) {
 	}
 	apiOK := apiKeyPath != "" && secureRegularFile(apiKeyPath)
 	staticOK := staticPath != "" && secureRegularFile(staticPath)
+	// A path the user explicitly exported must never be dropped in silence.
+	// Warn per path, before the combined gate, so the half-secure case — one
+	// good path, one rejected — still reports what was discarded instead of
+	// quietly enabling proxying with only half the intended credentials.
+	if apiKeyPath != "" && !apiOK {
+		fmt.Fprintln(out, colorize("! ProxyScrape API key path is not a regular file with 0600 permissions; ignoring "+apiKeyPath, "\033[33m", noColor))
+	}
+	if staticPath != "" && !staticOK {
+		fmt.Fprintln(out, colorize("! ProxyScrape static pool path is not a regular file with 0600 permissions; ignoring "+staticPath, "\033[33m", noColor))
+	}
 	if !apiOK && !staticOK {
 		return
 	}

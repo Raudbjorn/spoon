@@ -36,11 +36,16 @@ func New(cookie string, gate func(context.Context) error) *Client {
 func (c *Client) wait(ctx context.Context) error {
 	c.mu.Lock()
 	now := time.Now()
-	wait := c.next.Sub(now)
-	if wait < 0 {
-		wait = 0
+	var wait time.Duration
+	if c.next.After(now) {
+		// Reserve the next free slot and push the queue one tick further out,
+		// so concurrent callers serialise instead of all waking on the same
+		// deadline and bursting together.
+		wait = c.next.Sub(now)
+		c.next = c.next.Add(time.Second)
+	} else {
+		c.next = now.Add(time.Second) // 60 RPM
 	}
-	c.next = now.Add(time.Second) // 60 RPM
 	c.mu.Unlock()
 	if wait > 0 {
 		t := time.NewTimer(wait)
