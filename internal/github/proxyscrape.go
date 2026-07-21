@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -144,7 +145,9 @@ func fetchProxyScrape(ctx context.Context, apiKey string, whitelist bool) []*url
 	}
 	body, err = io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	resp.Body.Close()
-	if err != nil {
+	// Mirror the /api-keys status check above: on 401/403/500 the body is an
+	// error page, not a proxy list, and must not reach parseProxyLines.
+	if err != nil || resp.StatusCode/100 != 2 {
 		return nil
 	}
 	return parseProxyLines(string(body))
@@ -195,6 +198,13 @@ func loadProxyCache(ttl time.Duration) []*url.URL {
 	if err != nil {
 		return nil
 	}
+	// The cache is consulted before the API-key path and decides which proxies
+	// every GitHub request routes through, so a file another local user can
+	// write is a traffic-interception primitive. Refuse anything that is not a
+	// regular file owned by us with no group/other write bit.
+	if !secureCacheFile(path) {
+		return nil
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil
@@ -225,7 +235,16 @@ func saveProxyCache(urls []*url.URL) error {
 	if err := os.WriteFile(path+".tmp", data, 0o600); err != nil {
 		return fmt.Errorf("write proxy cache: %w", err)
 	}
-	// os.Rename cannot overwrite an existing destination on Windows.
-	_ = os.Remove(path)
+	// O_WRONLY|O_CREATE|O_TRUNC ignores the perm argument when the file already
+	// exists, so an existing loose-moded .tmp keeps its mode. Chmod explicitly,
+	// as config.Save does.
+	if err := os.Chmod(path+".tmp", 0o600); err != nil {
+		return fmt.Errorf("secure proxy cache: %w", err)
+	}
+	// os.Rename cannot overwrite an existing destination on Windows; elsewhere
+	// rename-over is atomic and unlinking first would open a gap.
+	if runtime.GOOS == "windows" {
+		_ = os.Remove(path)
+	}
 	return os.Rename(path+".tmp", path)
 }

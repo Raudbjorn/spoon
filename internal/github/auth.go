@@ -45,9 +45,15 @@ func CheckAuthWithOptions(opts ClientOptions) (*Client, AuthStatus, error) {
 func (c *Client) probeExplicitBackends(ctx context.Context, status *AuthStatus) error {
 	probed := make([]*backend, 0, len(c.backends))
 	for _, b := range c.backends {
-		login, err := c.probeLogin(ctx, b)
+		login, err := c.probeLoginWithRetry(ctx, b)
 		if err != nil || login == "" {
-			c.pool.disableUntil(b, time.Time{}, true)
+			// Permanent is documented as a confirmed auth failure and is never
+			// rehabilitated, so reserve it for an actual rejection. A transient
+			// 500, gateway error or dropped connection must not burn a valid
+			// token for the life of the process.
+			if isAuthRejection(err) {
+				c.pool.disableUntil(b, time.Time{}, true)
+			}
 			continue
 		}
 		b.Login = login
@@ -81,6 +87,44 @@ func dedupeBackendsByLogin(backends []*backend) ([]*backend, int) {
 		unique = append(unique, b)
 	}
 	return unique, duplicates
+}
+
+// isAuthRejection reports whether err is GitHub refusing the credential itself,
+// as opposed to a transient failure. A 403 carrying rate-limit headers is
+// exhaustion, not rejection, and must stay recoverable.
+func isAuthRejection(err error) bool {
+	if err == nil {
+		return false
+	}
+	if detectRateLimitFromHTTPError(err) != nil {
+		return false
+	}
+	code := statusCode(err)
+	return code == http.StatusUnauthorized || code == http.StatusForbidden
+}
+
+// probeLoginWithRetry retries the identity probe on transient failures. Startup
+// is exactly when a proxy blip is most likely, and dropping a token here removes
+// it from the pool for the whole run.
+func (c *Client) probeLoginWithRetry(ctx context.Context, b *backend) (string, error) {
+	const attempts = 3
+	var lastErr error
+	for attempt := range attempts {
+		login, err := c.probeLogin(ctx, b)
+		if err == nil {
+			return login, nil
+		}
+		lastErr = err
+		if isAuthRejection(err) {
+			return "", err
+		}
+		if attempt < attempts-1 {
+			if serr := proxyBackoff(ctx, c.sleep(), attempt); serr != nil {
+				return "", serr
+			}
+		}
+	}
+	return "", lastErr
 }
 
 func (c *Client) probeLogin(ctx context.Context, b *backend) (string, error) {

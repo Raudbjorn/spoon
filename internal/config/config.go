@@ -11,6 +11,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -158,9 +159,13 @@ func Save(path string, c *Config) error {
 	if err := os.Chmod(tmp, 0o600); err != nil {
 		return fmt.Errorf("secure %s: %w", tmp, err)
 	}
-	// os.Rename cannot overwrite an existing destination on Windows; remove it
-	// first (no-op / ignorable when absent).
-	_ = os.Remove(path)
+	// os.Rename cannot overwrite an existing destination on Windows, so the
+	// destination has to go first there. Everywhere else rename-over is atomic
+	// and unlinking first would open a window where a crash leaves no config at
+	// all, so the removal stays Windows-only.
+	if runtime.GOOS == "windows" {
+		_ = os.Remove(path)
+	}
 	if err := os.Rename(tmp, path); err != nil {
 		return fmt.Errorf("rename %s -> %s: %w", tmp, path, err)
 	}

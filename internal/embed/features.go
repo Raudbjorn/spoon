@@ -138,8 +138,23 @@ func diffLine(d forge.FileDiff) string {
 		return ""
 	}
 	if d.Patch != "" {
-		return d.Patch
+		if hunkHeader.MatchString(d.Patch) {
+			return d.Patch
+		}
+		// A headerless patch — github_web scrapes bare +/- lines with no
+		// ---/+++ or @@ header. NormalizeDiff rewrites a real hunk header to
+		// "@@@@", so leaving these alone makes an identical change embed
+		// differently depending on which source fetched it. Detect the missing
+		// header rather than matching PatchSource, so any future headerless
+		// source converges on the same canonical form.
+		return diffFileHeader(d) + "\n" + d.Patch
 	}
+	return diffFileHeader(d)
+}
+
+// diffFileHeader builds the canonical ---/+++/@@ preamble shared by every
+// patch source, so normalization collapses them to the same shape.
+func diffFileHeader(d forge.FileDiff) string {
 	del := d.Deletions
 	if del < 0 {
 		del = 0

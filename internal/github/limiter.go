@@ -60,11 +60,11 @@ func (l *limiter) SetRate(r float64) {
 	l.mu.Unlock()
 }
 
-
 // SetRPM updates the refill rate in requests per minute.
 func (l *limiter) SetRPM(rpm float64) {
 	l.SetRate(rpm / 60)
 }
+
 // Wait blocks until one token is available or ctx is cancelled.
 func (l *limiter) Wait(ctx context.Context) error {
 	for {
