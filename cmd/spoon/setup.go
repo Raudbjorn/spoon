@@ -306,7 +306,8 @@ Usage:
 Flags:
   --forge github|gitlab    Provider to check (default: github)
   --forge-host HOSTNAME    Self-hosted GitLab/GHES hostname
-  --embedder-backend B     builtin, openvino, or fastembed
+  --embedder-backend B     fastembed (the only embedder; accepted for
+                           compatibility)
   --fastembed-cache PATH   FastEmbed model cache directory
   --auto-pull              Download missing default OpenVINO models without asking
                            (also: SPOON_AUTO_PULL=1)
