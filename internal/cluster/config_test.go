@@ -73,6 +73,30 @@ func TestConfigValidate(t *testing.T) {
 			},
 			wantErr: "weights",
 		},
+		{
+			name: "negative weight",
+			mutate: func(c *Config) {
+				c.Weights[0] = -0.1
+			},
+			wantErr: "negative",
+		},
+		{
+			// A single +Inf weight makes the sum +Inf, which passes the
+			// sum > 0 check but is not JSON encodable, so it must be
+			// rejected per weight.
+			name: "positive infinite weight",
+			mutate: func(c *Config) {
+				c.Weights[0] = float32(math.Inf(1))
+			},
+			wantErr: "infinite",
+		},
+		{
+			name: "negative infinite weight",
+			mutate: func(c *Config) {
+				c.Weights[0] = float32(math.Inf(-1))
+			},
+			wantErr: "negative",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -96,15 +120,39 @@ func TestConfigValidate(t *testing.T) {
 }
 
 func TestConfigFingerprint(t *testing.T) {
+	fingerprint := func(t *testing.T, c Config) string {
+		t.Helper()
+		got, err := c.Fingerprint()
+		if err != nil {
+			t.Fatalf("Fingerprint() = %v, want nil error", err)
+		}
+		return got
+	}
+
 	base := validFixtureConfig()
 	same := validFixtureConfig()
-	if base.Fingerprint() != same.Fingerprint() {
+	if fingerprint(t, base) != fingerprint(t, same) {
 		t.Error("identical configs must share a fingerprint")
 	}
 
 	changed := validFixtureConfig()
 	changed.Epsilon = 0.35
-	if base.Fingerprint() == changed.Fingerprint() {
+	if fingerprint(t, base) == fingerprint(t, changed) {
 		t.Error("changed epsilon must change the fingerprint")
+	}
+}
+
+// TestConfigFingerprintUnencodable pins that an unencodable config surfaces an
+// error instead of a sentinel fingerprint. Two distinct bad configs sharing a
+// sentinel would collide as a cache hit.
+func TestConfigFingerprintUnencodable(t *testing.T) {
+	cfg := validFixtureConfig()
+	cfg.Epsilon = math.NaN()
+	got, err := cfg.Fingerprint()
+	if err == nil {
+		t.Fatalf("Fingerprint() = %q, want error for NaN epsilon", got)
+	}
+	if got != "" {
+		t.Errorf("Fingerprint() = %q on error, want empty string", got)
 	}
 }
