@@ -160,3 +160,65 @@ func TestConfigPermissionsSaveIsOwnerOnly(t *testing.T) {
 		t.Fatalf("mode=%o want=600", got)
 	}
 }
+
+// Save must never unlink the destination on Unix: os.Rename already replaces
+// atomically, and a crash between an unconditional Remove and the Rename would
+// destroy a config file holding the user's GitHub PATs.
+//
+// This asserts the syscall, not the end state. Atomic replace and
+// unlink-then-rename produce identical content and permissions, so an
+// end-state test cannot tell them apart and would pass with the bug restored.
+func TestSaveDoesNotUnlinkDestinationOnUnix(t *testing.T) {
+	if removeBeforeRename {
+		t.Skip("Windows genuinely requires the unlink")
+	}
+	var removed []string
+	orig := osRemove
+	osRemove = func(p string) error {
+		removed = append(removed, p)
+		return orig(p)
+	}
+	defer func() { osRemove = orig }()
+
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := Save(path, &Config{GitHub: GitHubConfig{Tokens: []string{"first"}}}); err != nil {
+		t.Fatal(err)
+	}
+	// Overwrite: this is the case that would unlink.
+	if err := Save(path, &Config{GitHub: GitHubConfig{Tokens: []string{"second"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(removed) != 0 {
+		t.Errorf("Save unlinked %v; on Unix it must rename over the destination", removed)
+	}
+}
+
+// Companion end-state check: the overwrite genuinely replaces content, keeps
+// 0600, and leaves no temp file. This one passes with or without the fix — it
+// guards Save's general behaviour, not the atomicity decision above.
+func TestSaveOverwritePreservesModeAndContent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := Save(path, &Config{GitHub: GitHubConfig{Tokens: []string{"first"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(path, &Config{GitHub: GitHubConfig{Tokens: []string{"second"}}}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("config absent after overwrite: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("mode=%o want=600", info.Mode().Perm())
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.GitHub.Tokens) != 1 || got.GitHub.Tokens[0] != "second" {
+		t.Errorf("tokens=%v want=[second]", got.GitHub.Tokens)
+	}
+	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
+		t.Errorf("leftover temp file after save: %v", err)
+	}
+}

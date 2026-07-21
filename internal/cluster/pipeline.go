@@ -297,6 +297,22 @@ func RunPipeline(ctx context.Context, opts PipelineOptions, inputs PipelineInput
 
 	// 5. Multi-modal embed.
 	vecs, err := embed.MultiModalEmbed(ctx, embedder, features)
+	if err != nil && ctx.Err() == nil {
+		// Falling back rather than skipping: the documented contract is that an
+		// unavailable embedder degrades to lexical with a warning, and that has
+		// to hold for a failure *after* init (corrupt ONNX file, allocation
+		// failure) as much as for one during it. Dropping clustering entirely
+		// here was the only path that broke the promise.
+		//
+		// A cancelled context is not degradation — it is the caller leaving, so
+		// re-running the whole embed lexically would be wasted work.
+		if _, isLexical := embedder.(embed.LocalEmbedder); !isLexical {
+			fmt.Fprintf(logger, "[cluster] embedder failed: %v; falling back to lexical\n", err)
+			embedder = embed.LocalEmbedder{}
+			modelName = embed.BuiltinModelName
+			vecs, err = embed.MultiModalEmbed(ctx, embedder, features)
+		}
+	}
 	if err != nil {
 		msg := fmt.Sprintf("embedder failed: %v", err)
 		fmt.Fprintf(logger, "[cluster] embedder failed: %v; skipping clustering\n", err)
