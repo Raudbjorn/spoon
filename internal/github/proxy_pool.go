@@ -35,6 +35,10 @@ func newStaticProxyPool(urls []*url.URL) *proxyPool {
 	for _, u := range urls {
 		tr := base.Clone()
 		tr.Proxy = http.ProxyURL(u)
+		// DefaultTransport sets dial and TLS-handshake deadlines but leaves
+		// ResponseHeaderTimeout unset, so a proxy that connects and then goes
+		// silent is never timed out at the transport layer.
+		tr.ResponseHeaderTimeout = responseHeaderTimeout
 		p.entries = append(p.entries, &proxyEntry{url: u, transport: tr})
 	}
 	return p
@@ -123,7 +127,9 @@ type rotatingProxyTransport struct {
 
 func newRotatingProxyTransport(pool *proxyPool) *rotatingProxyTransport {
 	base, _ := http.DefaultTransport.(*http.Transport)
-	return &rotatingProxyTransport{pool: pool, direct: base.Clone()}
+	direct := base.Clone()
+	direct.ResponseHeaderTimeout = responseHeaderTimeout
+	return &rotatingProxyTransport{pool: pool, direct: direct}
 }
 
 func (t *rotatingProxyTransport) RoundTrip(req *http.Request) (*http.Response, error) {

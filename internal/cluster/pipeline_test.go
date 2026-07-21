@@ -3,6 +3,7 @@ package cluster
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -752,5 +753,87 @@ func TestRunPipeline_ZeroValueOptionDefaults(t *testing.T) {
 		if fork.Heat.ClusterID == "" {
 			t.Errorf("fork %s: no cluster assignment", fork.T1.ID)
 		}
+	}
+}
+
+// failingEmbedder succeeds at construction and fails at embed time — the shape
+// of a corrupt model_optimized.onnx or an ONNX allocation failure.
+type failingEmbedder struct{ calls int }
+
+func (f *failingEmbedder) Embed(_ context.Context, _ []string) ([]embed.Vector, error) {
+	f.calls++
+	return nil, errors.New("onnx allocation failed")
+}
+func (f *failingEmbedder) Dim() int { return 8 }
+
+// README.md and docs/embedders.md both promise that an unavailable embedder
+// degrades to lexical with a warning and leaves clustering working. That held
+// only when init failed; a failure *after* init dropped clustering entirely.
+func TestPipeline_PostInitEmbedFailureFallsBackToLexical(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+
+	forks := []EnrichedFork{
+		makePipelineFork("o/a1", 3, []string{"Alpha/x.go", "Alpha/y.go"}, 90),
+		makePipelineFork("o/a2", 4, []string{"Alpha/z.go", "Alpha/w.go"}, 85),
+		makePipelineFork("o/a3", 5, []string{"Alpha/m.go", "Alpha/n.go"}, 80),
+	}
+	broken := &failingEmbedder{}
+	opts := PipelineOptions{
+		Enabled:           true,
+		MinimumCandidates: 1,
+		TopN:              10,
+		Epsilon:           0.6,
+		MinClusterSize:    3,
+		Embedder:          broken,
+	}
+	inputs := PipelineInputs{
+		Provider:      "github",
+		UpstreamOwner: "up",
+		UpstreamRepo:  "stream",
+		Upstream:      parentDataFixture(),
+		Forks:         forks,
+	}
+
+	var buf bytes.Buffer
+	skip, err := RunPipeline(context.Background(), opts, inputs, &buf)
+	if err != nil {
+		t.Fatalf("RunPipeline: %v\nlog: %s", err, buf.String())
+	}
+	if broken.calls == 0 {
+		t.Fatal("the failing embedder was never called; test proves nothing")
+	}
+	if skip != nil && skip.Code == "embedder_failed" {
+		t.Errorf("clustering was skipped instead of falling back to lexical: %+v\nlog: %s", skip, buf.String())
+	}
+	if !strings.Contains(buf.String(), "falling back to lexical") {
+		t.Errorf("no lexical-fallback warning emitted\nlog: %s", buf.String())
+	}
+}
+
+// A cancelled context is the caller leaving, not embedder degradation — it must
+// not trigger a full lexical re-embed of the same work.
+func TestPipeline_CancelledContextDoesNotFallBack(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+
+	forks := []EnrichedFork{
+		makePipelineFork("o/a1", 3, []string{"Alpha/x.go"}, 90),
+		makePipelineFork("o/a2", 4, []string{"Alpha/z.go"}, 85),
+		makePipelineFork("o/a3", 5, []string{"Alpha/m.go"}, 80),
+	}
+	broken := &failingEmbedder{}
+	opts := PipelineOptions{
+		Enabled: true, MinimumCandidates: 1, TopN: 10,
+		Epsilon: 0.6, MinClusterSize: 3, Embedder: broken,
+	}
+	inputs := PipelineInputs{
+		Provider: "github", UpstreamOwner: "up", UpstreamRepo: "stream",
+		Upstream: parentDataFixture(), Forks: forks,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var buf bytes.Buffer
+	if _, err := RunPipeline(ctx, opts, inputs, &buf); err == nil && strings.Contains(buf.String(), "falling back to lexical") {
+		t.Errorf("cancelled run re-embedded lexically instead of bailing\nlog: %s", buf.String())
 	}
 }

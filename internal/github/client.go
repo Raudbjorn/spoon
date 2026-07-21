@@ -19,6 +19,26 @@ import (
 	"github.com/svnbjrn/spoon/internal/github/webdiff"
 )
 
+// requestTimeout bounds a single GitHub HTTP request end to end.
+//
+// go-gh builds &http.Client{Transport: ..., Timeout: opts.Timeout}, so leaving
+// Timeout zero means no deadline at all. A backend that completes the TCP
+// handshake and then never sends response headers — the characteristic failure
+// of a free datacenter proxy — otherwise blocks forever: the gateway-retry loop
+// never runs because no error is returned, and the proxy is never scored
+// unhealthy because scoring happens only after RoundTrip returns. The run hangs
+// with no output until killed.
+//
+// Generous enough for a large compare or a slow GraphQL page, short enough that
+// a stalled backend is retried against a different one within a minute.
+const requestTimeout = 60 * time.Second
+
+// responseHeaderTimeout bounds the wait for response headers specifically. It
+// is the tighter of the two guards and the one that actually catches a silent
+// stall: http.DefaultTransport leaves it unset, so a cloned proxy transport
+// inherits no header deadline.
+const responseHeaderTimeout = 30 * time.Second
+
 type ProxyOptions struct {
 	Enabled           bool
 	APIKeyFile        string
@@ -159,10 +179,16 @@ func NewClientWithOptions(opts ClientOptions) (*Client, error) {
 		if opts.Proxy.Enabled {
 			slog.Warn("github: proxy configured but no github.tokens set; proxy routing is inactive on the gh-default token path (add github.tokens to enable it)")
 		}
-		rest, err := ghAPI.DefaultRESTClient()
+		// Not ghAPI.DefaultRESTClient(): that is NewRESTClient(ClientOptions{}),
+		// which leaves Timeout zero. Passing only Timeout still triggers go-gh's
+		// option resolution (it keys off an empty Host), so host and token are
+		// read from the gh config exactly as before — this is the default path
+		// when no github.tokens are configured, so it must be bounded too.
+		defaultOpts := ghAPI.ClientOptions{Timeout: requestTimeout}
+		rest, err := ghAPI.NewRESTClient(defaultOpts)
 		if err == nil {
 			b := &backend{Rest: rest, REST: newBudget(), GraphQLBudget: newBudget()}
-			if gql, gqlErr := ghAPI.DefaultGraphQLClient(); gqlErr == nil {
+			if gql, gqlErr := ghAPI.NewGraphQLClient(defaultOpts); gqlErr == nil {
 				b.GraphQL = gql
 			}
 			c.authenticated = true
@@ -170,7 +196,7 @@ func NewClientWithOptions(opts ClientOptions) (*Client, error) {
 			c.initRateControls()
 			return c, nil
 		}
-		rest, err = ghAPI.NewRESTClient(ghAPI.ClientOptions{AuthToken: "x", Host: "github.com", Transport: &unauthTransport{base: rotating}})
+		rest, err = ghAPI.NewRESTClient(ghAPI.ClientOptions{AuthToken: "x", Host: "github.com", Transport: &unauthTransport{base: rotating}, Timeout: requestTimeout})
 		if err != nil {
 			return nil, fmt.Errorf("creating unauthenticated client: %w", err)
 		}
@@ -186,7 +212,7 @@ func NewClientWithOptions(opts ClientOptions) (*Client, error) {
 		if token == "" {
 			return nil, fmt.Errorf("github token list contains an empty entry")
 		}
-		clientOpts := ghAPI.ClientOptions{AuthToken: token, Host: "github.com", Transport: rotating}
+		clientOpts := ghAPI.ClientOptions{AuthToken: token, Host: "github.com", Transport: rotating, Timeout: requestTimeout}
 		rest, err := ghAPI.NewRESTClient(clientOpts)
 		if err != nil {
 			return nil, fmt.Errorf("creating GitHub REST backend: %w", err)
