@@ -16,7 +16,7 @@ go build -o spoon ./cmd/spoon      # interactive TUI
 go build -o spn   ./cmd/spn        # agent CLI (JSON/NDJSON)
 ```
 
-Requires Go 1.26+ (the module targets `go 1.26.2`). The MDG centrality backend
+Requires Go 1.26.2+, matching the `go` directive in `go.mod`. The MDG centrality backend
 (`--full-mdg`) uses tree-sitter parsers via cgo, so building also needs a
 working C compiler on PATH (`gcc`/`clang` on Linux/macOS, MinGW or MSVC on
 Windows). `CGO_ENABLED=1` is the Go default; do not unset it.
