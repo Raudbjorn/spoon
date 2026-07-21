@@ -75,7 +75,16 @@ check() {
     # go test ./... compiles the cgo tree-sitter package too; force cgo on
     # for the same reason build() does — makepkg runs each phase in its own
     # subshell, so build()'s CGO_ENABLED export does not reach here.
+    #
+    # The CGO_* flags must match build() as well: Go keys its build cache on
+    # them, so a mismatch silently recompiles the whole cgo tree instead of
+    # reusing build()'s objects, and would test binaries built without the
+    # distro hardening flags we actually ship.
     export CGO_ENABLED=1
+    export CGO_CPPFLAGS="${CPPFLAGS}"
+    export CGO_CFLAGS="${CFLAGS}"
+    export CGO_CXXFLAGS="${CXXFLAGS}"
+    export CGO_LDFLAGS="${LDFLAGS}"
     export GOPATH="${srcdir}/gopath"
     export GOFLAGS="-mod=readonly -modcacherw"
     go test ./...

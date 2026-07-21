@@ -129,7 +129,7 @@ func bucketKey(novelty float64) string {
 	if novelty > 1 {
 		novelty = 1
 	}
-	idx := int(math.Floor(novelty*10)) / 1
+	idx := int(math.Floor(novelty * 10))
 	if idx < 0 {
 		idx = 0
 	}

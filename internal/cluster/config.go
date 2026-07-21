@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"math"
 )
 
 // Config captures all clustering and representation parameters that affect
@@ -43,7 +44,17 @@ func (c Config) Validate() error {
 		return fmt.Errorf("minimumCandidates %d < 1", c.MinimumCandidates)
 	}
 	var sum float32
-	for _, weight := range c.Weights {
+	for i, weight := range c.Weights {
+		// Negative weights invert the distance metric rather than
+		// down-weighting a modality, and an infinite weight is not JSON
+		// encodable so it would break Fingerprint. Reject both per weight
+		// rather than relying on the sum, which can mask them.
+		if weight < 0 {
+			return fmt.Errorf("modality weight[%d] %.3f cannot be negative", i, weight)
+		}
+		if math.IsInf(float64(weight), 0) {
+			return fmt.Errorf("modality weight[%d] is infinite", i)
+		}
 		sum += weight
 	}
 	// Negated comparison so a NaN weight (sum becomes NaN) is rejected.
@@ -53,12 +64,16 @@ func (c Config) Validate() error {
 	return nil
 }
 
-// Fingerprint returns the SHA-256 hash of the config's canonical JSON encoding.
-func (c Config) Fingerprint() string {
+// Fingerprint returns the SHA-256 hash of the config's canonical JSON
+// encoding. It returns an error when the config cannot be encoded (a
+// non-finite float reaching json.Marshal); callers must not fall back to a
+// sentinel string, since two distinct unencodable configs would then share a
+// fingerprint and collide as a cache hit.
+func (c Config) Fingerprint() (string, error) {
 	data, err := json.Marshal(c)
 	if err != nil {
-		return "error"
+		return "", fmt.Errorf("encode config for fingerprint: %w", err)
 	}
 	hash := sha256.Sum256(data)
-	return fmt.Sprintf("%x", hash)
+	return fmt.Sprintf("%x", hash), nil
 }
