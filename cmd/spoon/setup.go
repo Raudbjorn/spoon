@@ -459,7 +459,10 @@ func setupProxyReferences(cfg *config.Config, noColor bool, out io.Writer) {
 		cfg.GitHub.Proxy.StaticFile = staticPath
 	}
 	if cfg.GitHub.Proxy.WhitelistPublicIP == nil {
-		whitelist := true
+		// Off by default: opting into proxy routing is not opting into
+		// publishing this machine's public IP to api.ipify.org and registering
+		// it against a ProxyScrape account.
+		whitelist := false
 		cfg.GitHub.Proxy.WhitelistPublicIP = &whitelist
 	}
 	if cfg.GitHub.Proxy.CacheTTL == "" {

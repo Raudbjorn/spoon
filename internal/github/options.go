@@ -27,7 +27,11 @@ func ResolveClientOptions(rpmOverride float64) (ClientOptions, error) {
 		opts.Proxy.Enabled = proxy.Enabled
 		opts.Proxy.APIKeyFile = proxy.APIKeyFile
 		opts.Proxy.StaticFile = proxy.StaticFile
-		opts.Proxy.WhitelistPublicIP = true
+		// Default off: opting into proxy routing is not opting into publishing
+		// your public IP to api.ipify.org and registering it against a
+		// ProxyScrape account. The field is *bool precisely so unset is
+		// distinguishable from an explicit false.
+		opts.Proxy.WhitelistPublicIP = false
 		if proxy.WhitelistPublicIP != nil {
 			opts.Proxy.WhitelistPublicIP = *proxy.WhitelistPublicIP
 		}
