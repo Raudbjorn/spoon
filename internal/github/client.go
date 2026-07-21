@@ -344,12 +344,20 @@ func (c *Client) waitRequest(ctx context.Context, lim *limiter) error {
 
 func (c *Client) doGet(ctx context.Context, path string) (*http.Response, error) {
 	c.ensurePool()
-	b, err := c.pool.nextBackend(time.Now())
-	if err != nil {
-		return nil, err
-	}
-	var resp *http.Response
-	err = c.doWithRetry(ctx, func() error {
+	var (
+		resp *http.Response
+		b    *backend
+	)
+	// Select the identity inside the closure. doWithRetry calls fn again after
+	// a rate-limit sleep, and that retry has to land on a different identity
+	// than the one it just disabled — otherwise a spent token absorbs the retry
+	// and healthy tokens are never tried, which is the only path multi-token
+	// dispatch exists for.
+	err := c.doWithRetry(ctx, func() error {
+		var berr error
+		if b, berr = c.pool.nextBackend(time.Now()); berr != nil {
+			return berr
+		}
 		var requestErr error
 		for attempt := range 3 {
 			if err := c.waitRequest(ctx, b.REST.Limiter); err != nil {
