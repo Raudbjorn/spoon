@@ -133,6 +133,10 @@ func Open(path string) (*Store, error) {
 	// SQLITE_BUSY instead of waiting. The driver deliberately sorts
 	// busy_timeout first among _pragma values.
 	q := url.Values{}
+	// 5s, not the 30s used for network I/O elsewhere: this guards local
+	// lock contention between spn processes, where a waiter that has not been
+	// admitted in 5s means a stuck peer rather than a slow one, and the caller
+	// degrades to a warning rather than failing. Pinned by TestBusyTimeoutApplied.
 	q.Add("_pragma", "busy_timeout(5000)")
 	q.Add("_pragma", "foreign_keys(ON)")
 	q.Add("_pragma", "synchronous(NORMAL)")
@@ -180,6 +184,10 @@ func (s *Store) Close() error { return s.db.Close() }
 // has to observe the result. spn forks list opens the store unconditionally,
 // which makes concurrent first runs the common case, not an edge case.
 func ensureWAL(ctx context.Context, db *sql.DB) error {
+	// sum(1..50)ms = ~1.275s total, deliberately shorter than the 5s
+	// busy_timeout beside it: the WAL switch is a header write that either
+	// succeeds quickly or is blocked by a peer mid-switch, so extra waiting
+	// buys nothing, and a non-WAL result is accepted rather than fatal.
 	const attempts = 50
 	var lastErr error
 	for i := range attempts {
