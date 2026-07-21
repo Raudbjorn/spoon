@@ -155,7 +155,6 @@ func runEvalWith(args []string, stdout, stderr io.Writer) int {
 			Score:     r.Heat.Score,
 		})
 	}
-	_ = cancel
 	report := eval.Compute(repo, rows, jtmt)
 	enc := json.NewEncoder(stdout)
 	if err := enc.Encode(report); err != nil {
