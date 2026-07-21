@@ -819,6 +819,16 @@ func runForksClusterPipeline(
 		}
 	}
 
+	// Resolve the MDG-cache pin: prefer the caller's explicit
+	// CentralityHeadSHA override (tests, future pinning beyond the
+	// upstream's HEAD), and fall back to parent.HeadSHA when the caller
+	// didn't supply one. Mirrors the same resolution in
+	// internal/tui/cluster_bridge.go so both entry points honour the
+	// documented contract on ClusterOptions.CentralityHeadSHA.
+	pin := parent.HeadSHA
+	if opts.CentralityHeadSHA != "" {
+		pin = opts.CentralityHeadSHA
+	}
 	pipelineOpts := cluster.PipelineOptions{
 		Enabled:           opts.Enabled,
 		TopN:              opts.TopN,
@@ -827,7 +837,7 @@ func runForksClusterPipeline(
 		MinimumCandidates: 10,
 		Refresh:           opts.Refresh,
 		CentralityBackend: opts.CentralityBackend,
-		CentralityHeadSHA: parent.HeadSHA,
+		CentralityHeadSHA: pin,
 		StrictMDG:         opts.StrictMDG,
 	}
 	// Forward the optional embedder / categorizer / label-polisher hooks
