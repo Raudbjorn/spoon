@@ -22,20 +22,34 @@ type BranchScan struct {
 const minHeadroom = 0.20
 
 // tipUpstreamed reports whether the head commit of cmp (the newest ahead commit)
-// heads a merged PR into upstreamFullName. Returns (false, 0) when there is
-// nothing to probe, headroom is exhausted, or the probe errors — the divergence
-// is then treated as genuine rather than dropped.
-func (c *Client) tipUpstreamed(ctx context.Context, upstreamFullName, forkOwner, forkRepo string, cmp CompareResult) (bool, int) {
+// heads a merged PR into upstreamFullName. Returns (false, 0, nil) when there is
+// nothing to probe, headroom is exhausted, the commit list is truncated, or the
+// probe fails for a non-context reason — the divergence is then treated as
+// genuine rather than dropped. A context cancellation is returned as an error so
+// callers can propagate it instead of recording a fabricated "genuine work"
+// verdict produced by an aborted probe.
+func (c *Client) tipUpstreamed(ctx context.Context, upstreamFullName, forkOwner, forkRepo string, cmp CompareResult) (bool, int, error) {
 	if len(cmp.Commits) == 0 || c.Headroom() < minHeadroom {
-		return false, 0
+		return false, 0, nil
+	}
+	// GitHub's compare endpoint caps the embedded commit list (250 entries) and
+	// reports the true size in TotalCommits. When the list is truncated the last
+	// element is a middle commit, not the branch tip: probing it could match an
+	// older squash-merged PR and wrongly zero a branch that carries genuine work
+	// above it. No tip SHA is available from this response, so skip the probe.
+	if cmp.TotalCommits > len(cmp.Commits) {
+		return false, 0, nil
 	}
 	// GitHub compare returns ahead commits oldest-first, so the tip is last.
 	tip := cmp.Commits[len(cmp.Commits)-1].SHA
 	res, err := c.CheckUpstreamed(ctx, forkOwner, forkRepo, tip, upstreamFullName)
 	if err != nil {
-		return false, 0
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return false, 0, ctxErr
+		}
+		return false, 0, nil
 	}
-	return res.Upstreamed, res.PRNumber
+	return res.Upstreamed, res.PRNumber, nil
 }
 
 // ScanBranches selects a non-default branch to attribute work to when the
@@ -91,13 +105,23 @@ func (c *Client) ScanBranches(
 
 		cmp, err := c.FetchCompare(ctx, parentOwner, parentRepo, parentBranch, fork.Owner.Login, branch.Name)
 		if err != nil {
+			// A cancelled context makes every remaining fetch fail; returning
+			// here keeps the last branch from exiting the loop with a nil error
+			// that reads as "scan completed".
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return fallback, ctxErr
+			}
 			continue // skip branches that fail
 		}
 		if cmp.AheadBy <= 0 {
 			continue
 		}
 
-		if up, pr := c.tipUpstreamed(ctx, upstream, fork.Owner.Login, fork.Name, cmp); up {
+		up, pr, upErr := c.tipUpstreamed(ctx, upstream, fork.Owner.Login, fork.Name, cmp)
+		if upErr != nil {
+			return fallback, upErr
+		}
+		if up {
 			// Remember the most-recent upstreamed branch, but keep looking for
 			// genuine work on an older branch.
 			if fallback == nil {
@@ -118,6 +142,13 @@ func (c *Client) ScanBranches(
 // tries the default branch first; if the default has genuine (not-upstreamed)
 // work it wins. Otherwise it scans side branches for the most-recent branch
 // with real work, falling back to the default-branch result.
+//
+// When the default branch is ahead but already upstreamed and every side branch
+// is upstreamed too, the default-branch result is returned in preference to
+// ScanBranches' upstreamed fallback. Both carry Upstreamed=true and score the
+// fork identically; attributing the merged work to the fork's primary branch is
+// the more meaningful of the two. ScanBranches' upstreamed fallback is only
+// used when the default branch itself showed no divergence at all.
 func (c *Client) FetchCompareWithBranchScan(
 	ctx context.Context,
 	parentOwner, parentRepo, parentBranch string,
@@ -133,7 +164,10 @@ func (c *Client) FetchCompareWithBranchScan(
 	}
 
 	if result.AheadBy > 0 {
-		up, pr := c.tipUpstreamed(ctx, upstream, fork.Owner.Login, fork.Name, result)
+		up, pr, upErr := c.tipUpstreamed(ctx, upstream, fork.Owner.Login, fork.Name, result)
+		if upErr != nil {
+			return BranchScan{}, upErr
+		}
 		if !up {
 			// Default branch carries genuine work — use it, no scan needed.
 			return BranchScan{Compare: result, Branch: fork.DefaultBranch}, nil

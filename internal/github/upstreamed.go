@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"strings"
 )
 
@@ -43,8 +42,13 @@ type UpstreamedResult struct {
 // "is this commit reachable from upstream/master" check (GET .../commits/{sha})
 // returns 404 even for fully-merged work. GitHub nonetheless preserves the
 // *PR association* on the original head commit, which is what makes this the
-// reliable "already upstreamed" probe. Returns (nil, nil) on 404/403 so a
-// deleted or private fork degrades to "unknown", not an error.
+// reliable "already upstreamed" probe.
+//
+// A 404/403 (deleted or private fork) returns (nil, nil) — an empty association
+// list, not an error. There is deliberately no distinct "unknown" state: callers
+// treat an empty list as "no merged upstream PR found", which leaves the fork's
+// divergence counted as genuine work. That is the conservative direction — an
+// unreadable fork keeps its work rather than being silently zeroed as merged.
 func (c *Client) PullsForCommit(ctx context.Context, owner, repo, sha string) ([]associatedPR, error) {
 	path := fmt.Sprintf("repos/%s/%s/commits/%s/pulls", owner, repo, sha)
 
@@ -57,13 +61,8 @@ func (c *Client) PullsForCommit(ctx context.Context, owner, repo, sha string) ([
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("reading pulls-for-commit response: %w", err)
-	}
-
 	var prs []associatedPR
-	if err := json.Unmarshal(body, &prs); err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(&prs); err != nil {
 		return nil, fmt.Errorf("parsing pulls-for-commit response: %w", err)
 	}
 	return prs, nil

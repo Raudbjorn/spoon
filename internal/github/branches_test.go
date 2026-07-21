@@ -15,6 +15,9 @@ type branchMeta struct {
 	ahead    int
 	tipSHA   string
 	mergedPR int // >0 → tip heads a merged upstream PR
+	// totalCommits, when >0, is reported as total_commits while only `ahead`
+	// commits are embedded — GitHub's truncation of large compare responses.
+	totalCommits int
 }
 
 // scanTestServer routes the two endpoints branch selection touches:
@@ -52,10 +55,15 @@ func scanTestServer(t *testing.T, upstream string, byBranch map[string]branchMet
 				}
 				commits = append(commits, map[string]any{"sha": sha})
 			}
+			total := m.totalCommits
+			if total == 0 {
+				total = m.ahead
+			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"ahead_by":  m.ahead,
-				"behind_by": 100,
-				"commits":   commits,
+				"ahead_by":      m.ahead,
+				"behind_by":     100,
+				"total_commits": total,
+				"commits":       commits,
 			})
 		case strings.HasSuffix(path, "/pulls"):
 			// .../commits/{sha}/pulls
@@ -176,5 +184,51 @@ func TestFetchCompareWithBranchScan_DefaultMerged_PrefersGenuineSide(t *testing.
 	}
 	if scan.Branch != "feature-new" || scan.Upstreamed {
 		t.Errorf("want feature-new/not-upstreamed, got %q/%v", scan.Branch, scan.Upstreamed)
+	}
+}
+
+// A truncated compare response (total_commits > len(commits)) means the last
+// embedded commit is a middle commit, not the branch tip. Probing it could
+// match an older squash-merged PR and wrongly zero a branch whose newer commits
+// are genuine work, so the probe is skipped and the divergence kept.
+func TestFetchCompareWithBranchScan_TruncatedCommits_SkipsUpstreamedProbe(t *testing.T) {
+	srv := scanTestServer(t, "up/stream", map[string]branchMeta{
+		"main": {ahead: 0},
+		// 250 embedded commits out of 900; the embedded "tip" heads a merged PR.
+		"big": {ahead: 250, tipSHA: "sha_mid", mergedPR: 42, totalCommits: 900},
+	})
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	branches := []BranchInfo{{Name: "big", LastCommitAt: "2026-06-01T00:00:00Z"}}
+	scan, err := c.FetchCompareWithBranchScan(context.Background(), "up", "stream", "main", testFork(), branches)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if scan.Branch != "big" {
+		t.Fatalf("selected branch = %q, want big", scan.Branch)
+	}
+	if scan.Upstreamed {
+		t.Errorf("truncated compare must not be flagged upstreamed (probed SHA is not the tip)")
+	}
+}
+
+// A context cancelled mid-scan must surface as an error rather than a
+// successful result: every subsequent fetch fails, and silently treating those
+// failures as "branch has no upstreamed PR" fabricates genuine-work verdicts.
+func TestScanBranches_ContextCancelled_PropagatesError(t *testing.T) {
+	srv := scanTestServer(t, "up/stream", map[string]branchMeta{
+		"main": {ahead: 0},
+		"side": {ahead: 3, tipSHA: "sha_side", mergedPR: 0},
+	})
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	branches := []BranchInfo{{Name: "side", LastCommitAt: "2026-06-01T00:00:00Z"}}
+	if _, err := c.ScanBranches(ctx, "up", "stream", "main", testFork(), branches); err == nil {
+		t.Error("want context error, got nil")
 	}
 }
