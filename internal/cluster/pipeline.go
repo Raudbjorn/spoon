@@ -220,10 +220,14 @@ func RunPipeline(ctx context.Context, opts PipelineOptions, inputs PipelineInput
 		}, nil
 	}
 
-	// TopN <= 0 means "uncapped" in SelectClusterCandidates; pin the
-	// effective cap to the selected candidate count so the config
-	// fingerprint is concrete and validation accepts the uncapped form.
-	if opts.TopN <= 0 {
+	// TopN <= 0 means "uncapped" in SelectClusterCandidates. Pin the
+	// effective cap to the selected candidate count when it is uncapped or
+	// when the cap exceeds the candidates actually available, so the config
+	// fingerprint is concrete and tracks the real clustered set. Without the
+	// second condition a cap of 50 over 30 candidates fingerprints the same
+	// as that cap over 35, and the 5 new forks would silently inherit a
+	// stale cache entry that has no assignment for them.
+	if opts.TopN <= 0 || opts.TopN > len(candidates) {
 		opts.TopN = len(candidates)
 	}
 
@@ -244,7 +248,14 @@ func RunPipeline(ctx context.Context, opts PipelineOptions, inputs PipelineInput
 			Message: err.Error(),
 		}, nil
 	}
-	fingerprint := cfg.Fingerprint()
+	fingerprint, err := cfg.Fingerprint()
+	if err != nil {
+		fmt.Fprintf(logger, "[cluster] cannot fingerprint config: %v\n", err)
+		return &SkipReason{
+			Code:    "invalid_config",
+			Message: err.Error(),
+		}, nil
+	}
 
 	// 2. Cache fast-path. Try to satisfy this pipeline from a previous run's
 	//    saved clusters before doing any expensive work.

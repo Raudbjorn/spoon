@@ -653,20 +653,47 @@ func TestRunPipeline_CacheBypassedByThreshold(t *testing.T) {
 		assignments[i] = Assignment{ForkID: id, Cluster: "cached", Novelty: 0.5}
 		members[i] = id
 	}
+	// Write the cache under the exact fingerprint RunPipeline would compute
+	// for these options, so the entry is a genuine cache hit. Without this
+	// the fingerprint mismatch alone would reject the cache and the test
+	// would pass even if the candidate gate ran after the cache lookup.
+	// TopN is pinned to len(candidates) because the cap (10) exceeds the 8
+	// eligible forks, and MinimumCandidates is the default 10.
+	fingerprint, err := Config{
+		EmbedderID:        embed.BuiltinModelName,
+		PreprocessID:      "v1",
+		Weights:           [4]float32{0.3, 0.3, 0.2, 0.2},
+		WeakSignalsID:     "v1",
+		Epsilon:           0.6,
+		MinClusterSize:    3,
+		TopN:              len(forks),
+		MinimumCandidates: 10,
+	}.Fingerprint()
+	if err != nil {
+		t.Fatalf("Fingerprint: %v", err)
+	}
 	if err := SaveCache(ClusterCache{
-		SchemaVersion:  SchemaVersion,
-		ComputedAt:     time.Now().UTC(),
-		EmbedderModel:  embed.BuiltinModelName,
-		Provider:       "github",
-		Owner:          "up",
-		Repo:           "stream",
-		Epsilon:        0.6,
-		MinClusterSize: 3,
-		TopM:           10,
-		Clusters:       []Cluster{{ID: "cached", Members: members}},
-		Assignments:    assignments,
+		SchemaVersion:     SchemaVersion,
+		ComputedAt:        time.Now().UTC(),
+		EmbedderModel:     embed.BuiltinModelName,
+		ConfigFingerprint: fingerprint,
+		Provider:          "github",
+		Owner:             "up",
+		Repo:              "stream",
+		Epsilon:           0.6,
+		MinClusterSize:    3,
+		TopM:              10,
+		Clusters:          []Cluster{{ID: "cached", Members: members}},
+		Assignments:       assignments,
 	}); err != nil {
 		t.Fatalf("SaveCache: %v", err)
+	}
+
+	// Guard the guard: if this entry is not a loadable cache hit, the
+	// assertions below pass for the wrong reason and no longer detect a
+	// cache lookup that runs ahead of the candidate gate.
+	if _, ok := LoadCache("github", "up", "stream", "", embed.BuiltinModelName, fingerprint); !ok {
+		t.Fatal("seeded cache is not a valid hit; test would be vacuous")
 	}
 
 	var log bytes.Buffer
