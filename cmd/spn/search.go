@@ -27,7 +27,7 @@ func runSearch(args []string) int { return runSearchWith(args, os.Stdout, os.Std
 
 func runSearchWith(args []string, stdout, stderr io.Writer) int {
 	query := ""
-	repoFilter := ""
+	repoOwner, repoName := "", ""
 	top := 20
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -36,9 +36,15 @@ func runSearchWith(args []string, stdout, stderr io.Writer) int {
 				return agentio.NewError(agentio.CodeBadInput, "--repo requires owner/repo", "Pass --repo owner/repo.").Emit(stderr)
 			}
 			i++
-			repoFilter = strings.TrimSpace(args[i])
+			repoFilter := strings.TrimSpace(args[i])
 			if repoFilter == "" {
 				return agentio.NewError(agentio.CodeBadInput, "--repo must not be empty", "Pass --repo owner/repo.").Emit(stderr)
+			}
+			// Validate the owner/repo shape at parse time (before loading the
+			// embedder) so a malformed value fails fast and without ONNX.
+			repoOwner, repoName = splitRepoArg(repoFilter)
+			if repoOwner == "" || repoName == "" {
+				return agentio.NewError(agentio.CodeBadInput, "--repo must be owner/repo", "Pass --repo owner/repo.").Emit(stderr)
 			}
 		case "--top":
 			if i+1 >= len(args) {
@@ -93,7 +99,9 @@ func runSearchWith(args []string, stdout, stderr io.Writer) int {
 		MaxLength: embCfg.MaxLength, BatchSize: embCfg.BatchSize,
 	})
 	if err != nil {
-		return agentio.NewError(agentio.CodeInternal, "embedder_unavailable: "+err.Error(), "Set ONNX_PATH to libonnxruntime.so and verify the FastEmbed cache.").Emit(stderr)
+		// User-fixable (the remediation says so: set ONNX_PATH), so bad_input
+		// (exit 2), not internal (exit 1) which reads as a tool bug to an agent.
+		return agentio.NewError(agentio.CodeBadInput, "embedder_unavailable: "+err.Error(), "Set ONNX_PATH to libonnxruntime.so and verify the FastEmbed cache.").Emit(stderr)
 	}
 	defer model.Close()
 
@@ -106,13 +114,6 @@ func runSearchWith(args []string, stdout, stderr io.Writer) int {
 	queryVector, err := model.EmbedQuery(context.Background(), query)
 	if err != nil {
 		return agentio.NewError(agentio.CodeInternal, "embedder_unavailable: "+err.Error(), "Verify ONNX Runtime and the FastEmbed model cache.").Emit(stderr)
-	}
-	repoOwner, repoName := "", ""
-	if repoFilter != "" {
-		repoOwner, repoName = splitRepoArg(repoFilter)
-		if repoOwner == "" || repoName == "" {
-			return agentio.NewError(agentio.CodeBadInput, "--repo must be owner/repo", "Pass --repo owner/repo.").Emit(stderr)
-		}
 	}
 	rows, err := db.SearchRows(context.Background(), model.ModelID(), repoOwner, repoName)
 	if err != nil {

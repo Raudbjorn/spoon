@@ -135,6 +135,7 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 	// did not address this knob". Used by OwnerCacheTTL (default 24h)
 	// and topic-mode SiblingSimEnabled (default off).
 	ownerCacheTTLSet := false
+	clusterEpsilonSet := false
 	siblingSimFlagSet := false
 	noSiblingSimFlagSet := false
 	siblingSimModeSet := false
@@ -256,6 +257,7 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 				return agentio.NewError(agentio.CodeBadInput, "--cluster-epsilon requires a non-negative number", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
 			}
 			opts.Cluster.Epsilon = f
+			clusterEpsilonSet = true
 		case "--cluster-min-size":
 			if i+1 >= len(args) {
 				return agentio.NewError(agentio.CodeBadInput, "--cluster-min-size requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
@@ -334,6 +336,10 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 		case "--sibling-sim":
 			opts.Cluster.SiblingSimEnabled = true
 			siblingSimFlagSet = true
+			// A later --sibling-sim re-enables the feature, so clear the
+			// --no-sibling-sim latch — otherwise the post-loop conflict check
+			// fires against a state the flags no longer describe.
+			noSiblingSimFlagSet = false
 		case "--no-sibling-sim":
 			opts.Cluster.SiblingSimEnabled = false
 			siblingSimFlagSet = true
@@ -358,7 +364,10 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 			opts.OwnerCacheTTL = d
 			ownerCacheTTLSet = true
 		default:
-			if strings.HasPrefix(args[i], "--") {
+			// Match a single leading dash, not just "--": otherwise a typo like
+			// `-tier 1` is silently swallowed as the positional repo argument and
+			// the error points at the wrong token.
+			if strings.HasPrefix(args[i], "-") {
 				return agentio.NewError(agentio.CodeBadInput, "unknown flag: "+args[i], agentio.RemediationBadInput("forks", "list")).Emit(stderr)
 			}
 			if repo != "" {
@@ -381,6 +390,11 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 	}
 	if _, isTopic := strings.CutPrefix(repo, "topic:"); !isTopic && (topicLanesSet || topicLaneBudgetSet) {
 		return agentio.NewError(agentio.CodeBadInput, "--topic-lanes and --topic-lane-budget only apply to topic:NAME mode", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+	}
+	// --commit-file-budget is read only while enriching commit files, so it is a
+	// silent no-op without --commit-files. Reject it rather than accept-and-ignore.
+	if opts.CommitFileBudget > 0 && !opts.CommitFiles {
+		return agentio.NewError(agentio.CodeBadInput, "--commit-file-budget requires --commit-files", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
 	}
 	if siblingSimModeSet {
 		if noSiblingSimFlagSet {
@@ -433,7 +447,10 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 			opts.Cluster.Categorize = true // zero-shot categories need a semantic embedder
 		}
 	}
-	if opts.Cluster.Epsilon == 0 {
+	// Only fill the backend default when the user did not set epsilon: a struct
+	// zero and an explicit --cluster-epsilon 0 (force singleton clusters) are
+	// otherwise indistinguishable, and the latter was silently overwritten.
+	if !clusterEpsilonSet {
 		if fastembedActive {
 			opts.Cluster.Epsilon = 0.35
 		} else {

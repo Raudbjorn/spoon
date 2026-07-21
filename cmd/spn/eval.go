@@ -73,7 +73,9 @@ func runEvalWith(args []string, stdout, stderr io.Writer) int {
 		case "--no-mdg":
 			opts.Cluster.CentralityBackend = ""
 		default:
-			if strings.HasPrefix(args[i], "--") {
+			// Single leading dash, not just "--", so a typo like `-tier` is
+			// reported as an unknown flag instead of swallowed as the positional.
+			if strings.HasPrefix(args[i], "-") {
 				return agentio.NewError(agentio.CodeBadInput, "unknown flag: "+args[i], agentio.RemediationBadInput("forks", "eval")).Emit(stderr)
 			}
 			if repoArg != "" {

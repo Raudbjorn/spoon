@@ -43,7 +43,7 @@ spoon golang/go                                 # GitHub repo
 spoon gitlab.com/inkscape/inkscape              # GitLab (auto-detected)
 spoon --forge gitlab group/repo                 # force provider
 spoon --forge-host gitlab.example.com g/repo    # self-hosted GitLab
-spn forks list charmbracelet/bubbletea --json   # JSON to stdout (agent CLI)
+spn forks list charmbracelet/bubbletea          # NDJSON to stdout (agent CLI)
 spn forks list charmbracelet/bubbletea --csv    # batched CSV (see "Agent CLI" below)
 spn forks list golang/go --tier 1               # T1 only (skip compare calls)
 spn forks list golang/go --top 5                # only enrich top 5 by T1 score
