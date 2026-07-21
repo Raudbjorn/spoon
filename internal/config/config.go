@@ -129,6 +129,17 @@ func Load(path string) (*Config, error) {
 
 // Save writes c to path as indented JSON, creating parent directories. The
 // write is atomic (temp file + rename) so a crash can't truncate the config.
+// removeBeforeRename records whether Save must unlink the destination before
+// renaming over it. Only Windows requires this; on Unix it would trade an
+// atomic replace for a crash window on a PAT-bearing file. Both are variables
+// rather than an inline runtime.GOOS check so a test can assert the Unix path
+// never unlinks — atomic replace and unlink-then-rename are indistinguishable
+// by end state, so without this seam the fix has no regression guard.
+var (
+	removeBeforeRename = runtime.GOOS == "windows"
+	osRemove           = os.Remove
+)
+
 func Save(path string, c *Config) error {
 	if err := c.Validate(); err != nil {
 		return err
@@ -164,8 +175,8 @@ func Save(path string, c *Config) error {
 	// do we unlink first — doing it unconditionally would open a window where a
 	// crash between Remove and Rename destroys the file, and this file holds the
 	// user's GitHub PATs.
-	if runtime.GOOS == "windows" {
-		_ = os.Remove(path)
+	if removeBeforeRename {
+		_ = osRemove(path)
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		return fmt.Errorf("rename %s -> %s: %w", tmp, path, err)

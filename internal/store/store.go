@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -87,14 +86,6 @@ type SearchRow struct {
 type Store struct {
 	db   *sql.DB
 	path string
-	// securedWrite guards the one post-write chmod pass. SQLite creates the
-	// -wal and -shm sidecars lazily on first write, so Open cannot secure files
-	// that do not exist yet — but re-running the pass on every upsert costs a
-	// Stat plus a Chmod per artifact per fork, which is real I/O across a large
-	// fork set. Once after the first write is enough: the set of artifacts is
-	// fixed from then on.
-	securedWrite sync.Once
-	secureErr    error
 }
 
 func DefaultPath() (string, error) {
@@ -124,6 +115,15 @@ func Open(path string) (*Store, error) {
 	if err := os.Chmod(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("secure store directory: %w", err)
 	}
+	// Create the database file ourselves, at 0600. SQLite would create it
+	// 0666&~umask and we would only chmod it afterwards, leaving a window in
+	// which it is world-readable. The -wal/-shm sidecars inherit the main
+	// file's mode, so getting this right at birth secures all three.
+	if f, ferr := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600); ferr == nil {
+		f.Close()
+	} else if !errors.Is(ferr, os.ErrExist) {
+		return nil, fmt.Errorf("create store file: %w", ferr)
+	}
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite store: %w", err)
@@ -134,6 +134,9 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	// Fix up a database created by an earlier version at a looser mode. By this
+	// point initialize's journal_mode=WAL has materialised the sidecars, so all
+	// three artifacts exist and are covered.
 	if err := s.secureArtifacts(); err != nil {
 		db.Close()
 		return nil, err
@@ -249,12 +252,9 @@ func (s *Store) UpsertSnapshot(ctx context.Context, snap Snapshot) error {
 			return fmt.Errorf("insert document: %w", err)
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	// First write is when SQLite materialises -wal/-shm; secure them once.
-	s.securedWrite.Do(func() { s.secureErr = s.secureArtifacts() })
-	return s.secureErr
+	// No chmod pass here: Open already secured every artifact, and SQLite does
+	// not loosen them afterwards. The previous per-upsert pass was redundant.
+	return tx.Commit()
 }
 
 func insertFile(ctx context.Context, tx *sql.Tx, table, forkKey, sha string, f FileRecord) error {
