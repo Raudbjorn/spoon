@@ -43,6 +43,13 @@ type Options struct {
 	CommitFiles      bool
 	CommitFileBudget int
 
+	// CommitFileRunBudget, when non-nil, is a run-scoped remaining counter shared
+	// across every Stream call in one invocation. Topic mode calls Stream once
+	// per selected repo, so a per-call counter would grant each repo a fresh
+	// budget and issue up to N x the documented cap; a shared counter makes the
+	// budget span the whole run. When nil, the per-call CommitFileBudget applies.
+	CommitFileRunBudget *atomic.Int64
+
 	// ShortlistN, when > 0, buffers all results, computes each fork's Robbins
 	// expected rank (with confidence) over the enriched set, and emits only the
 	// top-N by expected rank. Forces collect-then-emit semantics.
@@ -742,6 +749,32 @@ func enrichCommitFiles(ctx context.Context, provider forge.Forge, collected []Re
 	if budget <= 0 {
 		budget = 100
 	}
+	// claim reserves one unit of the commit-file budget, returning false when it
+	// is exhausted. A run-scoped counter (topic mode) is shared across repos; the
+	// per-call fallback keeps single-repo runs unchanged.
+	runBudget := opts.CommitFileRunBudget
+	used := 0
+	claim := func() bool {
+		if runBudget != nil {
+			// CAS-decrement only while positive: no transient negative is ever
+			// observable, so concurrent Stream calls sharing the budget can't
+			// each see it exhausted or under-count a valid claim.
+			for {
+				current := runBudget.Load()
+				if current <= 0 {
+					return false
+				}
+				if runBudget.CompareAndSwap(current, current-1) {
+					return true
+				}
+			}
+		}
+		if used >= budget {
+			return false
+		}
+		used++
+		return true
+	}
 	order := make([]int, len(collected))
 	for i := range order {
 		order[i] = i
@@ -749,7 +782,6 @@ func enrichCommitFiles(ctx context.Context, provider forge.Forge, collected []Re
 	sort.SliceStable(order, func(i, j int) bool {
 		return collected[order[i]].Heat.Score > collected[order[j]].Heat.Score
 	})
-	used := 0
 	for _, index := range order {
 		result := &collected[index]
 		if result.T2 == nil {
@@ -761,17 +793,16 @@ func enrichCommitFiles(ctx context.Context, provider forge.Forge, collected []Re
 		})
 		complete := true
 		for commitIndex := range result.T2.Commits {
-			if used >= budget {
-				complete = false
-				result.CommitFilesSkip = &StageSkip{Stage: "commit_files", ForkID: result.Fork.ID, Reason: fmt.Sprintf("global commit-file budget (%d) exhausted", budget)}
-				break
-			}
 			if !opts.ReserveDisabled && provider.Headroom() < ReserveHeadroom {
 				complete = false
 				result.CommitFilesSkip = &StageSkip{Stage: "commit_files", ForkID: result.Fork.ID, Reason: "rate-limit reserve reached"}
 				break
 			}
-			used++
+			if !claim() {
+				complete = false
+				result.CommitFilesSkip = &StageSkip{Stage: "commit_files", ForkID: result.Fork.ID, Reason: fmt.Sprintf("global commit-file budget (%d) exhausted", budget)}
+				break
+			}
 			files, err := fileProvider.CommitFiles(ctx, result.Fork, result.T2.Commits[commitIndex].SHA)
 			if err != nil {
 				complete = false

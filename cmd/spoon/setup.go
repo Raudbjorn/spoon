@@ -1,8 +1,8 @@
 // cmd/spoon/setup.go — `spoon setup` preflight: verify provider credentials
-// and provision the OpenVINO features (embedder, reranker, labeler) —
-// downloading default models for any feature with no model configured —
-// then persist the validated result to the config file. All features run
-// in-process; there are no external services to manage.
+// and provision the FastEmbed embedder plus the OpenVINO features (reranker,
+// labeler) — downloading default models for any feature with no model
+// configured — then persist the validated result to the config file. All
+// features run in-process; there are no external services to manage.
 package main
 
 import (
@@ -130,7 +130,7 @@ func runSetupWith(ctx context.Context, args []string, stdin io.Reader, interacti
 		}
 	}
 
-	fmt.Fprintln(stdout, "spoon setup — checking credentials and OpenVINO features")
+	fmt.Fprintln(stdout, "spoon setup — checking credentials, the FastEmbed embedder, and OpenVINO features")
 	if loadedCfg != nil {
 		fmt.Fprintf(stdout, "Loaded config from %s\n", configPath)
 	}
@@ -309,7 +309,7 @@ Flags:
   --embedder-backend B     fastembed (the only embedder; accepted for
                            compatibility)
   --fastembed-cache PATH   FastEmbed model cache directory
-  --auto-pull              Download missing default OpenVINO models without asking
+  --auto-pull              Download missing default models without asking
                            (also: SPOON_AUTO_PULL=1)
   --no-prompt              Never prompt (report only; don't download)
   --config PATH            Config file to read/write (default

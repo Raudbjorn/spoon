@@ -27,7 +27,7 @@ func runSearch(args []string) int { return runSearchWith(args, os.Stdout, os.Std
 
 func runSearchWith(args []string, stdout, stderr io.Writer) int {
 	query := ""
-	repoFilter := ""
+	repoOwner, repoName := "", ""
 	top := 20
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -36,9 +36,15 @@ func runSearchWith(args []string, stdout, stderr io.Writer) int {
 				return agentio.NewError(agentio.CodeBadInput, "--repo requires owner/repo", "Pass --repo owner/repo.").Emit(stderr)
 			}
 			i++
-			repoFilter = strings.TrimSpace(args[i])
+			repoFilter := strings.TrimSpace(args[i])
 			if repoFilter == "" {
 				return agentio.NewError(agentio.CodeBadInput, "--repo must not be empty", "Pass --repo owner/repo.").Emit(stderr)
+			}
+			// Validate the owner/repo shape at parse time (before loading the
+			// embedder) so a malformed value fails fast and without ONNX.
+			repoOwner, repoName = splitRepoArg(repoFilter)
+			if repoOwner == "" || repoName == "" {
+				return agentio.NewError(agentio.CodeBadInput, "--repo must be owner/repo", "Pass --repo owner/repo.").Emit(stderr)
 			}
 		case "--top":
 			if i+1 >= len(args) {
@@ -93,7 +99,9 @@ func runSearchWith(args []string, stdout, stderr io.Writer) int {
 		MaxLength: embCfg.MaxLength, BatchSize: embCfg.BatchSize,
 	})
 	if err != nil {
-		return agentio.NewError(agentio.CodeInternal, "embedder_unavailable: "+err.Error(), "Set ONNX_PATH to libonnxruntime.so and verify the FastEmbed cache.").Emit(stderr)
+		// User-fixable (the remediation says so: set ONNX_PATH), so bad_input
+		// (exit 2), not internal (exit 1) which reads as a tool bug to an agent.
+		return agentio.NewError(agentio.CodeBadInput, "embedder_unavailable: "+err.Error(), "Set ONNX_PATH to libonnxruntime.so and verify the FastEmbed cache.").Emit(stderr)
 	}
 	defer model.Close()
 
@@ -107,42 +115,15 @@ func runSearchWith(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return agentio.NewError(agentio.CodeInternal, "embedder_unavailable: "+err.Error(), "Verify ONNX Runtime and the FastEmbed model cache.").Emit(stderr)
 	}
-	repoKey := ""
-	if repoFilter != "" {
-		owner, name := splitRepoArg(repoFilter)
-		if owner == "" || name == "" {
-			return agentio.NewError(agentio.CodeBadInput, "--repo must be owner/repo", "Pass --repo owner/repo.").Emit(stderr)
-		}
-		// cfg may be nil (no config file); fall back to GitHub defaults.
-		provider, host := "github", "github.com"
-		if cfg != nil {
-			if cfg.Forge.Provider != "" {
-				provider = strings.ToLower(cfg.Forge.Provider)
-			}
-			if cfg.Forge.Host != "" {
-				host = cfg.Forge.Host
-			}
-		}
-		repoKey = store.RepoKey(provider, host, owner, name)
-	}
-	rows, err := db.SearchRows(context.Background(), model.ModelID(), repoKey)
+	rows, err := db.SearchRows(context.Background(), model.ModelID(), repoOwner, repoName)
 	if err != nil {
 		return agentio.NewError(agentio.CodeInternal, err.Error(), agentio.RemediationInternal()).Emit(stderr)
 	}
-	results := make([]searchResult, 0, len(rows))
-	for _, row := range rows {
-		vector, err := semantic.DecodeVector(row.Vector, row.Dim)
-		if err != nil {
-			return agentio.NewError(agentio.CodeInternal, fmt.Sprintf("invalid stored embedding %s: %v", row.DocumentID, err), agentio.RemediationInternal()).Emit(stderr)
-		}
-		score, err := semantic.Cosine(queryVector, vector)
-		if err != nil {
-			return agentio.NewError(agentio.CodeInternal, err.Error(), agentio.RemediationInternal()).Emit(stderr)
-		}
-		results = append(results, searchResult{
-			ForkID: row.ForkKey, Repo: row.Repo, Fork: row.Fork, URL: row.URL,
-			Score: score, Model: row.Model, IndexedAt: row.IndexedAt.UTC().Format("2006-01-02T15:04:05.999999999Z07:00"),
-		})
+	results, skipped := rankSearchRows(queryVector, rows)
+	if skipped > 0 {
+		// One unreadable blob (partial write, corruption) must not fail the whole
+		// command and strand every intact row — degrade and count instead.
+		emitRowsSkipped(stderr, skipped)
 	}
 	sort.Slice(results, func(i, j int) bool {
 		if results[i].Score == results[j].Score {
@@ -166,6 +147,40 @@ func runSearchWith(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	return 0
+}
+
+// rankSearchRows scores every readable row against the query vector, skipping
+// (and counting) any whose stored vector cannot be decoded or scored. A single
+// corrupt blob must not fail the whole search and strand thousands of intact
+// rows, so the caller degrades on skipped>0 rather than erroring.
+func rankSearchRows(queryVector []float32, rows []store.SearchRow) (results []searchResult, skipped int) {
+	results = make([]searchResult, 0, len(rows))
+	for _, row := range rows {
+		vector, err := semantic.DecodeVector(row.Vector, row.Dim)
+		if err != nil {
+			skipped++
+			continue
+		}
+		score, err := semantic.Cosine(queryVector, vector)
+		if err != nil {
+			skipped++
+			continue
+		}
+		results = append(results, searchResult{
+			ForkID: row.ForkKey, Repo: row.Repo, Fork: row.Fork, URL: row.URL,
+			Score: score, Model: row.Model, IndexedAt: row.IndexedAt.UTC().Format("2006-01-02T15:04:05.999999999Z07:00"),
+		})
+	}
+	return results, skipped
+}
+
+func emitRowsSkipped(stderr io.Writer, skipped int) {
+	_ = json.NewEncoder(stderr).Encode(map[string]any{"warning": map[string]any{
+		"code":        "semantic_rows_skipped",
+		"message":     fmt.Sprintf("%d stored embedding(s) were unreadable and skipped", skipped),
+		"details":     map[string]any{"skipped": skipped},
+		"remediation": "Re-run 'spn forks list <repo>' to rebuild the affected embeddings.",
+	}})
 }
 
 func emitSemanticEmpty(stderr io.Writer) {

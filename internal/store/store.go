@@ -459,16 +459,25 @@ func (s *Store) UpsertEmbeddings(ctx context.Context, records []EmbeddingRecord)
 	return s.secureArtifactsOnce()
 }
 
-func (s *Store) SearchRows(ctx context.Context, model, repoKey string) ([]SearchRow, error) {
+// SearchRows returns indexed embedding rows for the given model. When owner and
+// name are both non-empty the result is restricted to that upstream repo.
+//
+// The filter is by repo identity (owner/name), NOT the full
+// provider:host:owner/name key: `spn forks list` persists under the forge it
+// actually authenticated against (auth.Provider/Host), while a later
+// `spn search --repo owner/repo` rarely knows that forge and would otherwise
+// compute a github.com default key that matches nothing. Matching on owner/name
+// finds the index regardless of which forge built it.
+func (s *Store) SearchRows(ctx context.Context, model, owner, name string) ([]SearchRow, error) {
 	// e.content_hash = d.content_hash excludes vectors that are stale relative to
 	// the current document (re-indexing pending or failed), so search never
 	// ranks against an embedding of superseded content.
 	q := `SELECT d.document_id,f.fork_key,r.repo_key,r.owner||'/'||r.name,f.owner||'/'||f.name,f.url,e.model,e.dim,e.vector,e.created_at
 		FROM embeddings e JOIN documents d ON d.document_id=e.document_id AND e.content_hash=d.content_hash JOIN forks f ON f.fork_key=d.fork_key JOIN repos r ON r.repo_key=f.repo_key WHERE e.model=?`
 	args := []any{model}
-	if repoKey != "" {
-		q += " AND r.repo_key=?"
-		args = append(args, repoKey)
+	if owner != "" && name != "" {
+		q += " AND LOWER(r.owner)=? AND LOWER(r.name)=?"
+		args = append(args, strings.ToLower(owner), strings.ToLower(name))
 	}
 	q += " ORDER BY f.fork_key"
 	rows, err := s.db.QueryContext(ctx, q, args...)

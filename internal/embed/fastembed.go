@@ -52,6 +52,45 @@ type FastEmbedEmbedder struct {
 	closeErr  error
 }
 
+// The ONNX environment is process-global: NewFlagEmbedding shares it via
+// ort.IsInitialized(), and FlagEmbedding.Destroy() calls ort.DestroyEnvironment()
+// outright. So a per-instance Close() that destroys unconditionally would pull
+// the environment out from under any other live embedder — a cgo use-after-free,
+// i.e. a segfault, not an error return. Reference-count live embedders and only
+// tear the environment down when the last one closes.
+//
+// Limitation: Destroy() tears down only the shared environment, not per-instance
+// ONNX sessions, and non-last closers skip it entirely. A long-running process
+// that keeps at least one embedder alive while repeatedly creating and closing
+// others will not reclaim those others' sessions until the last embedder closes.
+// spoon's CLIs are short-lived (create one or two embedders, then exit), so this
+// is benign; a long-running consumer should reuse a single shared
+// FastEmbedEmbedder rather than churning them.
+var (
+	ortMu       sync.Mutex
+	ortLiveRefs int
+)
+
+func acquireORT() {
+	ortMu.Lock()
+	ortLiveRefs++
+	ortMu.Unlock()
+}
+
+// releaseORT drops one reference and reports whether the caller now owns
+// teardown of the shared environment (it was the last live embedder). A release
+// with no references held returns false rather than claiming teardown, so a
+// spurious close cannot trigger an erroneous DestroyEnvironment.
+func releaseORT() bool {
+	ortMu.Lock()
+	defer ortMu.Unlock()
+	if ortLiveRefs > 0 {
+		ortLiveRefs--
+		return ortLiveRefs == 0
+	}
+	return false
+}
+
 func DefaultFastEmbedCacheDir() (string, error) {
 	root := os.Getenv("XDG_CACHE_HOME")
 	if root == "" {
@@ -117,6 +156,7 @@ func NewFastEmbedEmbedder(cfg FastEmbedConfig) (*FastEmbedEmbedder, error) {
 			return nil, fmt.Errorf("initialize fastembed after re-provisioning: %w", err)
 		}
 	}
+	acquireORT()
 	return &FastEmbedEmbedder{model: model, batchSize: cfg.BatchSize}, nil
 }
 
@@ -279,10 +319,17 @@ func validateFastEmbed(raw [][]float32) ([]Vector, error) {
 func (e *FastEmbedEmbedder) Close() error {
 	e.closeOnce.Do(func() {
 		e.mu.Lock()
-		defer e.mu.Unlock()
-		if e.model != nil {
-			e.closeErr = e.model.Destroy()
-			e.model = nil
+		m := e.model
+		e.model = nil
+		e.mu.Unlock()
+		if m == nil {
+			return
+		}
+		// Only the last live embedder tears down the shared process-global ONNX
+		// environment; destroying it while another instance is live would
+		// invalidate that instance's sessions.
+		if releaseORT() {
+			e.closeErr = m.Destroy()
 		}
 	})
 	return e.closeErr

@@ -10,6 +10,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -19,6 +20,7 @@ import (
 	"github.com/svnbjrn/spoon/internal/agentio"
 	"github.com/svnbjrn/spoon/internal/eval"
 	"github.com/svnbjrn/spoon/internal/forksops"
+	gh "github.com/svnbjrn/spoon/internal/github"
 )
 
 func runEval(args []string) int { return runEvalWith(args, os.Stdout, os.Stderr) }
@@ -71,7 +73,9 @@ func runEvalWith(args []string, stdout, stderr io.Writer) int {
 		case "--no-mdg":
 			opts.Cluster.CentralityBackend = ""
 		default:
-			if strings.HasPrefix(args[i], "--") {
+			// Single leading dash, not just "--", so a typo like `-tier` is
+			// reported as an unknown flag instead of swallowed as the positional.
+			if strings.HasPrefix(args[i], "-") {
 				return agentio.NewError(agentio.CodeBadInput, "unknown flag: "+args[i], agentio.RemediationBadInput("forks", "eval")).Emit(stderr)
 			}
 			if repoArg != "" {
@@ -123,6 +127,12 @@ func runEvalWith(args []string, stdout, stderr io.Writer) int {
 	}
 	ch, streamErr := forksops.Stream(ctx, provider, owner, name, opts)
 	if streamErr != nil {
+		var rejected *gh.AllBackendsRejectedError
+		if errors.As(streamErr, &rejected) {
+			// Every token was rejected (401): a non-retryable auth failure, not a
+			// transient upstream error (#79).
+			return agentio.NewError(agentio.CodeAuthRequired, streamErr.Error(), agentio.RemediationAuthRequired()).Emit(stderr)
+		}
 		return agentio.NewError(agentio.CodeUpstream, streamErr.Error(), agentio.RemediationUpstream()).Emit(stderr)
 	}
 	// Drain the stream, join to judgments, compute the report. Per-fork

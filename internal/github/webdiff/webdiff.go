@@ -1,6 +1,7 @@
 package webdiff
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -14,7 +15,11 @@ import (
 	"golang.org/x/net/html"
 )
 
-const maxResponseBytes = 16 << 20
+const (
+	maxResponseBytes = 16 << 20  // per page
+	maxTotalBytes    = 128 << 20 // cumulative across all pages
+	maxPages         = 512       // bound the pagination loop
+)
 
 type FilePatch struct {
 	Path  string
@@ -22,15 +27,29 @@ type FilePatch struct {
 }
 
 type Client struct {
-	http   *http.Client
-	cookie string
-	gate   func(context.Context) error
-	mu     sync.Mutex
-	next   time.Time
+	http     *http.Client
+	cookie   string
+	gate     func(context.Context) error
+	maxPages int
+	mu       sync.Mutex
+	next     time.Time
 }
 
 func New(cookie string, gate func(context.Context) error) *Client {
-	return &Client{http: &http.Client{Timeout: 30 * time.Second}, cookie: strings.TrimSpace(cookie), gate: gate}
+	return &Client{
+		maxPages: maxPages,
+		http: &http.Client{
+			Timeout: 30 * time.Second,
+			// Do not auto-follow redirects: the session cookie is a sensitive
+			// header, and following a 301 to http:// or to a *.github.com host
+			// would re-send it in cleartext or to an unintended origin. Surface
+			// the 3xx as a non-2xx status instead so the caller records a skip
+			// reason rather than leaking the cookie.
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		},
+		cookie: strings.TrimSpace(cookie),
+		gate:   gate,
+	}
 }
 
 // minInterval paces web-diff requests at 60 RPM. These hit github.com's HTML
@@ -82,64 +101,89 @@ func (c *Client) wait(ctx context.Context) error {
 	return nil
 }
 
-func (c *Client) Fetch(ctx context.Context, owner, repo, base, head string) (map[string]string, error) {
+// Fetch scrapes the HTML diff pages for base..head. The returned bool reports
+// truncation: true means a later page could not be parsed and the collected
+// patches are incomplete, so the caller must not persist them as whole diffs.
+func (c *Client) Fetch(ctx context.Context, owner, repo, base, head string) (map[string]string, bool, error) {
 	if c.cookie == "" {
-		return nil, fmt.Errorf("SPOON_GH_COOKIE is empty")
+		return nil, false, fmt.Errorf("SPOON_GH_COOKIE is empty")
 	}
 	start := 0
-	out := map[string]string{}
-	for {
+	acc := map[string]*strings.Builder{}
+	var total int64
+	truncated := false
+	for page := 0; ; page++ {
+		if page >= c.maxPages {
+			// A response sequence emitting a strictly-increasing start_entry
+			// (markup drift, a stale caching proxy) would otherwise loop forever.
+			return nil, false, fmt.Errorf("GitHub web diff exceeded %d pages", maxPages)
+		}
 		if err := c.wait(ctx); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		u := fmt.Sprintf("https://github.com/%s/%s/diffs/%s..%s?start_entry=%d", url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(base), url.PathEscape(head), start)
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		req.Header.Set("Cookie", c.cookie)
 		req.Header.Set("Accept", "text/html")
 		resp, err := c.http.Do(req)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if resp.Request.URL.Host != "github.com" || strings.Contains(resp.Request.URL.Path, "/login") {
 			resp.Body.Close()
-			return nil, fmt.Errorf("GitHub web diff authentication redirect")
+			return nil, false, fmt.Errorf("GitHub web diff authentication redirect")
 		}
 		if resp.StatusCode/100 != 2 {
 			resp.Body.Close()
-			return nil, fmt.Errorf("GitHub web diff returned HTTP %d", resp.StatusCode)
+			return nil, false, fmt.Errorf("GitHub web diff returned HTTP %d", resp.StatusCode)
 		}
 		limited := io.LimitReader(resp.Body, maxResponseBytes+1)
 		body, err := io.ReadAll(limited)
 		resp.Body.Close()
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if len(body) > maxResponseBytes {
-			return nil, fmt.Errorf("GitHub web diff exceeded %d bytes", maxResponseBytes)
+			return nil, false, fmt.Errorf("GitHub web diff exceeded %d bytes", maxResponseBytes)
 		}
-		patches, next, err := ParseHTML(strings.NewReader(string(body)))
+		total += int64(len(body))
+		if total > maxTotalBytes {
+			return nil, false, fmt.Errorf("GitHub web diff exceeded %d total bytes", int64(maxTotalBytes))
+		}
+		patches, next, err := ParseHTML(bytes.NewReader(body))
 		if err != nil {
-			// A later page that yields no parseable files is treated as the end
-			// of the diff (markup drift or an empty tail) rather than discarding
-			// the patches already collected. The first page still fails loudly —
-			// an unparseable opening page means the whole scrape is unreliable.
-			if len(out) > 0 {
+			// A later page failed to parse. We cannot tell which files are
+			// complete and which had hunks spanning into the failed page, so
+			// report truncation and let the caller discard rather than persist a
+			// leading fragment as a whole diff. The first page still fails
+			// loudly — an unparseable opening page means the scrape is unreliable.
+			if len(acc) > 0 {
+				truncated = true
 				break
 			}
-			return nil, err
+			return nil, false, err
 		}
 		for path, patch := range patches {
-			out[path] += patch
+			b := acc[path]
+			if b == nil {
+				b = &strings.Builder{}
+				acc[path] = b
+			}
+			b.WriteString(patch)
 		}
 		if next < 0 || next <= start {
 			break
 		}
 		start = next
 	}
-	return out, nil
+	out := make(map[string]string, len(acc))
+	for path, b := range acc {
+		out[path] = b.String()
+	}
+	return out, truncated, nil
 }
 
 func ParseHTML(r io.Reader) (map[string]string, int, error) {
@@ -147,8 +191,9 @@ func ParseHTML(r io.Reader) (map[string]string, int, error) {
 	if err != nil {
 		return nil, -1, fmt.Errorf("parse GitHub diff HTML: %w", err)
 	}
-	out := map[string]string{}
+	acc := map[string]*strings.Builder{}
 	next := -1
+	nextAuthoritative := false // a rel="next" link outranks a text-"next" match
 	var current string
 	var walk func(*html.Node)
 	walk = func(n *html.Node) {
@@ -159,21 +204,39 @@ func ParseHTML(r io.Reader) (map[string]string, int, error) {
 			class := attr(n, "class")
 			if current != "" && n.Data == "td" && strings.Contains(class, "blob-code") {
 				line := strings.TrimSuffix(text(n), "\n")
+				b := acc[current]
+				if b == nil {
+					b = &strings.Builder{}
+					acc[current] = b
+				}
+				var prefix byte
 				switch {
 				case strings.Contains(class, "addition"):
-					out[current] += "+" + line + "\n"
+					prefix = '+'
 				case strings.Contains(class, "deletion"):
-					out[current] += "-" + line + "\n"
+					prefix = '-'
 				case strings.Contains(class, "context"):
-					out[current] += " " + line + "\n"
+					prefix = ' '
+				}
+				if prefix != 0 {
+					b.WriteByte(prefix)
+					b.WriteString(line)
+					b.WriteByte('\n')
 				}
 			}
-			if n.Data == "a" {
-				href := attr(n, "href")
-				if strings.Contains(strings.ToLower(text(n)), "next") || attr(n, "rel") == "next" {
-					if parsed, e := url.Parse(href); e == nil {
+			if n.Data == "a" && !nextAuthoritative {
+				rel := attr(n, "rel") == "next"
+				// Only a rel="next" link, or the FIRST <a> whose text is "next",
+				// drives pagination — otherwise a file or repo literally named
+				// "next" could hijack start_entry. rel="next" is authoritative and
+				// stops any later text-match from overriding it.
+				if rel || (next < 0 && strings.Contains(strings.ToLower(text(n)), "next")) {
+					if parsed, e := url.Parse(attr(n, "href")); e == nil {
 						if value, e := strconv.Atoi(parsed.Query().Get("start_entry")); e == nil {
 							next = value
+							if rel {
+								nextAuthoritative = true
+							}
 						}
 					}
 				}
@@ -184,8 +247,12 @@ func ParseHTML(r io.Reader) (map[string]string, int, error) {
 		}
 	}
 	walk(root)
-	if len(out) == 0 {
+	if len(acc) == 0 {
 		return nil, next, fmt.Errorf("GitHub web diff markup contained no parseable files")
+	}
+	out := make(map[string]string, len(acc))
+	for path, b := range acc {
+		out[path] = b.String()
 	}
 	return out, next, nil
 }

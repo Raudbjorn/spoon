@@ -9,7 +9,12 @@ import (
 	"github.com/svnbjrn/spoon/internal/forge"
 )
 
-const defaultMaxDiffChars = 4000
+// defaultMaxDiffChars caps the assembled diff. The fastembed window is 512
+// tokens (~1.5-2k chars); when the diff shares a single embedding document with
+// other sections (the semantic index), a larger budget only produces bytes the
+// encoder discards. 2000 keeps the diff within reach of the window while leaving
+// room for the higher-signal sections that precede it.
+const defaultMaxDiffChars = 2000
 
 // ForkFeatures holds the four per-fork modality blobs.
 type ForkFeatures struct {
@@ -17,6 +22,10 @@ type ForkFeatures struct {
 	Commits   string
 	ReadmeDoc string
 	DiffChunk string
+	// DiffTruncated is true when the diff exceeded maxDiffChars and was cut. It
+	// lets callers surface a truncation signal rather than silently indexing a
+	// partial diff.
+	DiffTruncated bool
 }
 
 // BuildFeatures composes the four modality strings from T2Data plus an
@@ -28,11 +37,13 @@ func BuildFeatures(t2 forge.T2Data, readme string, maxDiffChars int) ForkFeature
 	if maxDiffChars <= 0 {
 		maxDiffChars = defaultMaxDiffChars
 	}
+	diff, truncated := buildDiffChunk(t2.Diffs, maxDiffChars)
 	return ForkFeatures{
-		Paths:     buildPaths(t2.Diffs),
-		Commits:   buildCommits(t2.Commits),
-		ReadmeDoc: strings.TrimSpace(readme),
-		DiffChunk: NormalizeDiff(buildDiffChunk(t2.Diffs, maxDiffChars)),
+		Paths:         buildPaths(t2.Diffs),
+		Commits:       buildCommits(t2.Commits),
+		ReadmeDoc:     strings.TrimSpace(readme),
+		DiffChunk:     NormalizeDiff(diff),
+		DiffTruncated: truncated,
 	}
 }
 
@@ -82,9 +93,9 @@ func buildCommits(commits []forge.AheadCommit) string {
 	return strings.Join(out, "\n")
 }
 
-func buildDiffChunk(diffs []forge.FileDiff, maxChars int) string {
+func buildDiffChunk(diffs []forge.FileDiff, maxChars int) (string, bool) {
 	if len(diffs) == 0 || maxChars <= 0 {
-		return ""
+		return "", false
 	}
 	ranked := append([]forge.FileDiff(nil), diffs...)
 	sort.SliceStable(ranked, func(i, j int) bool {
@@ -96,6 +107,7 @@ func buildDiffChunk(diffs []forge.FileDiff, maxChars int) string {
 		return ci > cj
 	})
 	var out []rune
+	truncated := false
 	for _, d := range ranked {
 		chunk := diffLine(d)
 		if chunk == "" {
@@ -109,6 +121,9 @@ func buildDiffChunk(diffs []forge.FileDiff, maxChars int) string {
 		}
 		remaining := maxChars - len(out) - sep
 		if remaining <= 0 {
+			// Budget spent with diffs still pending — the assembled chunk omits
+			// content, so report truncation.
+			truncated = true
 			break
 		}
 		if sep == 1 {
@@ -117,7 +132,6 @@ func buildDiffChunk(diffs []forge.FileDiff, maxChars int) string {
 		// Decode only up to `remaining` runes directly from the string, avoiding
 		// a full []rune(chunk) allocation for a potentially large patch.
 		count := 0
-		truncated := false
 		for _, r := range chunk {
 			if count >= remaining {
 				truncated = true
@@ -130,7 +144,7 @@ func buildDiffChunk(diffs []forge.FileDiff, maxChars int) string {
 			break
 		}
 	}
-	return string(out)
+	return string(out), truncated
 }
 
 func diffLine(d forge.FileDiff) string {

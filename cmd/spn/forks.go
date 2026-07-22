@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/svnbjrn/spoon/internal/agentio"
@@ -134,6 +135,7 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 	// did not address this knob". Used by OwnerCacheTTL (default 24h)
 	// and topic-mode SiblingSimEnabled (default off).
 	ownerCacheTTLSet := false
+	clusterEpsilonSet := false
 	siblingSimFlagSet := false
 	noSiblingSimFlagSet := false
 	siblingSimModeSet := false
@@ -255,6 +257,7 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 				return agentio.NewError(agentio.CodeBadInput, "--cluster-epsilon requires a non-negative number", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
 			}
 			opts.Cluster.Epsilon = f
+			clusterEpsilonSet = true
 		case "--cluster-min-size":
 			if i+1 >= len(args) {
 				return agentio.NewError(agentio.CodeBadInput, "--cluster-min-size requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
@@ -333,6 +336,10 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 		case "--sibling-sim":
 			opts.Cluster.SiblingSimEnabled = true
 			siblingSimFlagSet = true
+			// A later --sibling-sim re-enables the feature, so clear the
+			// --no-sibling-sim latch — otherwise the post-loop conflict check
+			// fires against a state the flags no longer describe.
+			noSiblingSimFlagSet = false
 		case "--no-sibling-sim":
 			opts.Cluster.SiblingSimEnabled = false
 			siblingSimFlagSet = true
@@ -357,7 +364,10 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 			opts.OwnerCacheTTL = d
 			ownerCacheTTLSet = true
 		default:
-			if strings.HasPrefix(args[i], "--") {
+			// Match a single leading dash, not just "--": otherwise a typo like
+			// `-tier 1` is silently swallowed as the positional repo argument and
+			// the error points at the wrong token.
+			if strings.HasPrefix(args[i], "-") {
 				return agentio.NewError(agentio.CodeBadInput, "unknown flag: "+args[i], agentio.RemediationBadInput("forks", "list")).Emit(stderr)
 			}
 			if repo != "" {
@@ -380,6 +390,11 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 	}
 	if _, isTopic := strings.CutPrefix(repo, "topic:"); !isTopic && (topicLanesSet || topicLaneBudgetSet) {
 		return agentio.NewError(agentio.CodeBadInput, "--topic-lanes and --topic-lane-budget only apply to topic:NAME mode", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+	}
+	// --commit-file-budget is read only while enriching commit files, so it is a
+	// silent no-op without --commit-files. Reject it rather than accept-and-ignore.
+	if opts.CommitFileBudget > 0 && !opts.CommitFiles {
+		return agentio.NewError(agentio.CodeBadInput, "--commit-file-budget requires --commit-files", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
 	}
 	if siblingSimModeSet {
 		if noSiblingSimFlagSet {
@@ -432,12 +447,27 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 			opts.Cluster.Categorize = true // zero-shot categories need a semantic embedder
 		}
 	}
-	if opts.Cluster.Epsilon == 0 {
+	// Only fill the backend default when the user did not set epsilon: a struct
+	// zero and an explicit --cluster-epsilon 0 (force singleton clusters) are
+	// otherwise indistinguishable, and the latter was silently overwritten.
+	if !clusterEpsilonSet {
 		if fastembedActive {
 			opts.Cluster.Epsilon = 0.35
 		} else {
 			opts.Cluster.Epsilon = 0.55
 		}
+	}
+	// A single run-scoped commit-file budget, shared across every repo. Topic
+	// mode calls Stream once per selected repo, so without this each repo would
+	// get a fresh budget and issue up to N x the documented cap (#88).
+	if opts.CommitFiles {
+		budget := opts.CommitFileBudget
+		if budget <= 0 {
+			budget = 100
+		}
+		remaining := &atomic.Int64{}
+		remaining.Store(int64(budget))
+		opts.CommitFileRunBudget = remaining
 	}
 	// Label polishing: only when a labeler model is configured and the
 	// openvino-genai runtime loads. Like the reranker, a configured but
@@ -591,6 +621,13 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 	defer cancel()
 	ch, streamErr := forksops.Stream(ctx, provider, owner, name, opts)
 	if streamErr != nil {
+		var rejected *gh.AllBackendsRejectedError
+		if errors.As(streamErr, &rejected) {
+			// Every configured token was rejected (401): a non-retryable auth
+			// failure, not a rate limit. Surfacing it as rate_limited yields
+			// retry_after_seconds=0 and an agent tight-retry loop (#79).
+			return agentio.NewError(agentio.CodeAuthRequired, streamErr.Error(), agentio.RemediationAuthRequired()).Emit(stderr)
+		}
 		var rl *gh.RateLimitError
 		if errors.As(streamErr, &rl) {
 			resetAt := rl.ResetAt.UTC().Format("2006-01-02T15:04:05Z07:00")
@@ -614,6 +651,7 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 	}
 	degraded, total := 0, 0
 	storeWarned := false
+	truncWarned := false
 	for r := range ch {
 		if r.ClusterSkip != nil {
 			if r.ClusterSkip.Code == "mdg_unavailable" {
@@ -642,7 +680,7 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 		if r.BudgetSkip != nil {
 			degraded++
 		}
-		persistSnapshotBestEffort(ctx, db, auth, owner, name, semanticModelID, r, &storeWarned, stderr)
+		persistSnapshotBestEffort(ctx, db, auth, owner, name, semanticModelID, r, &storeWarned, &truncWarned, stderr)
 		if err := agentio.WriteNDJSON(stdout, forkToJSONDetailedUpstream(r, details, "")); err != nil {
 			return agentio.NewError(agentio.CodeInternal, err.Error(), agentio.RemediationInternal()).Emit(stderr)
 		}
@@ -660,7 +698,9 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func persistForkSnapshot(ctx context.Context, db *store.Store, auth forge.AuthInfo, owner, name, modelID string, r forksops.Result) error {
+// persistForkSnapshot stores a fork snapshot and reports whether the fork's
+// embedding document had its diff section truncated to fit the model window.
+func persistForkSnapshot(ctx context.Context, db *store.Store, auth forge.AuthInfo, owner, name, modelID string, r forksops.Result) (diffTruncated bool, err error) {
 	now := time.Now().UTC()
 	host := auth.Host
 	if host == "" {
@@ -707,9 +747,9 @@ func persistForkSnapshot(ctx context.Context, db *store.Store, auth forge.AuthIn
 	if modelID != "" {
 		repoKey := store.RepoKey(snapshot.Repo.Provider, snapshot.Repo.Host, owner, name)
 		forkKey := store.ForkKey(repoKey, r.Fork.ID)
-		snapshot.Document = semantic.BuildDocument(modelID, forkKey, r.Fork, r.T2)
+		snapshot.Document, diffTruncated = semantic.BuildDocument(forkKey, r.Fork, r.T2)
 	}
-	return db.UpsertSnapshot(ctx, snapshot)
+	return diffTruncated, db.UpsertSnapshot(ctx, snapshot)
 }
 
 // enableWebDiffIfRequested turns on cookie-authenticated web diff scraping for
@@ -760,16 +800,25 @@ func emitSemanticIndexWarning(ctx context.Context, db *store.Store, model embed.
 // forks. It no-ops when the store is unavailable (db == nil) and emits at most
 // one structured warning per run (via warned) so a persistent write failure
 // can't flood stderr.
-func persistSnapshotBestEffort(ctx context.Context, db *store.Store, auth forge.AuthInfo, owner, name, modelID string, r forksops.Result, warned *bool, stderr io.Writer) {
+func persistSnapshotBestEffort(ctx context.Context, db *store.Store, auth forge.AuthInfo, owner, name, modelID string, r forksops.Result, warned, truncWarned *bool, stderr io.Writer) {
 	if db == nil {
 		return
 	}
-	if err := persistForkSnapshot(ctx, db, auth, owner, name, modelID, r); err != nil && !*warned {
+	diffTruncated, err := persistForkSnapshot(ctx, db, auth, owner, name, modelID, r)
+	if err != nil && !*warned {
 		*warned = true
 		_ = json.NewEncoder(stderr).Encode(map[string]any{"warning": map[string]any{
 			"code":        "store_unavailable",
 			"message":     "failed to persist fork snapshot; continuing without persistence: " + err.Error(),
 			"remediation": "Check disk space and permissions on ~/.local/share/spoon; listing/output is unaffected.",
+		}})
+	}
+	if diffTruncated && !*truncWarned {
+		*truncWarned = true
+		_ = json.NewEncoder(stderr).Encode(map[string]any{"warning": map[string]any{
+			"code":        "embed_diff_truncated",
+			"message":     "one or more fork diffs exceeded the embedding window and were truncated for indexing",
+			"remediation": "Semantic ranking uses the leading portion of large diffs; no action needed unless recall on big changes matters.",
 		}})
 	}
 }
@@ -1014,6 +1063,7 @@ func emitForksCSV(ctx context.Context, db *store.Store, auth forge.AuthInfo, own
 		return agentio.NewError(agentio.CodeInternal, "write csv header: "+err.Error(), agentio.RemediationInternal()).Emit(stderr)
 	}
 	storeWarned := false
+	truncWarned := false
 	for r := range ch {
 		if r.ClusterSkip != nil {
 			emitClusterWarning(stderr, r.ClusterSkip)
@@ -1037,7 +1087,7 @@ func emitForksCSV(ctx context.Context, db *store.Store, auth forge.AuthInfo, own
 			})
 			continue
 		}
-		persistSnapshotBestEffort(ctx, db, auth, owner, name, modelID, r, &storeWarned, stderr)
+		persistSnapshotBestEffort(ctx, db, auth, owner, name, modelID, r, &storeWarned, &truncWarned, stderr)
 		if err := w.Write(forkToCSVRow(r)); err != nil {
 			return agentio.NewError(agentio.CodeInternal, "write csv row: "+err.Error(), agentio.RemediationInternal()).Emit(stderr)
 		}
@@ -1201,6 +1251,13 @@ func streamAndEmit(ctx context.Context, db *store.Store, auth forge.AuthInfo, pr
 	defer cancel()
 	ch, streamErr := forksops.Stream(ctx, provider, owner, name, opts)
 	if streamErr != nil {
+		var rejected *gh.AllBackendsRejectedError
+		if errors.As(streamErr, &rejected) {
+			// No usable identity: every token was rejected (401). This affects
+			// every repo in the topic set, so fail the whole run rather than
+			// degrading per-repo and hammering dead credentials (#79).
+			return agentio.NewError(agentio.CodeAuthRequired, streamErr.Error(), agentio.RemediationAuthRequired()).Emit(stderr)
+		}
 		var rl *gh.RateLimitError
 		if errors.As(streamErr, &rl) {
 			resetAt := rl.ResetAt.UTC().Format("2006-01-02T15:04:05Z07:00")
@@ -1223,6 +1280,7 @@ func streamAndEmit(ctx context.Context, db *store.Store, auth forge.AuthInfo, pr
 	}
 	degraded, total := 0, 0
 	storeWarned := false
+	truncWarned := false
 	for r := range ch {
 		if r.ClusterSkip != nil {
 			emitClusterWarning(stderr, r.ClusterSkip)
@@ -1253,7 +1311,7 @@ func streamAndEmit(ctx context.Context, db *store.Store, auth forge.AuthInfo, pr
 		if r.BudgetSkip != nil {
 			degraded++
 		}
-		persistSnapshotBestEffort(ctx, db, auth, owner, name, modelID, r, &storeWarned, stderr)
+		persistSnapshotBestEffort(ctx, db, auth, owner, name, modelID, r, &storeWarned, &truncWarned, stderr)
 		if err := agentio.WriteNDJSON(stdout, forkToJSONDetailedUpstream(r, details, upstream)); err != nil {
 			return agentio.NewError(agentio.CodeInternal, err.Error(), agentio.RemediationInternal()).Emit(stderr)
 		}

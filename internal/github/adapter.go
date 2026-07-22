@@ -197,8 +197,14 @@ func (p *GHProvider) Compare(ctx context.Context, fork forge.T1Data, branch stri
 			}
 			if base == "" || head == "" {
 				t2.PatchSkipReason = "web diff unavailable: compare response omitted base/head SHA"
-			} else if patches, webErr := p.client.webDiff.Fetch(ctx, p.sourceOwner, p.sourceRepo, base, head); webErr != nil {
+			} else if patches, truncated, webErr := p.client.webDiff.Fetch(ctx, p.sourceOwner, p.sourceRepo, base, head); webErr != nil {
 				t2.PatchSkipReason = webErr.Error()
+			} else if truncated {
+				// A later page failed to parse: the collected patches are
+				// incomplete and we cannot tell which files are whole. Persisting
+				// a leading fragment as a complete diff would silently corrupt the
+				// store and the semantic index, so discard and record the skip.
+				t2.PatchSkipReason = "web diff truncated: pagination incomplete"
 			} else {
 				for i := range t2.Diffs {
 					if t2.Diffs[i].Patch == "" && patches[t2.Diffs[i].Path] != "" {
