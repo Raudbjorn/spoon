@@ -756,11 +756,18 @@ func enrichCommitFiles(ctx context.Context, provider forge.Forge, collected []Re
 	used := 0
 	claim := func() bool {
 		if runBudget != nil {
-			if runBudget.Add(-1) < 0 {
-				runBudget.Add(1) // undo the over-decrement; budget is spent
-				return false
+			// CAS-decrement only while positive: no transient negative is ever
+			// observable, so concurrent Stream calls sharing the budget can't
+			// each see it exhausted or under-count a valid claim.
+			for {
+				current := runBudget.Load()
+				if current <= 0 {
+					return false
+				}
+				if runBudget.CompareAndSwap(current, current-1) {
+					return true
+				}
 			}
-			return true
 		}
 		if used >= budget {
 			return false

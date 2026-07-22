@@ -27,9 +27,15 @@ func TestORTRefcountOnlyLastCloserTearsDown(t *testing.T) {
 		t.Fatal("last close did not claim teardown of the shared environment")
 	}
 
-	// Defensive: an extra release must not go negative or re-claim teardown
-	// incorrectly (it stays at zero, so it reports true but never underflows).
-	if got := func() bool { releaseORT(); ortMu.Lock(); defer ortMu.Unlock(); return ortLiveRefs >= 0 }(); !got {
+	// A release with no references held must NOT claim teardown (returning true
+	// there would trigger a spurious DestroyEnvironment) and must not underflow.
+	if releaseORT() {
+		t.Fatal("release at zero refs must not claim teardown")
+	}
+	ortMu.Lock()
+	underflowed := ortLiveRefs < 0
+	ortMu.Unlock()
+	if underflowed {
 		t.Fatal("refcount underflowed below zero")
 	}
 }

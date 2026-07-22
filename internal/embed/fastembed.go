@@ -58,6 +58,14 @@ type FastEmbedEmbedder struct {
 // the environment out from under any other live embedder — a cgo use-after-free,
 // i.e. a segfault, not an error return. Reference-count live embedders and only
 // tear the environment down when the last one closes.
+//
+// Limitation: Destroy() tears down only the shared environment, not per-instance
+// ONNX sessions, and non-last closers skip it entirely. A long-running process
+// that keeps at least one embedder alive while repeatedly creating and closing
+// others will not reclaim those others' sessions until the last embedder closes.
+// spoon's CLIs are short-lived (create one or two embedders, then exit), so this
+// is benign; a long-running consumer should reuse a single shared
+// FastEmbedEmbedder rather than churning them.
 var (
 	ortMu       sync.Mutex
 	ortLiveRefs int
@@ -70,14 +78,17 @@ func acquireORT() {
 }
 
 // releaseORT drops one reference and reports whether the caller now owns
-// teardown of the shared environment (it was the last live embedder).
+// teardown of the shared environment (it was the last live embedder). A release
+// with no references held returns false rather than claiming teardown, so a
+// spurious close cannot trigger an erroneous DestroyEnvironment.
 func releaseORT() bool {
 	ortMu.Lock()
 	defer ortMu.Unlock()
 	if ortLiveRefs > 0 {
 		ortLiveRefs--
+		return ortLiveRefs == 0
 	}
-	return ortLiveRefs == 0
+	return false
 }
 
 func DefaultFastEmbedCacheDir() (string, error) {
