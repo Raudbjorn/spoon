@@ -105,8 +105,15 @@ func TestForksListWebDiffWarnsAndSucceeds(t *testing.T) {
 	if !strings.Contains(stderr.String(), "web_diff_unstable") {
 		t.Fatalf("expected a web_diff_unstable warning on stderr:\n%s", stderr.String())
 	}
-	if strings.TrimSpace(stdout.String()) == "" {
+	out := strings.TrimSpace(stdout.String())
+	if out == "" {
 		t.Fatal("expected NDJSON output alongside the web-diff warning")
+	}
+	for _, line := range strings.Split(out, "\n") {
+		var obj map[string]any
+		if err := json.Unmarshal([]byte(line), &obj); err != nil {
+			t.Fatalf("invalid NDJSON line %q: %v", line, err)
+		}
 	}
 }
 
@@ -125,7 +132,14 @@ func TestForksListNoEmbedSilencesWarning(t *testing.T) {
 	if strings.Contains(stderr.String(), "embed_unavailable") {
 		t.Fatalf("--no-embed must not emit embed_unavailable:\n%s", stderr.String())
 	}
-	if strings.TrimSpace(stdout.String()) == "" {
+	out := strings.TrimSpace(stdout.String())
+	if out == "" {
 		t.Fatal("expected NDJSON output with embedding disabled")
+	}
+	for _, line := range strings.Split(out, "\n") {
+		var obj map[string]any
+		if err := json.Unmarshal([]byte(line), &obj); err != nil {
+			t.Fatalf("invalid NDJSON line %q: %v", line, err)
+		}
 	}
 }

@@ -737,10 +737,10 @@ func TestSpnForksList_defaultOutputHasNoPriorFields(t *testing.T) {
 	}
 }
 
-// splitRepoArg builds the owner/repo key used by search, eval, repo and threads
-// commands. The repo-key construction is pure parsing and must reject malformed
-// shapes deterministically — a bad key silently routes queries to the wrong
-// store rows (#87).
+// splitRepoArg splits the owner/repo key used by search, eval, repo and threads
+// commands. The parsing is pure and deterministic; callers must treat empty
+// owner or repo as malformed (and reject it) to avoid routing queries to the
+// wrong store rows (#87).
 func TestSplitRepoArg(t *testing.T) {
 	cases := []struct {
 		name  string
