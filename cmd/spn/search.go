@@ -56,6 +56,16 @@ func runSearchWith(args []string, stdout, stderr io.Writer) int {
 				return agentio.NewError(agentio.CodeBadInput, "--top must be a positive integer", "Pass --top N with N > 0.").Emit(stderr)
 			}
 			top = value
+		case "--":
+			// POSIX flag/positional separator: everything after is positional.
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "missing query after --", "Usage: spn search \"query\" [--repo owner/repo] [--top N]").Emit(stderr)
+			}
+			if i+2 < len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "search accepts exactly one query argument", "Quote multi-word queries.").Emit(stderr)
+			}
+			query = strings.TrimSpace(args[i+1])
+			i = len(args)
 		default:
 			if strings.HasPrefix(args[i], "-") {
 				return agentio.NewError(agentio.CodeBadInput, "unknown search flag: "+args[i], "Usage: spn search \"query\" [--repo owner/repo] [--top N]").Emit(stderr)
