@@ -89,3 +89,43 @@ func TestCommitFilesWiringReachesDispatch(t *testing.T) {
 		t.Fatalf("parsing did not reach dispatch:\n%s", stderr.String())
 	}
 }
+
+// --web-diff must emit the web_diff_unstable warning on stderr and still
+// complete the run: the flag opts into an unsupported scraping fallback, it
+// does not gate success (#87).
+func TestForksListWebDiffWarnsAndSucceeds(t *testing.T) {
+	blockEmbedderCache(t)
+	stubTwoForkProvider(t)
+
+	var stdout, stderr bytes.Buffer
+	exit := runForksWith([]string{"list", "o/r", "--tier", "1", "--no-cluster", "--web-diff"}, &stdout, &stderr)
+	if exit != 0 {
+		t.Fatalf("exit = %d, want 0; stderr:\n%s", exit, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "web_diff_unstable") {
+		t.Fatalf("expected a web_diff_unstable warning on stderr:\n%s", stderr.String())
+	}
+	if strings.TrimSpace(stdout.String()) == "" {
+		t.Fatal("expected NDJSON output alongside the web-diff warning")
+	}
+}
+
+// --no-embed opts out of embedding entirely: the run must succeed with NDJSON
+// output and, crucially, must NOT emit embed_unavailable — the user asked to
+// skip embedding, so a missing runtime is expected, not a degradation (#87).
+func TestForksListNoEmbedSilencesWarning(t *testing.T) {
+	blockEmbedderCache(t)
+	stubTwoForkProvider(t)
+
+	var stdout, stderr bytes.Buffer
+	exit := runForksWith([]string{"list", "o/r", "--tier", "1", "--no-cluster", "--no-embed"}, &stdout, &stderr)
+	if exit != 0 {
+		t.Fatalf("exit = %d, want 0; stderr:\n%s", exit, stderr.String())
+	}
+	if strings.Contains(stderr.String(), "embed_unavailable") {
+		t.Fatalf("--no-embed must not emit embed_unavailable:\n%s", stderr.String())
+	}
+	if strings.TrimSpace(stdout.String()) == "" {
+		t.Fatal("expected NDJSON output with embedding disabled")
+	}
+}
