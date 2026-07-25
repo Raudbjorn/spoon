@@ -736,3 +736,30 @@ func TestSpnForksList_defaultOutputHasNoPriorFields(t *testing.T) {
 		}
 	}
 }
+
+// splitRepoArg builds the owner/repo key used by search, eval, repo and threads
+// commands. The repo-key construction is pure parsing and must reject malformed
+// shapes deterministically — a bad key silently routes queries to the wrong
+// store rows (#87).
+func TestSplitRepoArg(t *testing.T) {
+	cases := []struct {
+		in    string
+		owner string
+		repo  string
+	}{
+		{"owner/repo", "owner", "repo"},
+		{"a/b/c", "a", "b/c"}, // SplitN keeps the remainder as the repo name
+		{"/repo", "", "repo"},
+		{"owner/", "owner", ""},
+		{"noslash", "", ""},
+		{"", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			owner, repo := splitRepoArg(tc.in)
+			if owner != tc.owner || repo != tc.repo {
+				t.Fatalf("splitRepoArg(%q) = (%q, %q), want (%q, %q)", tc.in, owner, repo, tc.owner, tc.repo)
+			}
+		})
+	}
+}
