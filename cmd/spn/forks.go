@@ -363,6 +363,16 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 			}
 			opts.OwnerCacheTTL = d
 			ownerCacheTTLSet = true
+		case "--":
+			// POSIX flag/positional separator: everything after is positional.
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "missing repository argument after --", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			if i+2 < len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "unexpected positional argument after --: "+args[i+2], agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			repo = args[i+1]
+			i = len(args)
 		default:
 			// Match a single leading dash, not just "--": otherwise a typo like
 			// `-tier 1` is silently swallowed as the positional repo argument and
@@ -813,7 +823,7 @@ func persistSnapshotBestEffort(ctx context.Context, db *store.Store, auth forge.
 			"remediation": "Check disk space and permissions on ~/.local/share/spoon; listing/output is unaffected.",
 		}})
 	}
-	if diffTruncated && !*truncWarned {
+	if err == nil && diffTruncated && !*truncWarned {
 		*truncWarned = true
 		_ = json.NewEncoder(stderr).Encode(map[string]any{"warning": map[string]any{
 			"code":        "embed_diff_truncated",

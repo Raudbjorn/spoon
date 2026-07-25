@@ -23,22 +23,35 @@ import (
 // placed right after description so a fork with a long commit list can no longer
 // push the diff out of the window entirely.
 func BuildDocument(forkKey string, fork forge.T1Data, t2 *forge.T2Data) (store.DocumentRecord, bool) {
-	sections := []string{
-		strings.TrimSpace(fork.Owner + "/" + fork.Name),
-		strings.TrimSpace(fork.Description),
+	sections := make([]string, 0, 7)
+	if name := strings.TrimSpace(fork.Owner + "/" + fork.Name); name != "" {
+		sections = append(sections, name)
+	}
+	if desc := strings.TrimSpace(fork.Description); desc != "" {
+		sections = append(sections, desc)
 	}
 	truncated := false
 	if t2 != nil {
 		features := embed.BuildFeatures(*t2, "", 0)
 		truncated = features.DiffTruncated
-		sections = append(sections, features.DiffChunk, features.Commits, features.Paths)
-	} else {
-		sections = append(sections, "", "", "")
+		if features.DiffChunk != "" {
+			sections = append(sections, features.DiffChunk)
+		}
+		if features.Commits != "" {
+			sections = append(sections, features.Commits)
+		}
+		if features.Paths != "" {
+			sections = append(sections, features.Paths)
+		}
 	}
-	sections = append(sections, strings.TrimSpace(fork.Language))
-	topics := append([]string(nil), fork.Topics...)
-	sort.Strings(topics)
-	sections = append(sections, strings.Join(topics, " "))
+	if lang := strings.TrimSpace(fork.Language); lang != "" {
+		sections = append(sections, lang)
+	}
+	if len(fork.Topics) > 0 {
+		topics := append([]string(nil), fork.Topics...)
+		sort.Strings(topics)
+		sections = append(sections, strings.Join(topics, " "))
+	}
 
 	body := strings.TrimSpace(strings.Join(sections, "\n\n"))
 	// Hash the body alone, NOT modelID+body: documents is keyed by fork
