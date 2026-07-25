@@ -287,6 +287,21 @@ func attr(n *html.Node, key string) string {
 }
 
 func text(n *html.Node) string {
+	// Fast paths for the common cases — a diff cell is almost always an element
+	// with a single text child — so we avoid the stack-slice and Builder
+	// allocations on the hot path (called for every td and a element).
+	if n == nil {
+		return ""
+	}
+	if n.FirstChild == nil {
+		if n.Type == html.TextNode {
+			return n.Data
+		}
+		return ""
+	}
+	if n.FirstChild.NextSibling == nil && n.FirstChild.Type == html.TextNode {
+		return n.FirstChild.Data
+	}
 	var b strings.Builder
 	// Iterative like ParseHTML's walk: this runs its own traversal over the
 	// subtree handed to it, so it must not depend on Go stack depth either.
