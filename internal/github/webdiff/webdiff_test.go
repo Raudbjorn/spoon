@@ -26,6 +26,30 @@ func TestWebDiffParsesFilesAndPagination(t *testing.T) {
 	}
 }
 
+// ParseHTML tracks the "current file" as a state machine over a pre-order DFS:
+// a file header must be visited before its descendant blob-code cells. If the
+// traversal visits children in reverse, a cell attaches to the wrong path and
+// patches cross-contaminate. A single-file fixture cannot catch that, so assert two
+// files whose patches must stay on their own paths.
+func TestWebDiffMultiFileKeepsPatchesOnOwnPath(t *testing.T) {
+	fixture := `<html><body>
+<div class="js-file-header" data-path="a.go"></div>
+<table><tr><td class="blob-code blob-code-addition">alpha()</td></tr></table>
+<div class="js-file-header" data-path="b.go"></div>
+<table><tr><td class="blob-code blob-code-deletion">beta()</td></tr></table>
+</body></html>`
+	patches, _, err := ParseHTML(strings.NewReader(fixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := patches["a.go"]; got != "+alpha()\n" {
+		t.Fatalf("a.go patch=%q want=+alpha()\\n", got)
+	}
+	if got := patches["b.go"]; got != "-beta()\n" {
+		t.Fatalf("b.go patch=%q want=-beta()\\n", got)
+	}
+}
+
 func TestWebDiffMarkupChangeIsGracefulError(t *testing.T) {
 	if _, _, err := ParseHTML(strings.NewReader(`<html><body>changed</body></html>`)); err == nil {
 		t.Fatal("expected parse error for unrecognized markup")
