@@ -116,7 +116,7 @@ func (c *Client) Fetch(ctx context.Context, owner, repo, base, head string) (map
 		if page >= c.maxPages {
 			// A response sequence emitting a strictly-increasing start_entry
 			// (markup drift, a stale caching proxy) would otherwise loop forever.
-			return nil, false, fmt.Errorf("GitHub web diff exceeded %d pages", maxPages)
+			return nil, false, fmt.Errorf("GitHub web diff exceeded %d pages", c.maxPages)
 		}
 		if err := c.wait(ctx); err != nil {
 			return nil, false, err
@@ -195,8 +195,14 @@ func ParseHTML(r io.Reader) (map[string]string, int, error) {
 	next := -1
 	nextAuthoritative := false // a rel="next" link outranks a text-"next" match
 	var current string
-	var walk func(*html.Node)
-	walk = func(n *html.Node) {
+	// Traverse iteratively with an explicit stack rather than recursing: the
+	// DOM is externally supplied, and although html.Parse caps tree depth, an
+	// explicit stack makes the bound a heap allocation rather than the Go stack
+	// — whose exhaustion is fatal and uncatchable (#83).
+	stack := []*html.Node{root}
+	for len(stack) > 0 {
+		n := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
 		if n.Type == html.ElementNode {
 			if path := filePath(n); path != "" {
 				current = path
@@ -242,11 +248,13 @@ func ParseHTML(r io.Reader) (map[string]string, int, error) {
 				}
 			}
 		}
-		for child := n.FirstChild; child != nil; child = child.NextSibling {
-			walk(child)
+		// Push right-to-left so the stack pops in document (pre-order) order —
+		// the current-file state machine needs a file header visited before its
+		// descendant blob-code cells.
+		for child := n.LastChild; child != nil; child = child.PrevSibling {
+			stack = append(stack, child)
 		}
 	}
-	walk(root)
 	if len(acc) == 0 {
 		return nil, next, fmt.Errorf("GitHub web diff markup contained no parseable files")
 	}
@@ -279,16 +287,34 @@ func attr(n *html.Node, key string) string {
 }
 
 func text(n *html.Node) string {
+	// Fast paths for the common cases — a diff cell is almost always an element
+	// with a single text child — so we avoid the stack-slice and Builder
+	// allocations on the hot path (called for every td and a element).
+	if n == nil {
+		return ""
+	}
+	if n.FirstChild == nil {
+		if n.Type == html.TextNode {
+			return n.Data
+		}
+		return ""
+	}
+	if n.FirstChild.NextSibling == nil && n.FirstChild.Type == html.TextNode {
+		return n.FirstChild.Data
+	}
 	var b strings.Builder
-	var walk func(*html.Node)
-	walk = func(node *html.Node) {
+	// Iterative like ParseHTML's walk: this runs its own traversal over the
+	// subtree handed to it, so it must not depend on Go stack depth either.
+	stack := []*html.Node{n}
+	for len(stack) > 0 {
+		node := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
 		if node.Type == html.TextNode {
 			b.WriteString(node.Data)
 		}
-		for child := node.FirstChild; child != nil; child = child.NextSibling {
-			walk(child)
+		for child := node.LastChild; child != nil; child = child.PrevSibling {
+			stack = append(stack, child)
 		}
 	}
-	walk(n)
 	return b.String()
 }
