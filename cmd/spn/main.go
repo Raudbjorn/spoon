@@ -106,7 +106,7 @@ Nouns and verbs:
         --query "intent" scores every enriched fork against a free-text
         intent (cross-encoder reranker when configured, lexical fallback
         otherwise), sorts by relevance, and adds queryScore/queryMethod to
-        each record. With the openvino backend each fork also gets a
+        each record. With fastembed active each fork also gets a
         zero-shot 'category' facet, and a configured labeler polishes
         cluster labels with an in-process LLM.
         --priors PATH scores each fork against a JSON interest spec

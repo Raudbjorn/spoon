@@ -93,6 +93,10 @@ func TestEvalEmbedders_Manual(t *testing.T) {
 
 	for _, entry := range strings.Split(spec, ",") {
 		entry = strings.TrimSpace(entry)
+		if entry != "builtin" {
+			t.Logf("%s: skipped (openvino embedder removed)", entry)
+			continue
+		}
 		name, embedder, closeFn := buildEvalEmbedder(t, entry)
 
 		start := time.Now()
@@ -125,27 +129,16 @@ func TestEvalEmbedders_Manual(t *testing.T) {
 	}
 }
 
-// buildEvalEmbedder parses "builtin" or "/model/dir[:pooling]".
+// buildEvalEmbedder returns the builtin lexical embedder. The OpenVINO model
+// embedder was removed; only "builtin" is evaluable (non-builtin entries are
+// skipped by the caller).
 func buildEvalEmbedder(t *testing.T, entry string) (string, Embedder, func()) {
 	t.Helper()
 	if entry == "builtin" {
 		return "builtin-lexical", LocalEmbedder{}, func() {}
 	}
-	dir, pooling := entry, Pooling("")
-	if i := strings.LastIndexByte(entry, ':'); i > 1 { // ":" after a path char, not C:\
-		if p, ok := ParsePooling(entry[i+1:]); ok {
-			dir, pooling = entry[:i], p
-		}
-	}
-	e, err := NewOpenVINOEmbedder(OpenVINOConfig{ModelPath: dir, Pooling: pooling})
-	if err != nil {
-		t.Fatalf("load %s: %v", entry, err)
-	}
-	name := filepath.Base(dir)
-	if pooling != "" {
-		name += ":" + string(pooling)
-	}
-	return name, e, e.Close
+	t.Fatalf("openvino embedder removed; only 'builtin' is evaluable (got %q)", entry)
+	return "", nil, nil
 }
 
 // computeAUC is the Mann-Whitney estimate: P(same > diff) + 0.5*P(equal).

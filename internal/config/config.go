@@ -42,15 +42,10 @@ type ModelConfig struct {
 // EmbedderConfig configures the in-process fastembed embedder that powers
 // persistence and semantic search. fastembed is the only backend; an empty
 // Backend means fastembed. It runs inside the spoon process — no external
-// services. (The legacy ModelPath/Device/Pooling fields are retained only so
-// old config files still parse; they are ignored.)
+// services.
 type EmbedderConfig struct {
 	// Backend is "fastembed" (the default) or empty, which means fastembed.
 	Backend string `json:"backend,omitempty"`
-	// Deprecated: openvino embedder fields, ignored. Kept for back-compat parse.
-	ModelPath string `json:"modelPath,omitempty"`
-	Device    string `json:"device,omitempty"`
-	Pooling   string `json:"pooling,omitempty"`
 	// FastEmbed settings. The persistent semantic model remains fixed; these
 	// fields record its cache and batching configuration.
 	Model     string `json:"model,omitempty"`
@@ -261,11 +256,11 @@ func Coalesce(vals ...string) string {
 // to the empty backend (which resolves to fastembed), so a stale config file
 // degrades cleanly instead of failing every load. Covers since-removed
 // external backends (ollama, sidecar, openai) and the retired in-process
-// backends (builtin, lexical, openvino). Non-backend embedder fields (fastembed
+// backends (builtin, lexical). Non-backend embedder fields (fastembed
 // model/cache) are preserved.
 func (c *Config) normalizeLegacy() {
 	switch strings.ToLower(c.Embedder.Backend) {
-	case "ollama", "sidecar", "openai", "builtin", "lexical", "openvino":
+	case "ollama", "sidecar", "openai", "builtin", "lexical":
 		c.Embedder.Backend = ""
 	}
 }

@@ -29,7 +29,7 @@ type ClusterOptions struct {
 	Refresh        bool
 
 	// Embedder, when non-nil, replaces the built-in lexical embedder
-	// (openvino backend or tests). EmbedderID keys the cluster cache.
+	// (fastembed or tests; nil → built-in lexical embedder). EmbedderID keys the cluster cache.
 	Embedder   embed.Embedder
 	EmbedderID string
 
