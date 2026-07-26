@@ -42,8 +42,8 @@ const classifyDigestMaxChars = 1500
 // ClassifyForks assigns a zero-shot category to each fork digest by cosine
 // similarity against DefaultCategories in one embedding batch. Returns
 // (categories, scores) parallel to features; empty category = unclassified.
-// Intended for semantic embedders (the openvino backend); lexical hashing
-// makes anchor matching meaningless, so callers gate on backend.
+// Intended for semantic embedders (fastembed); lexical hashing makes anchor
+// matching meaningless, so callers gate on backend.
 func ClassifyForks(ctx context.Context, e embed.Embedder, features []embed.ForkFeatures) ([]string, []float64, error) {
 	if len(features) == 0 {
 		return nil, nil, nil

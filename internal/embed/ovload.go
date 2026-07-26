@@ -1,10 +1,10 @@
 package embed
 
-// Runtime loading of the OpenVINO C runtime. The embedder and reranker are
-// always compiled into the binary (no build tags); the native library is
-// dlopen'd lazily on first use. If it cannot be found the OpenVINO backend is
-// simply unavailable and callers fall back to the builtin lexical embedder —
-// the binary stays portable and `go build` needs no OpenVINO SDK.
+// Runtime loading of the OpenVINO C runtime. The reranker is always compiled
+// into the binary (no build tags); the native library is dlopen'd lazily on
+// first use. If it cannot be found the OpenVINO reranker is simply
+// unavailable and callers fall back to the builtin lexical embedder — the
+// binary stays portable and `go build` needs no OpenVINO SDK.
 
 /*
 #cgo LDFLAGS: -ldl

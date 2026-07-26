@@ -241,7 +241,7 @@ func splitFullName(s string) (string, string, bool) {
 }
 
 // cosineSimilarity assumes L2-normalized vectors and reduces to a dot
-// product. The LocalEmbedder and OpenVINOEmbedder both return
+// product. The LocalEmbedder and FastEmbedEmbedder both return
 // L2-normalized vectors, so the dot product IS the cosine similarity.
 // For un-normalized inputs the value is in [-1, 1] but biased by
 // magnitude; the P2 score is clamped via ApplySiblingSimilarityToScore.

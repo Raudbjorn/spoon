@@ -156,8 +156,8 @@ type ClusterOptions struct {
 	LabelPolisher cluster.LabelPolisher
 
 	// Embedder, when non-nil, replaces the built-in lexical embedder
-	// (openvino backend, constructed by the CLI which owns its lifecycle;
-	// also the test seam). EmbedderID must identify it for cache keying.
+	// (fastembed when the CLI installed it, else the test seam; nil →
+	// built-in lexical embedder). EmbedderID must identify it for cache keying.
 	Embedder   embed.Embedder
 	EmbedderID string
 

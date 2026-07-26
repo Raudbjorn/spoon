@@ -33,14 +33,13 @@ type PipelineOptions struct {
 	MinimumCandidates int  // default 10 if zero
 	Refresh           bool // true → skip LoadCache, force a fresh clustering pass
 
-	// Embedder, when non-nil, replaces the built-in lexical embedder. Used
-	// by the openvino backend (constructed in the CLI layer, which owns its
-	// lifecycle) and by tests.
+	// Embedder, when non-nil, replaces the built-in lexical embedder (used
+	// by tests; production leaves it nil so the lexical engine runs, or the
+	// CLI installs fastembed).
 	Embedder embed.Embedder
 
 	// EmbedderID identifies the embedder for cluster-cache keying. Must be
-	// set whenever Embedder is (e.g. embed.OpenVINOConfig.EmbedderID());
-	// empty means the built-in lexical embedder.
+	// set whenever Embedder is; empty means the built-in lexical embedder.
 	EmbedderID string
 
 	// LabelPolisher, when non-nil, rewrites each non-noise cluster's

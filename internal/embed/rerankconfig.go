@@ -24,7 +24,8 @@ type RerankConfig struct {
 	// MaxBatch caps pairs per inference call. 0 → 8.
 	MaxBatch int
 
-	// TokenizersLib / CacheDir as in OpenVINOConfig.
+	// TokenizersLib / CacheDir configure the OpenVINO runtime (tokenizer
+	// extension library path and model compile cache directory).
 	TokenizersLib string
 	CacheDir      string
 }
