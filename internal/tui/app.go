@@ -378,6 +378,16 @@ func (m *Model) processPendingUpdates() (tea.Model, tea.Cmd) {
 		for i := range m.forks {
 			if m.forks[i].Fork.ID == update.forkID {
 				t2 := update.t2
+
+				// A compare that never ran carries no divergence to show,
+				// score or persist. Leaving T2 nil renders AHEAD/BEHIND as
+				// "-" and keeps the T1 heat, rather than reporting the fork
+				// as verified-stagnant and hard-zeroing it via no_ahead.
+				if !t2.Performed {
+					m.forks[i].Enriching = false
+					break
+				}
+
 				m.forks[i].T2 = &t2
 				m.forks[i].Enriching = false
 				m.forks[i].Enriched = true
@@ -706,6 +716,13 @@ func (m *Model) startFetch() tea.Cmd {
 			cache := gh.LoadCache(owner, name)
 			if cache != nil && cache.ForkListValid() {
 				parent := ghRepoInfoToForge(*cache.Parent)
+				// This path returns without calling provider.Parent, which is
+				// what normally latches the upstream baseline onto the provider.
+				// Restore it from the cache, or every Compare below is issued
+				// against an empty upstream and 404s.
+				if setter, ok := provider.(forge.CompareBaselineSetter); ok {
+					setter.SetCompareBaseline(owner, name, parent.DefaultBranch)
+				}
 				forks := make([]forge.T1Data, 0, len(cache.Forks))
 				for _, f := range cache.Forks {
 					var extra *gh.T1Extra

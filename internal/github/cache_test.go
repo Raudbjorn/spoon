@@ -45,11 +45,14 @@ func TestCacheRoundTrip(t *testing.T) {
 		t.Errorf("Expected 2 forks, got %d", len(entry.Forks))
 	}
 
-	// Save compare
+	// Save compare. Performed marks this as a comparison that actually ran;
+	// without it SaveCompare correctly refuses to persist and CompareValid
+	// correctly refuses to serve it.
 	compare := CompareResult{
-		AheadBy:  5,
-		BehindBy: 2,
-		Status:   "ahead",
+		Performed: true,
+		AheadBy:   5,
+		BehindBy:  2,
+		Status:    "ahead",
 	}
 	err = SaveCompare("test", "repo", 1, compare)
 	if err != nil {

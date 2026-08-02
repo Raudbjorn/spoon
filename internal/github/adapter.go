@@ -62,6 +62,21 @@ func (p *GHProvider) Headroom() float64 {
 	return p.client.Headroom()
 }
 
+// The TUI's cached-fork-list path restores the compare baseline through this
+// interface via a type assertion. A failed assertion would silently no-op and
+// reinstate the all-zeros bug, so pin it at compile time.
+var _ forge.CompareBaselineSetter = (*GHProvider)(nil)
+
+// SetCompareBaseline implements forge.CompareBaselineSetter. Parent() calls it
+// on the live path; a caller that serves the fork list from a local cache must
+// call it explicitly, or every Compare that follows has no upstream to compare
+// against.
+func (p *GHProvider) SetCompareBaseline(owner, repo, defaultBranch string) {
+	p.sourceOwner = owner
+	p.sourceRepo = repo
+	p.sourceDefaultBranch = defaultBranch
+}
+
 // Parent implements forge.Forge.
 func (p *GHProvider) Parent(ctx context.Context, owner, repo string) (forge.ParentData, error) {
 	info, err := p.client.FetchParent(ctx, owner, repo)
@@ -70,9 +85,7 @@ func (p *GHProvider) Parent(ctx context.Context, owner, repo string) (forge.Pare
 	}
 
 	// Cache for Compare() calls.
-	p.sourceOwner = owner
-	p.sourceRepo = repo
-	p.sourceDefaultBranch = info.DefaultBranch
+	p.SetCompareBaseline(owner, repo, info.DefaultBranch)
 
 	pushed, _ := time.Parse(time.RFC3339, info.PushedAt)
 
@@ -147,6 +160,14 @@ func (p *GHProvider) Branches(_ context.Context, fork forge.T1Data, n int) ([]fo
 
 // Compare implements forge.Forge.
 func (p *GHProvider) Compare(ctx context.Context, fork forge.T1Data, branch string) (forge.T2Data, error) {
+	// Without a baseline the compare path degrades to "repos///compare/HEAD...",
+	// which 404s for every fork and — because a 404 is not a run-ending error —
+	// used to surface as a fork list where everything is 0 ahead / 0 behind.
+	// Fail loudly instead; the gitea provider already guards this the same way.
+	if p.sourceOwner == "" || p.sourceRepo == "" {
+		return forge.T2Data{}, fmt.Errorf("compare %s@%s: upstream not resolved (Parent not called)", fork.ID, branch)
+	}
+
 	parentBranch := p.sourceDefaultBranch
 	if parentBranch == "" {
 		parentBranch = "HEAD"
@@ -342,6 +363,7 @@ func compareToT2(r CompareResult) forge.T2Data {
 	}
 
 	return forge.T2Data{
+		Performed:          r.Performed,
 		AheadCount:         r.AheadBy,
 		BehindCount:        r.BehindBy,
 		MNA:                mna,

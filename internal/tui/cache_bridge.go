@@ -157,6 +157,7 @@ func ghCompareToForgeT2(c gh.CompareResult) forge.T2Data {
 	}
 
 	return forge.T2Data{
+		Performed:      c.Performed,
 		AheadCount:     c.AheadBy,
 		BehindCount:    c.BehindBy,
 		TotalAdditions: totalAdd,
@@ -206,6 +207,7 @@ func forgeT2ToGHCompare(t2 forge.T2Data) gh.CompareResult {
 	}
 
 	return gh.CompareResult{
+		Performed:    t2.Performed,
 		Status:       status,
 		AheadBy:      t2.AheadCount,
 		BehindBy:     t2.BehindCount,

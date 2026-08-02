@@ -81,13 +81,19 @@ func (e *CacheEntry) ForkListValid() bool {
 	return e.isWithinTTL(forkListTTL)
 }
 
-// CompareValid returns true if a specific fork's compare data is within TTL.
+// CompareValid returns true if a specific fork's compare data is within TTL
+// and records a comparison that actually ran.
+//
+// The Performed gate is the single chokepoint for every cached-compare reader,
+// so a new call site cannot forget the check. It also self-heals caches written
+// before the field existed: those entries unmarshal to Performed=false and are
+// re-fetched rather than served as a fork with no divergence.
 func (e *CacheEntry) CompareValid(forkID int64) bool {
 	if e == nil || e.Compares == nil {
 		return false
 	}
-	_, ok := e.Compares[forkID]
-	if !ok {
+	c, ok := e.Compares[forkID]
+	if !ok || !c.Performed {
 		return false
 	}
 	return e.isWithinTTL(compareTTL)
@@ -124,8 +130,15 @@ func SaveForkList(owner, repo string, parent RepoInfo, forks []ForkInfo, extras 
 	return writeCache(path, entry)
 }
 
-// SaveCompare saves a compare result for a specific fork.
+// SaveCompare saves a compare result for a specific fork. A compare that was
+// never performed is not persisted: writing it would both serve a fabricated
+// "identical" for the next 24h and, because the write refreshes FetchedAt,
+// extend the fork list's own TTL so the bad entry renews itself indefinitely.
 func SaveCompare(owner, repo string, forkID int64, compare CompareResult) error {
+	if !compare.Performed {
+		return nil
+	}
+
 	path, err := cacheFile(owner, repo)
 	if err != nil {
 		return err
