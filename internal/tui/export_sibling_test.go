@@ -5,86 +5,132 @@ import (
 	"time"
 
 	"github.com/svnbjrn/spoon/internal/forge"
+	"github.com/svnbjrn/spoon/internal/heat"
 )
 
-func div(ahead, files, adds, dels int, head string) *ExportDiv {
-	return &ExportDiv{
-		Ahead:        ahead,
-		FilesChanged: files,
-		Additions:    adds,
-		Deletions:    dels,
-		HeadSHA:      head,
+func sfDiv(id string, score float64, ahead, files, adds, dels int, head, fingerprint string) ScoredFork {
+	diffs := make([]forge.FileDiff, files)
+	if files > 0 {
+		diffs[0] = forge.FileDiff{Additions: adds, Deletions: dels}
+	}
+	return ScoredFork{
+		Fork: forge.T1Data{ID: id, BranchFingerprint: fingerprint},
+		Heat: heat.HeatResult{Score: score},
+		T2:   &forge.T2Data{Performed: true, AheadCount: ahead, HeadSHA: head, Diffs: diffs},
 	}
 }
 
-func TestAssignSiblingGroups_identicalDiffShapeIsGrouped(t *testing.T) {
+func TestAssignDuplicateGroups_identicalDiffShapeIsGrouped(t *testing.T) {
 	// Observed in the qvr/nonraid export: emtee40, ghenry22 and jsebean all
 	// reported (10 ahead, 7 files, +11210, -0) — the same pre-restructure work,
 	// listed three times as if independent.
-	forks := []ExportFork{
-		{FullName: "emtee40/nonraid", Divergence: div(10, 7, 11210, 0, ""), Heat: ExportHeat{Score: 26.4}},
-		{FullName: "ghenry22/nonraid", Divergence: div(10, 7, 11210, 0, ""), Heat: ExportHeat{Score: 26.3}},
-		{FullName: "jsebean/nonraid", Divergence: div(10, 7, 11210, 0, ""), Heat: ExportHeat{Score: 26.3}},
-		{FullName: "iiLaurens/nonraid", Divergence: div(1, 2, 188, 73, ""), Heat: ExportHeat{Score: 26.1}},
-	}
+	m := &Model{forks: []ScoredFork{
+		sfDiv("emtee40/nonraid", 26.4, 10, 7, 11210, 0, "", ""),
+		sfDiv("ghenry22/nonraid", 26.3, 10, 7, 11210, 0, "", ""),
+		sfDiv("jsebean/nonraid", 26.3, 10, 7, 11210, 0, "", ""),
+		sfDiv("iiLaurens/nonraid", 26.1, 1, 2, 188, 73, "", ""),
+	}}
 
-	AssignSiblingGroups(forks)
+	m.assignDuplicateGroups()
 
 	for _, i := range []int{0, 1, 2} {
-		if forks[i].SiblingCount != 3 {
-			t.Errorf("%s: SiblingCount = %d, want 3", forks[i].FullName, forks[i].SiblingCount)
+		if m.forks[i].SiblingCount != 3 {
+			t.Errorf("%s: SiblingCount = %d, want 3", m.forks[i].Fork.ID, m.forks[i].SiblingCount)
 		}
 	}
-	if forks[0].SiblingGroup != forks[1].SiblingGroup || forks[1].SiblingGroup != forks[2].SiblingGroup {
-		t.Error("the three identical forks did not share a sibling group")
+	if m.forks[0].SiblingGroup != m.forks[1].SiblingGroup || m.forks[1].SiblingGroup != m.forks[2].SiblingGroup {
+		t.Error("the three identical forks did not share a group")
 	}
-
-	// Highest score wins the primary slot.
-	if !forks[0].SiblingPrimary {
+	if !m.forks[0].SiblingPrimary {
 		t.Error("emtee40 (highest score) should be the primary")
 	}
-	if forks[1].SiblingPrimary || forks[2].SiblingPrimary {
+	if m.forks[1].SiblingPrimary || m.forks[2].SiblingPrimary {
 		t.Error("only one member of a group may be primary")
 	}
-
-	// The genuinely distinct fork is untouched.
-	if forks[3].SiblingGroup != "" || forks[3].SiblingCount != 0 || forks[3].SiblingPrimary {
-		t.Errorf("iiLaurens should not be grouped, got %+v", forks[3])
+	if m.forks[3].SiblingGroup != "" || m.forks[3].SiblingCount != 0 {
+		t.Errorf("iiLaurens should not be grouped, got %+v", m.forks[3])
 	}
 }
 
-func TestAssignSiblingGroups_headSHABeatsDiffShape(t *testing.T) {
-	// Same head commit is proof of identical work; the shapes here differ, so
-	// only the SHA can group them. The key must be SHA-derived.
-	forks := []ExportFork{
-		{FullName: "a/x", Divergence: div(3, 1, 10, 2, "deadbeef"), Heat: ExportHeat{Score: 1}},
-		{FullName: "b/x", Divergence: div(9, 4, 99, 9, "deadbeef"), Heat: ExportHeat{Score: 2}},
-	}
+func TestAssignDuplicateGroups_keyPrecedence(t *testing.T) {
+	// Fingerprint outranks head SHA, which outranks diff shape. Each key is
+	// strictly more conclusive than the next.
+	t.Run("fingerprint beats everything", func(t *testing.T) {
+		m := &Model{forks: []ScoredFork{
+			sfDiv("a/x", 1, 3, 1, 10, 2, "sha-a", "fp1"),
+			sfDiv("b/x", 2, 9, 4, 99, 9, "sha-b", "fp1"),
+		}}
+		m.assignDuplicateGroups()
+		if m.forks[0].SiblingGroup != "f:fp1" {
+			t.Errorf("group = %q, want f:fp1", m.forks[0].SiblingGroup)
+		}
+		if !m.forks[1].SiblingPrimary {
+			t.Error("b/x has the higher score and should be primary")
+		}
+	})
 
-	AssignSiblingGroups(forks)
+	t.Run("head SHA beats diff shape", func(t *testing.T) {
+		// Shapes differ, so only the shared SHA can group these.
+		m := &Model{forks: []ScoredFork{
+			sfDiv("a/x", 1, 3, 1, 10, 2, "deadbeef", ""),
+			sfDiv("b/x", 2, 9, 4, 99, 9, "deadbeef", ""),
+		}}
+		m.assignDuplicateGroups()
+		if m.forks[0].SiblingGroup != "h:deadbeef" {
+			t.Errorf("group = %q, want h:deadbeef", m.forks[0].SiblingGroup)
+		}
+	})
 
-	if forks[0].SiblingGroup != "h:deadbeef" {
-		t.Errorf("SiblingGroup = %q, want h:deadbeef", forks[0].SiblingGroup)
-	}
-	if !forks[1].SiblingPrimary {
-		t.Error("b/x has the higher score and should be primary")
-	}
+	t.Run("a fork with only a fingerprint still groups", func(t *testing.T) {
+		// The sweep can land before T2 does.
+		m := &Model{forks: []ScoredFork{
+			{Fork: forge.T1Data{ID: "a/x", BranchFingerprint: "fp9"}},
+			{Fork: forge.T1Data{ID: "b/x", BranchFingerprint: "fp9"}},
+		}}
+		m.assignDuplicateGroups()
+		if m.forks[0].SiblingCount != 2 {
+			t.Errorf("SiblingCount = %d, want 2 — fingerprint needs no T2", m.forks[0].SiblingCount)
+		}
+	})
 }
 
-func TestAssignSiblingGroups_inertForksAreNeverGrouped(t *testing.T) {
+func TestAssignDuplicateGroups_inertForksAreNeverGrouped(t *testing.T) {
 	// 10 of the 22 nonraid forks are unmodified mirrors. Grouping them would
 	// produce one enormous meaningless bucket.
-	forks := []ExportFork{
-		{FullName: "a/x", Divergence: div(0, 0, 0, 0, "")},
-		{FullName: "b/x", Divergence: div(0, 0, 0, 0, "")},
-		{FullName: "c/x"}, // no compare ran at all
+	m := &Model{forks: []ScoredFork{
+		{Fork: forge.T1Data{ID: "a/x"}, T2: &forge.T2Data{Performed: true, AheadCount: 0}},
+		{Fork: forge.T1Data{ID: "b/x"}, T2: &forge.T2Data{Performed: true, AheadCount: 0}},
+		{Fork: forge.T1Data{ID: "c/x"}}, // no compare ran at all
+	}}
+
+	m.assignDuplicateGroups()
+
+	for _, f := range m.forks {
+		if f.SiblingGroup != "" || f.SiblingCount != 0 {
+			t.Errorf("%s: inert fork was grouped (%+v)", f.Fork.ID, f)
+		}
+	}
+}
+
+// Re-assignment must clear stale tags: a fork's key sharpens as the sweep and
+// enrichment land, and a group formed under the weaker key must not persist.
+func TestAssignDuplicateGroups_isIdempotentAndClearsStaleTags(t *testing.T) {
+	m := &Model{forks: []ScoredFork{
+		sfDiv("a/x", 2, 10, 7, 11210, 0, "", ""),
+		sfDiv("b/x", 1, 10, 7, 11210, 0, "", ""),
+	}}
+	m.assignDuplicateGroups()
+	if m.forks[0].SiblingCount != 2 {
+		t.Fatalf("expected an initial group, got %d", m.forks[0].SiblingCount)
 	}
 
-	AssignSiblingGroups(forks)
+	// b/x turns out to have distinct work once its fingerprint arrives.
+	m.forks[1].Fork.BranchFingerprint = "unique"
+	m.assignDuplicateGroups()
 
-	for _, f := range forks {
-		if f.SiblingGroup != "" || f.SiblingCount != 0 {
-			t.Errorf("%s: inert fork was grouped (%+v)", f.FullName, f)
+	for i, f := range m.forks {
+		if f.SiblingGroup != "" || f.SiblingCount != 0 || f.SiblingPrimary {
+			t.Errorf("fork %d kept a stale tag: %+v", i, f)
 		}
 	}
 }

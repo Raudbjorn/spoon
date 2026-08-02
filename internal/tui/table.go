@@ -32,6 +32,10 @@ func (m Model) viewTable() string {
 		return " "
 	}
 
+	// Colour duplicate groups by order of appearance so two groups that end up
+	// adjacent never share a colour.
+	gutterOrd := gutterOrdinals(m.forks)
+
 	hasCompare := false
 	for _, f := range m.forks {
 		if f.T2 != nil {
@@ -41,14 +45,14 @@ func (m Model) viewTable() string {
 	}
 
 	if hasCompare {
-		header := fmt.Sprintf(" %-4s %3s  %-28s  %5s %6s %7s %7s  %-10s  %s",
+		header := fmt.Sprintf("  %-4s %3s  %-28s  %5s %6s %7s %7s  %-10s  %s",
 			"HEAT", sortInd("heat"), "REPOSITORY",
 			"★"+sortInd("stars"), "AHEAD"+sortInd("ahead"), "BEHIND",
 			"BRANCH"+sortInd("branches"),
 			"PUSHED"+sortInd("pushed"), "STATUS")
 		b.WriteString(headerStyle.Render(header))
 	} else {
-		header := fmt.Sprintf(" %-4s %3s  %-30s %5s %5s %7s  %-12s",
+		header := fmt.Sprintf("  %-4s %3s  %-30s %5s %5s %7s  %-12s",
 			"HEAT", sortInd("heat"), "REPOSITORY",
 			"★"+sortInd("stars"), "⑂"+sortInd("forks"),
 			"BRANCH"+sortInd("branches"),
@@ -130,6 +134,10 @@ func (m Model) viewTable() string {
 			branches = fmt.Sprintf("%7d", *n)
 		}
 
+		// Duplicate-group gutter. Members of a contiguous group all draw the
+		// same coloured bar, so the group reads as one unbroken line.
+		gutter := duplicateGutter(sf, gutterOrd)
+
 		var row string
 		if hasCompare {
 			if len(name) > 26 {
@@ -144,14 +152,14 @@ func (m Model) viewTable() string {
 				ahead = "   ~"
 				behind = "    ~"
 			}
-			row = fmt.Sprintf("%s%s%s%s  %-26s  %5d %6s %7s %7s  %-10s  %s",
-				prefix, scorePrefix, heatBar, scoreStyled, name, sf.Fork.Stars, ahead, behind, branches, pushed, badges)
+			row = fmt.Sprintf("%s%s%s%s%s  %-26s  %5d %6s %7s %7s  %-10s  %s",
+				gutter, prefix, scorePrefix, heatBar, scoreStyled, name, sf.Fork.Stars, ahead, behind, branches, pushed, badges)
 		} else {
 			if len(name) > 30 {
 				name = name[:27] + "..."
 			}
-			row = fmt.Sprintf("%s%s%s%s  %-30s %5d %5d %7s  %-12s",
-				prefix, scorePrefix, heatBar, scoreStyled, name, sf.Fork.Stars, sf.Fork.SubForkCount, branches, pushed)
+			row = fmt.Sprintf("%s%s%s%s%s  %-30s %5d %5d %7s  %-12s",
+				gutter, prefix, scorePrefix, heatBar, scoreStyled, name, sf.Fork.Stars, sf.Fork.SubForkCount, branches, pushed)
 		}
 
 		if isSelected {
@@ -208,13 +216,18 @@ func renderBadges(sf ScoredFork) string {
 		badges = append(badges, "🏷️")
 	}
 
+	// Duplicate work: this fork is one of N carrying identical changes.
+	if sf.SiblingCount > 1 {
+		badges = append(badges, fmt.Sprintf("👯%d", sf.SiblingCount))
+	}
+
 	return strings.Join(badges, " ")
 }
 
 // badgeLegend returns a one-line legend for badges visible in the current fork list.
 // Only includes badges that actually appear, so the legend stays compact.
 func (m Model) badgeLegend() string {
-	var hasWolf, hasPR, hasSubFork, hasBranch, hasRelease bool
+	var hasWolf, hasPR, hasSubFork, hasBranch, hasRelease, hasDupe bool
 	for _, sf := range m.forks {
 		if sf.Heat.LoneWolfV2 != nil && sf.Heat.LoneWolfV2.Detected {
 			hasWolf = true
@@ -230,6 +243,9 @@ func (m Model) badgeLegend() string {
 		}
 		if sf.Fork.ReleaseCount > 0 {
 			hasRelease = true
+		}
+		if sf.SiblingCount > 1 {
+			hasDupe = true
 		}
 	}
 
@@ -248,6 +264,9 @@ func (m Model) badgeLegend() string {
 	}
 	if hasRelease {
 		parts = append(parts, "🏷️ releases")
+	}
+	if hasDupe {
+		parts = append(parts, "👯 duplicate work (same line = same group)")
 	}
 	if len(parts) == 0 {
 		return ""
@@ -344,6 +363,11 @@ func (m *Model) sortForks() {
 		}
 		return !less
 	})
+	// Duplicates share a score, so they usually land adjacent — but ties are
+	// not ordered by group, so an unrelated fork with identical stats could
+	// sort between two members and fall inside their gutter line. Gather makes
+	// the grouping exact rather than incidental.
+	m.gatherDuplicateGroups(0, len(m.forks))
 	if m.cursor >= len(m.forks) {
 		m.cursor = len(m.forks) - 1
 	}
@@ -451,6 +475,17 @@ func (m *Model) sortForksByCluster() {
 		// Within a cluster, higher heat first.
 		return m.forks[i].Heat.Score > m.forks[j].Heat.Score
 	})
+	// Gather inside each cluster block so cluster grouping stays the outer
+	// structure; a duplicate group spanning two clusters is left split rather
+	// than breaking the cluster headers.
+	for lo := 0; lo < len(m.forks); {
+		hi := lo + 1
+		for hi < len(m.forks) && m.forks[hi].Heat.ClusterID == m.forks[lo].Heat.ClusterID {
+			hi++
+		}
+		m.gatherDuplicateGroups(lo, hi)
+		lo = hi
+	}
 	if m.cursor >= len(m.forks) {
 		m.cursor = len(m.forks) - 1
 	}

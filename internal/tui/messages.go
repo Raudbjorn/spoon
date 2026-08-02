@@ -19,7 +19,10 @@ type authReadyMsg struct {
 // fork absent from the map stayed unknown.
 type branchDivergenceMsg struct {
 	counts map[string]int
-	err    error
+	// fingerprints maps fork ID to its divergent-branch identity; forks sharing
+	// one carry identical work.
+	fingerprints map[string]string
+	err          error
 }
 
 type parentFetchedMsg struct {

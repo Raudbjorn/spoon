@@ -73,16 +73,16 @@ var _ forge.CompareBaselineSetter = (*GHProvider)(nil)
 //
 // Compares against the network root (sourceOwner/sourceRepo), not a fork's
 // direct parent — planning/spoon-plan.md:159.
-func (p *GHProvider) DivergentBranchCounts(ctx context.Context, forks []forge.T1Data) (map[string]int, error) {
+func (p *GHProvider) DivergentBranchCounts(ctx context.Context, forks []forge.T1Data) (map[string]int, map[string]string, error) {
 	targets := make([]ForkTarget, 0, len(forks))
 	for _, f := range forks {
 		targets = append(targets, ForkTarget{ID: f.ID, Owner: f.Owner, Name: f.Name})
 	}
 	counts, err := p.client.FetchDivergentBranchCounts(ctx, p.sourceOwner, p.sourceRepo, p.sourceDefaultBranch, targets)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return counts.Divergent, nil
+	return counts.Divergent, counts.Fingerprint, nil
 }
 
 var _ forge.BranchDivergenceProvider = (*GHProvider)(nil)

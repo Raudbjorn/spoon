@@ -49,6 +49,14 @@ type ScoredFork struct {
 	// fork as such instead of as zero divergence.
 	Enriched      bool
 	BudgetSkipped bool
+
+	// Duplicate-group membership: forks carrying identical work. SiblingGroup
+	// is the shared identity key (empty when this fork is unique), SiblingCount
+	// the group size, and SiblingPrimary marks the highest-scoring member.
+	// Assigned by assignDuplicateGroups; see duplicates.go.
+	SiblingGroup   string
+	SiblingCount   int
+	SiblingPrimary bool
 }
 
 // Model is the top-level Bubble Tea model.
@@ -435,6 +443,10 @@ func (m *Model) processPendingUpdates() (tea.Model, tea.Cmd) {
 		}
 	}
 	m.pendingUpdates = m.pendingUpdates[:0]
+
+	// Re-group after each settled batch: T2 landing can sharpen a fork's key
+	// from the diff-shape fallback to an exact head SHA.
+	m.assignDuplicateGroups()
 
 	if m.enrichDone >= m.enrichTotal && m.enriching {
 		m.enriching = false

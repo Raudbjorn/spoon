@@ -71,6 +71,7 @@ func ghForkInfoToForge(f gh.ForkInfo, extra *gh.T1Extra, parentFullPath string) 
 		t1.OpenPRCount = extra.OpenPRCount
 		t1.ReleaseCount = extra.ReleaseCount
 		t1.DivergentBranches = extra.DivergentBranches
+		t1.BranchFingerprint = extra.BranchFingerprint
 
 		branches := make([]forge.BranchRef, 0, len(extra.TopBranches))
 		for _, br := range extra.TopBranches {
@@ -122,6 +123,7 @@ func forgeT1ToGHExtra(t1 forge.T1Data) gh.T1Extra {
 		ReleaseCount:      t1.ReleaseCount,
 		TopBranches:       branches,
 		DivergentBranches: t1.DivergentBranches,
+		BranchFingerprint: t1.BranchFingerprint,
 	}
 }
 
@@ -160,6 +162,8 @@ func ghCompareToForgeT2(c gh.CompareResult) forge.T2Data {
 
 	return forge.T2Data{
 		Performed:      c.Performed,
+		BaseSHA:        c.BaseSHA,
+		HeadSHA:        c.HeadSHA,
 		AheadCount:     c.AheadBy,
 		BehindCount:    c.BehindBy,
 		TotalAdditions: totalAdd,
@@ -210,6 +214,8 @@ func forgeT2ToGHCompare(t2 forge.T2Data) gh.CompareResult {
 
 	return gh.CompareResult{
 		Performed:    t2.Performed,
+		BaseSHA:      t2.BaseSHA,
+		HeadSHA:      t2.HeadSHA,
 		Status:       status,
 		AheadBy:      t2.AheadCount,
 		BehindBy:     t2.BehindCount,

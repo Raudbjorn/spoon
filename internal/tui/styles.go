@@ -11,6 +11,40 @@ var heatColors = []lipgloss.Color{
 	lipgloss.Color("196"), // 80-100: red
 }
 
+// gutterColors tint the duplicate-group gutter. Deliberately distinct from
+// heatColors so a group line is never mistaken for part of the heat bar, and
+// cycled by group so two groups that end up adjacent stay separable.
+var gutterColors = []lipgloss.Color{
+	lipgloss.Color("170"), // orchid
+	lipgloss.Color("214"), // orange
+	lipgloss.Color("79"),  // aquamarine
+	lipgloss.Color("205"), // pink
+	lipgloss.Color("112"), // green
+	lipgloss.Color("111"), // periwinkle
+}
+
+// gutterStyleFor returns the colour for the ordinal-th duplicate group in the
+// rendered list.
+//
+// Colours are assigned by order of appearance rather than by hashing the group
+// key: hashing cannot guarantee that two groups landing next to each other get
+// different colours, and when they collide the two lines read as one group —
+// exactly the confusion the gutter exists to prevent. Cycling by position makes
+// adjacent groups always differ.
+func gutterStyleFor(ordinal int) lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(gutterColour(ordinal))
+}
+
+// gutterColour is the colour choice alone, separated from rendering so it stays
+// assertable: lipgloss strips colour with no TTY attached, which would make any
+// test over rendered output pass vacuously.
+func gutterColour(ordinal int) lipgloss.Color {
+	if ordinal < 0 {
+		ordinal = 0
+	}
+	return gutterColors[ordinal%len(gutterColors)]
+}
+
 // HeatBarChars are the block characters used for the heat bar.
 var heatBarChars = [4]rune{'░', '▒', '▓', '█'}
 
