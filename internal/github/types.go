@@ -57,6 +57,16 @@ type OwnerInfo struct {
 
 // CompareResult represents the response from the compare endpoint.
 type CompareResult struct {
+	// Performed reports whether the comparison actually ran. False means the
+	// compare could not be carried out (typically a 404: fork deleted, made
+	// private, or DMCA'd) and every other field is meaningless. This is not a
+	// GitHub API field; it is set by FetchCompare and persisted to the on-disk
+	// cache so a cached entry cannot be mistaken for a real "identical".
+	//
+	// Cache entries written before this field existed unmarshal to false and
+	// are therefore correctly treated as "never compared" rather than as a
+	// fork with no divergence.
+	Performed       bool         `json:"performed"`
 	Status          string       `json:"status"` // "ahead", "behind", "diverged", "identical"
 	AheadBy         int          `json:"ahead_by"`
 	BehindBy        int          `json:"behind_by"`

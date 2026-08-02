@@ -2,11 +2,13 @@ package github
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/svnbjrn/spoon/internal/forge"
 )
@@ -43,22 +45,43 @@ func recordingServer(t *testing.T, status int, body string) (*httptest.Server, f
 }
 
 // A 404 from the compare endpoint means "this comparison could not be
-// performed". FetchCompare currently converts it to (CompareResult{}, nil),
-// which is indistinguishable from a real, successful "0 ahead, 0 behind,
-// identical" result. Callers act on the difference: a zero-valued success is
-// persisted to the fork cache and scored as a genuinely stagnant fork.
+// performed". That is deliberately not a run-ending error — an inaccessible
+// fork must not kill a scan of hundreds — but it is also not a successful
+// "0 ahead, 0 behind, identical" result. The distinction is carried by
+// Performed, since callers persist and score on it.
 func TestFetchCompare_NotFoundIsNotAZeroValuedSuccess(t *testing.T) {
 	srv, _ := recordingServer(t, http.StatusNotFound, `{"message":"Not Found"}`)
 	c := newTestClient(t, srv)
 
 	got, err := c.FetchCompare(context.Background(), "parent", "repo", "main", "forkowner", "main")
-	if err == nil {
-		t.Fatalf("FetchCompare returned nil error for a 404; got %+v\n"+
-			"a comparison that could not be performed must not be reported as "+
-			"a successful zero — callers persist it and score it as a stagnant fork", got)
+	if err != nil {
+		t.Fatalf("a 404 must stay a non-fatal condition, got error: %v", err)
+	}
+	if got.Performed {
+		t.Errorf("404 reported as a performed comparison: %+v\n"+
+			"callers persist and score this as a genuinely stagnant fork", got)
 	}
 	if got.AheadBy != 0 || got.BehindBy != 0 {
-		t.Errorf("expected zero-valued result alongside the error, got ahead=%d behind=%d", got.AheadBy, got.BehindBy)
+		t.Errorf("expected zero-valued result, got ahead=%d behind=%d", got.AheadBy, got.BehindBy)
+	}
+}
+
+// The mirror of the above: a real comparison must be marked Performed, or the
+// Performed gate would discard every genuine result instead.
+func TestFetchCompare_SuccessIsMarkedPerformed(t *testing.T) {
+	srv, _ := recordingServer(t, http.StatusOK,
+		`{"status":"ahead","ahead_by":3,"behind_by":1,"total_commits":3}`)
+	c := newTestClient(t, srv)
+
+	got, err := c.FetchCompare(context.Background(), "parent", "repo", "main", "forkowner", "main")
+	if err != nil {
+		t.Fatalf("FetchCompare: %v", err)
+	}
+	if !got.Performed {
+		t.Error("a successful compare was not marked Performed; the cache would discard it")
+	}
+	if got.AheadBy != 3 || got.BehindBy != 1 {
+		t.Errorf("ahead=%d behind=%d, want 3/1", got.AheadBy, got.BehindBy)
 	}
 }
 
@@ -96,5 +119,77 @@ func TestGHProviderCompare_WithoutParentDoesNotFabricateZeros(t *testing.T) {
 			"This is the reported bug: every fork is recorded as 0/0 'identical', "+
 			"cached for 24h, and hard-scored to heat 0 by the no_ahead penalty",
 			t2.AheadCount, t2.BehindCount)
+	}
+}
+
+// The flag is only as good as its persistence: it has to survive the on-disk
+// cache round trip, and a legacy entry written before the field existed must
+// read back as "never compared" rather than as a fork with no divergence.
+func TestCompareValid_GatesOnPerformed(t *testing.T) {
+	within := time.Now().UTC().Format(time.RFC3339)
+
+	t.Run("performed compare is served", func(t *testing.T) {
+		e := &CacheEntry{
+			FetchedAt: within,
+			Compares:  map[int64]CompareResult{7: {Performed: true, AheadBy: 3}},
+		}
+		if !e.CompareValid(7) {
+			t.Error("a real compare within TTL was rejected")
+		}
+	})
+
+	t.Run("unperformed compare is refetched", func(t *testing.T) {
+		e := &CacheEntry{
+			FetchedAt: within,
+			Compares:  map[int64]CompareResult{7: {Performed: false}},
+		}
+		if e.CompareValid(7) {
+			t.Error("a compare that never ran was served as valid cache data")
+		}
+	})
+
+	t.Run("legacy entry without the field self-heals", func(t *testing.T) {
+		var legacy CompareResult
+		// Exactly what the poisoned on-disk caches contain.
+		if err := json.Unmarshal([]byte(
+			`{"status":"identical","ahead_by":0,"behind_by":0,"total_commits":0}`), &legacy); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		e := &CacheEntry{FetchedAt: within, Compares: map[int64]CompareResult{7: legacy}}
+		if e.CompareValid(7) {
+			t.Error("a pre-Performed cache entry was served as a real 'identical' result")
+		}
+	})
+}
+
+// SaveCompare must not write an unperformed result: doing so both fabricates an
+// "identical" for the next 24h and refreshes FetchedAt, which extends the fork
+// list TTL so the bad entry renews its own expiry indefinitely.
+func TestSaveCompare_RefusesUnperformedResult(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", dir)
+
+	if err := SaveForkList("parent", "repo",
+		RepoInfo{FullName: "parent/repo", DefaultBranch: "main"},
+		[]ForkInfo{{ID: 7, FullName: "forkowner/repo"}}, nil); err != nil {
+		t.Fatalf("SaveForkList: %v", err)
+	}
+
+	before := LoadCache("parent", "repo")
+	if before == nil {
+		t.Fatal("fork list did not persist")
+	}
+
+	if err := SaveCompare("parent", "repo", 7, CompareResult{Performed: false, Status: "identical"}); err != nil {
+		t.Fatalf("SaveCompare: %v", err)
+	}
+
+	after := LoadCache("parent", "repo")
+	if _, ok := after.Compares[7]; ok {
+		t.Error("an unperformed compare was persisted to the cache")
+	}
+	if after.FetchedAt != before.FetchedAt {
+		t.Errorf("an unperformed compare refreshed FetchedAt (%s -> %s), renewing the fork-list TTL",
+			before.FetchedAt, after.FetchedAt)
 	}
 }

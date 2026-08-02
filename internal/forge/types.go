@@ -162,6 +162,15 @@ type AheadCommit struct {
 
 // T2Data is code-divergence data from comparing the fork to its upstream source.
 type T2Data struct {
+	// Performed reports whether the comparison actually ran against the
+	// upstream. It is false when the compare could not be carried out at all
+	// (fork deleted, made private, DMCA'd, or the upstream baseline was never
+	// resolved). The zero value is deliberately "not performed": every other
+	// field on a !Performed T2Data is meaningless, and treating it as a real
+	// "0 ahead, 0 behind, identical" result is what made a whole fork list
+	// render as heat 0. Callers must check this before persisting, scoring, or
+	// displaying divergence.
+	Performed          bool
 	AheadCount         int
 	BehindCount        int
 	MNA                int     // Meaningful Net Additions -- junk/generated stripped.
@@ -232,6 +241,17 @@ type CommitFileProvider interface {
 	CommitFiles(context.Context, T1Data, string) ([]FileDiff, error)
 }
 
+// CompareBaselineSetter is an optional provider capability for restoring the
+// upstream baseline that Parent() would normally establish.
+//
+// Compare needs to know which upstream to compare against, and providers latch
+// that from Parent(). A caller that serves the fork list from a local cache
+// never calls Parent(), so without this the baseline stays empty and every
+// subsequent Compare is issued against a malformed upstream. Providers that do
+// not implement it remain valid Forge values.
+type CompareBaselineSetter interface {
+	SetCompareBaseline(owner, repo, defaultBranch string)
+}
 type TopicLane string
 
 const (
