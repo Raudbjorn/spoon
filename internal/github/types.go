@@ -147,6 +147,10 @@ type T1Extra struct {
 	OpenPRCount  int
 	ReleaseCount int
 	TopBranches  []BranchInfo
+
+	// DivergentBranches is the count of branches ahead of upstream. A pointer
+	// so a cache entry written before the sweep ran is "unknown", not zero.
+	DivergentBranches *int `json:"DivergentBranches,omitempty"`
 }
 
 // BranchInfo describes a branch with its last commit timestamp.

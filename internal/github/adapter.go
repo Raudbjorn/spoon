@@ -67,6 +67,26 @@ func (p *GHProvider) Headroom() float64 {
 // reinstate the all-zeros bug, so pin it at compile time.
 var _ forge.CompareBaselineSetter = (*GHProvider)(nil)
 
+// DivergentBranchCounts implements forge.BranchDivergenceProvider. The whole
+// batch costs two GraphQL queries regardless of how many forks or branches are
+// involved, so unlike the REST branch scan it needs no per-branch budget gate.
+//
+// Compares against the network root (sourceOwner/sourceRepo), not a fork's
+// direct parent — planning/spoon-plan.md:159.
+func (p *GHProvider) DivergentBranchCounts(ctx context.Context, forks []forge.T1Data) (map[string]int, error) {
+	targets := make([]ForkTarget, 0, len(forks))
+	for _, f := range forks {
+		targets = append(targets, ForkTarget{ID: f.ID, Owner: f.Owner, Name: f.Name})
+	}
+	counts, err := p.client.FetchDivergentBranchCounts(ctx, p.sourceOwner, p.sourceRepo, p.sourceDefaultBranch, targets)
+	if err != nil {
+		return nil, err
+	}
+	return counts.Divergent, nil
+}
+
+var _ forge.BranchDivergenceProvider = (*GHProvider)(nil)
+
 // SetCompareBaseline implements forge.CompareBaselineSetter. Parent() calls it
 // on the live path; a caller that serves the fork list from a local cache must
 // call it explicitly, or every Compare that follows has no upstream to compare
