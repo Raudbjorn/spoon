@@ -180,6 +180,7 @@ func (m *Model) promptExportMarked() tea.Cmd {
 
 	m.exportForks = toExport
 	m.exportPath = m.defaultExportPath()
+	m.exportCursor = len([]rune(m.exportPath))
 	m.view = viewExportPath
 	return nil
 }
@@ -194,12 +195,13 @@ func (m *Model) promptExportAll() tea.Cmd {
 	copy(toExport, m.forks)
 	m.exportForks = toExport
 	m.exportPath = m.defaultExportPath()
+	m.exportCursor = len([]rune(m.exportPath))
 	m.view = viewExportPath
 	return nil
 }
 
 // handleExportPathKey handles input in the export path prompt.
-func (m *Model) handleExportPathKey(key string) (tea.Model, tea.Cmd) {
+func (m *Model) handleExportPathKey(key string, typed string) (tea.Model, tea.Cmd) {
 	switch key {
 	case "enter":
 		path := strings.TrimSpace(m.exportPath)
@@ -214,16 +216,8 @@ func (m *Model) handleExportPathKey(key string) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.exportForks = nil
 		m.view = viewTable
-	case "backspace":
-		if len(m.exportPath) > 0 {
-			m.exportPath = m.exportPath[:len(m.exportPath)-1]
-		}
-	case "ctrl+u":
-		m.exportPath = ""
 	default:
-		if len(key) == 1 {
-			m.exportPath += key
-		}
+		m.exportPath, m.exportCursor, _ = lineEdit(m.exportPath, m.exportCursor, key, typed)
 	}
 	return m, nil
 }
@@ -234,8 +228,8 @@ func (m Model) viewExportPath() string {
 	b.WriteString("\n")
 	count := len(m.exportForks)
 	b.WriteString(fmt.Sprintf("  Exporting %d fork(s) to JSON\n\n", count))
-	b.WriteString("  Save to: " + m.exportPath + "█\n\n")
-	b.WriteString("  " + helpStyle.Render("Enter confirm  Esc cancel  Ctrl+U clear") + "\n")
+	b.WriteString("  Save to: " + renderWithCursor(m.exportPath, m.exportCursor) + "\n\n")
+	b.WriteString("  " + helpStyle.Render("←/→ move  Home/End  Enter confirm  Esc cancel  Ctrl+U clear") + "\n")
 	return b.String()
 }
 

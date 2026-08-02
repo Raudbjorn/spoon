@@ -60,10 +60,12 @@ type Model struct {
 	quitting bool
 
 	// Input
-	input    string
-	inputErr string
-	initRepo string // from CLI arg
-	refresh  bool   // bypass cache
+	input string
+	// inputCursor is the insertion point as a rune offset into input.
+	inputCursor int
+	inputErr    string
+	initRepo    string // from CLI arg
+	refresh     bool   // bypass cache
 
 	// Auth
 	provider forge.Forge
@@ -103,8 +105,13 @@ type Model struct {
 	errMsgTime  time.Time
 
 	// Export path prompt
-	exportPath  string       // editable path shown in prompt
-	exportForks []ScoredFork // forks staged for export (nil = export all)
+	exportPath string // editable path shown in prompt
+	// exportCursor is the insertion point as a rune offset into exportPath,
+	// in [0, len([]rune(exportPath))]. Without it the prompt was append-only,
+	// so a suggested filename could not be corrected — every keystroke landed
+	// after ".json".
+	exportCursor int
+	exportForks  []ScoredFork // forks staged for export (nil = export all)
 
 	// Cluster pipeline
 	// Topic picker state (topic mode).
@@ -485,15 +492,19 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 
+	// Text prompts need the literal runes, not the key name: a paste is one
+	// KeyRunes event whose String() is bracketed and never matches a binding.
+	typed := typedText(msg)
+
 	switch m.view {
 	case viewInput:
-		return m.handleInputKey(key)
+		return m.handleInputKey(key, typed)
 	case viewTable:
 		return m.handleTableKey(key)
 	case viewDetail:
 		return m.handleDetailKey(key)
 	case viewExportPath:
-		return m.handleExportPathKey(key)
+		return m.handleExportPathKey(key, typed)
 	case viewTopicPicker:
 		return m.handleTopicPickerKey(key)
 	case viewHelp:
@@ -506,7 +517,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *Model) handleInputKey(key string) (tea.Model, tea.Cmd) {
+func (m *Model) handleInputKey(key string, typed string) (tea.Model, tea.Cmd) {
 	switch key {
 	case "enter":
 		m.inputErr = ""
@@ -517,18 +528,12 @@ func (m *Model) handleInputKey(key string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, m.startFetch()
-	case "backspace":
-		if len(m.input) > 0 {
-			m.input = m.input[:len(m.input)-1]
-		}
 	case "esc":
 		if m.parent != nil {
 			m.view = viewTable
 		}
 	default:
-		if len(key) == 1 {
-			m.input += key
-		}
+		m.input, m.inputCursor, _ = lineEdit(m.input, m.inputCursor, key, typed)
 	}
 	return m, nil
 }
@@ -689,6 +694,7 @@ func (m *Model) startFetch() tea.Cmd {
 	if m.initRepo != "" {
 		repo = m.initRepo
 		m.input = repo
+		m.inputCursor = len([]rune(m.input))
 		m.initRepo = ""
 	}
 
@@ -1095,8 +1101,7 @@ func (m Model) viewInput() string {
 		}
 	}
 
-	b.WriteString("  Repository: " + m.input)
-	b.WriteString("█\n")
+	b.WriteString("  Repository: " + renderWithCursor(m.input, m.inputCursor) + "\n")
 
 	if m.inputErr != "" {
 		b.WriteString("  " + errorStyle.Render(m.inputErr) + "\n")
@@ -1109,7 +1114,7 @@ func (m Model) viewInput() string {
 		b.WriteString("\n  " + m.loadMsg + "\n")
 	} else {
 		b.WriteString("\n  " + helpStyle.Render("Enter a GitHub or GitLab repository (e.g., golang/go)") + "\n")
-		b.WriteString("  " + helpStyle.Render("Press Enter to search, Ctrl+C to quit") + "\n")
+		b.WriteString("  " + helpStyle.Render("←/→ move  Home/End  paste supported  Enter to search  Ctrl+C to quit") + "\n")
 	}
 
 	return b.String()
