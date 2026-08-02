@@ -107,6 +107,13 @@ type T1Data struct {
 	// populated lazily via Branches() for GitLab).
 	Branches []BranchRef
 
+	// DivergentBranches counts this fork's branches holding at least one commit
+	// the upstream lacks. Nil means the count was never obtained (provider
+	// cannot supply it, the sweep failed, or the fork was unresolvable) and must
+	// render as unknown rather than as zero — a real 0 means "checked, nothing
+	// diverges anywhere".
+	DivergentBranches *int
+
 	// Fork lineage
 	SourceFullPath string // network root used for compare baseline; never the direct parent.
 	ParentFullPath string // direct parent
@@ -239,6 +246,17 @@ type Forge interface {
 // attribution. Providers that do not implement it remain valid Forge values.
 type CommitFileProvider interface {
 	CommitFiles(context.Context, T1Data, string) ([]FileDiff, error)
+}
+
+// BranchDivergenceProvider is an optional provider capability for counting,
+// per fork, the branches carrying commits the upstream lacks. Implementations
+// are expected to answer for the whole batch in bounded API cost; a provider
+// that would need one request per branch should simply not implement it.
+//
+// A fork absent from the returned map was not resolved, which is distinct from
+// a present zero.
+type BranchDivergenceProvider interface {
+	DivergentBranchCounts(ctx context.Context, forks []T1Data) (map[string]int, error)
 }
 
 // CompareBaselineSetter is an optional provider capability for restoring the

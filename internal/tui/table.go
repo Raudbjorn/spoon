@@ -41,15 +41,17 @@ func (m Model) viewTable() string {
 	}
 
 	if hasCompare {
-		header := fmt.Sprintf(" %-4s %3s  %-28s  %5s %6s %7s  %-10s  %s",
+		header := fmt.Sprintf(" %-4s %3s  %-28s  %5s %6s %7s %7s  %-10s  %s",
 			"HEAT", sortInd("heat"), "REPOSITORY",
 			"★"+sortInd("stars"), "AHEAD"+sortInd("ahead"), "BEHIND",
+			"BRANCH"+sortInd("branches"),
 			"PUSHED"+sortInd("pushed"), "STATUS")
 		b.WriteString(headerStyle.Render(header))
 	} else {
-		header := fmt.Sprintf(" %-4s %3s  %-30s %5s %5s  %-12s",
+		header := fmt.Sprintf(" %-4s %3s  %-30s %5s %5s %7s  %-12s",
 			"HEAT", sortInd("heat"), "REPOSITORY",
 			"★"+sortInd("stars"), "⑂"+sortInd("forks"),
+			"BRANCH"+sortInd("branches"),
 			"PUSHED"+sortInd("pushed"))
 		b.WriteString(headerStyle.Render(header))
 	}
@@ -120,6 +122,14 @@ func (m Model) viewTable() string {
 		// Badges
 		badges := renderBadges(sf)
 
+		// Branches carrying commits upstream lacks. Nil means never counted
+		// (non-GitHub provider, or the sweep has not landed yet) and renders
+		// "-", distinct from a counted 0.
+		branches := "      -"
+		if n := sf.Fork.DivergentBranches; n != nil {
+			branches = fmt.Sprintf("%7d", *n)
+		}
+
 		var row string
 		if hasCompare {
 			if len(name) > 26 {
@@ -134,14 +144,14 @@ func (m Model) viewTable() string {
 				ahead = "   ~"
 				behind = "    ~"
 			}
-			row = fmt.Sprintf("%s%s%s%s  %-26s  %5d %6s %7s  %-10s  %s",
-				prefix, scorePrefix, heatBar, scoreStyled, name, sf.Fork.Stars, ahead, behind, pushed, badges)
+			row = fmt.Sprintf("%s%s%s%s  %-26s  %5d %6s %7s %7s  %-10s  %s",
+				prefix, scorePrefix, heatBar, scoreStyled, name, sf.Fork.Stars, ahead, behind, branches, pushed, badges)
 		} else {
 			if len(name) > 30 {
 				name = name[:27] + "..."
 			}
-			row = fmt.Sprintf("%s%s%s%s  %-30s %5d %5d  %-12s",
-				prefix, scorePrefix, heatBar, scoreStyled, name, sf.Fork.Stars, sf.Fork.SubForkCount, pushed)
+			row = fmt.Sprintf("%s%s%s%s  %-30s %5d %5d %7s  %-12s",
+				prefix, scorePrefix, heatBar, scoreStyled, name, sf.Fork.Stars, sf.Fork.SubForkCount, branches, pushed)
 		}
 
 		if isSelected {
@@ -281,7 +291,7 @@ func (m Model) renderStatusBar() string {
 }
 
 func (m *Model) cycleSortColumn() {
-	cols := []string{"heat", "stars", "ahead", "forks", "pushed"}
+	cols := []string{"heat", "stars", "ahead", "branches", "forks", "pushed"}
 	for i, c := range cols {
 		if c == m.sortCol {
 			m.sortCol = cols[(i+1)%len(cols)]
@@ -313,6 +323,17 @@ func (m *Model) sortForks() {
 				aj = m.forks[j].T2.AheadCount
 			}
 			less = ai < aj
+		case "branches":
+			// Unknown (nil) sorts as -1 so it lands below a genuine 0 rather
+			// than tying with it.
+			bi, bj := -1, -1
+			if n := m.forks[i].Fork.DivergentBranches; n != nil {
+				bi = *n
+			}
+			if n := m.forks[j].Fork.DivergentBranches; n != nil {
+				bj = *n
+			}
+			less = bi < bj
 		case "pushed":
 			less = m.forks[i].Fork.PushedAt.Before(m.forks[j].Fork.PushedAt)
 		default:

@@ -221,6 +221,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case enrichBatchTickMsg:
 		return m.processPendingUpdates()
 
+	case branchDivergenceMsg:
+		return m.handleBranchDivergence(msg)
+
 	case enrichmentDoneMsg:
 		m.enriching = false
 		return m, nil
@@ -265,15 +268,22 @@ func (m *Model) handleCachedLoad(msg cachedLoadMsg) (tea.Model, tea.Cmd) {
 		m.applyCachedCompares(msg.cache)
 	}
 
+	cmds := []tea.Cmd{}
+	if bc := m.startBranchDivergenceSweep(); bc != nil {
+		cmds = append(cmds, bc)
+	}
+
 	cmd := m.startEnrichment()
 	if cmd == nil {
 		// No T2 enrichment scheduled (e.g. rate-limited). Still try
 		// clustering on whatever T1+cached-T2 data we have.
 		if cc := m.maybeStartClusterPipeline(); cc != nil {
-			return m, cc
+			cmds = append(cmds, cc)
+			return m, tea.Batch(cmds...)
 		}
 	}
-	return m, cmd
+	cmds = append(cmds, cmd)
+	return m, tea.Batch(cmds...)
 }
 
 func (m *Model) applyCachedCompares(cache *gh.CacheEntry) {
@@ -339,13 +349,20 @@ func (m *Model) handleForksFetched(msg forksFetchedMsg) (tea.Model, tea.Cmd) {
 	m.view = viewTable
 	m.cursor = 0
 
+	cmds := []tea.Cmd{}
+	if bc := m.startBranchDivergenceSweep(); bc != nil {
+		cmds = append(cmds, bc)
+	}
+
 	cmd := m.startEnrichment()
 	if cmd == nil {
 		if cc := m.maybeStartClusterPipeline(); cc != nil {
-			return m, cc
+			cmds = append(cmds, cc)
+			return m, tea.Batch(cmds...)
 		}
 	}
-	return m, cmd
+	cmds = append(cmds, cmd)
+	return m, tea.Batch(cmds...)
 }
 
 func (m *Model) processPendingUpdates() (tea.Model, tea.Cmd) {
@@ -797,7 +814,7 @@ func (m *Model) fetchForks() tea.Cmd {
 			for _, f := range forks {
 				ghF := forgeT1ToGHForkInfo(f)
 				ghForks = append(ghForks, ghF)
-				if f.OpenPRCount > 0 || f.ReleaseCount > 0 || len(f.Branches) > 0 {
+				if f.OpenPRCount > 0 || f.ReleaseCount > 0 || len(f.Branches) > 0 || f.DivergentBranches != nil {
 					ghExtras[ghF.ID] = forgeT1ToGHExtra(f)
 				}
 			}

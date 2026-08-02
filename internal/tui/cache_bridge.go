@@ -70,6 +70,7 @@ func ghForkInfoToForge(f gh.ForkInfo, extra *gh.T1Extra, parentFullPath string) 
 	if extra != nil {
 		t1.OpenPRCount = extra.OpenPRCount
 		t1.ReleaseCount = extra.ReleaseCount
+		t1.DivergentBranches = extra.DivergentBranches
 
 		branches := make([]forge.BranchRef, 0, len(extra.TopBranches))
 		for _, br := range extra.TopBranches {
@@ -117,9 +118,10 @@ func forgeT1ToGHExtra(t1 forge.T1Data) gh.T1Extra {
 		})
 	}
 	return gh.T1Extra{
-		OpenPRCount:  t1.OpenPRCount,
-		ReleaseCount: t1.ReleaseCount,
-		TopBranches:  branches,
+		OpenPRCount:       t1.OpenPRCount,
+		ReleaseCount:      t1.ReleaseCount,
+		TopBranches:       branches,
+		DivergentBranches: t1.DivergentBranches,
 	}
 }
 

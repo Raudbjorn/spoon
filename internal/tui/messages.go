@@ -14,6 +14,14 @@ type authReadyMsg struct {
 	err      error
 }
 
+// branchDivergenceMsg carries the result of the batched divergent-branch
+// sweep. counts maps fork ID to the number of branches ahead of upstream; a
+// fork absent from the map stayed unknown.
+type branchDivergenceMsg struct {
+	counts map[string]int
+	err    error
+}
+
 type parentFetchedMsg struct {
 	parent forge.ParentData
 	err    error
