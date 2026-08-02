@@ -55,6 +55,10 @@ type ClientOptions struct {
 
 type apiResource uint8
 
+// defaultHost is the only GitHub host this provider talks to. It is also what
+// AuthStatus.Host reports, which callers interpolate into user-facing URLs.
+const defaultHost = "github.com"
+
 const (
 	resourceREST apiResource = iota
 	resourceGraphQL
@@ -196,7 +200,7 @@ func NewClientWithOptions(opts ClientOptions) (*Client, error) {
 			c.initRateControls()
 			return c, nil
 		}
-		rest, err = ghAPI.NewRESTClient(ghAPI.ClientOptions{AuthToken: "x", Host: "github.com", Transport: &unauthTransport{base: rotating}, Timeout: requestTimeout})
+		rest, err = ghAPI.NewRESTClient(ghAPI.ClientOptions{AuthToken: "x", Host: defaultHost, Transport: &unauthTransport{base: rotating}, Timeout: requestTimeout})
 		if err != nil {
 			return nil, fmt.Errorf("creating unauthenticated client: %w", err)
 		}
@@ -212,7 +216,7 @@ func NewClientWithOptions(opts ClientOptions) (*Client, error) {
 		if token == "" {
 			return nil, fmt.Errorf("github token list contains an empty entry")
 		}
-		clientOpts := ghAPI.ClientOptions{AuthToken: token, Host: "github.com", Transport: rotating, Timeout: requestTimeout}
+		clientOpts := ghAPI.ClientOptions{AuthToken: token, Host: defaultHost, Transport: rotating, Timeout: requestTimeout}
 		rest, err := ghAPI.NewRESTClient(clientOpts)
 		if err != nil {
 			return nil, fmt.Errorf("creating GitHub REST backend: %w", err)

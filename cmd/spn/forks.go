@@ -714,14 +714,7 @@ func persistForkSnapshot(ctx context.Context, db *store.Store, auth forge.AuthIn
 	now := time.Now().UTC()
 	host := auth.Host
 	if host == "" {
-		switch auth.Provider {
-		case forge.ProviderGitLab:
-			host = "gitlab.com"
-		case forge.ProviderGitea:
-			host = "codeberg.org"
-		default:
-			host = "github.com"
-		}
+		host = forge.DefaultHost(auth.Provider)
 	}
 	firstSeen := r.Fork.CreatedAt
 	if firstSeen.IsZero() {

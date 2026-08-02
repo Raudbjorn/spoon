@@ -50,8 +50,30 @@ func FormatCloneCmd(htmlURL, repoName, branch, defaultBranch string) string {
 	return fmt.Sprintf("git clone %s && cd %s && git checkout %s", htmlURL, repoName, branch)
 }
 
+// DefaultHost returns the canonical public host for a provider. It is the single
+// source of truth for the "caller had no host" fallback, which was previously
+// open-coded in three places that had already drifted apart — one of them
+// omitted Gitea, and forge.CompareURL had no fallback at all and emitted
+// "https:///owner/repo/..." instead.
+//
+// Gitea has no single canonical instance; codeberg.org is the convention used
+// elsewhere in the codebase for a Gitea caller that supplied no host.
+func DefaultHost(provider Provider) string {
+	switch provider {
+	case ProviderGitLab:
+		return "gitlab.com"
+	case ProviderGitea:
+		return "codeberg.org"
+	default:
+		return "github.com"
+	}
+}
+
 // CompareURL returns the compare view URL for a fork vs upstream.
 func CompareURL(provider Provider, host, parentFullPath, parentBranch, forkOwner, forkBranch string) string {
+	if host == "" {
+		host = DefaultHost(provider)
+	}
 	switch provider {
 	case ProviderGitLab:
 		return fmt.Sprintf("https://%s/%s/-/compare/%s...%s:%s",

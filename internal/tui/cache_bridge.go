@@ -249,16 +249,28 @@ func forgeT2ToExportDiv(t2 *forge.T2Data) *ExportDiv {
 		FilesChanged: len(t2.Diffs),
 		Additions:    totalAdds,
 		Deletions:    totalDels,
+		Upstreamed:   t2.Upstreamed,
+		UpstreamedPR: t2.UpstreamedPR,
+		MNA:          t2.MNA,
+		FeatureRatio: t2.FeatureCommitRatio,
+		IsBranchWork: t2.IsBranchWork,
+		ActiveBranch: t2.ActiveBranch,
 	}
+}
+
+// formatOptionalTime renders a timestamp, or "" when it is the zero value, so
+// callers using omitempty drop the field instead of emitting year 0001.
+func formatOptionalTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.Format(time.RFC3339)
 }
 
 // forgeExportURL returns the URL for a fork given the provider context.
 func forgeExportURL(provider forge.Provider, host, forkID string) string {
 	if host == "" {
-		host = "github.com"
-		if provider == forge.ProviderGitLab {
-			host = "gitlab.com"
-		}
+		host = forge.DefaultHost(provider)
 	}
 	return fmt.Sprintf("https://%s/%s", host, forkID)
 }

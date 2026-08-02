@@ -48,7 +48,9 @@ type ExportFork struct {
 	OpenIssues int    `json:"open_issues"`
 	Language   string `json:"language,omitempty"`
 	PushedAt   string `json:"pushed_at"`
-	CreatedAt  string `json:"created_at"`
+	// CreatedAt is omitted rather than emitted as the zero time. Not every
+	// provider path supplies it, and "0001-01-01T00:00:00Z" reads as real data.
+	CreatedAt string `json:"created_at,omitempty"`
 
 	// Enriched is true when this fork's compare (divergence) actually ran. When
 	// false, Divergence is absent (omitted) rather than reported as zero — the
@@ -72,6 +74,17 @@ type ExportFork struct {
 	NoveltyScore       float64 `json:"novelty_score,omitempty"`
 	ClusterMemberCount int     `json:"cluster_member_count,omitempty"`
 	ChangeImpact       float64 `json:"change_impact,omitempty"`
+
+	// Duplicate fields identify forks carrying the SAME work, which is common in
+	// a fork network: a popular fork gets re-forked, or many forks branch from
+	// one pre-restructure commit and all report an identical diff. Grouping is by
+	// exact diff shape and is unrelated to the embedder-backed cluster_* fields
+	// above — it needs no model and always runs.
+	//
+	// Rows are never dropped — collapsing is the consumer's decision.
+	DuplicateGroup   string `json:"duplicate_group,omitempty"`
+	DuplicateCount   int    `json:"duplicate_count,omitempty"`
+	DuplicatePrimary bool   `json:"duplicate_primary,omitempty"`
 }
 
 // ExportLoneWolf is the lone wolf signal export (v2 shape).
@@ -115,6 +128,19 @@ type ExportDiv struct {
 	FilesChanged int `json:"files_changed"`
 	Additions    int `json:"additions"`
 	Deletions    int `json:"deletions"`
+
+	// The fields below are already computed during T2 and feed the heat score,
+	// but were previously dropped on the way to the export. They are what a
+	// consumer needs to triage a fork without re-fetching the compare.
+	//
+	// Upstreamed is the strongest single signal: the fork's work is already
+	// merged upstream, so its divergence is historical and not worth reviewing.
+	Upstreamed   bool    `json:"upstreamed,omitempty"`
+	UpstreamedPR int     `json:"upstreamed_pr,omitempty"`
+	MNA          int     `json:"mna,omitempty"`
+	FeatureRatio float64 `json:"feature_commit_ratio,omitempty"`
+	IsBranchWork bool    `json:"is_branch_work,omitempty"`
+	ActiveBranch string  `json:"active_branch,omitempty"`
 }
 
 type exportDoneMsg struct {
@@ -247,7 +273,7 @@ func (m *Model) doExport(toExport []ScoredFork, filename string) tea.Cmd {
 				OpenIssues: sf.Fork.OpenIssues,
 				Language:   sf.Fork.Language,
 				PushedAt:   sf.Fork.PushedAt.Format(time.RFC3339),
-				CreatedAt:  sf.Fork.CreatedAt.Format(time.RFC3339),
+				CreatedAt:  formatOptionalTime(sf.Fork.CreatedAt),
 				Enriched:   sf.Enriched,
 				Heat:       efHeat,
 				CompareURL: forge.CompareURL(auth.Provider, auth.Host,
@@ -306,6 +332,8 @@ func (m *Model) doExport(toExport []ScoredFork, filename string) tea.Cmd {
 		data.TotalCount = len(data.Forks)
 		data.Degraded = data.EnrichedCount < data.TotalCount
 
+		AssignDuplicateGroups(data.Forks)
+
 		jsonData, err := json.MarshalIndent(data, "", "  ")
 		if err != nil {
 			return exportDoneMsg{err: err}
@@ -313,6 +341,54 @@ func (m *Model) doExport(toExport []ScoredFork, filename string) tea.Cmd {
 
 		err = os.WriteFile(filename, jsonData, 0644)
 		return exportDoneMsg{path: filename, err: err}
+	}
+}
+
+// duplicateKey returns the identity used to detect forks carrying the same work,
+// and whether the fork is eligible for grouping at all.
+//
+// The key is the diff shape: same commit count, same file count, same line
+// counts. That is a strong signal but not proof — two forks could coincide. It
+// is prefixed "d:" so a future exact key (a shared head commit, which would be
+// proof) can be added under a different prefix without ambiguity. T2Data does
+// not currently resolve a head SHA.
+//
+// Forks with no divergence are never grouped: every unmodified mirror would
+// otherwise collapse into one meaningless bucket.
+func duplicateKey(ef ExportFork) (string, bool) {
+	if ef.Divergence == nil || ef.Divergence.Ahead == 0 {
+		return "", false
+	}
+	d := ef.Divergence
+	return fmt.Sprintf("d:%d/%d/%d/%d", d.Ahead, d.FilesChanged, d.Additions, d.Deletions), true
+}
+
+// AssignDuplicateGroups tags forks that carry identical work. The highest-scoring
+// member of each group is marked DuplicatePrimary so a consumer can show one row
+// and fold the rest. Groups of one are left untagged.
+func AssignDuplicateGroups(forks []ExportFork) {
+	groups := make(map[string][]int, len(forks))
+	for i, ef := range forks {
+		if key, ok := duplicateKey(ef); ok {
+			groups[key] = append(groups[key], i)
+		}
+	}
+
+	for key, idxs := range groups {
+		if len(idxs) < 2 {
+			continue
+		}
+		primary := idxs[0]
+		for _, i := range idxs[1:] {
+			if forks[i].Heat.Score > forks[primary].Heat.Score {
+				primary = i
+			}
+		}
+		for _, i := range idxs {
+			forks[i].DuplicateGroup = key
+			forks[i].DuplicateCount = len(idxs)
+			forks[i].DuplicatePrimary = i == primary
+		}
 	}
 }
 

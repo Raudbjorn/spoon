@@ -1,6 +1,27 @@
 package github
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
+
+func TestGHProviderAuth_reportsHost(t *testing.T) {
+	// Regression: AuthStatus.Host was never populated, so AuthInfo.Host came out
+	// empty and forge.CompareURL built "https:///owner/repo/compare/...". The
+	// REST/GraphQL clients hardcode the host separately, so nothing else noticed.
+	p := NewGHProvider(nil, AuthStatus{Authenticated: true, Host: defaultHost})
+
+	info, err := p.Auth(context.Background())
+	if err != nil {
+		t.Fatalf("Auth() error: %v", err)
+	}
+	if info.Host == "" {
+		t.Fatal("AuthInfo.Host is empty; compare URLs will be built without a host")
+	}
+	if info.Host != "github.com" {
+		t.Errorf("AuthInfo.Host = %q, want github.com", info.Host)
+	}
+}
 
 func TestHasScope(t *testing.T) {
 	cases := []struct {

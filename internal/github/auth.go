@@ -23,7 +23,15 @@ func CheckAuthWithOptions(opts ClientOptions) (*Client, AuthStatus, error) {
 	if err != nil {
 		return nil, AuthStatus{}, err
 	}
-	status := AuthStatus{Authenticated: client.IsAuthenticated(), TokenSource: "none"}
+	// Host must be set here: it is the only source AuthInfo.Host reads from, and
+	// callers such as forge.CompareURL interpolate it directly into a URL. The
+	// REST/GraphQL clients hardcode github.com of their own accord, so leaving it
+	// empty here goes unnoticed until a URL is built from it.
+	status := AuthStatus{
+		Authenticated: client.IsAuthenticated(),
+		Host:          defaultHost,
+		TokenSource:   "none",
+	}
 	if client.authenticated {
 		status.TokenSource = "gh"
 		if len(opts.Tokens) > 0 {

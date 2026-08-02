@@ -72,6 +72,7 @@ query($owner: String!, $name: String!, $cursor: String) {
         description
         stargazerCount
         pushedAt
+        createdAt
         isArchived
         isDisabled
         forkCount
@@ -120,6 +121,7 @@ type gqlForkNode struct {
 	Description     string `json:"description"`
 	StargazerCount  int    `json:"stargazerCount"`
 	PushedAt        string `json:"pushedAt"`
+	CreatedAt       string `json:"createdAt"`
 	IsArchived      bool   `json:"isArchived"`
 	IsDisabled      bool   `json:"isDisabled"`
 	ForkCount       int    `json:"forkCount"`
@@ -305,6 +307,7 @@ func gqlForkToForkInfo(node gqlForkNode) (ForkInfo, T1Extra) {
 		Archived:      node.IsArchived,
 		Disabled:      node.IsDisabled,
 		PushedAt:      node.PushedAt,
+		CreatedAt:     node.CreatedAt,
 		HTMLURL:       htmlURL,
 		Fork:          true,
 		Topics:        extractTopicNames(node.RepositoryTopics.Nodes),
