@@ -29,7 +29,7 @@ func (m *Model) startBranchDivergenceSweep() tea.Cmd {
 	// usually none, so a second run costs nothing.
 	pending := make([]forge.T1Data, 0, len(m.forks))
 	for _, sf := range m.forks {
-		if sf.Fork.DivergentBranches == nil {
+		if sf.Fork.DivergentBranches == nil || sf.Fork.BranchFingerprint == "" {
 			pending = append(pending, sf.Fork)
 		}
 	}
@@ -43,8 +43,8 @@ func (m *Model) startBranchDivergenceSweep() tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		counts, err := prov.DivergentBranchCounts(ctx, pending)
-		return branchDivergenceMsg{counts: counts, err: err}
+		counts, fps, err := prov.DivergentBranchCounts(ctx, pending)
+		return branchDivergenceMsg{counts: counts, fingerprints: fps, err: err}
 	}
 }
 
@@ -59,16 +59,23 @@ func (m *Model) handleBranchDivergence(msg branchDivergenceMsg) (tea.Model, tea.
 
 	applied := false
 	for i := range m.forks {
-		n, ok := msg.counts[m.forks[i].Fork.ID]
-		if !ok {
-			continue
+		id := m.forks[i].Fork.ID
+		if n, ok := msg.counts[id]; ok {
+			count := n
+			m.forks[i].Fork.DivergentBranches = &count
+			applied = true
 		}
-		count := n
-		m.forks[i].Fork.DivergentBranches = &count
-		applied = true
+		if fp, ok := msg.fingerprints[id]; ok && fp != "" {
+			m.forks[i].Fork.BranchFingerprint = fp
+			applied = true
+		}
 	}
 
 	if applied {
+		// The fingerprint is the strongest duplicate key, so re-group and
+		// re-sort now that it has landed.
+		m.assignDuplicateGroups()
+		m.sortForks()
 		m.persistForkListCounts()
 	}
 	return m, nil

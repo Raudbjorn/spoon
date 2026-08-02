@@ -2,9 +2,12 @@ package github
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -61,6 +64,19 @@ type BranchCounts struct {
 	// distinct from a present zero, which means "checked, nothing divergent".
 	Divergent map[string]int
 
+	// Fingerprint maps fork ID to an identity built from the tip OIDs of its
+	// divergent branches — the branches with aheadBy > 0. Two forks sharing a
+	// fingerprint carry byte-identical work.
+	//
+	// Only divergent branches contribute. A fork's default branch is usually
+	// just its own sync state (observed in qvr/nonraid: three forks with
+	// byte-identical work branches but three different "main" tips), so
+	// including every branch would make identical forks look distinct.
+	//
+	// Empty for a fork with no divergent branch: an inert mirror has no work to
+	// be identical about, and grouping them all together would be meaningless.
+	Fingerprint map[string]string
+
 	// Truncated lists forks with more than branchPageSize branches, whose
 	// counts are lower bounds.
 	Truncated []string
@@ -97,7 +113,10 @@ type refsNode struct {
 	Refs struct {
 		TotalCount int `json:"totalCount"`
 		Nodes      []struct {
-			Name string `json:"name"`
+			Name   string `json:"name"`
+			Target struct {
+				OID string `json:"oid"`
+			} `json:"target"`
 		} `json:"nodes"`
 	} `json:"refs"`
 }
@@ -160,7 +179,11 @@ func (c *Client) FetchDivergentBranchCounts(
 	if baseOwner == "" || baseRepo == "" {
 		return nil, fmt.Errorf("divergent branches: upstream not resolved (Parent not called)")
 	}
-	out := &BranchCounts{Divergent: make(map[string]int, len(forks))}
+	out := &BranchCounts{
+		Divergent:   make(map[string]int, len(forks)),
+		Fingerprint: make(map[string]string, len(forks)),
+	}
+	divergentOIDs := make(map[string][]string, len(forks))
 	if len(forks) == 0 {
 		return out, nil
 	}
@@ -171,6 +194,7 @@ func (c *Client) FetchDivergentBranchCounts(
 	type branchRef struct {
 		forkID string
 		branch string
+		oid    string
 	}
 	var pairs []branchRef
 
@@ -180,7 +204,7 @@ func (c *Client) FetchDivergentBranchCounts(
 		var q strings.Builder
 		q.WriteString("query {\n")
 		for i, f := range batch {
-			fmt.Fprintf(&q, "  f%d: repository(owner: %s, name: %s) { refs(refPrefix: \"refs/heads/\", first: %d) { totalCount nodes { name } } }\n",
+			fmt.Fprintf(&q, "  f%d: repository(owner: %s, name: %s) { refs(refPrefix: \"refs/heads/\", first: %d) { totalCount nodes { name target { oid } } } }\n",
 				i, gqlString(f.Owner), gqlString(f.Name), branchPageSize)
 		}
 		q.WriteString("  rateLimit { limit remaining used resetAt cost }\n}")
@@ -209,7 +233,7 @@ func (c *Client) FetchDivergentBranchCounts(
 			// reported as a real zero rather than as unknown.
 			out.Divergent[f.ID] = 0
 			for _, n := range node.Refs.Nodes {
-				pairs = append(pairs, branchRef{forkID: f.ID, branch: n.Name})
+				pairs = append(pairs, branchRef{forkID: f.ID, branch: n.Name, oid: n.Target.OID})
 			}
 		}
 	}
@@ -260,11 +284,48 @@ func (c *Client) FetchDivergentBranchCounts(
 			}
 			if cmp.AheadBy > 0 {
 				out.Divergent[p.forkID]++
+				if p.oid != "" {
+					divergentOIDs[p.forkID] = append(divergentOIDs[p.forkID], p.oid)
+				}
 			}
 		}
 	}
 
+	for forkID, oids := range divergentOIDs {
+		out.Fingerprint[forkID] = BranchFingerprint(oids)
+	}
+
 	return out, nil
+}
+
+// BranchFingerprint reduces a fork's divergent-branch tip OIDs to one identity
+// string. Order-independent, so two forks whose branches were listed in
+// different orders still match.
+//
+// Exported so the same construction is reachable from tests and from callers
+// that obtain OIDs another way.
+func BranchFingerprint(oids []string) string {
+	if len(oids) == 0 {
+		return ""
+	}
+	uniq := make([]string, 0, len(oids))
+	seen := make(map[string]struct{}, len(oids))
+	for _, o := range oids {
+		if o == "" {
+			continue
+		}
+		if _, dup := seen[o]; dup {
+			continue
+		}
+		seen[o] = struct{}{}
+		uniq = append(uniq, o)
+	}
+	if len(uniq) == 0 {
+		return ""
+	}
+	sort.Strings(uniq)
+	sum := sha256.Sum256([]byte(strings.Join(uniq, "\n")))
+	return hex.EncodeToString(sum[:])[:16]
 }
 
 type chunkRange struct{ lo, hi int }

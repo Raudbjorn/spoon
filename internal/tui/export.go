@@ -322,13 +322,18 @@ func (m *Model) doExport(toExport []ScoredFork, filename string) tea.Cmd {
 			}
 
 			ef.WhyDistinct = GenerateWhyDistinct(sf, parent)
+
+			// Grouping is computed on the model (duplicates.go) so the export
+			// and the screen cannot disagree about what is a duplicate.
+			ef.SiblingGroup = sf.SiblingGroup
+			ef.SiblingCount = sf.SiblingCount
+			ef.SiblingPrimary = sf.SiblingPrimary
+
 			data.Forks = append(data.Forks, ef)
 		}
 
 		data.TotalCount = len(data.Forks)
 		data.Degraded = data.EnrichedCount < data.TotalCount
-
-		AssignSiblingGroups(data.Forks)
 
 		jsonData, err := json.MarshalIndent(data, "", "  ")
 		if err != nil {
@@ -337,56 +342,6 @@ func (m *Model) doExport(toExport []ScoredFork, filename string) tea.Cmd {
 
 		err = os.WriteFile(filename, jsonData, 0644)
 		return exportDoneMsg{path: filename, err: err}
-	}
-}
-
-// siblingKey returns the identity used to detect forks carrying the same work,
-// and whether the fork is eligible for grouping at all.
-//
-// A shared head commit is proof: the fork tips are the same object. Where the
-// head SHA is unavailable (not every provider path resolves one) fall back to
-// the diff shape, which is a strong but not conclusive signal — hence the "d:"
-// prefix, so a consumer can tell the two apart.
-//
-// Forks with no divergence are never grouped: every unmodified mirror would
-// otherwise collapse into one meaningless bucket.
-func siblingKey(ef ExportFork) (string, bool) {
-	if ef.Divergence == nil || ef.Divergence.Ahead == 0 {
-		return "", false
-	}
-	if sha := ef.Divergence.HeadSHA; sha != "" {
-		return "h:" + sha, true
-	}
-	d := ef.Divergence
-	return fmt.Sprintf("d:%d/%d/%d/%d", d.Ahead, d.FilesChanged, d.Additions, d.Deletions), true
-}
-
-// AssignSiblingGroups tags forks that carry identical work. The highest-scoring
-// member of each group is marked SiblingPrimary so a consumer can show one row
-// and fold the rest. Groups of one are left untagged.
-func AssignSiblingGroups(forks []ExportFork) {
-	groups := make(map[string][]int, len(forks))
-	for i, ef := range forks {
-		if key, ok := siblingKey(ef); ok {
-			groups[key] = append(groups[key], i)
-		}
-	}
-
-	for key, idxs := range groups {
-		if len(idxs) < 2 {
-			continue
-		}
-		primary := idxs[0]
-		for _, i := range idxs[1:] {
-			if forks[i].Heat.Score > forks[primary].Heat.Score {
-				primary = i
-			}
-		}
-		for _, i := range idxs {
-			forks[i].SiblingGroup = key
-			forks[i].SiblingCount = len(idxs)
-			forks[i].SiblingPrimary = i == primary
-		}
 	}
 }
 

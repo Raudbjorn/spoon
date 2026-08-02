@@ -76,6 +76,14 @@ type CompareResult struct {
 	BaseCommit      Commit       `json:"base_commit"`
 	MergeBaseCommit Commit       `json:"merge_base_commit"`
 	HTMLURL         string       `json:"html_url"`
+
+	// BaseSHA/HeadSHA are resolved by the adapter rather than returned under
+	// these names by the API, and are persisted so a cached compare keeps the
+	// exact identity of the work. Without them a warm run silently loses the
+	// SHA-grade sibling key and degrades to the fuzzy diff-shape fallback,
+	// producing different grouping than the cold run that wrote the cache.
+	BaseSHA string `json:"base_sha,omitempty"`
+	HeadSHA string `json:"head_sha,omitempty"`
 }
 
 // FileChange represents a changed file in a compare response.
@@ -151,6 +159,10 @@ type T1Extra struct {
 	// DivergentBranches is the count of branches ahead of upstream. A pointer
 	// so a cache entry written before the sweep ran is "unknown", not zero.
 	DivergentBranches *int `json:"DivergentBranches,omitempty"`
+
+	// BranchFingerprint identifies the fork's divergent work by its branch tip
+	// OIDs; two forks sharing one carry identical work.
+	BranchFingerprint string `json:"BranchFingerprint,omitempty"`
 }
 
 // BranchInfo describes a branch with its last commit timestamp.

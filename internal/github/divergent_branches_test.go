@@ -197,3 +197,93 @@ func TestSlidingChunks(t *testing.T) {
 		t.Error("degenerate inputs must yield no chunks")
 	}
 }
+
+// The qvr/nonraid case: three forks whose divergent branches are byte-identical
+// but whose default branches differ. Fingerprinting every branch would make
+// them look distinct; fingerprinting only the divergent ones identifies them.
+func TestFetchDivergentBranchCounts_FingerprintIgnoresNonDivergentBranches(t *testing.T) {
+	// Each fork: main (own sync state, ahead 0) + two shared work branches.
+	phaseA := `{"data":{
+		"f0":{"refs":{"totalCount":3,"nodes":[
+			{"name":"main","target":{"oid":"5a7ada59"}},
+			{"name":"nonraid-6.1","target":{"oid":"8b00ca26"}},
+			{"name":"nonraid-6.12","target":{"oid":"57e2f4ae"}}]}},
+		"f1":{"refs":{"totalCount":3,"nodes":[
+			{"name":"main","target":{"oid":"1a7dcd04"}},
+			{"name":"nonraid-6.1","target":{"oid":"8b00ca26"}},
+			{"name":"nonraid-6.12","target":{"oid":"57e2f4ae"}}]}},
+		"f2":{"refs":{"totalCount":3,"nodes":[
+			{"name":"main","target":{"oid":"66f9eec4"}},
+			{"name":"nonraid-6.1","target":{"oid":"a5e9f813"}},
+			{"name":"nonraid-6.12","target":{"oid":"6e88ee4f"}}]}},
+		` + rl + `}}`
+	// main ahead 0 everywhere; work branches ahead > 0.
+	phaseB := `{"data":{"repository":{"ref":{
+		"c0":{"aheadBy":0},"c1":{"aheadBy":10},"c2":{"aheadBy":12},
+		"c3":{"aheadBy":0},"c4":{"aheadBy":10},"c5":{"aheadBy":12},
+		"c6":{"aheadBy":0},"c7":{"aheadBy":9},"c8":{"aheadBy":9}
+	}},` + rl + `}}`
+
+	srv, _ := graphQLStub(t, phaseA, phaseB)
+	c := newTestClientGQL(t, srv)
+
+	got, err := c.FetchDivergentBranchCounts(context.Background(), "qvr", "nonraid", "main",
+		[]ForkTarget{
+			{ID: "emtee40/nonraid", Owner: "emtee40", Name: "nonraid"},
+			{ID: "ghenry22/nonraid", Owner: "ghenry22", Name: "nonraid"},
+			{ID: "Gelma/nonraid", Owner: "Gelma", Name: "nonraid"},
+		})
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+
+	a := got.Fingerprint["emtee40/nonraid"]
+	b := got.Fingerprint["ghenry22/nonraid"]
+	g := got.Fingerprint["Gelma/nonraid"]
+
+	if a == "" || b == "" || g == "" {
+		t.Fatalf("missing fingerprints: emtee40=%q ghenry22=%q Gelma=%q", a, b, g)
+	}
+	if a != b {
+		t.Errorf("forks with byte-identical work branches got different fingerprints:\n  %s\n  %s\n"+
+			"their default branches differ and must not contribute", a, b)
+	}
+	if a == g {
+		t.Error("Gelma has different branch tips and must not share the fingerprint")
+	}
+}
+
+// A fork with nothing ahead has no work to be identical about.
+func TestFetchDivergentBranchCounts_InertForkHasNoFingerprint(t *testing.T) {
+	phaseA := `{"data":{"f0":{"refs":{"totalCount":1,"nodes":[
+		{"name":"main","target":{"oid":"deadbeef"}}]}},` + rl + `}}`
+	phaseB := `{"data":{"repository":{"ref":{"c0":{"aheadBy":0}}},` + rl + `}}`
+
+	srv, _ := graphQLStub(t, phaseA, phaseB)
+	c := newTestClientGQL(t, srv)
+
+	got, err := c.FetchDivergentBranchCounts(context.Background(), "up", "stream", "main",
+		[]ForkTarget{{ID: "mirror/repo", Owner: "mirror", Name: "repo"}})
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if fp := got.Fingerprint["mirror/repo"]; fp != "" {
+		t.Errorf("inert fork got fingerprint %q; every mirror would collapse into one group", fp)
+	}
+}
+
+func TestBranchFingerprint(t *testing.T) {
+	a := BranchFingerprint([]string{"aaa", "bbb"})
+	if b := BranchFingerprint([]string{"bbb", "aaa"}); a != b {
+		t.Error("fingerprint must not depend on branch order")
+	}
+	if d := BranchFingerprint([]string{"aaa", "bbb", "aaa"}); a != d {
+		t.Error("duplicate OIDs must not change the fingerprint")
+	}
+	if BranchFingerprint(nil) != "" || BranchFingerprint([]string{""}) != "" {
+		t.Error("empty input must yield an empty fingerprint, never a hash of nothing")
+	}
+	if BranchFingerprint([]string{"aaa"}) == BranchFingerprint([]string{"bbb"}) {
+		t.Error("different OIDs must not collide")
+	}
+}

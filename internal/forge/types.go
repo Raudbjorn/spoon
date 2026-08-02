@@ -114,6 +114,12 @@ type T1Data struct {
 	// diverges anywhere".
 	DivergentBranches *int
 
+	// BranchFingerprint identifies this fork's divergent work by the tip OIDs of
+	// its ahead-of-upstream branches. Two forks sharing a non-empty fingerprint
+	// carry byte-identical work — one fork re-forked, or both branched from the
+	// same point. Empty means unknown or nothing divergent, and never groups.
+	BranchFingerprint string
+
 	// Fork lineage
 	SourceFullPath string // network root used for compare baseline; never the direct parent.
 	ParentFullPath string // direct parent
@@ -256,7 +262,9 @@ type CommitFileProvider interface {
 // A fork absent from the returned map was not resolved, which is distinct from
 // a present zero.
 type BranchDivergenceProvider interface {
-	DivergentBranchCounts(ctx context.Context, forks []T1Data) (map[string]int, error)
+	// Returns per-fork divergent-branch counts and per-fork work fingerprints.
+	// Forks sharing a non-empty fingerprint carry byte-identical work.
+	DivergentBranchCounts(ctx context.Context, forks []T1Data) (counts map[string]int, fingerprints map[string]string, err error)
 }
 
 // CompareBaselineSetter is an optional provider capability for restoring the

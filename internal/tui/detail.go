@@ -101,7 +101,7 @@ func (m Model) viewDetail() string {
 		if label == "" {
 			label = sf.Heat.ClusterID
 		}
-		// "noise" gets a minimal block — no label noise, no siblings.
+		// "noise" gets a minimal block — no label noise, no peers.
 		isNoise := sf.Heat.ClusterID == "noise"
 
 		line := fmt.Sprintf("│ Cluster: %s", label)
@@ -136,12 +136,12 @@ func (m Model) viewDetail() string {
 		}
 
 		if !isNoise {
-			siblings := m.collectSiblings(sf.Heat.ClusterID, sf.Fork.ID)
-			if len(siblings) > 0 {
+			peers := m.collectClusterPeers(sf.Heat.ClusterID, sf.Fork.ID)
+			if len(peers) > 0 {
 				const maxShown = 5
-				header := fmt.Sprintf("│  Siblings (%d):", len(siblings))
+				header := fmt.Sprintf("│  Cluster peers (%d):", len(peers))
 				b.WriteString(fitBoxLine(header, boxWidth) + "\n")
-				shown := siblings
+				shown := peers
 				extra := 0
 				if len(shown) > maxShown {
 					extra = len(shown) - maxShown
@@ -257,10 +257,10 @@ func pad(n int, ch string) string {
 	return strings.Repeat(ch, n)
 }
 
-// collectSiblings returns the fork IDs of other members of the given
+// collectClusterPeers returns the fork IDs of other members of the given
 // cluster, sorted by Heat.Score descending. The caller's own fork (by
 // ID) is excluded.
-func (m Model) collectSiblings(clusterID, selfID string) []string {
+func (m Model) collectClusterPeers(clusterID, selfID string) []string {
 	type sib struct {
 		id    string
 		score float64
