@@ -276,6 +276,13 @@ func (m *Model) handleCachedLoad(msg cachedLoadMsg) (tea.Model, tea.Cmd) {
 		m.applyCachedCompares(msg.cache)
 	}
 
+	// Group immediately. Cached forks already carry everything the fingerprint
+	// and head-SHA keys need, so waiting for the first enrichment batch would
+	// render the initial table without badges or gutters for no reason.
+	// applyCachedCompares sorts, so gather has to follow it, not precede it.
+	m.assignDuplicateGroups()
+	m.gatherDuplicateGroups(0, len(m.forks))
+
 	cmds := []tea.Cmd{}
 	if bc := m.startBranchDivergenceSweep(); bc != nil {
 		cmds = append(cmds, bc)
@@ -445,8 +452,12 @@ func (m *Model) processPendingUpdates() (tea.Model, tea.Cmd) {
 	m.pendingUpdates = m.pendingUpdates[:0]
 
 	// Re-group after each settled batch: T2 landing can sharpen a fork's key
-	// from the diff-shape fallback to an exact head SHA.
+	// from the diff-shape fallback to an exact head SHA. Gather rather than
+	// re-sort: the rows are already in the user's chosen order and re-sorting
+	// mid-enrichment would move them under the cursor, but without gathering
+	// the freshly-formed groups would render non-contiguous.
 	m.assignDuplicateGroups()
+	m.gatherDuplicateGroups(0, len(m.forks))
 
 	if m.enrichDone >= m.enrichTotal && m.enriching {
 		m.enriching = false
