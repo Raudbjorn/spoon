@@ -4,6 +4,9 @@
 
 # Exports
 spoon-export-*.json
+# The TUI's save prompt suggests a name the user can append to, so exports land
+# as spoon-export-....json.2 and similar. Match any trailing suffix.
+spoon-export-*.json.*
 
 # Local Python tooling (sidecar venv was removed; future Python experiments should be inlined)
 embed/sidecar/
