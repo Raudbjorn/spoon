@@ -329,6 +329,18 @@ func compareToT2(r CompareResult) forge.T2Data {
 	mna := computeMNAFromDiffs(diffs)
 	fcr := featureCommitRatio(ahead)
 
+	// Identity of the compared work: the merge base it diverged from and the
+	// tip it diverged to. Both are needed to tell two forks carrying the same
+	// commits apart from two that merely have similar diff statistics.
+	baseSHA := r.MergeBaseCommit.SHA
+	if baseSHA == "" {
+		baseSHA = r.BaseCommit.SHA
+	}
+	headSHA := ""
+	if len(r.Commits) > 0 {
+		headSHA = r.Commits[len(r.Commits)-1].SHA
+	}
+
 	return forge.T2Data{
 		AheadCount:         r.AheadBy,
 		BehindCount:        r.BehindBy,
@@ -336,6 +348,8 @@ func compareToT2(r CompareResult) forge.T2Data {
 		TotalAdditions:     totalAdd,
 		TotalDeletions:     totalDel,
 		FeatureCommitRatio: fcr,
+		BaseSHA:            baseSHA,
+		HeadSHA:            headSHA,
 		Diffs:              diffs,
 		Commits:            ahead,
 	}

@@ -172,6 +172,8 @@ type T2Data struct {
 	ActiveBranch       string  // non-empty when IsBranchWork == true
 	Upstreamed         bool    // true when the active branch tip heads a merged upstream PR (work already integrated)
 	UpstreamedPR       int     // the merged upstream PR number when Upstreamed == true
+	BaseSHA            string  // merge-base commit used for the comparison
+	HeadSHA            string  // resolved tip of the compared fork branch
 	Diffs              []FileDiff
 	Commits            []AheadCommit // used by the T3 lone-wolf gate
 	PatchSkipReason    string

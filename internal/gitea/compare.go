@@ -82,6 +82,10 @@ func (p *Provider) Compare(ctx context.Context, fork forge.T1Data, branch string
 	if capped {
 		t2.AheadCount = len(commits) // lower bound: at least this many
 	}
+	if !capped {
+		t2.BaseSHA = mergeBase
+		t2.HeadSHA = commits[0].SHA
+	}
 
 	// 2. Behind: intra-upstream compare (merge-base is in upstream, so this works).
 	if !capped {
