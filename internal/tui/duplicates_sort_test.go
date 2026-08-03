@@ -319,3 +319,87 @@ func TestGatherDuplicateGroups_EmitsEveryMemberOnce(t *testing.T) {
 		t.Errorf("list length changed to %d", len(m.forks))
 	}
 }
+
+// handleBranchDivergence re-sorts the whole list once the sweep lands — an
+// async event that can arrive well after the user has moved the cursor onto a
+// specific row. Without capturing and restoring the selection, a re-sort
+// landing between the user looking at a fork and acting on it (space to mark,
+// enter to open) would silently apply to whichever fork the reorder happened
+// to leave under the cursor instead.
+func TestHandleBranchDivergence_PreservesCursorAcrossResort(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+
+	m := &Model{
+		sortCol: "heat",
+		parent:  &forge.ParentData{FullName: "owner/repo", DefaultBranch: "main"},
+		forks: []ScoredFork{
+			{Fork: forge.T1Data{ID: "low/x"}, Heat: heat.HeatResult{Score: 5}},
+			{Fork: forge.T1Data{ID: "target/x"}, Heat: heat.HeatResult{Score: 10}},
+			{Fork: forge.T1Data{ID: "high/x"}, Heat: heat.HeatResult{Score: 50}},
+		},
+	}
+	// Cursor is on target/x, the middle-scored fork.
+	m.cursor = 1
+
+	n := 2
+	m.handleBranchDivergence(branchDivergenceMsg{
+		counts: map[string]int{"target/x": n},
+	})
+
+	if got := m.forks[m.cursor].Fork.ID; got != "target/x" {
+		t.Errorf("cursor now points at %q after the resort, want %q", got, "target/x")
+	}
+}
+
+// processPendingUpdates's post-batch gather can also move rows; the same
+// preservation must apply there.
+func TestProcessPendingUpdates_PreservesCursorAcrossGather(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+
+	m := &Model{
+		sortCol: "heat",
+		parent:  &forge.ParentData{FullName: "owner/repo", DefaultBranch: "main"},
+		forks: []ScoredFork{
+			// Two forks that will become a duplicate group once T2 lands, plus
+			// an unrelated fork sitting between them before gather runs.
+			{Fork: forge.T1Data{ID: "a/x"}, Heat: heat.HeatResult{Score: 10}},
+			{Fork: forge.T1Data{ID: "target/x"}, Heat: heat.HeatResult{Score: 10}},
+			{Fork: forge.T1Data{ID: "b/x"}, Heat: heat.HeatResult{Score: 10}},
+		},
+		pendingUpdates: []tier2ResultMsg{
+			{forkID: "a/x", t2: forge.T2Data{Performed: true, AheadCount: 10, HeadSHA: "shared"}},
+			{forkID: "b/x", t2: forge.T2Data{Performed: true, AheadCount: 10, HeadSHA: "shared"}},
+		},
+		enrichTotal: 2,
+		enriching:   true,
+	}
+	m.cursor = 1 // on target/x, between the two forks that are about to group
+
+	m.processPendingUpdates()
+
+	if got := m.forks[m.cursor].Fork.ID; got != "target/x" {
+		t.Errorf("cursor now points at %q after gather, want %q", got, "target/x")
+	}
+}
+
+// BranchCounts.Truncated used to be computed by the sweep and then discarded —
+// GHProvider.DivergentBranchCounts dropped it, so a fork with more than 100
+// branches silently reported a lower-bound count as if it were exact. It must
+// now reach the user.
+func TestHandleBranchDivergence_SurfacesTruncatedForks(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+
+	m := &Model{
+		parent: &forge.ParentData{FullName: "owner/repo", DefaultBranch: "main"},
+		forks:  []ScoredFork{{Fork: forge.T1Data{ID: "big/x"}}},
+	}
+
+	m.handleBranchDivergence(branchDivergenceMsg{
+		counts:    map[string]int{"big/x": 5},
+		truncated: []string{"big/x"},
+	})
+
+	if m.errMsg == "" {
+		t.Error("truncated forks were reported but nothing was surfaced to the user")
+	}
+}

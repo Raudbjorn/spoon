@@ -22,7 +22,10 @@ type branchDivergenceMsg struct {
 	// fingerprints maps fork ID to its divergent-branch identity; forks sharing
 	// one carry identical work.
 	fingerprints map[string]string
-	err          error
+	// truncated lists fork IDs whose branch list was too large to enumerate in
+	// full — their counts and fingerprints are lower bounds, not exact.
+	truncated []string
+	err       error
 }
 
 type parentFetchedMsg struct {
