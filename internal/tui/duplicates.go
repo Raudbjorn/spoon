@@ -127,19 +127,30 @@ func (m *Model) gatherDuplicateGroups(lo, hi int) {
 		// disturbing where the group as a whole sits.
 		emitted[g] = true
 		idxs := members[g]
+		// Emit by index rather than by re-testing SiblingPrimary, so every
+		// member is emitted exactly once regardless of how many are flagged.
+		// assignDuplicateGroups marks exactly one, but a second flagged member
+		// would otherwise be dropped here and copy() below would silently
+		// truncate, leaving stale rows in the tail of the section.
+		primary := -1
 		for _, j := range idxs {
 			if section[j].SiblingPrimary {
 				out = append(out, section[j])
+				primary = j
 				break
 			}
 		}
 		for _, j := range idxs {
-			if !section[j].SiblingPrimary {
+			if j != primary {
 				out = append(out, section[j])
 			}
 		}
 	}
 
+	if len(out) != len(section) {
+		// Unreachable by construction; bail rather than truncate the list.
+		return
+	}
 	copy(section, out)
 }
 

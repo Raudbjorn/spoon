@@ -324,45 +324,7 @@ func (m *Model) cycleSortColumn() {
 }
 
 func (m *Model) sortForks() {
-	sort.SliceStable(m.forks, func(i, j int) bool {
-		var less bool
-		switch m.sortCol {
-		case "heat":
-			less = m.forks[i].Heat.Score < m.forks[j].Heat.Score
-		case "stars":
-			less = m.forks[i].Fork.Stars < m.forks[j].Fork.Stars
-		case "forks":
-			less = m.forks[i].Fork.SubForkCount < m.forks[j].Fork.SubForkCount
-		case "ahead":
-			ai, aj := 0, 0
-			if m.forks[i].T2 != nil {
-				ai = m.forks[i].T2.AheadCount
-			}
-			if m.forks[j].T2 != nil {
-				aj = m.forks[j].T2.AheadCount
-			}
-			less = ai < aj
-		case "branches":
-			// Unknown (nil) sorts as -1 so it lands below a genuine 0 rather
-			// than tying with it.
-			bi, bj := -1, -1
-			if n := m.forks[i].Fork.DivergentBranches; n != nil {
-				bi = *n
-			}
-			if n := m.forks[j].Fork.DivergentBranches; n != nil {
-				bj = *n
-			}
-			less = bi < bj
-		case "pushed":
-			less = m.forks[i].Fork.PushedAt.Before(m.forks[j].Fork.PushedAt)
-		default:
-			less = m.forks[i].Heat.Score < m.forks[j].Heat.Score
-		}
-		if m.sortAsc {
-			return less
-		}
-		return !less
-	})
+	sort.SliceStable(m.forks, m.forkLess())
 	// Duplicates share a score, so they usually land adjacent — but ties are
 	// not ordered by group, so an unrelated fork with identical stats could
 	// sort between two members and fall inside their gutter line. Gather makes
@@ -373,6 +335,65 @@ func (m *Model) sortForks() {
 	}
 	if m.cursor < 0 {
 		m.cursor = 0
+	}
+}
+
+// forkLess returns the row comparator for the active sort column. Extracted so
+// the strict-weak-ordering property can be asserted directly rather than
+// inferred from sorted output.
+func (m *Model) forkLess() func(i, j int) bool {
+	return func(i, j int) bool {
+		// less and equal are computed separately so ties can be reported as
+		// "neither less nor greater". Deriving the descending case as !less
+		// alone would return true for both (i,j) and (j,i) on a tie, which is
+		// not a strict weak ordering: sort is then free to reorder equal
+		// elements, defeating SliceStable and making the row order that
+		// gatherDuplicateGroups anchors to non-deterministic.
+		var less, equal bool
+		switch m.sortCol {
+		case "heat":
+			a, b := m.forks[i].Heat.Score, m.forks[j].Heat.Score
+			less, equal = a < b, a == b
+		case "stars":
+			a, b := m.forks[i].Fork.Stars, m.forks[j].Fork.Stars
+			less, equal = a < b, a == b
+		case "forks":
+			a, b := m.forks[i].Fork.SubForkCount, m.forks[j].Fork.SubForkCount
+			less, equal = a < b, a == b
+		case "ahead":
+			ai, aj := 0, 0
+			if m.forks[i].T2 != nil {
+				ai = m.forks[i].T2.AheadCount
+			}
+			if m.forks[j].T2 != nil {
+				aj = m.forks[j].T2.AheadCount
+			}
+			less, equal = ai < aj, ai == aj
+		case "branches":
+			// Unknown (nil) sorts as -1 so it lands below a genuine 0 rather
+			// than tying with it.
+			bi, bj := -1, -1
+			if n := m.forks[i].Fork.DivergentBranches; n != nil {
+				bi = *n
+			}
+			if n := m.forks[j].Fork.DivergentBranches; n != nil {
+				bj = *n
+			}
+			less, equal = bi < bj, bi == bj
+		case "pushed":
+			a, b := m.forks[i].Fork.PushedAt, m.forks[j].Fork.PushedAt
+			less, equal = a.Before(b), a.Equal(b)
+		default:
+			a, b := m.forks[i].Heat.Score, m.forks[j].Heat.Score
+			less, equal = a < b, a == b
+		}
+		if equal {
+			return false
+		}
+		if m.sortAsc {
+			return less
+		}
+		return !less
 	}
 }
 

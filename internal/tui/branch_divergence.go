@@ -25,11 +25,19 @@ func (m *Model) startBranchDivergenceSweep() tea.Cmd {
 		return nil
 	}
 
-	// Only sweep forks whose count is still unknown. On a cache hit that is
+	// Only sweep forks whose data is still missing. On a cache hit that is
 	// usually none, so a second run costs nothing.
+	//
+	// A fork with zero divergent branches legitimately has no fingerprint —
+	// there is no work to fingerprint — so an empty fingerprint only counts as
+	// missing when the fork actually has divergent branches. Testing the
+	// fingerprint unconditionally would re-sweep every inert mirror on every
+	// run, which is most of a typical fork network.
 	pending := make([]forge.T1Data, 0, len(m.forks))
 	for _, sf := range m.forks {
-		if sf.Fork.DivergentBranches == nil || sf.Fork.BranchFingerprint == "" {
+		count := sf.Fork.DivergentBranches
+		needsSweep := count == nil || (*count > 0 && sf.Fork.BranchFingerprint == "")
+		if needsSweep {
 			pending = append(pending, sf.Fork)
 		}
 	}

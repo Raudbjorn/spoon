@@ -215,3 +215,107 @@ func TestViewTable_GutterKeepsHeaderAndRowsAligned(t *testing.T) {
 		t.Error("legend is missing the 👯 entry")
 	}
 }
+
+// A fork with zero divergent branches has no work to fingerprint, so its empty
+// fingerprint is the correct final state — not missing data. Treating it as
+// missing re-swept every inert mirror on every run, which is most of a typical
+// fork network, silently defeating the cache.
+func TestStartBranchDivergenceSweep_DoesNotResweepInertForks(t *testing.T) {
+	zero, three := 0, 3
+	m := &Model{forks: []ScoredFork{
+		// Inert: counted, legitimately no fingerprint. Must not be re-swept.
+		{Fork: forge.T1Data{ID: "inert/x", DivergentBranches: &zero}},
+		// Complete: counted and fingerprinted. Must not be re-swept.
+		{Fork: forge.T1Data{ID: "done/x", DivergentBranches: &three, BranchFingerprint: "fp"}},
+		// Genuinely incomplete: has divergent branches but no fingerprint.
+		{Fork: forge.T1Data{ID: "partial/x", DivergentBranches: &three}},
+		// Never swept at all.
+		{Fork: forge.T1Data{ID: "fresh/x"}},
+	}}
+
+	var swept []string
+	for _, sf := range m.forks {
+		count := sf.Fork.DivergentBranches
+		if count == nil || (*count > 0 && sf.Fork.BranchFingerprint == "") {
+			swept = append(swept, sf.Fork.ID)
+		}
+	}
+
+	want := map[string]bool{"partial/x": true, "fresh/x": true}
+	if len(swept) != len(want) {
+		t.Fatalf("sweep set = %v, want exactly %v", swept, []string{"partial/x", "fresh/x"})
+	}
+	for _, id := range swept {
+		if !want[id] {
+			t.Errorf("%s was queued for re-sweep but its data is complete", id)
+		}
+	}
+}
+
+// Go's sort requires a strict weak ordering: less(i,j) and less(j,i) must not
+// both be true. Deriving the descending case as !less alone returns true both
+// ways on a tie, which frees sort to reorder equal elements and makes the row
+// order gatherDuplicateGroups anchors to non-deterministic.
+func TestSortForks_ComparatorIsAStrictWeakOrdering(t *testing.T) {
+	zero := 0
+	mk := func(id string) ScoredFork {
+		// Every field the comparator reads is identical across these forks.
+		return ScoredFork{
+			Fork: forge.T1Data{ID: id, Stars: 7, SubForkCount: 2, DivergentBranches: &zero},
+			Heat: heat.HeatResult{Score: 27},
+			T2:   &forge.T2Data{Performed: true, AheadCount: 10},
+		}
+	}
+	for _, col := range []string{"heat", "stars", "ahead", "branches", "forks", "pushed"} {
+		for _, asc := range []bool{true, false} {
+			m := &Model{sortCol: col, sortAsc: asc, forks: []ScoredFork{mk("a/x"), mk("b/x")}}
+			cmp := m.forkLess()
+			if cmp(0, 1) && cmp(1, 0) {
+				t.Errorf("%s asc=%v: comparator reports both a<b and b<a for equal forks", col, asc)
+			}
+		}
+	}
+}
+
+// Ties must also keep their input order, which is the whole point of using
+// SliceStable — and what makes a duplicate group's anchor position repeatable.
+func TestSortForks_TiesKeepInputOrder(t *testing.T) {
+	mk := func(id string) ScoredFork {
+		return ScoredFork{Fork: forge.T1Data{ID: id}, Heat: heat.HeatResult{Score: 27}}
+	}
+	for _, asc := range []bool{true, false} {
+		m := &Model{sortCol: "heat", sortAsc: asc, forks: []ScoredFork{mk("a"), mk("b"), mk("c")}}
+		m.sortForks()
+		got := []string{m.forks[0].Fork.ID, m.forks[1].Fork.ID, m.forks[2].Fork.ID}
+		if got[0] != "a" || got[1] != "b" || got[2] != "c" {
+			t.Errorf("asc=%v: equal-scored forks reordered to %v, want [a b c]", asc, got)
+		}
+	}
+}
+
+// gatherDuplicateGroups must emit every member exactly once. If a second member
+// were ever flagged primary, the old shape dropped it and the copy() below
+// truncated, leaving a stale row in the tail.
+func TestGatherDuplicateGroups_EmitsEveryMemberOnce(t *testing.T) {
+	m := &Model{forks: []ScoredFork{
+		{Fork: forge.T1Data{ID: "a/x"}, SiblingGroup: "g", SiblingCount: 3, SiblingPrimary: true},
+		{Fork: forge.T1Data{ID: "outsider/x"}},
+		// Deliberately inconsistent: a second primary in the same group.
+		{Fork: forge.T1Data{ID: "b/x"}, SiblingGroup: "g", SiblingCount: 3, SiblingPrimary: true},
+		{Fork: forge.T1Data{ID: "c/x"}, SiblingGroup: "g", SiblingCount: 3},
+	}}
+	m.gatherDuplicateGroups(0, len(m.forks))
+
+	seen := map[string]int{}
+	for _, f := range m.forks {
+		seen[f.Fork.ID]++
+	}
+	for _, id := range []string{"a/x", "b/x", "c/x", "outsider/x"} {
+		if seen[id] != 1 {
+			t.Errorf("%s appears %d times, want exactly 1: %v", id, seen[id], m.forks)
+		}
+	}
+	if len(m.forks) != 4 {
+		t.Errorf("list length changed to %d", len(m.forks))
+	}
+}
