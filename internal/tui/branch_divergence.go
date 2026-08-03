@@ -2,7 +2,9 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -51,8 +53,8 @@ func (m *Model) startBranchDivergenceSweep() tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		counts, fps, err := prov.DivergentBranchCounts(ctx, pending)
-		return branchDivergenceMsg{counts: counts, fingerprints: fps, err: err}
+		counts, fps, truncated, err := prov.DivergentBranchCounts(ctx, pending)
+		return branchDivergenceMsg{counts: counts, fingerprints: fps, truncated: truncated, err: err}
 	}
 }
 
@@ -81,10 +83,24 @@ func (m *Model) handleBranchDivergence(msg branchDivergenceMsg) (tea.Model, tea.
 
 	if applied {
 		// The fingerprint is the strongest duplicate key, so re-group and
-		// re-sort now that it has landed.
+		// re-sort now that it has landed. This runs asynchronously after the
+		// table is already on screen, so capture the fork under the cursor and
+		// restore it afterward — otherwise a re-sort landing between the user
+		// looking at a row and acting on it (space to mark, enter to open)
+		// would apply to whichever fork the reorder happened to leave there.
+		var selectedID string
+		if m.cursor >= 0 && m.cursor < len(m.forks) {
+			selectedID = m.forks[m.cursor].Fork.ID
+		}
 		m.assignDuplicateGroups()
 		m.sortForks()
+		m.restoreCursorByID(selectedID)
 		m.persistForkListCounts()
+	}
+
+	if len(msg.truncated) > 0 {
+		m.errMsg = fmt.Sprintf("%d fork(s) have more branches than could be listed; their BRANCH counts are lower bounds", len(msg.truncated))
+		m.errMsgTime = time.Now()
 	}
 	return m, nil
 }

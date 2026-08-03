@@ -73,16 +73,16 @@ var _ forge.CompareBaselineSetter = (*GHProvider)(nil)
 //
 // Compares against the network root (sourceOwner/sourceRepo), not a fork's
 // direct parent — planning/spoon-plan.md:159.
-func (p *GHProvider) DivergentBranchCounts(ctx context.Context, forks []forge.T1Data) (map[string]int, map[string]string, error) {
+func (p *GHProvider) DivergentBranchCounts(ctx context.Context, forks []forge.T1Data) (map[string]int, map[string]string, []string, error) {
 	targets := make([]ForkTarget, 0, len(forks))
 	for _, f := range forks {
 		targets = append(targets, ForkTarget{ID: f.ID, Owner: f.Owner, Name: f.Name})
 	}
 	counts, err := p.client.FetchDivergentBranchCounts(ctx, p.sourceOwner, p.sourceRepo, p.sourceDefaultBranch, targets)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return counts.Divergent, counts.Fingerprint, nil
+	return counts.Divergent, counts.Fingerprint, counts.Truncated, nil
 }
 
 var _ forge.BranchDivergenceProvider = (*GHProvider)(nil)
@@ -377,8 +377,16 @@ func compareToT2(r CompareResult) forge.T2Data {
 	if baseSHA == "" {
 		baseSHA = r.BaseCommit.SHA
 	}
+	// GitHub's compare endpoint caps the returned commit list (250 at time of
+	// writing) and reports the true count separately as TotalCommits. Above
+	// that cap, Commits[len-1] is just the deepest commit the API happened to
+	// return, not the fork's actual tip — trusting it would let two forks that
+	// share a base and their first N ahead-commits, then diverge, collide on
+	// a HeadSHA neither of them actually has at that position. Only trust it
+	// when the list is known-complete, mirroring the Gitea provider's !capped
+	// guard for the same reason.
 	headSHA := ""
-	if len(r.Commits) > 0 {
+	if len(r.Commits) > 0 && r.TotalCommits == len(r.Commits) {
 		headSHA = r.Commits[len(r.Commits)-1].SHA
 	}
 

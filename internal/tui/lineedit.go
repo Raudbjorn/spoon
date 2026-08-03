@@ -21,6 +21,14 @@ import (
 // newline, and embedding one in a filename or repo slug yields a broken path
 // or a lookup that fails for no visible reason.
 func typedText(msg tea.KeyMsg) string {
+	// An Alt-modified rune is a keyboard shortcut (alt+f, alt+b, ...), not
+	// text: bubbletea reports it as the same KeyRunes/KeySpace shape as a
+	// plain keystroke, distinguished only by this flag. A bracketed paste
+	// never carries Alt, so this cannot swallow a real paste.
+	if msg.Alt {
+		return ""
+	}
+
 	var raw string
 	switch msg.Type {
 	case tea.KeyRunes:

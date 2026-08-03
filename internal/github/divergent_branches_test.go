@@ -182,6 +182,25 @@ func TestGqlString_EscapesLiterals(t *testing.T) {
 	}
 }
 
+// strconv.Quote (Go string syntax) and JSON/GraphQL string syntax diverge for
+// bytes Go escapes as \v, \a, or \xNN — none of which JSON accepts. Unreachable
+// via a real git ref name or GitHub login today, but gqlString's own doc
+// promises "GraphQL string syntax is JSON's", so assert the output actually
+// is legal JSON rather than merely legal Go.
+func TestGqlString_ProducesValidJSON(t *testing.T) {
+	for _, in := range []string{"main", `fix"quote`, "tab\there", "bell\a", "vtab\v"} {
+		out := gqlString(in)
+		var decoded string
+		if err := json.Unmarshal([]byte(out), &decoded); err != nil {
+			t.Errorf("gqlString(%q) = %s, not valid JSON: %v", in, out, err)
+			continue
+		}
+		if decoded != in {
+			t.Errorf("gqlString(%q) round-trips to %q", in, decoded)
+		}
+	}
+}
+
 func TestSlidingChunks(t *testing.T) {
 	got := slidingChunks(7, 3)
 	want := []chunkRange{{0, 3}, {3, 6}, {6, 7}}
@@ -285,5 +304,114 @@ func TestBranchFingerprint(t *testing.T) {
 	}
 	if BranchFingerprint([]string{"aaa"}) == BranchFingerprint([]string{"bbb"}) {
 		t.Error("different OIDs must not collide")
+	}
+}
+
+// baseBranch being empty used to fall back to "HEAD", which GraphQL's
+// ref(qualifiedName:) does not resolve — "refs/heads/HEAD" simply returns
+// null with no error. That reproduced this file's own bug: a comparison that
+// never ran, reported back as a confident zero for every fork. Empty
+// baseBranch must be rejected the same way an empty owner/repo already is.
+func TestFetchDivergentBranchCounts_RejectsEmptyBaseBranch(t *testing.T) {
+	srv, _ := graphQLStub(t, "", "")
+	c := newTestClientGQL(t, srv)
+
+	if _, err := c.FetchDivergentBranchCounts(context.Background(), "up", "stream", "",
+		[]ForkTarget{{ID: "o/r", Owner: "o", Name: "r"}}); err == nil {
+		t.Fatal("expected an error when baseBranch is empty")
+	}
+}
+
+// If the upstream ref itself fails to resolve — a renamed or deleted base
+// branch, or (before the previous fix) the unqualified "HEAD" fallback —
+// GraphQL returns "ref": null with no accompanying error, since ref is a
+// nullable field. Every aliased compare nested under it is then necessarily
+// absent too. Continuing past that silently leaves the phase-A-seeded zero in
+// place for every fork in the whole sweep; it must instead surface as a hard
+// error.
+func TestFetchDivergentBranchCounts_FailsLoudlyWhenUpstreamRefIsNull(t *testing.T) {
+	phaseA := `{"data":{"f0":{"refs":{"totalCount":1,"nodes":[
+		{"name":"main","target":{"oid":"aaa"}}]}},` + rl + `}}`
+	phaseB := `{"data":{"repository":{"ref":null},` + rl + `}}`
+
+	srv, _ := graphQLStub(t, phaseA, phaseB)
+	c := newTestClientGQL(t, srv)
+
+	got, err := c.FetchDivergentBranchCounts(context.Background(), "up", "stream", "renamed-branch",
+		[]ForkTarget{{ID: "o/r", Owner: "o", Name: "r"}})
+	if err == nil {
+		t.Fatalf("expected an error when the upstream ref does not resolve, got %+v", got)
+	}
+}
+
+// A fork whose every phase-B alias comes back NOT_FOUND (e.g. deleted or
+// renamed between phase A and phase B, which isPartialLookupError exists to
+// tolerate) was never actually compared. The phase-A seed must be retracted
+// for it — it must read as unknown, not as "checked, nothing diverges" — while
+// a fork with at least one answered branch keeps its real count.
+func TestFetchDivergentBranchCounts_UnansweredForkIsRetractedNotZero(t *testing.T) {
+	phaseA := `{"data":{
+		"f0":{"refs":{"totalCount":1,"nodes":[{"name":"main","target":{"oid":"aaa"}}]}},
+		"f1":{"refs":{"totalCount":1,"nodes":[{"name":"main","target":{"oid":"bbb"}}]}},
+		` + rl + `}}`
+	// c0 (f0's only branch) is answered with aheadBy 0. c1 (f1's only branch)
+	// comes back null, as a renamed/deleted branch would.
+	phaseB := `{"data":{"repository":{"ref":{"c0":{"aheadBy":0},"c1":null}},` + rl + `},
+		"errors":[{"type":"NOT_FOUND","path":["repository","ref","c1"],"message":"Could not resolve head ref"}]}`
+
+	srv, _ := graphQLStub(t, phaseA, phaseB)
+	c := newTestClientGQL(t, srv)
+
+	got, err := c.FetchDivergentBranchCounts(context.Background(), "up", "stream", "main",
+		[]ForkTarget{
+			{ID: "answered/repo", Owner: "answered", Name: "repo"},
+			{ID: "vanished/repo", Owner: "vanished", Name: "repo"},
+		})
+	if err != nil {
+		t.Fatalf("a partial NOT_FOUND must not fail the sweep: %v", err)
+	}
+
+	if n, ok := got.Divergent["answered/repo"]; !ok || n != 0 {
+		t.Errorf("answered/repo = (%d, %v), want (0, true) — it got a real answer", n, ok)
+	}
+	if _, ok := got.Divergent["vanished/repo"]; ok {
+		t.Error("vanished/repo was never answered in phase B but was reported as a real zero")
+	}
+}
+
+// Phase B used to derive the owner by splitting ForkTarget.ID on "/", ignoring
+// the Owner field the caller supplied — ID is documented as an opaque
+// provider key, and only happens to look like "owner/name" for GitHub. Assert
+// the query is built from Owner directly by using an ID that would split to
+// the wrong owner if the old derivation were still in place.
+func TestFetchDivergentBranchCounts_UsesForkTargetOwnerNotID(t *testing.T) {
+	phaseA := `{"data":{"f0":{"refs":{"totalCount":1,"nodes":[
+		{"name":"main","target":{"oid":"aaa"}}]}},` + rl + `}}`
+	phaseB := `{"data":{"repository":{"ref":{"c0":{"aheadBy":3}}},` + rl + `}}`
+
+	srv, docs := graphQLStub(t, phaseA, phaseB)
+	c := newTestClientGQL(t, srv)
+
+	// An opaque ID whose "owner" (if split on "/") would be wrong.
+	got, err := c.FetchDivergentBranchCounts(context.Background(), "up", "stream", "main",
+		[]ForkTarget{{ID: "12345", Owner: "realowner", Name: "repo"}})
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if n := got.Divergent["12345"]; n != 1 {
+		t.Errorf("divergent = %d, want 1", n)
+	}
+
+	found := false
+	for _, doc := range docs() {
+		if strings.Contains(doc, `"realowner:main"`) {
+			found = true
+		}
+		if strings.Contains(doc, `"12345:main"`) {
+			t.Errorf("query used the opaque ID as an owner:\n%s", doc)
+		}
+	}
+	if !found {
+		t.Error(`expected the phase-B query to contain "realowner:main"`)
 	}
 }

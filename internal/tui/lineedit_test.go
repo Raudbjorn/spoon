@@ -176,3 +176,20 @@ func TestHandleKey_NavigationKeysAreNotTypedAsText(t *testing.T) {
 		t.Errorf("navigation keys were typed into the field: %q", m.input)
 	}
 }
+
+// alt+f arrives as the same KeyRunes{Runes:['f']} shape as a plain 'f'
+// keystroke, distinguished only by the Alt flag. Without checking it,
+// typedText inserted the shortcut's letter into the field instead of treating
+// it as a keybinding the caller should handle.
+func TestTypedText_RejectsAltModifiedRunes(t *testing.T) {
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f"), Alt: true}
+	if got := typedText(msg); got != "" {
+		t.Errorf("typedText(alt+f) = %q, want empty — alt+f is a shortcut, not text", got)
+	}
+
+	// A bracketed paste never carries Alt, so this must not affect real pastes.
+	paste := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("owner/repo"), Paste: true}
+	if got := typedText(paste); got != "owner/repo" {
+		t.Errorf("typedText(paste) = %q, want %q", got, "owner/repo")
+	}
+}

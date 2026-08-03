@@ -84,6 +84,14 @@ type CompareResult struct {
 	// producing different grouping than the cold run that wrote the cache.
 	BaseSHA string `json:"base_sha,omitempty"`
 	HeadSHA string `json:"head_sha,omitempty"`
+
+	// FetchedAt is this compare's own freshness timestamp, stamped by
+	// SaveCompare. It exists so a compare write never has to touch
+	// CacheEntry.FetchedAt (which governs the fork list's own TTL) in order to
+	// record its own — see CompareValid and SaveCompare. Empty on entries
+	// written before this field existed; CompareValid falls back to the
+	// shared entry timestamp for those.
+	FetchedAt string `json:"fetched_at,omitempty"`
 }
 
 // FileChange represents a changed file in a compare response.

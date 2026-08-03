@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 
 	ghAPI "github.com/cli/go-gh/v2/pkg/api"
@@ -75,6 +74,13 @@ type BranchCounts struct {
 	//
 	// Empty for a fork with no divergent branch: an inert mirror has no work to
 	// be identical about, and grouping them all together would be meaningless.
+	//
+	// A fork listed in Truncated has a fingerprint built from only the first
+	// branchPageSize branches, so two genuinely identical forks can fingerprint
+	// differently if either one's full branch set was cut off before the
+	// matching pair of branches was reached. This is the same lower-bound
+	// caveat Truncated already carries for the count, applied to the identity
+	// derived from it.
 	Fingerprint map[string]string
 
 	// Truncated lists forks with more than branchPageSize branches, whose
@@ -160,7 +166,17 @@ func isPartialLookupError(err error) bool {
 // JSON's, so this both quotes and escapes — necessary because branch names and
 // owner logins reach the query as literals, not bound variables (aliases and
 // arguments in a dynamically built document cannot be parameterised).
-func gqlString(s string) string { return strconv.Quote(s) }
+//
+// json.Marshal, not strconv.Quote: Go's quoted-string syntax accepts escapes
+// JSON/GraphQL do not (\v, \a, hex byte escapes for non-UTF-8 input), so a
+// value containing one would have produced a syntax error in the query
+// document. Unreachable today — git ref-name and GitHub login rules forbid
+// the bytes that would trigger it — but json.Marshal is the exactly-right
+// tool and no more code.
+func gqlString(s string) string {
+	b, _ := json.Marshal(s) // marshaling a string cannot fail
+	return string(b)
+}
 
 // FetchDivergentBranchCounts counts, per fork, the branches carrying commits
 // absent from baseOwner/baseRepo@baseBranch.
@@ -176,7 +192,15 @@ func (c *Client) FetchDivergentBranchCounts(
 	baseOwner, baseRepo, baseBranch string,
 	forks []ForkTarget,
 ) (*BranchCounts, error) {
-	if baseOwner == "" || baseRepo == "" {
+	// baseBranch must be a real branch name, not left to default. GitHub's REST
+	// compare endpoint accepts the "HEAD" shorthand for "the base repo's
+	// default branch", which is where that fallback convention comes from
+	// elsewhere in this package — but GraphQL's ref(qualifiedName:) has no such
+	// shorthand, and "refs/heads/HEAD" simply does not resolve. Silently
+	// defaulting to it here reproduced the exact bug this file exists to fix:
+	// a comparison that never ran, reported back as a confident zero for every
+	// fork in the sweep.
+	if baseOwner == "" || baseRepo == "" || baseBranch == "" {
 		return nil, fmt.Errorf("divergent branches: upstream not resolved (Parent not called)")
 	}
 	out := &BranchCounts{
@@ -187,16 +211,20 @@ func (c *Client) FetchDivergentBranchCounts(
 	if len(forks) == 0 {
 		return out, nil
 	}
-	if baseBranch == "" {
-		baseBranch = "HEAD"
-	}
 
 	type branchRef struct {
 		forkID string
+		owner  string
 		branch string
 		oid    string
 	}
 	var pairs []branchRef
+	// forksAttempted tracks which forks had at least one branch queued for
+	// phase B, so a fork whose every alias comes back unanswered (rather than
+	// answered with a real ahead count) can be told apart from one that was
+	// genuinely checked and found to diverge nowhere.
+	forksAttempted := make(map[string]bool, len(forks))
+	answered := make(map[string]bool, len(forks))
 
 	// Phase A — enumerate branches.
 	for _, chunk := range slidingChunks(len(forks), refsBatchSize) {
@@ -230,10 +258,13 @@ func (c *Client) FetchDivergentBranchCounts(
 				out.Truncated = append(out.Truncated, f.ID)
 			}
 			// Seed a zero so a fork that resolved but diverges nowhere is
-			// reported as a real zero rather than as unknown.
+			// reported as a real zero rather than as unknown. Phase B may
+			// retract this if none of the fork's branches actually get an
+			// answer there.
 			out.Divergent[f.ID] = 0
 			for _, n := range node.Refs.Nodes {
-				pairs = append(pairs, branchRef{forkID: f.ID, branch: n.Name, oid: n.Target.OID})
+				forksAttempted[f.ID] = true
+				pairs = append(pairs, branchRef{forkID: f.ID, owner: f.Owner, branch: n.Name, oid: n.Target.OID})
 			}
 		}
 	}
@@ -242,7 +273,9 @@ func (c *Client) FetchDivergentBranchCounts(
 		return out, nil
 	}
 
-	// Phase B — compare each branch against the upstream ref.
+	// Phase B — compare each branch against the upstream ref. qualifiedName
+	// needs a fully-qualified ref; baseBranch is validated non-empty above, so
+	// this only ever adds the refs/heads/ prefix a caller omitted.
 	qualified := baseBranch
 	if !strings.HasPrefix(qualified, "refs/") {
 		qualified = "refs/heads/" + qualified
@@ -255,12 +288,8 @@ func (c *Client) FetchDivergentBranchCounts(
 		fmt.Fprintf(&q, "  repository(owner: %s, name: %s) {\n", gqlString(baseOwner), gqlString(baseRepo))
 		fmt.Fprintf(&q, "    ref(qualifiedName: %s) {\n", gqlString(qualified))
 		for i, p := range batch {
-			owner := p.forkID
-			if idx := strings.IndexByte(owner, '/'); idx > 0 {
-				owner = owner[:idx]
-			}
 			fmt.Fprintf(&q, "      c%d: compare(headRef: %s) { aheadBy }\n",
-				i, gqlString(owner+":"+p.branch))
+				i, gqlString(p.owner+":"+p.branch))
 		}
 		q.WriteString("    }\n  }\n  rateLimit { limit remaining used resetAt cost }\n}")
 
@@ -269,6 +298,20 @@ func (c *Client) FetchDivergentBranchCounts(
 			if !isPartialLookupError(err) {
 				return nil, fmt.Errorf("compare fork branches: %w", err)
 			}
+		}
+
+		// A resolved ref always yields a non-nil map: this chunk's batch is
+		// non-empty by construction (slidingChunks never emits an empty
+		// range), so the query always names at least one alias under ref, and
+		// GraphQL includes every requested field in its response even when
+		// that field's own value is null. A nil map here therefore means ref
+		// itself failed to resolve — a renamed or deleted base branch, or (as
+		// this used to be reachable via) an unqualified "HEAD" — not that
+		// every child alias individually came back empty. Continuing past
+		// that would fabricate a zero for every fork in the batch, which is
+		// the exact bug this file exists to eliminate; fail loudly instead.
+		if resp.Repository.Ref == nil {
+			return nil, fmt.Errorf("compare fork branches: upstream ref %q did not resolve", qualified)
 		}
 
 		for i, p := range batch {
@@ -282,12 +325,23 @@ func (c *Client) FetchDivergentBranchCounts(
 			if err := json.Unmarshal(raw, &cmp); err != nil {
 				continue
 			}
+			answered[p.forkID] = true
 			if cmp.AheadBy > 0 {
 				out.Divergent[p.forkID]++
 				if p.oid != "" {
 					divergentOIDs[p.forkID] = append(divergentOIDs[p.forkID], p.oid)
 				}
 			}
+		}
+	}
+
+	// A fork whose every branch came back unanswered (all NOT_FOUND or null,
+	// e.g. deleted or renamed between phase A and phase B) was never actually
+	// checked. The phase-A seed asserted a real zero for that case; retract it
+	// so the fork reads as unknown rather than as "checked, nothing diverges".
+	for forkID := range forksAttempted {
+		if !answered[forkID] {
+			delete(out.Divergent, forkID)
 		}
 	}
 

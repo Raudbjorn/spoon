@@ -84,6 +84,7 @@ func (p *Provider) Compare(ctx context.Context, fork forge.T1Data, branch string
 	fcr := featureCommitRatio(aheadCommits)
 
 	t2 := forge.T2Data{
+		Performed:          true,
 		AheadCount:         len(aheadCommits),
 		BehindCount:        behindCount,
 		MNA:                mna,

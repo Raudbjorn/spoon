@@ -264,7 +264,10 @@ type CommitFileProvider interface {
 type BranchDivergenceProvider interface {
 	// Returns per-fork divergent-branch counts and per-fork work fingerprints.
 	// Forks sharing a non-empty fingerprint carry byte-identical work.
-	DivergentBranchCounts(ctx context.Context, forks []T1Data) (counts map[string]int, fingerprints map[string]string, err error)
+	// truncated lists fork IDs whose branch list was too large to enumerate in
+	// full, so their counts (and any fingerprint derived from them) are lower
+	// bounds rather than exact.
+	DivergentBranchCounts(ctx context.Context, forks []T1Data) (counts map[string]int, fingerprints map[string]string, truncated []string, err error)
 }
 
 // CompareBaselineSetter is an optional provider capability for restoring the

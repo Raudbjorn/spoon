@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -88,6 +89,14 @@ func (e *CacheEntry) ForkListValid() bool {
 // so a new call site cannot forget the check. It also self-heals caches written
 // before the field existed: those entries unmarshal to Performed=false and are
 // re-fetched rather than served as a fork with no divergence.
+//
+// Freshness is measured from the compare's own FetchedAt, not the entry's:
+// each compare ages out independently, so one fork's fresh write cannot make
+// every other fork's stale compare look valid, and (see SaveCompare) writing
+// one no longer has to touch the fork list's own timestamp to record its own.
+// A compare saved before this field existed has no FetchedAt of its own; it
+// falls back to the entry-level timestamp, which was accurate for it at the
+// time it was written, until it ages out on its own.
 func (e *CacheEntry) CompareValid(forkID int64) bool {
 	if e == nil || e.Compares == nil {
 		return false
@@ -96,11 +105,19 @@ func (e *CacheEntry) CompareValid(forkID int64) bool {
 	if !ok || !c.Performed {
 		return false
 	}
-	return e.isWithinTTL(compareTTL)
+	ts := c.FetchedAt
+	if ts == "" {
+		ts = e.FetchedAt
+	}
+	return withinTTL(ts, compareTTL)
 }
 
 func (e *CacheEntry) isWithinTTL(ttl time.Duration) bool {
-	t, err := time.Parse(time.RFC3339, e.FetchedAt)
+	return withinTTL(e.FetchedAt, ttl)
+}
+
+func withinTTL(ts string, ttl time.Duration) bool {
+	t, err := time.Parse(time.RFC3339, ts)
 	if err != nil {
 		return false
 	}
@@ -131,9 +148,16 @@ func SaveForkList(owner, repo string, parent RepoInfo, forks []ForkInfo, extras 
 }
 
 // SaveCompare saves a compare result for a specific fork. A compare that was
-// never performed is not persisted: writing it would both serve a fabricated
-// "identical" for the next 24h and, because the write refreshes FetchedAt,
-// extend the fork list's own TTL so the bad entry renews itself indefinitely.
+// never performed is not persisted: writing it would serve a fabricated
+// "identical" for the next 24h.
+//
+// This stamps the compare's own FetchedAt and deliberately leaves the entry's
+// FetchedAt untouched. That field governs ForkListValid, and a compare write
+// must not refresh it: doing so let a single compare save resurrect an
+// already-expired fork list, silently preventing it from ever aging out under
+// continuous use (a new compare typically lands well within every 24h window,
+// which kept the list looking fresh forever) — the same shape of bug this
+// field's Performed gate exists to close, one layer up.
 func SaveCompare(owner, repo string, forkID int64, compare CompareResult) error {
 	if !compare.Performed {
 		return nil
@@ -146,15 +170,19 @@ func SaveCompare(owner, repo string, forkID int64, compare CompareResult) error 
 
 	existing := LoadCache(owner, repo)
 	if existing == nil {
-		// No cache entry yet — can't save compare without parent/forks context
+		// No cache entry yet — can't save compare without parent/forks context.
+		// A caller checking only the error can't tell this apart from "saved" —
+		// this is the observable trace of that silent decline.
+		slog.Debug("github: skipping compare save, no fork-list cache entry yet",
+			"owner", owner, "repo", repo, "fork_id", forkID)
 		return nil
 	}
 
 	if existing.Compares == nil {
 		existing.Compares = make(map[int64]CompareResult)
 	}
+	compare.FetchedAt = time.Now().UTC().Format(time.RFC3339)
 	existing.Compares[forkID] = compare
-	existing.FetchedAt = time.Now().UTC().Format(time.RFC3339)
 
 	return writeCache(path, existing)
 }

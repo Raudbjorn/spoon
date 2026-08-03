@@ -91,9 +91,10 @@ func (m *Model) assignDuplicateGroups() {
 // so they usually land adjacent — but ties are not ordered by group, so an
 // unrelated fork with the same heat/ahead/behind can sort between two members
 // and fall inside the group's gutter line, which would assert an identity it
-// does not have. Gathering anchors each group at its primary's sorted position
-// and pulls the remaining members up behind it, leaving every other fork's
-// relative order untouched.
+// does not have. Gathering anchors each group at the sorted position of
+// whichever member is reached first — not necessarily the primary — and pulls
+// the rest up behind it with the primary placed first, leaving every other
+// fork's relative order untouched.
 func (m *Model) gatherDuplicateGroups(lo, hi int) {
 	if hi-lo < 2 {
 		return
@@ -176,6 +177,14 @@ func gutterOrdinals(forks []ScoredFork) map[string]int {
 // for a duplicate-group member, a space otherwise. Every member of a contiguous
 // group draws the same glyph and colour, so the group reads as one unbroken
 // line; ordinals ensures the next group along is a different colour.
+//
+// Under cluster grouping (sortForksByCluster), gatherDuplicateGroups runs
+// per cluster block, so a group whose members land in two different clusters
+// renders as two separate runs that happen to share a colour — ordinals is
+// keyed by group across the whole list, not per fragment. This is deliberate:
+// the two runs genuinely are the same group, just split by a cluster boundary
+// that already breaks the visual line with a header row in between, so there
+// is nothing for the colour to falsely claim continuity with.
 //
 // Always exactly one cell wide, or every column to the right would shift.
 func duplicateGutter(sf ScoredFork, ordinals map[string]int) string {

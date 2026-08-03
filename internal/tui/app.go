@@ -453,11 +453,18 @@ func (m *Model) processPendingUpdates() (tea.Model, tea.Cmd) {
 
 	// Re-group after each settled batch: T2 landing can sharpen a fork's key
 	// from the diff-shape fallback to an exact head SHA. Gather rather than
-	// re-sort: the rows are already in the user's chosen order and re-sorting
-	// mid-enrichment would move them under the cursor, but without gathering
-	// the freshly-formed groups would render non-contiguous.
+	// re-sort: the rows are already in the user's chosen order, and gathering
+	// only moves the members of a freshly-formed group next to each other
+	// instead of reordering everything. It can still move rows, though — so
+	// capture the fork under the cursor first and restore it afterward, same
+	// as the sweep handler does for its own re-sort.
+	var selectedID string
+	if m.cursor >= 0 && m.cursor < len(m.forks) {
+		selectedID = m.forks[m.cursor].Fork.ID
+	}
 	m.assignDuplicateGroups()
 	m.gatherDuplicateGroups(0, len(m.forks))
+	m.restoreCursorByID(selectedID)
 
 	if m.enrichDone >= m.enrichTotal && m.enriching {
 		m.enriching = false
