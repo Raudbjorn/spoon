@@ -94,6 +94,12 @@ type Client struct {
 	global   *limiter
 	webDiff  *webdiff.Client
 
+	// localBranchScan gates ScanBranchesLocal (localbranchscan.go), the
+	// git-ls-remote/fetch/merge-base alternative to the REST/GraphQL-only
+	// ScanBranches. Opt-in: shells out to a git subprocess, a real failure
+	// mode ScanBranches doesn't have.
+	localBranchScan bool
+
 	rest                *ghAPI.RESTClient
 	gql                 *ghAPI.GraphQLClient
 	authenticated       bool
@@ -277,6 +283,13 @@ func (c *Client) EnableWebDiff(cookie string) {
 		}
 		return c.global.Wait(ctx)
 	})
+}
+
+// EnableLocalBranchScan turns on the git-ls-remote/fetch/merge-base branch
+// scan (see ScanBranchesLocal in localbranchscan.go) in place of the
+// REST/GraphQL-only ScanBranches when the default branch shows no work.
+func (c *Client) EnableLocalBranchScan() {
+	c.localBranchScan = true
 }
 
 type unauthTransport struct{ base http.RoundTripper }
