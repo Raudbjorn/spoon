@@ -96,6 +96,37 @@ type RepoSnapshot struct {
 	Parent        *forge.ParentData
 	ForksSyncedAt time.Time
 	Forks         []CachedFork
+
+	// byID indexes Forks by forge ID, built once by LoadRepoSnapshot so
+	// per-fork lookups are O(1) — callers do one lookup per live fork, and a
+	// linear scan would make that quadratic over the network size.
+	byID map[string]int
+}
+
+// Fork returns the cached fork with the given forge ID, or nil.
+func (s *RepoSnapshot) Fork(id string) *CachedFork {
+	if s == nil {
+		return nil
+	}
+	if i, ok := s.byID[id]; ok {
+		return &s.Forks[i]
+	}
+	return nil
+}
+
+// ValidT2 returns the stored compare for the fork matching t1, when the
+// stored pushed_at equals the live one. Validity is content-addressed: a push
+// moves pushed_at, so equality means the stored compare still describes the
+// fork's current state — no TTL involved. Returns nil on miss or staleness.
+//
+// The returned T2 carries no file patch text (see LoadRepoSnapshot); diff
+// stats, commits and triage scalars are complete.
+func (s *RepoSnapshot) ValidT2(t1 forge.T1Data) *forge.T2Data {
+	cf := s.Fork(t1.ID)
+	if cf == nil || cf.T2 == nil || !cf.T1.PushedAt.Equal(t1.PushedAt) {
+		return nil
+	}
+	return cf.T2
 }
 
 // CachedFork is one fork reconstructed from the store. T2 is nil when the fork
@@ -549,6 +580,13 @@ func (s *Store) initialize(ctx context.Context) error {
 				// over an already-migrated schema (user_version lost or reset)
 				// must tolerate the column existing — the CREATE TABLE steps get
 				// the same tolerance from IF NOT EXISTS.
+				//
+				// Coupled to SQLite's error text (verified against the vendored
+				// go-libsql): if a driver upgrade rewords "duplicate column
+				// name", this tolerance silently disappears and a version-reset
+				// database starts failing to open. TestReinitializeOverExistingSchema
+				// pins the behavior, so a reword breaks loudly in CI, not in the
+				// field.
 				if strings.HasPrefix(stmt, "ALTER TABLE") && strings.Contains(err.Error(), "duplicate column name") {
 					continue
 				}
@@ -803,8 +841,17 @@ func headSHA(t2 *forge.T2Data) string {
 // LoadRepoSnapshot reconstructs the cached upstream and forks for one repo.
 // It returns nil (no error) when the repo has never been persisted. Forks are
 // returned in fork_key order; a fork whose compare was never fetched has a nil
-// T2. Freshness is the caller's call: compare each fork's T1.PushedAt with the
-// live listing, and ForksSyncedAt for list-level staleness.
+// T2. Freshness is the caller's call: use ValidT2 per fork, and ForksSyncedAt
+// for list-level staleness.
+//
+// File patch text is deliberately NOT hydrated: patches can run to megabytes
+// per fork and the whole snapshot stays pinned for a session, so eagerly
+// loading them for every fork — including ones whose compare never gets
+// served — would dominate memory for zero benefit. Patch-dependent output
+// (--files NDJSON, the diff embedding modality) degrades to diff stats for
+// cache-served compares, the same state live paths are in whenever a patch
+// was skipped at fetch time. The rows on disk keep their patches; only this
+// read path skips them.
 func (s *Store) LoadRepoSnapshot(ctx context.Context, provider, host, owner, name string) (*RepoSnapshot, error) {
 	repoKey := RepoKey(provider, host, owner, name)
 	var parentJSON, syncedAt string
@@ -855,13 +902,17 @@ func (s *Store) LoadRepoSnapshot(ctx context.Context, provider, host, owner, nam
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	snap.byID = make(map[string]int, len(snap.Forks))
+	for i := range snap.Forks {
+		snap.byID[snap.Forks[i].T1.ID] = i
+	}
 	if len(byKey) == 0 {
 		return snap, nil
 	}
 
 	// Rehydrate the relational halves of T2: compare files, then commits with
 	// their per-commit files.
-	fileRows, err := s.db.QueryContext(ctx, `SELECT cf.fork_key, cf.path, cf.previous_path, cf.status, cf.additions, cf.deletions, cf.patch, cf.patch_source
+	fileRows, err := s.db.QueryContext(ctx, `SELECT cf.fork_key, cf.path, cf.previous_path, cf.status, cf.additions, cf.deletions, cf.patch_source
 		FROM compare_files cf JOIN forks f ON f.fork_key=cf.fork_key WHERE f.repo_key=? ORDER BY cf.fork_key, cf.path`, repoKey)
 	if err != nil {
 		return nil, fmt.Errorf("load compare files for %s: %w", repoKey, err)
@@ -870,11 +921,9 @@ func (s *Store) LoadRepoSnapshot(ctx context.Context, provider, host, owner, nam
 	for fileRows.Next() {
 		var forkKey string
 		var fd forge.FileDiff
-		var patch sql.NullString
-		if err := fileRows.Scan(&forkKey, &fd.Path, &fd.PreviousPath, &fd.Status, &fd.Additions, &fd.Deletions, &patch, &fd.PatchSource); err != nil {
+		if err := fileRows.Scan(&forkKey, &fd.Path, &fd.PreviousPath, &fd.Status, &fd.Additions, &fd.Deletions, &fd.PatchSource); err != nil {
 			return nil, err
 		}
-		fd.Patch = patch.String
 		if p, ok := byKey[forkKey]; ok {
 			snap.Forks[p.idx].T2.Diffs = append(snap.Forks[p.idx].T2.Diffs, fd)
 		}
@@ -911,7 +960,7 @@ func (s *Store) LoadRepoSnapshot(ctx context.Context, provider, host, owner, nam
 		return nil, err
 	}
 
-	cfRows, err := s.db.QueryContext(ctx, `SELECT cf.fork_key, cf.sha, cf.path, cf.previous_path, cf.status, cf.additions, cf.deletions, cf.patch, cf.patch_source
+	cfRows, err := s.db.QueryContext(ctx, `SELECT cf.fork_key, cf.sha, cf.path, cf.previous_path, cf.status, cf.additions, cf.deletions, cf.patch_source
 		FROM commit_files cf JOIN forks f ON f.fork_key=cf.fork_key WHERE f.repo_key=? ORDER BY cf.fork_key, cf.sha, cf.path`, repoKey)
 	if err != nil {
 		return nil, fmt.Errorf("load commit files for %s: %w", repoKey, err)
@@ -920,11 +969,9 @@ func (s *Store) LoadRepoSnapshot(ctx context.Context, provider, host, owner, nam
 	for cfRows.Next() {
 		var forkKey, sha string
 		var fd forge.FileDiff
-		var patch sql.NullString
-		if err := cfRows.Scan(&forkKey, &sha, &fd.Path, &fd.PreviousPath, &fd.Status, &fd.Additions, &fd.Deletions, &patch, &fd.PatchSource); err != nil {
+		if err := cfRows.Scan(&forkKey, &sha, &fd.Path, &fd.PreviousPath, &fd.Status, &fd.Additions, &fd.Deletions, &fd.PatchSource); err != nil {
 			return nil, err
 		}
-		fd.Patch = patch.String
 		p, ok := byKey[forkKey]
 		if !ok {
 			continue

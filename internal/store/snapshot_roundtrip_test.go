@@ -93,8 +93,25 @@ func TestRepoSnapshotRoundTrip(t *testing.T) {
 	if cf.T2 == nil {
 		t.Fatal("t2 not reconstructed")
 	}
-	if !reflect.DeepEqual(cf.T2, t2) {
-		t.Errorf("t2 mismatch:\n got %+v\nwant %+v", cf.T2, t2)
+	// Patch text is deliberately not hydrated (it can run to megabytes per
+	// fork and the snapshot stays pinned for a session); everything else must
+	// round-trip exactly.
+	wantT2 := *t2
+	wantT2.Diffs = append([]forge.FileDiff(nil), t2.Diffs...)
+	for i := range wantT2.Diffs {
+		wantT2.Diffs[i].Patch = ""
+	}
+	if !reflect.DeepEqual(cf.T2, &wantT2) {
+		t.Errorf("t2 mismatch:\n got %+v\nwant %+v", cf.T2, &wantT2)
+	}
+	// The lookup index and validity check work off the hydrated snapshot.
+	if got.ValidT2(*t1) == nil {
+		t.Error("ValidT2 missed a fork with matching pushed_at")
+	}
+	stale := *t1
+	stale.PushedAt = stale.PushedAt.Add(time.Hour)
+	if got.ValidT2(stale) != nil {
+		t.Error("ValidT2 served a compare for a fork pushed since it was recorded")
 	}
 	if cf.Heat != 12.5 || cf.Tier != 2 {
 		t.Errorf("heat/tier = %v/%v, want 12.5/2", cf.Heat, cf.Tier)

@@ -683,10 +683,9 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 
 // storeCachedT2 returns a compare-lookup closure over the repo's stored
 // snapshot, or nil when the cache must not be consulted (--refresh) or no
-// snapshot exists. Validity is content-addressed: a stored compare is served
-// only when the fork's live pushed_at matches the one it was recorded under —
-// a push moves pushed_at, so stale compares never surface and re-fetching
-// overwrites them (self-eviction).
+// snapshot exists. Validity is content-addressed (see store.ValidT2): a push
+// moves pushed_at, so stale compares never surface and re-fetching overwrites
+// them (self-eviction). Lookups are O(1) via the snapshot's fork index.
 func storeCachedT2(ctx context.Context, db *store.Store, auth forge.AuthInfo, owner, name string, refresh bool) func(forge.T1Data) *forge.T2Data {
 	if db == nil || refresh {
 		return nil
@@ -699,15 +698,7 @@ func storeCachedT2(ctx context.Context, db *store.Store, auth forge.AuthInfo, ow
 	if err != nil || snap == nil {
 		return nil
 	}
-	return func(t1 forge.T1Data) *forge.T2Data {
-		for i := range snap.Forks {
-			cf := &snap.Forks[i]
-			if cf.T1.ID == t1.ID && cf.T2 != nil && cf.T1.PushedAt.Equal(t1.PushedAt) {
-				return cf.T2
-			}
-		}
-		return nil
-	}
+	return snap.ValidT2
 }
 
 // persistForkSnapshot stores a fork snapshot and reports whether the fork's
@@ -737,13 +728,16 @@ func persistForkSnapshot(ctx context.Context, db *store.Store, auth forge.AuthIn
 		// (t1_json), T2 preserves the triage scalars alongside the relational
 		// compare rows so later runs can serve the compare from the store.
 		T1: &r.Fork,
-		T2: r.T2,
 	}
-	if r.T2 != nil {
-		// T2 was fetched: its compare/commit data is authoritative and replaces
-		// any stored rows. A degraded scan (r.T2 == nil) leaves T2Present false
-		// so UpsertSnapshot preserves previously stored enrichment instead of
-		// erasing it.
+	if r.T2 != nil && !r.T2FromCache {
+		// T2 was fetched live: its compare/commit data is authoritative and
+		// replaces any stored rows. A degraded scan (r.T2 == nil) leaves
+		// T2Present false so UpsertSnapshot preserves previously stored
+		// enrichment instead of erasing it — and so does a cache-served T2:
+		// the store's read path skips patch text, so re-persisting it would
+		// overwrite full rows with patch-less ones, and its document is
+		// unchanged from the run that stored it.
+		snapshot.T2 = r.T2
 		snapshot.T2Present = true
 		snapshot.CompareFiles = storeFiles(r.T2.Diffs)
 		snapshot.Commits = make([]store.CommitRecord, 0, len(r.T2.Commits))
@@ -753,11 +747,16 @@ func persistForkSnapshot(ctx context.Context, db *store.Store, auth forge.AuthIn
 				AuthorEmail: commit.AuthorEmail, CommittedAt: commit.Timestamp, Files: storeFiles(commit.Files),
 			})
 		}
-	}
-	if modelID != "" {
+		if modelID != "" {
+			repoKey := store.RepoKey(snapshot.Repo.Provider, snapshot.Repo.Host, owner, name)
+			forkKey := store.ForkKey(repoKey, r.Fork.ID)
+			snapshot.Document, diffTruncated = semantic.BuildDocument(forkKey, r.Fork, r.T2)
+		}
+	} else if modelID != "" && r.T2 == nil {
+		// No compare at all: the T1-only document still indexes the fork.
 		repoKey := store.RepoKey(snapshot.Repo.Provider, snapshot.Repo.Host, owner, name)
 		forkKey := store.ForkKey(repoKey, r.Fork.ID)
-		snapshot.Document, diffTruncated = semantic.BuildDocument(forkKey, r.Fork, r.T2)
+		snapshot.Document, diffTruncated = semantic.BuildDocument(forkKey, r.Fork, nil)
 	}
 	return diffTruncated, db.UpsertSnapshot(ctx, snapshot)
 }

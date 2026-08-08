@@ -54,6 +54,11 @@ type tier2ResultMsg struct {
 	// rate-limit reserve floor was reached. Distinct from err: the fork is
 	// kept, just marked un-enriched rather than failed.
 	budgetSkipped bool
+	// fromCache marks a compare served from the store. It must not be
+	// persisted back: cached T2s carry no patch text (the store's read path
+	// skips it), and re-persisting would overwrite full rows with patch-less
+	// ones — and the rows are identical anyway.
+	fromCache bool
 }
 
 type startFetchMsg struct{}

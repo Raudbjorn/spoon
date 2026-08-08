@@ -191,6 +191,12 @@ type Result struct {
 	Heat heat.HeatResult
 	Err  *Error
 
+	// T2FromCache marks a compare served by Options.CachedT2 rather than
+	// fetched live. Persistence must then leave the stored compare rows alone:
+	// cached T2s carry no patch text (the store's read path skips it), and
+	// re-persisting them would overwrite full rows with patch-less ones.
+	T2FromCache bool
+
 	// ExpectedRank / RankConfidence are set only when ShortlistN > 0 (Robbins
 	// expected-rank shortlist). Lower ExpectedRank ≈ more likely the best fork;
 	// RankConfidence mirrors Heat.Confidence (tier reached).
@@ -544,6 +550,7 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 					if enrich && tier >= 2 && opts.CachedT2 != nil {
 						if t2 := opts.CachedT2(s.fork); t2 != nil {
 							r.T2 = t2
+							r.T2FromCache = true
 						}
 					}
 					if enrich && tier >= 2 && r.T2 == nil && !opts.ReserveDisabled && provider.Headroom() < ReserveHeadroom {

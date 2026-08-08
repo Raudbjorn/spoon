@@ -319,28 +319,12 @@ func (m *Model) handleCachedLoad(msg cachedLoadMsg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-// cachedT2For returns the stored compare for a fork when its pushed_at matches
-// the live listing. A push moves pushed_at, so equality means the compare is
-// still describing the fork's current state — no TTL involved.
-func cachedT2For(snap *store.RepoSnapshot, t1 forge.T1Data) *forge.T2Data {
-	if snap == nil {
-		return nil
-	}
-	for i := range snap.Forks {
-		cf := &snap.Forks[i]
-		if cf.T1.ID == t1.ID && cf.T2 != nil && cf.T1.PushedAt.Equal(t1.PushedAt) {
-			return cf.T2
-		}
-	}
-	return nil
-}
-
 func (m *Model) applyCachedCompares(snap *store.RepoSnapshot) {
 	if snap == nil {
 		return
 	}
 	for i := range m.forks {
-		t2 := cachedT2For(snap, m.forks[i].Fork)
+		t2 := snap.ValidT2(m.forks[i].Fork)
 		if t2 == nil {
 			continue
 		}
@@ -457,7 +441,11 @@ func (m *Model) processPendingUpdates() (tea.Model, tea.Cmd) {
 
 				m.recomputeT2Score(i)
 
-				m.persistCompare(i)
+				// Cache-served compares are already in the store, verbatim
+				// minus patch text — re-persisting would degrade the rows.
+				if !update.fromCache {
+					m.persistCompare(i)
+				}
 
 				break
 			}
@@ -1102,8 +1090,8 @@ func (m *Model) startEnrichment() tea.Cmd {
 			// Serve the compare from the store when the fork hasn't been pushed
 			// since it was recorded.
 			if !refresh {
-				if t2 := cachedT2For(cached, f); t2 != nil {
-					return tier2ResultMsg{forkID: forkID, t2: *t2}
+				if t2 := cached.ValidT2(f); t2 != nil {
+					return tier2ResultMsg{forkID: forkID, t2: *t2, fromCache: true}
 				}
 			}
 
