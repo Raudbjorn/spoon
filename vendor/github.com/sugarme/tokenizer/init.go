@@ -18,6 +18,7 @@ func init() {
 
 	initEnv()
 
+	log.Printf("INFO: CachedDir=%q\n", CachedDir)
 }
 
 func initEnv() {
