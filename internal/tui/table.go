@@ -315,12 +315,12 @@ func (m *Model) cycleSortColumn() {
 		if c == m.sortCol {
 			m.sortCol = cols[(i+1)%len(cols)]
 			m.sortAsc = false
-			m.sortForks()
+			m.reapplySort()
 			return
 		}
 	}
 	m.sortCol = "heat"
-	m.sortForks()
+	m.reapplySort()
 }
 
 func (m *Model) sortForks() {

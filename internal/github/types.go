@@ -85,6 +85,20 @@ type CompareResult struct {
 	BaseSHA string `json:"base_sha,omitempty"`
 	HeadSHA string `json:"head_sha,omitempty"`
 
+	// Divergence signals computed during enrichment (the upstreamed PR probe,
+	// the branch scan, and MNA/feature-ratio derivation). Like BaseSHA/HeadSHA
+	// these are not GitHub API fields; they are persisted so a warm run scores
+	// and exports the same fork the same way as the cold run that wrote the
+	// cache. Without them a cached compare rehydrated with zeros: the heat
+	// score silently changed (MNA and the upstreamed penalty both feed it) and
+	// the export dropped every one of these keys via omitempty.
+	Upstreamed         bool    `json:"upstreamed,omitempty"`
+	UpstreamedPR       int     `json:"upstreamed_pr,omitempty"`
+	MNA                int     `json:"mna,omitempty"`
+	FeatureCommitRatio float64 `json:"feature_commit_ratio,omitempty"`
+	IsBranchWork       bool    `json:"is_branch_work,omitempty"`
+	ActiveBranch       string  `json:"active_branch,omitempty"`
+
 	// FetchedAt is this compare's own freshness timestamp, stamped by
 	// SaveCompare. It exists so a compare write never has to touch
 	// CacheEntry.FetchedAt (which governs the fork list's own TTL) in order to

@@ -93,7 +93,7 @@ func (m *Model) handleBranchDivergence(msg branchDivergenceMsg) (tea.Model, tea.
 			selectedID = m.forks[m.cursor].Fork.ID
 		}
 		m.assignDuplicateGroups()
-		m.sortForks()
+		m.reapplySort()
 		m.restoreCursorByID(selectedID)
 		m.persistForkListCounts()
 	}
@@ -120,11 +120,32 @@ func (m *Model) persistForkListCounts() {
 		return
 	}
 
-	ghForks := make([]gh.ForkInfo, 0, len(m.forks))
+	// m.forks is not the full fork list: scoreForks drops ghost forks before
+	// scoring, and SaveForkList replaces the stored Forks/T1Extras wholesale.
+	// Rebuilding the cache from m.forks alone would therefore silently evict
+	// every ghost from disk on the first sweep. Start from the on-disk list and
+	// overlay the rows this model actually holds, keyed by FullName (the IDs
+	// are hashes of it, so the two are interchangeable as keys).
+	var ghForks []gh.ForkInfo
 	ghExtras := make(map[int64]gh.T1Extra, len(m.forks))
+	if existing := gh.LoadCache(owner, name); existing != nil {
+		ghForks = existing.Forks
+		for id, extra := range existing.T1Extras {
+			ghExtras[id] = extra
+		}
+	}
+	index := make(map[string]int, len(ghForks))
+	for i, f := range ghForks {
+		index[f.FullName] = i
+	}
+
 	for _, sf := range m.forks {
 		ghF := forgeT1ToGHForkInfo(sf.Fork)
-		ghForks = append(ghForks, ghF)
+		if i, ok := index[ghF.FullName]; ok {
+			ghForks[i] = ghF
+		} else {
+			ghForks = append(ghForks, ghF)
+		}
 		if sf.Fork.OpenPRCount > 0 || sf.Fork.ReleaseCount > 0 ||
 			len(sf.Fork.Branches) > 0 || sf.Fork.DivergentBranches != nil {
 			ghExtras[ghF.ID] = forgeT1ToGHExtra(sf.Fork)
