@@ -109,7 +109,7 @@ func TestPersistForkListCounts_PreservesGhostForks(t *testing.T) {
 		t.Error("live fork missing from the cached fork list")
 	}
 	// And the sweep's count actually landed for the live fork.
-	extra, ok := cache.T1Extras[forgeT1ToGHForkInfo(live).ID]
+	extra, ok := cache.T1Extras["live/repo"]
 	if !ok || extra.DivergentBranches == nil || *extra.DivergentBranches != n {
 		t.Errorf("live fork's divergent-branch count not persisted: %+v", extra)
 	}
