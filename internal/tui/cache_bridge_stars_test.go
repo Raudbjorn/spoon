@@ -88,3 +88,30 @@ func TestT1CacheRoundTrip_PreservesBranchFingerprint(t *testing.T) {
 		t.Errorf("DivergentBranches = %v, want %d", out.DivergentBranches, n)
 	}
 }
+
+// A checked-clean fork (a real zero) must round-trip as zero, not decay to
+// nil: nil means "never counted" and would queue the fork for a re-sweep on
+// every warm run — most of a typical fork network is inert mirrors, so the
+// distinction carries the entire cache benefit of the sweep.
+func TestT1CacheRoundTrip_PreservesZeroDivergentBranches(t *testing.T) {
+	zero := 0
+	in := forge.T1Data{
+		ID:                "inert/nonraid",
+		Owner:             "inert",
+		Name:              "nonraid",
+		DivergentBranches: &zero,
+	}
+
+	extra := forgeT1ToGHExtra(in)
+	out := ghForkInfoToForge(forgeT1ToGHForkInfo(in), &extra, "qvr/nonraid")
+
+	if out.DivergentBranches == nil {
+		t.Fatal("a counted zero decayed to nil (unknown); the fork would be re-swept every run")
+	}
+	if *out.DivergentBranches != 0 {
+		t.Errorf("DivergentBranches = %d, want 0", *out.DivergentBranches)
+	}
+	if needsBranchSweep(out) {
+		t.Error("a checked-clean fork was queued for a re-sweep after the round trip")
+	}
+}

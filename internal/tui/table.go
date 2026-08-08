@@ -44,17 +44,38 @@ func (m Model) viewTable() string {
 		}
 	}
 
+	// Header field widths mirror the row cell layout exactly: rows lead with
+	// gutter(1) + cursor prefix(2) + heat bar(4) + score(2) = 9 cells, matched
+	// here by " %-4s %3s"; the name field is %-26s / %-30s in the rows, so the
+	// same width is used for REPOSITORY. Any width changed on one side must
+	// change on the other, or every column right of it drifts — asserted by
+	// TestViewTable_HeaderAndRowsAlign.
+	//
+	// The glyph labels (★, ⑂) go through padLeftCells rather than a %Ns verb:
+	// fmt pads by rune count, but lipgloss measures ★ at two cells, so a
+	// rune-padded field is one cell wider on screen than the number columns
+	// under it.
+	padLeftCells := func(s string, w int) string {
+		if n := w - lipgloss.Width(s); n > 0 {
+			return strings.Repeat(" ", n) + s
+		}
+		return s
+	}
+	// headerStyle carries Padding(0,1), so its left pad is the header's first
+	// cell; the format strings therefore start one cell earlier than the rows.
 	if hasCompare {
-		header := fmt.Sprintf("  %-4s %3s  %-28s  %5s %6s %7s %7s  %-10s  %s",
+		header := fmt.Sprintf("%-4s %3s  %-26s  %s %6s %7s %7s  %-10s  %s",
 			"HEAT", sortInd("heat"), "REPOSITORY",
-			"★"+sortInd("stars"), "AHEAD"+sortInd("ahead"), "BEHIND",
+			padLeftCells("★"+sortInd("stars"), 5),
+			"AHEAD"+sortInd("ahead"), "BEHIND",
 			"BRANCH"+sortInd("branches"),
 			"PUSHED"+sortInd("pushed"), "STATUS")
 		b.WriteString(headerStyle.Render(header))
 	} else {
-		header := fmt.Sprintf("  %-4s %3s  %-30s %5s %5s %7s  %-12s",
+		header := fmt.Sprintf("%-4s %3s  %-30s %s %s %7s  %-12s",
 			"HEAT", sortInd("heat"), "REPOSITORY",
-			"★"+sortInd("stars"), "⑂"+sortInd("forks"),
+			padLeftCells("★"+sortInd("stars"), 5),
+			padLeftCells("⑂"+sortInd("forks"), 5),
 			"BRANCH"+sortInd("branches"),
 			"PUSHED"+sortInd("pushed"))
 		b.WriteString(headerStyle.Render(header))

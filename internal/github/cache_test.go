@@ -165,6 +165,12 @@ func TestSaveCompare_DoesNotResurrectExpiredForkList(t *testing.T) {
 	if !after.CompareValid(1) {
 		t.Error("the compare just saved should be valid on its own per-compare timestamp")
 	}
+	// CompareValid alone cannot prove the per-compare stamp exists: an entry
+	// FetchedAt of -13h is still within the 24h compare TTL, so the fallback
+	// path would also report valid. Assert the stamp directly.
+	if after.Compares[1].FetchedAt == "" {
+		t.Error("SaveCompare did not stamp the compare's own FetchedAt; validity above came from the entry-level fallback")
+	}
 }
 
 // A compare saved before per-compare timestamps existed has no FetchedAt of
