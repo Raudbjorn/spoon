@@ -9,20 +9,26 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/svnbjrn/spoon/internal/cluster"
 	"github.com/svnbjrn/spoon/internal/config"
 	"github.com/svnbjrn/spoon/internal/forge"
-	"github.com/svnbjrn/spoon/internal/genai"
 	"github.com/svnbjrn/spoon/internal/gitea"
 	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/gitlab"
 	"github.com/svnbjrn/spoon/internal/heat"
+	"github.com/svnbjrn/spoon/internal/store"
 	"github.com/svnbjrn/spoon/internal/tui"
 )
 
 var version = "0.3.0-dev"
 
 func main() {
+	// Zero-configuration first run: make sure a documented default config
+	// exists before anything consults it. Never fatal — a bad or unwritable
+	// config degrades to built-in defaults with a warning.
+	if _, err := config.EnsureDefault(os.Stderr); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: ignoring config: %v\n", err)
+	}
+
 	// Subcommand dispatch: "spoon threads <pr-ref> ..."
 	if len(os.Args) >= 2 && os.Args[1] == "threads" {
 		os.Exit(runThreads(os.Args[2:]))
@@ -183,18 +189,17 @@ func main() {
 		CentralityBackend: backendFor(fullMDG),
 		StrictMDG:         strictMDG,
 	}
-	if !noCluster {
-		polisher, closePolisher, lerr := newLabelPolisher()
-		if lerr != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", lerr)
-			os.Exit(1)
-		}
-		if polisher != nil {
-			tuiClusterOpts.LabelPolisher = polisher
-			defer closePolisher()
-		}
+	// The global store is mandatory: every run reads and writes it, and an
+	// unusable store means silently uncached, unpersisted sessions — fail
+	// loudly instead.
+	db, err := store.OpenDefault()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: cannot open spoon store: %v\n", err)
+		os.Exit(1)
 	}
-	m := tui.NewModelWithCluster(provider, auth, repoArg, refresh, tuiClusterOpts).WithHeatWeights(heatWeights)
+	defer db.Close()
+
+	m := tui.NewModelWithCluster(provider, auth, repoArg, refresh, tuiClusterOpts).WithHeatWeights(heatWeights).WithStore(db)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 
 	if _, err := p.Run(); err != nil {
@@ -211,27 +216,6 @@ func backendFor(fullMDG bool) string {
 	}
 	return ""
 }
-
-// newLabelPolisher builds the cluster label polisher from config/env
-// (labeler.modelPath or $SPOON_OPENVINO_LABELER). Returns (nil, nil, nil)
-// when no labeler is configured.
-func newLabelPolisher() (cluster.LabelPolisher, func(), error) {
-	modelPath := os.Getenv("SPOON_OPENVINO_LABELER")
-	device := ""
-	if cfg, cerr := config.LoadDefault(); cerr == nil && cfg != nil {
-		modelPath = config.Coalesce(modelPath, cfg.Labeler.ModelPath)
-		device = cfg.Labeler.Device
-	}
-	if modelPath == "" {
-		return nil, nil, nil
-	}
-	p, err := genai.NewLabelPolisher(genai.Config{ModelPath: modelPath, Device: device})
-	if err != nil {
-		return nil, nil, err
-	}
-	return p, p.Close, nil
-}
-
 
 // createProvider detects the forge provider from the repo URL and flags,
 // creates the appropriate Forge implementation, and returns it with auth info.
@@ -380,7 +364,7 @@ Keybindings (TUI mode):
   q             Quit
 
 Subcommands:
-  spoon setup              Check credentials + provision OpenVINO models
+  spoon setup              Check credentials + the FastEmbed embedder
   spoon threads <pr-ref>   Operate on PR review threads (see 'spoon threads --help')
 
 Concepts:

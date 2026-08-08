@@ -77,14 +77,25 @@ type ExportFork struct {
 
 	// Sibling fields identify forks carrying the SAME work, which is common in a
 	// fork network: a popular fork gets re-forked, or many forks branch from one
-	// pre-restructure commit and all report an identical diff. This is the exact
-	// match only (same head commit, or failing that an identical diff shape) and
-	// is unrelated to the embedder-backed cluster_* fields above.
+	// pre-restructure commit and all report an identical diff. Detection runs on
+	// the model (duplicates.go) and is unrelated to the embedder-backed
+	// cluster_* fields above. There are two tiers:
+	//
+	// Confirmed (proof): the forks share commit identity — a branch fingerprint
+	// ("f:") or the compared head SHA ("h:"). Only these get the
+	// group/count/primary trio; the primary is the member a consumer may keep
+	// when folding the rest.
+	//
+	// Candidate (signal): the forks merely report the same diff shape ("d:" —
+	// commit, file and line counts). They get only SiblingCandidate — never a
+	// primary — because equal totals do not prove equal work. Consumers must
+	// verify before collapsing candidate rows.
 	//
 	// Rows are never dropped — collapsing is the consumer's decision.
-	SiblingGroup   string `json:"sibling_group,omitempty"`
-	SiblingCount   int    `json:"sibling_count,omitempty"`
-	SiblingPrimary bool   `json:"sibling_primary,omitempty"`
+	SiblingGroup     string `json:"sibling_group,omitempty"`
+	SiblingCount     int    `json:"sibling_count,omitempty"`
+	SiblingPrimary   bool   `json:"sibling_primary,omitempty"`
+	SiblingCandidate string `json:"sibling_candidate,omitempty"`
 }
 
 // ExportLoneWolf is the lone wolf signal export (v2 shape).
@@ -328,6 +339,7 @@ func (m *Model) doExport(toExport []ScoredFork, filename string) tea.Cmd {
 			ef.SiblingGroup = sf.SiblingGroup
 			ef.SiblingCount = sf.SiblingCount
 			ef.SiblingPrimary = sf.SiblingPrimary
+			ef.SiblingCandidate = sf.SiblingCandidate
 
 			data.Forks = append(data.Forks, ef)
 		}

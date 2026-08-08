@@ -1,12 +1,12 @@
-// cmd/spoon/setup.go — `spoon setup` preflight: verify provider credentials
-// and provision the FastEmbed embedder plus the OpenVINO features (reranker,
-// labeler) — downloading default models for any feature with no model
-// configured — then persist the validated result to the config file. All
-// features run in-process; there are no external services to manage.
+// cmd/spoon/setup.go — `spoon setup` preflight: verify provider credentials,
+// the global store, and the FastEmbed embedder, then persist the validated
+// result to the config file (regenerating its README). Everything runs
+// in-process; there are no external services to manage. First-run defaults
+// need no setup at all — config.EnsureDefault bootstraps them automatically;
+// this command exists to re-detect and repair.
 package main
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -18,15 +18,14 @@ import (
 	"github.com/svnbjrn/spoon/internal/config"
 	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/forge"
-	"github.com/svnbjrn/spoon/internal/genai"
-	"github.com/svnbjrn/spoon/internal/models"
+	"github.com/svnbjrn/spoon/internal/store"
 )
 
-// Indirection points so tests can stub network/runtime probes.
+// Indirection points so tests can stub the network credential probe and the
+// store open.
 var (
 	setupProviderFn = createProvider
-	setupEnsureFn   = models.Ensure
-	setupDevicesFn  = embed.AvailableDevices
+	setupStoreFn    = store.OpenDefault
 )
 
 func runSetup(args []string) int {
@@ -42,14 +41,11 @@ type setupFlags struct {
 	fastembedCache  string
 	noConfig        bool
 	noColor         bool
-	autoPull        bool
-	noPrompt        bool
 }
 
 func runSetupWith(ctx context.Context, args []string, stdin io.Reader, interactive bool, stdout, stderr io.Writer) int {
 	f := setupFlags{
-		noColor:  os.Getenv("NO_COLOR") != "",
-		autoPull: os.Getenv("SPOON_AUTO_PULL") == "1",
+		noColor: os.Getenv("NO_COLOR") != "",
 	}
 
 	needsValue := func(i int) bool { return i+1 >= len(args) }
@@ -60,10 +56,6 @@ func runSetupWith(ctx context.Context, args []string, stdin io.Reader, interacti
 			return 0
 		case "--no-color":
 			f.noColor = true
-		case "--auto-pull":
-			f.autoPull = true
-		case "--no-prompt":
-			f.noPrompt = true
 		case "--forge":
 			if needsValue(i) {
 				return setupErr(stderr, "--forge requires a value")
@@ -130,7 +122,7 @@ func runSetupWith(ctx context.Context, args []string, stdin io.Reader, interacti
 		}
 	}
 
-	fmt.Fprintln(stdout, "spoon setup — checking credentials, the FastEmbed embedder, and OpenVINO features")
+	fmt.Fprintln(stdout, "spoon setup — checking credentials and the FastEmbed embedder")
 	if loadedCfg != nil {
 		fmt.Fprintf(stdout, "Loaded config from %s\n", configPath)
 	}
@@ -145,15 +137,14 @@ func runSetupWith(ctx context.Context, args []string, stdin io.Reader, interacti
 	provOK, provLines := providerStatusLines(provider, auth, provErr)
 	printCheck(stdout, fmt.Sprintf("Provider (%s)", provider), provOK, provLines, f.noColor)
 
-	// --- OpenVINO features ------------------------------------------------------
+	// --- Global store ---------------------------------------------------------
+	storeOK := setupStore(f.noColor, stdout)
+
+	// --- Embedder + proxy -----------------------------------------------------
 	cfg := loadedCfg
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
-	// fastembed is the only embedder. setupOpenVINO now provisions just the
-	// optional reranker + labeler features.
-	cfg.Embedder.Backend = embed.BackendFastEmbed
-	ovOK := setupOpenVINO(ctx, f, cfg, interactive, stdin, stdout)
 	fastOK := setupFastEmbed(cfg, f.fastembedCache, f.noColor, stdout)
 	setupProxyReferences(cfg, f.noColor, stdout)
 
@@ -165,21 +156,41 @@ func runSetupWith(ctx context.Context, args []string, stdin io.Reader, interacti
 	// --- Summary --------------------------------------------------------------
 	// FastEmbed is advisory: a missing onnxruntime does not fail setup (the
 	// config still records fastembed and the feature activates once the runtime
-	// is installed). Credentials + OpenVINO features gate the exit code.
-	if provOK && ovOK {
+	// is installed). Credentials and the store gate the exit code — every run
+	// needs both.
+	if provOK && storeOK {
 		if fastOK {
-			fmt.Fprintln(stdout, colorize("✓ All set — credentials, OpenVINO features, and FastEmbed are ready.", "\033[32m", f.noColor))
+			fmt.Fprintln(stdout, colorize("✓ All set — credentials, the store, and FastEmbed are ready.", "\033[32m", f.noColor))
 		} else {
-			fmt.Fprintln(stdout, colorize("✓ Credentials and OpenVINO features ready; FastEmbed needs onnxruntime — semantic search stays off until it is installed (see above).", "\033[33m", f.noColor))
+			fmt.Fprintln(stdout, colorize("✓ Credentials and store ready; FastEmbed needs onnxruntime — semantic search stays off until it is installed (see above).", "\033[33m", f.noColor))
 		}
-		return 0
-	}
-	if provOK {
-		fmt.Fprintln(stdout, colorize("Credentials ready; some OpenVINO features need attention — see above.", "\033[33m", f.noColor))
 		return 0
 	}
 	fmt.Fprintln(stdout, colorize("Some checks need attention — see the suggestions above.", "\033[33m", f.noColor))
 	return 1
+}
+
+// setupStore reports the mandatory global store: its location and whether it
+// opens. An unusable store fails every spoon/spn run, so it fails setup too.
+func setupStore(noColor bool, out io.Writer) bool {
+	path, _ := store.DefaultPath()
+	s, err := setupStoreFn()
+	if err != nil {
+		printCheck(out, "Store", false, []string{
+			"Cannot open " + path + ": " + err.Error(),
+			"Every run needs the store (it is the cache and the persistence layer).",
+			"Check disk space and directory permissions.",
+		}, noColor)
+		return false
+	}
+	defer s.Close()
+	lines := []string{"Open: " + path}
+	if info, statErr := os.Stat(path); statErr == nil {
+		lines = append(lines, fmt.Sprintf("Size: %.1f MB", float64(info.Size())/(1024*1024)))
+	}
+	lines = append(lines, "Compares are content-addressed: entries refresh automatically when a fork is pushed.")
+	printCheck(out, "Store", true, lines, noColor)
+	return true
 }
 
 // mergeConfigDefaults fills unset flag fields from a loaded config, so the
@@ -200,7 +211,7 @@ func mergeConfigDefaults(f *setupFlags, c *config.Config) {
 }
 
 // writeSetupConfig updates (or creates) the config file with the validated
-// forge provider and any model paths adopted by setupOpenVINO.
+// forge provider and embedder settings, and refreshes the README beside it.
 func writeSetupConfig(path string, existed bool, cfg *config.Config, provider forge.Provider, forgeHost string, stdout, stderr io.Writer) {
 	cfg.Version = config.CurrentVersion
 	cfg.Forge.Provider = provider.String()
@@ -212,6 +223,9 @@ func writeSetupConfig(path string, existed bool, cfg *config.Config, provider fo
 	if err := config.Save(path, cfg); err != nil {
 		fmt.Fprintf(stderr, "warning: could not write config %s: %v\n", path, err)
 		return
+	}
+	if err := config.WriteReadme(path); err != nil {
+		fmt.Fprintf(stderr, "warning: could not refresh config README: %v\n", err)
 	}
 	fmt.Fprintf(stdout, "%s config at %s\n\n", verb, path)
 }
@@ -292,13 +306,17 @@ func setupMark(ok bool, noColor bool) string {
 }
 
 func printSetupHelp(w io.Writer) {
-	fmt.Fprint(w, `spoon setup — verify credentials and provision embedding features
+	fmt.Fprint(w, `spoon setup — verify credentials, the store, and the embedder
 
-Checks forge credentials, optional OpenVINO features, and the configured
-embedding backend. FastEmbed uses fixed BGE small EN v1.5 through ONNX Runtime;
-set ONNX_PATH before selecting it. Existing ProxyScrape files are referenced by
-path only and their contents are never copied into spoon's config. Exits 0 when
-ready, 1 when credentials or the selected runtime need attention.
+spoon is zero-configuration: the first run writes a documented default config
+automatically (see the README.md beside it). This command re-detects and
+repairs — checking forge credentials, the mandatory global store
+(~/.config/spoon/spoon.db; /var/lib/spoon on no-home hosts), and the FastEmbed
+embedder (BGE small EN v1.5 through ONNX Runtime; set ONNX_PATH if the runtime
+is not on the loader path — the model itself self-provisions on first use).
+Existing ProxyScrape files are referenced by path only and their contents are
+never copied into spoon's config. Exits 0 when ready, 1 when credentials or
+the store need attention.
 
 Usage:
   spoon setup [flags]
@@ -309,19 +327,11 @@ Flags:
   --embedder-backend B     fastembed (the only embedder; accepted for
                            compatibility)
   --fastembed-cache PATH   FastEmbed model cache directory
-  --auto-pull              Download missing default models without asking
-                           (also: SPOON_AUTO_PULL=1)
-  --no-prompt              Never prompt (report only; don't download)
   --config PATH            Config file to read/write (default
                            $XDG_CONFIG_HOME/spoon/config.json)
   --no-config              Don't read or write the config file
   --no-color               Disable colors
   -h, --help               Show this help
-
-Default models (downloaded to ~/.local/share/spoon/models when missing):
-  reranker  OpenVINO/bge-reranker-base-fp16-ov           (~560 MB)
-  labeler   OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov       (~1.1 GB)
-  fastembed BGE fast-bge-small-en-v1.5 (384 dimensions, max length 512)
 
 setup reads the config file (if present) as defaults, re-validates the
 settings, and writes the validated result back — so re-running keeps it
@@ -335,63 +345,6 @@ func colorize(text, ansiCode string, noColor bool) string {
 		return text
 	}
 	return ansiCode + text + "\033[0m"
-}
-
-// setupOpenVINO reports and provisions the in-process OpenVINO features.
-// For every feature with no model configured, the default model is
-// downloaded (with consent, or unconditionally under --auto-pull) and
-// adopted into cfg. Returns whether every applicable feature is ready.
-func setupOpenVINO(ctx context.Context, f setupFlags, cfg *config.Config, interactive bool, stdin io.Reader, out io.Writer) bool {
-	if !embed.OpenVINOAvailable() {
-		printCheck(out, "OpenVINO", false, []string{
-			"OpenVINO runtime (libopenvino_c.so) not found.",
-			"Clustering uses the built-in lexical embedder (zero setup, works fine).",
-			"For reranking and label polish (embedding is fastembed's job):",
-			"  • install OpenVINO, or set SPOON_OPENVINO_LIB to libopenvino_c.so",
-		}, f.noColor)
-		return true
-	}
-
-	devices := setupDevicesFn()
-	lines := []string{"Runtime available. Devices: " + strings.Join(devices, ", ")}
-	hasGPU := false
-	for _, d := range devices {
-		if strings.HasPrefix(d, "GPU") {
-			hasGPU = true
-		}
-	}
-	if !hasGPU {
-		lines = append(lines, "No GPU device visible — models will run on CPU (set embedder.device).")
-	}
-	printCheck(out, "OpenVINO", true, lines, f.noColor)
-
-	ok := true
-	type featureSlot struct {
-		feature   models.Feature
-		name      string
-		modelPath *string
-		usable    bool
-		hint      string
-	}
-	// Embedding is handled by fastembed (setupFastEmbed); OpenVINO here
-	// provisions only the optional reranker + labeler features.
-	slots := []featureSlot{
-		{models.FeatureReranker, "Reranker (--query relevance)", &cfg.Reranker.ModelPath, true, ""},
-		{models.FeatureLabeler, "Labeler (cluster label polish)", &cfg.Labeler.ModelPath, genai.Available(),
-			"install openvino-genai (or set SPOON_OPENVINO_GENAI_LIB) to enable"},
-	}
-	for _, slot := range slots {
-		if !slot.usable {
-			printCheck(out, slot.name, false, []string{
-				"Unavailable in this binary: " + slot.hint + ".",
-				"Skipping model download for it.",
-			}, f.noColor)
-			continue
-		}
-		ready := ensureFeatureModel(ctx, f, slot.feature, slot.name, slot.modelPath, interactive, stdin, out)
-		ok = ok && ready
-	}
-	return ok
 }
 
 func setupFastEmbed(cfg *config.Config, cacheDir string, noColor bool, out io.Writer) bool {
@@ -478,78 +431,4 @@ func setupProxyReferences(cfg *config.Config, noColor bool, out io.Writer) {
 func secureRegularFile(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o400 != 0 && info.Mode().Perm()&0o077 == 0
-}
-
-// ensureFeatureModel checks one feature's model configuration and downloads
-// the default model when none is configured. modelPath is updated in place
-// when a model is adopted. Returns readiness.
-func ensureFeatureModel(ctx context.Context, f setupFlags, feature models.Feature, name string, modelPath *string, interactive bool, stdin io.Reader, out io.Writer) bool {
-	if *modelPath != "" {
-		if models.IsDownloaded(*modelPath) {
-			printCheck(out, name, true, []string{"Configured: " + *modelPath}, f.noColor)
-			return true
-		}
-		printCheck(out, name, false, []string{
-			"Configured model dir is missing or incomplete: " + *modelPath,
-			"Fix the path in the config, or clear it and re-run setup to download the default.",
-		}, f.noColor)
-		return false
-	}
-
-	repo := models.DefaultRepo(feature)
-	dir, err := models.LocalDir(repo)
-	if err != nil {
-		printCheck(out, name, false, []string{"Cannot resolve model dir: " + err.Error()}, f.noColor)
-		return false
-	}
-	if models.IsDownloaded(dir) {
-		*modelPath = dir
-		printCheck(out, name, true, []string{"Default model present: " + dir}, f.noColor)
-		return true
-	}
-
-	canPrompt := f.autoPull || (interactive && !f.noPrompt)
-	if !canPrompt {
-		printCheck(out, name, false, []string{
-			fmt.Sprintf("No model configured. Default: %s (~%d MB).", repo, models.ApproxSizeMB(feature)),
-			"Download it with: spoon setup --auto-pull",
-		}, f.noColor)
-		return false
-	}
-	if !f.autoPull {
-		if !setupConfirm(stdin, out, fmt.Sprintf("Download %s (~%d MB) for %s?", repo, models.ApproxSizeMB(feature), name)) {
-			fmt.Fprintln(out, "    Skipped.")
-			return false
-		}
-	}
-	fmt.Fprintf(out, "    Downloading %s ...\n", repo)
-	lastFile, lastPct := "", -1
-	if _, err := setupEnsureFn(ctx, feature, func(file string, done, total int64) {
-		if total <= 0 {
-			return
-		}
-		pct := int(done * 100 / total)
-		if file != lastFile || pct/10 != lastPct/10 {
-			fmt.Fprintf(out, "      %s %d%%\n", file, pct)
-			lastFile, lastPct = file, pct
-		}
-	}); err != nil {
-		printCheck(out, name, false, []string{"Download failed: " + err.Error()}, f.noColor)
-		return false
-	}
-	*modelPath = dir
-	printCheck(out, name, true, []string{"Downloaded: " + dir}, f.noColor)
-	return true
-}
-
-// setupConfirm reads a y/N answer. Defaults to no on empty/EOF.
-func setupConfirm(stdin io.Reader, out io.Writer, prompt string) bool {
-	fmt.Fprintf(out, "    %s [y/N]: ", prompt)
-	line, _ := bufio.NewReader(stdin).ReadString('\n')
-	switch strings.ToLower(strings.TrimSpace(line)) {
-	case "y", "yes":
-		return true
-	default:
-		return false
-	}
 }

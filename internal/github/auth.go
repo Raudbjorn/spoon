@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	ghauth "github.com/cli/go-gh/v2/pkg/auth"
 )
 
 func CheckAuth() (*Client, AuthStatus, error) {
@@ -23,7 +25,19 @@ func CheckAuthWithOptions(opts ClientOptions) (*Client, AuthStatus, error) {
 	if err != nil {
 		return nil, AuthStatus{}, err
 	}
-	status := AuthStatus{Authenticated: client.IsAuthenticated(), TokenSource: "none"}
+	// Host must be set here: it is the only source AuthInfo.Host reads from, and
+	// callers such as forge.CompareURL interpolate it directly into URLs and
+	// the store's repo keys. go-gh's DefaultHost resolves GH_HOST and the gh
+	// CLI's configured host, so a GHES user's rows are keyed under their host
+	// rather than github.com. (The REST/GraphQL clients still hardcode
+	// github.com — full GHES API support is a separate piece of work — but the
+	// identity written into keys and URLs should not.)
+	host, _ := ghauth.DefaultHost()
+	status := AuthStatus{
+		Authenticated: client.IsAuthenticated(),
+		Host:          host,
+		TokenSource:   "none",
+	}
 	if client.authenticated {
 		status.TokenSource = "gh"
 		if len(opts.Tokens) > 0 {

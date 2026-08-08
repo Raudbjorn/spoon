@@ -35,6 +35,17 @@ Windows). `CGO_ENABLED=1` is the Go default; do not unset it.
 
 Unauthenticated requests work but hit much lower rate limits.
 
+## Configuration
+
+spoon is **zero-configuration**: the first run detects what the host offers
+(gh/glab CLIs, token environment variables), writes a fully-populated default
+config to `~/.config/spoon/config.json`, and drops a `README.md` beside it
+documenting every field and `SPOON_*` environment variable. Everything is
+enabled by default; edit the file or re-run `spoon setup` to change things.
+Hosts without a home directory use `/etc/spoon/config.json` (which also serves
+as an admin-provided defaults layer) and `/var/lib/spoon` for the store.
+`SPOON_NO_CONFIG=1` ignores the config file entirely.
+
 ## Usage
 
 ```sh
@@ -136,10 +147,12 @@ spn forks eval <repo> --judgments FILE                                  # score 
 spn repo centrality <owner/repo>                                        # upstream module/dir centrality
 ```
 
-`spn forks list` writes every emitted fork snapshot to
-`$XDG_DATA_HOME/spoon/spoon.db` (default
-`~/.local/share/spoon/spoon.db`) before printing it. `--files` and
-`--commits` opt into detailed wire output without changing what SQLite
+`spn forks list` writes every emitted fork snapshot to the global store at
+`$XDG_CONFIG_HOME/spoon/spoon.db` (default `~/.config/spoon/spoon.db`;
+`/var/lib/spoon/spoon.db` on hosts without a home directory) before printing
+it. The store doubles as a cross-invocation cache shared with the TUI: a
+stored compare is reused until its fork is pushed again. `--files` and
+`--commits` opt into detailed wire output without changing what the store
 retains. `--commit-files` implies both and attributes files to at most 100
 commits per run by default; override with `--commit-file-budget N`.
 
@@ -287,10 +300,8 @@ directory prefix + the most discriminative commit/path tokens). Tune with
 `--cluster-epsilon` / `--cluster-min-size`, cap the embedded set with
 `--cluster-top`, or disable with `--no-cluster`.
 
-The optional `--query` reranker and the LLM cluster-label polisher still use the
-OpenVINO runtime (loaded at run time via `dlopen`, no OpenVINO SDK needed for
-the default build); `spoon setup` provisions them, and
-`SPOON_OPENVINO_LIB` / `SPOON_OPENVINO_GENAI_LIB` point at off-path libraries.
+`--query` relevance is scored by the built-in lexical scorer over each fork's
+change digest — no extra runtime or model involved.
 
 Each completed list run embeds only new or changed documents in batches of 32.
 `spn search "<query>" --top 20` queries every indexed fork (or one upstream with
@@ -303,7 +314,7 @@ index is a successful empty result with a `semantic_index_empty` warning.
 cmd/spoon/         Interactive CLI entry point
 cmd/spn/           Agent-shaped CLI (JSON/NDJSON)
 internal/forge/    Provider abstraction (GitHub + GitLab + Gitea)
-internal/genai/    OpenVINO GenAI label polisher for cluster labels
+internal/config/   Zero-config bootstrap + validated config file
 internal/github/   GitHub REST/GraphQL dispatcher, token/proxy pools, web-diff adapter
 internal/gitlab/   GitLab client
 internal/heat/     Scoring, percentiles, filters
@@ -312,7 +323,7 @@ internal/threadsops/ PR thread ops shared by `spoon threads` and `spn threads`
 internal/agentio/  Structured error envelope + JSON writers for `spn`
 internal/embed/    Fixed FastEmbed embedder + built-in lexical fallback
 internal/semantic/ Deterministic documents, vector codec, incremental indexing
-internal/store/    Durable SQLite snapshots and embeddings
+internal/store/    Global libsql store: repo/fork/compare cache + embeddings
 internal/cluster/  Clustering, novelty, heuristic labels
 internal/forksops/ Streaming fork enumeration/enrichment
 internal/tui/      Bubbletea TUI

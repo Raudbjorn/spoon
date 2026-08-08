@@ -2,13 +2,11 @@ package github
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/svnbjrn/spoon/internal/forge"
 )
@@ -119,77 +117,5 @@ func TestGHProviderCompare_WithoutParentDoesNotFabricateZeros(t *testing.T) {
 			"This is the reported bug: every fork is recorded as 0/0 'identical', "+
 			"cached for 24h, and hard-scored to heat 0 by the no_ahead penalty",
 			t2.AheadCount, t2.BehindCount)
-	}
-}
-
-// The flag is only as good as its persistence: it has to survive the on-disk
-// cache round trip, and a legacy entry written before the field existed must
-// read back as "never compared" rather than as a fork with no divergence.
-func TestCompareValid_GatesOnPerformed(t *testing.T) {
-	within := time.Now().UTC().Format(time.RFC3339)
-
-	t.Run("performed compare is served", func(t *testing.T) {
-		e := &CacheEntry{
-			FetchedAt: within,
-			Compares:  map[string]CompareResult{"attacker/fork": {Performed: true, AheadBy: 3}},
-		}
-		if !e.CompareValid("attacker/fork") {
-			t.Error("a real compare within TTL was rejected")
-		}
-	})
-
-	t.Run("unperformed compare is refetched", func(t *testing.T) {
-		e := &CacheEntry{
-			FetchedAt: within,
-			Compares:  map[string]CompareResult{"attacker/fork": {Performed: false}},
-		}
-		if e.CompareValid("attacker/fork") {
-			t.Error("a compare that never ran was served as valid cache data")
-		}
-	})
-
-	t.Run("legacy entry without the field self-heals", func(t *testing.T) {
-		var legacy CompareResult
-		// Exactly what the poisoned on-disk caches contain.
-		if err := json.Unmarshal([]byte(
-			`{"status":"identical","ahead_by":0,"behind_by":0,"total_commits":0}`), &legacy); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
-		e := &CacheEntry{FetchedAt: within, Compares: map[string]CompareResult{"attacker/fork": legacy}}
-		if e.CompareValid("attacker/fork") {
-			t.Error("a pre-Performed cache entry was served as a real 'identical' result")
-		}
-	})
-}
-
-// SaveCompare must not write an unperformed result: doing so both fabricates an
-// "identical" for the next 24h and refreshes FetchedAt, which extends the fork
-// list TTL so the bad entry renews its own expiry indefinitely.
-func TestSaveCompare_RefusesUnperformedResult(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CACHE_HOME", dir)
-
-	if err := SaveForkList("parent", "repo",
-		RepoInfo{FullName: "parent/repo", DefaultBranch: "main"},
-		[]ForkInfo{{ID: 7, FullName: "forkowner/repo"}}, nil); err != nil {
-		t.Fatalf("SaveForkList: %v", err)
-	}
-
-	before := LoadCache("parent", "repo")
-	if before == nil {
-		t.Fatal("fork list did not persist")
-	}
-
-	if err := SaveCompare("parent", "repo", "attacker/fork", CompareResult{Performed: false, Status: "identical"}); err != nil {
-		t.Fatalf("SaveCompare: %v", err)
-	}
-
-	after := LoadCache("parent", "repo")
-	if _, ok := after.Compares["attacker/fork"]; ok {
-		t.Error("an unperformed compare was persisted to the cache")
-	}
-	if after.FetchedAt != before.FetchedAt {
-		t.Errorf("an unperformed compare refreshed FetchedAt (%s -> %s), renewing the fork-list TTL",
-			before.FetchedAt, after.FetchedAt)
 	}
 }

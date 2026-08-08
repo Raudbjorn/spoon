@@ -1,0 +1,9 @@
+# github.com/svnbjrn/spoon/internal/tui.test
+/usr/bin/ld: /tmp/go-link-3840092845/go.o: warning: relocation in read-only section `.rodata'
+/usr/bin/ld: warning: creating DT_TEXTREL in a PIE
+ok  	github.com/svnbjrn/spoon/internal/tui	0.007s
+ok  	github.com/svnbjrn/spoon/internal/forge	0.003s
+# github.com/svnbjrn/spoon/internal/github.test
+/usr/bin/ld: /tmp/go-link-423602833/go.o: warning: relocation in read-only section `.rodata'
+/usr/bin/ld: warning: creating DT_TEXTREL in a PIE
+ok  	github.com/svnbjrn/spoon/internal/github	0.099s

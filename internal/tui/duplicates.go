@@ -14,22 +14,19 @@ import (
 // Grouping runs on the model rather than on the export DTO so the screen and
 // the exported JSON cannot disagree about what is a duplicate.
 
-// forkSiblingKey returns the identity used to decide that two forks carry the
-// same work, and whether the fork is eligible for grouping at all.
+// forkIdentityKey returns the commit-identity key proving that two forks carry
+// the same work, and whether the fork has one.
 //
-// Three keys in descending order of proof:
+// Two keys in descending order of proof:
 //
 //	f:  branch fingerprint — the tip OIDs of every ahead-of-upstream branch.
 //	    Conclusive, and the only key that sees work on branches other than the
 //	    one that happened to be compared.
 //	h:  head SHA of the compared branch. Conclusive for that branch alone.
-//	d:  diff shape. Strong but circumstantial — two unrelated forks could in
-//	    principle produce the same ahead/files/additions/deletions tuple — so
-//	    the prefix keeps it distinguishable by consumers.
 //
-// Forks with no divergence are never grouped: every unmodified mirror would
+// Forks with no divergence never carry a key: every unmodified mirror would
 // otherwise collapse into one meaningless bucket.
-func forkSiblingKey(sf ScoredFork) (string, bool) {
+func forkIdentityKey(sf ScoredFork) (string, bool) {
 	if fp := sf.Fork.BranchFingerprint; fp != "" {
 		return "f:" + fp, true
 	}
@@ -38,6 +35,18 @@ func forkSiblingKey(sf ScoredFork) (string, bool) {
 	}
 	if sha := sf.T2.HeadSHA; sha != "" {
 		return "h:" + sha, true
+	}
+	return "", false
+}
+
+// forkShapeKey returns the diff-shape key ("d:" + ahead/files/adds/dels) and
+// whether the fork is eligible for shape matching. Equal shape is a strong
+// signal but circumstantial — two unrelated forks can produce the same tuple,
+// and rebased copies of the same work share it while their SHAs differ — so
+// shape matches only ever set SiblingCandidate, never a foldable group.
+func forkShapeKey(sf ScoredFork) (string, bool) {
+	if sf.T2 == nil || !sf.T2.Performed || sf.T2.AheadCount == 0 {
+		return "", false
 	}
 	totalAdds, totalDels := 0, 0
 	for _, d := range sf.T2.Diffs {
@@ -48,25 +57,38 @@ func forkSiblingKey(sf ScoredFork) (string, bool) {
 		sf.T2.AheadCount, len(sf.T2.Diffs), totalAdds, totalDels), true
 }
 
-// assignDuplicateGroups tags forks carrying identical work. The highest-scoring
-// member of each group becomes the primary, so a consumer can lead with one row
-// and treat the rest as copies. Groups of one are left untagged.
+// assignDuplicateGroups tags forks carrying identical work, in two tiers.
+//
+// Confirmed (commit identity via forkIdentityKey): the highest-scoring member
+// of each group becomes the primary, so a consumer can lead with one row and
+// treat the rest as copies.
+//
+// Candidate (diff shape via forkShapeKey): members get only SiblingCandidate.
+// No primary and no folding — equal totals with different (or unknown) commit
+// sets do not prove duplicate work; consumers must verify first. A fork can
+// carry both tags (a confirmed member that also shape-matches an
+// identity-less fork).
 //
 // Tagging is recomputed from scratch every call: enrichment and the branch
 // sweep land asynchronously, so a fork's key can sharpen from "d:" to "f:" part
 // way through a run, and stale tags from the weaker key must not survive.
 func (m *Model) assignDuplicateGroups() {
-	groups := make(map[string][]int, len(m.forks))
+	confirmed := make(map[string][]int, len(m.forks))
+	candidates := make(map[string][]int, len(m.forks))
 	for i := range m.forks {
 		m.forks[i].SiblingGroup = ""
 		m.forks[i].SiblingCount = 0
 		m.forks[i].SiblingPrimary = false
-		if key, ok := forkSiblingKey(m.forks[i]); ok {
-			groups[key] = append(groups[key], i)
+		m.forks[i].SiblingCandidate = ""
+		if key, ok := forkIdentityKey(m.forks[i]); ok {
+			confirmed[key] = append(confirmed[key], i)
+		}
+		if key, ok := forkShapeKey(m.forks[i]); ok {
+			candidates[key] = append(candidates[key], i)
 		}
 	}
 
-	for key, idxs := range groups {
+	for key, idxs := range confirmed {
 		if len(idxs) < 2 {
 			continue
 		}
@@ -80,6 +102,15 @@ func (m *Model) assignDuplicateGroups() {
 			m.forks[i].SiblingGroup = key
 			m.forks[i].SiblingCount = len(idxs)
 			m.forks[i].SiblingPrimary = i == primary
+		}
+	}
+
+	for key, idxs := range candidates {
+		if len(idxs) < 2 {
+			continue
+		}
+		for _, i := range idxs {
+			m.forks[i].SiblingCandidate = key
 		}
 	}
 }

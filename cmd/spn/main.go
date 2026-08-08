@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/svnbjrn/spoon/internal/agentio"
+	"github.com/svnbjrn/spoon/internal/config"
 )
 
 var version = "0.1.0-dev"
@@ -24,6 +25,12 @@ func main() { os.Exit(dispatch(os.Args[1:], os.Stdout, os.Stderr)) }
 func dispatch(args []string, stdout, stderr io.Writer) int {
 	if len(args) < 1 {
 		return agentio.NewError(agentio.CodeBadInput, "missing subcommand", usageRemediation).Emit(stderr)
+	}
+	// Zero-configuration first run: make sure a documented default config
+	// exists before any subcommand consults it. Never fatal — a bad or
+	// unwritable config degrades to built-in defaults with a warning.
+	if _, err := config.EnsureDefault(stderr); err != nil {
+		fmt.Fprintf(stderr, "warning: ignoring config: %v\n", err)
 	}
 	switch args[0] {
 	case "-h", "--help":

@@ -12,7 +12,7 @@ import (
 
 	"github.com/svnbjrn/spoon/internal/config"
 	"github.com/svnbjrn/spoon/internal/forge"
-	"github.com/svnbjrn/spoon/internal/models"
+	"github.com/svnbjrn/spoon/internal/store"
 )
 
 func TestProviderStatusLines(t *testing.T) {
@@ -43,10 +43,11 @@ func TestProviderStatusLines(t *testing.T) {
 	}
 }
 
-// stubProvider isolates the config file and replaces the provider probe.
+// stubProvider isolates the config file/store and replaces the provider probe.
 func stubProvider(t *testing.T, auth forge.AuthInfo, err error) {
 	t.Helper()
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	prev := setupProviderFn
 	t.Cleanup(func() { setupProviderFn = prev })
 	setupProviderFn = func(_ context.Context, _, _, _ string) (forge.Forge, forge.AuthInfo, string, error) {
@@ -63,8 +64,8 @@ func TestRunSetup_allGreenExitsZero(t *testing.T) {
 		t.Fatalf("exit=%d\n%s\n%s", exit, stdout.String(), stderr.String())
 	}
 	// The success summary text depends on whether onnxruntime is present
-	// (fastembed is advisory). Both variants report OpenVINO features ready.
-	if !strings.Contains(stdout.String(), "OpenVINO features") {
+	// (fastembed is advisory). Both variants report credentials ready.
+	if !strings.Contains(stdout.String(), "✓") || !strings.Contains(stdout.String(), "redentials") {
 		t.Errorf("missing success summary:\n%s", stdout.String())
 	}
 }
@@ -122,6 +123,52 @@ func TestRunSetup_noConfigSkipsWrite(t *testing.T) {
 	}
 }
 
+func TestRunSetup_storeSectionReported(t *testing.T) {
+	stubProvider(t, forge.AuthInfo{Tier: forge.AuthCLI, RateLimit: 5000, RateUnit: "hour"}, nil)
+
+	var stdout, stderr bytes.Buffer
+	exit := runSetupWith(context.Background(), []string{"--no-color"}, strings.NewReader(""), false, &stdout, &stderr)
+	if exit != 0 {
+		t.Fatalf("exit=%d\n%s\n%s", exit, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "✓ Store") {
+		t.Errorf("store section missing or failed:\n%s", stdout.String())
+	}
+}
+
+func TestRunSetup_unusableStoreExitsOne(t *testing.T) {
+	stubProvider(t, forge.AuthInfo{Tier: forge.AuthCLI, RateLimit: 5000, RateUnit: "hour"}, nil)
+	prev := setupStoreFn
+	t.Cleanup(func() { setupStoreFn = prev })
+	setupStoreFn = func() (*store.Store, error) { return nil, errors.New("disk full") }
+
+	var stdout, stderr bytes.Buffer
+	exit := runSetupWith(context.Background(), []string{"--no-color"}, strings.NewReader(""), false, &stdout, &stderr)
+	if exit != 1 {
+		t.Fatalf("exit=%d want 1 — an unusable store fails every run and must fail setup\n%s", exit, stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "disk full") {
+		t.Errorf("store failure not surfaced:\n%s", stdout.String())
+	}
+}
+
+func TestRunSetup_refreshesReadme(t *testing.T) {
+	stubProvider(t, forge.AuthInfo{Tier: forge.AuthCLI, RateLimit: 5000, RateUnit: "hour"}, nil)
+
+	var stdout, stderr bytes.Buffer
+	if exit := runSetupWith(context.Background(), []string{"--no-color"}, strings.NewReader(""), false, &stdout, &stderr); exit != 0 {
+		t.Fatalf("exit=%d\n%s", exit, stdout.String())
+	}
+	path, _ := config.DefaultPath()
+	readme, err := os.ReadFile(filepath.Join(filepath.Dir(path), "README.md"))
+	if err != nil {
+		t.Fatalf("setup did not write the config README: %v", err)
+	}
+	if !strings.Contains(string(readme), "SPOON_NO_CONFIG") {
+		t.Error("README content missing env var table")
+	}
+}
+
 func TestRunSetup_loadsConfigAsDefaults(t *testing.T) {
 	stubProvider(t, forge.AuthInfo{Tier: forge.AuthCLI, RateLimit: 5000, RateUnit: "hour"}, nil)
 
@@ -144,100 +191,5 @@ func TestRunSetup_loadsConfigAsDefaults(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "Provider (gitlab)") {
 		t.Errorf("config provider not used as default:\n%s", stdout.String())
-	}
-}
-
-func stubEnsure(t *testing.T, called *bool) {
-	t.Helper()
-	prev := setupEnsureFn
-	t.Cleanup(func() { setupEnsureFn = prev })
-	setupEnsureFn = func(_ context.Context, f models.Feature, _ models.Progress) (string, error) {
-		*called = true
-		dir, err := models.LocalDir(models.DefaultRepo(f))
-		if err != nil {
-			return "", err
-		}
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return "", err
-		}
-		if err := os.WriteFile(filepath.Join(dir, "openvino_model.xml"), []byte("<net/>"), 0o644); err != nil {
-			return "", err
-		}
-		return dir, nil
-	}
-}
-
-func TestEnsureFeatureModel_AutoPullDownloadsAndAdopts(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	called := false
-	stubEnsure(t, &called)
-
-	var out bytes.Buffer
-	modelPath := ""
-	ok := ensureFeatureModel(context.Background(), setupFlags{autoPull: true, noColor: true},
-		models.FeatureEmbedder, "Embedder", &modelPath, false, strings.NewReader(""), &out)
-	if !ok || !called {
-		t.Fatalf("ok=%v called=%v\n%s", ok, called, out.String())
-	}
-	if modelPath == "" || !models.IsDownloaded(modelPath) {
-		t.Fatalf("model path not adopted: %q", modelPath)
-	}
-}
-
-func TestEnsureFeatureModel_NoPromptReportsOnly(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	called := false
-	stubEnsure(t, &called)
-
-	var out bytes.Buffer
-	modelPath := ""
-	ok := ensureFeatureModel(context.Background(), setupFlags{noPrompt: true, noColor: true},
-		models.FeatureReranker, "Reranker", &modelPath, true, strings.NewReader(""), &out)
-	if ok || called || modelPath != "" {
-		t.Fatalf("no-prompt must not download: ok=%v called=%v path=%q", ok, called, modelPath)
-	}
-	if !strings.Contains(out.String(), "--auto-pull") {
-		t.Errorf("expected --auto-pull hint:\n%s", out.String())
-	}
-}
-
-func TestEnsureFeatureModel_InteractiveDecline(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	called := false
-	stubEnsure(t, &called)
-
-	var out bytes.Buffer
-	modelPath := ""
-	ok := ensureFeatureModel(context.Background(), setupFlags{noColor: true},
-		models.FeatureEmbedder, "Embedder", &modelPath, true, strings.NewReader("n\n"), &out)
-	if ok || called {
-		t.Fatalf("declined prompt must not download: ok=%v called=%v", ok, called)
-	}
-}
-
-func TestEnsureFeatureModel_ExistingDefaultAdopted(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	dir, err := models.LocalDir(models.DefaultRepo(models.FeatureEmbedder))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "openvino_model.xml"), []byte("<net/>"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	called := false
-	stubEnsure(t, &called)
-
-	var out bytes.Buffer
-	modelPath := ""
-	ok := ensureFeatureModel(context.Background(), setupFlags{noPrompt: true, noColor: true},
-		models.FeatureEmbedder, "Embedder", &modelPath, false, strings.NewReader(""), &out)
-	if !ok || called {
-		t.Fatalf("present default must be adopted without download: ok=%v called=%v", ok, called)
-	}
-	if modelPath != dir {
-		t.Fatalf("modelPath = %q, want %q", modelPath, dir)
 	}
 }

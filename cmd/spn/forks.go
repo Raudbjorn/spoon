@@ -20,7 +20,6 @@ import (
 	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/forge"
 	"github.com/svnbjrn/spoon/internal/forksops"
-	"github.com/svnbjrn/spoon/internal/genai"
 	"github.com/svnbjrn/spoon/internal/gitea"
 	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/gitlab"
@@ -479,31 +478,8 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 		remaining.Store(int64(budget))
 		opts.CommitFileRunBudget = remaining
 	}
-	// Label polishing: only when a labeler model is configured and the
-	// openvino-genai runtime loads. Like the reranker, a configured but
-	// unloadable labeler is a hard error.
-	if opts.Cluster.Enabled {
-		polisher, closePolisher, lerr := newLabelPolisher()
-		if lerr != nil {
-			return agentio.NewError(agentio.CodeBadInput, lerr.Error(),
-				"Run 'spoon setup' to download the default labeler, install openvino-genai (or set SPOON_OPENVINO_GENAI_LIB), or unset the labeler config.").Emit(stderr)
-		}
-		if polisher != nil {
-			opts.Cluster.LabelPolisher = polisher
-			defer closePolisher()
-		}
-	}
-
+	// Query relevance uses the built-in lexical scorer (opts.QueryScorer nil).
 	opts.Query = query
-	if query != "" {
-		scorer, closeScorer, qerr := newQueryScorer(stderr)
-		if qerr != nil {
-			return agentio.NewError(agentio.CodeBadInput, qerr.Error(),
-				"Run 'spoon setup' to download the default reranker, or unset the reranker config to fall back to lexical query scoring.").Emit(stderr)
-		}
-		opts.QueryScorer = scorer
-		defer closeScorer()
-	}
 
 	ctx := context.WithValue(context.Background(), githubRPMContextKey{}, githubRPM)
 
@@ -534,20 +510,16 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 		}})
 	}
 
-	// The durable store enhances a run (persistence + semantic index) but is
-	// never a prerequisite for listing forks: a locked DB, full disk, or
-	// read-only data dir degrades to a warning, not a failed run.
+	// The global store is mandatory: it is both the persistence layer and the
+	// cross-invocation cache, and a silently uncached run would refetch every
+	// compare. Fail loudly instead of degrading.
 	db, storeErr := store.OpenDefault()
 	if storeErr != nil {
-		_ = json.NewEncoder(stderr).Encode(map[string]any{"warning": map[string]any{
-			"code":        "store_unavailable",
-			"message":     "durable store unavailable; continuing without persistence/semantic index: " + storeErr.Error(),
-			"remediation": "Check disk space and permissions on ~/.local/share/spoon; listing/output is unaffected.",
-		}})
-		db = nil
-	} else {
-		defer db.Close()
+		return agentio.NewError(agentio.CodeInternal,
+			"cannot open spoon store: "+storeErr.Error(),
+			"Check disk space and permissions on ~/.config/spoon; the store is required for every run.").Emit(stderr)
 	}
+	defer db.Close()
 
 	if topicName, isTopic := strings.CutPrefix(repo, "topic:"); isTopic {
 		if csvMode {
@@ -627,6 +599,7 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 			opts.Cluster.SiblingSearcher = gh.NewGHSiblingSearcher(client)
 		}
 	}
+	opts.CachedT2 = storeCachedT2(ctx, db, auth, owner, name, opts.Refresh)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	ch, streamErr := forksops.Stream(ctx, provider, owner, name, opts)
@@ -708,20 +681,33 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// storeCachedT2 returns a compare-lookup closure over the repo's stored
+// snapshot, or nil when the cache must not be consulted (--refresh) or no
+// snapshot exists. Validity is content-addressed (see store.ValidT2): a push
+// moves pushed_at, so stale compares never surface and re-fetching overwrites
+// them (self-eviction). Lookups are O(1) via the snapshot's fork index.
+func storeCachedT2(ctx context.Context, db *store.Store, auth forge.AuthInfo, owner, name string, refresh bool) func(forge.T1Data) *forge.T2Data {
+	if db == nil || refresh {
+		return nil
+	}
+	host := auth.Host
+	if host == "" {
+		host = forge.DefaultHost(auth.Provider)
+	}
+	snap, err := db.LoadRepoSnapshot(ctx, auth.Provider.String(), host, owner, name)
+	if err != nil || snap == nil {
+		return nil
+	}
+	return snap.ValidT2
+}
+
 // persistForkSnapshot stores a fork snapshot and reports whether the fork's
 // embedding document had its diff section truncated to fit the model window.
 func persistForkSnapshot(ctx context.Context, db *store.Store, auth forge.AuthInfo, owner, name, modelID string, r forksops.Result) (diffTruncated bool, err error) {
 	now := time.Now().UTC()
 	host := auth.Host
 	if host == "" {
-		switch auth.Provider {
-		case forge.ProviderGitLab:
-			host = "gitlab.com"
-		case forge.ProviderGitea:
-			host = "codeberg.org"
-		default:
-			host = "github.com"
-		}
+		host = forge.DefaultHost(auth.Provider)
 	}
 	firstSeen := r.Fork.CreatedAt
 	if firstSeen.IsZero() {
@@ -738,12 +724,20 @@ func persistForkSnapshot(ctx context.Context, db *store.Store, auth forge.AuthIn
 			Stars: r.Fork.Stars, PushedAt: r.Fork.PushedAt, Heat: r.Heat.Score,
 			Tier: r.Heat.Tier, UpdatedAt: now,
 		},
+		// Full-fidelity halves: T1 makes the fork reusable as a listing entry
+		// (t1_json), T2 preserves the triage scalars alongside the relational
+		// compare rows so later runs can serve the compare from the store.
+		T1: &r.Fork,
 	}
-	if r.T2 != nil {
-		// T2 was fetched: its compare/commit data is authoritative and replaces
-		// any stored rows. A degraded scan (r.T2 == nil) leaves T2Present false
-		// so UpsertSnapshot preserves previously stored enrichment instead of
-		// erasing it.
+	if r.T2 != nil && !r.T2FromCache {
+		// T2 was fetched live: its compare/commit data is authoritative and
+		// replaces any stored rows. A degraded scan (r.T2 == nil) leaves
+		// T2Present false so UpsertSnapshot preserves previously stored
+		// enrichment instead of erasing it — and so does a cache-served T2:
+		// the store's read path skips patch text, so re-persisting it would
+		// overwrite full rows with patch-less ones, and its document is
+		// unchanged from the run that stored it.
+		snapshot.T2 = r.T2
 		snapshot.T2Present = true
 		snapshot.CompareFiles = storeFiles(r.T2.Diffs)
 		snapshot.Commits = make([]store.CommitRecord, 0, len(r.T2.Commits))
@@ -753,11 +747,16 @@ func persistForkSnapshot(ctx context.Context, db *store.Store, auth forge.AuthIn
 				AuthorEmail: commit.AuthorEmail, CommittedAt: commit.Timestamp, Files: storeFiles(commit.Files),
 			})
 		}
-	}
-	if modelID != "" {
+		if modelID != "" {
+			repoKey := store.RepoKey(snapshot.Repo.Provider, snapshot.Repo.Host, owner, name)
+			forkKey := store.ForkKey(repoKey, r.Fork.ID)
+			snapshot.Document, diffTruncated = semantic.BuildDocument(forkKey, r.Fork, r.T2)
+		}
+	} else if modelID != "" && r.T2 == nil {
+		// No compare at all: the T1-only document still indexes the fork.
 		repoKey := store.RepoKey(snapshot.Repo.Provider, snapshot.Repo.Host, owner, name)
 		forkKey := store.ForkKey(repoKey, r.Fork.ID)
-		snapshot.Document, diffTruncated = semantic.BuildDocument(forkKey, r.Fork, r.T2)
+		snapshot.Document, diffTruncated = semantic.BuildDocument(forkKey, r.Fork, nil)
 	}
 	return diffTruncated, db.UpsertSnapshot(ctx, snapshot)
 }
@@ -1200,48 +1199,6 @@ func resolveFastEmbedConfig(model, cacheDir string) embed.FastEmbedConfig {
 	}
 }
 
-// newQueryScorer builds the query relevance scorer: the OpenVINO
-// cross-encoder when a reranker model is configured (config file or
-// $SPOON_OPENVINO_RERANKER) and this binary supports it; otherwise nil so
-// the stream falls back to the built-in lexical scorer. A configured but
-// unloadable reranker is a hard error — never a silent quality downgrade.
-func newQueryScorer(stderr io.Writer) (embed.QueryScorer, func(), error) {
-	modelPath := os.Getenv("SPOON_OPENVINO_RERANKER")
-	device := os.Getenv("SPOON_OPENVINO_DEVICE")
-	if cfg, cerr := config.LoadDefault(); cerr == nil && cfg != nil {
-		modelPath = config.Coalesce(modelPath, cfg.Reranker.ModelPath)
-		device = config.Coalesce(device, cfg.Reranker.Device)
-	}
-	if modelPath == "" {
-		return nil, func() {}, nil // lexical fallback
-	}
-	r, err := embed.NewReranker(embed.RerankConfig{ModelPath: modelPath, Device: device})
-	if err != nil {
-		return nil, nil, err
-	}
-	return r, r.Close, nil
-}
-
-// newLabelPolisher builds the cluster label polisher from config/env
-// (labeler.modelPath or $SPOON_OPENVINO_LABELER). Returns (nil, nil, nil)
-// when no labeler is configured.
-func newLabelPolisher() (cluster.LabelPolisher, func(), error) {
-	modelPath := os.Getenv("SPOON_OPENVINO_LABELER")
-	device := ""
-	if cfg, cerr := config.LoadDefault(); cerr == nil && cfg != nil {
-		modelPath = config.Coalesce(modelPath, cfg.Labeler.ModelPath)
-		device = cfg.Labeler.Device
-	}
-	if modelPath == "" {
-		return nil, nil, nil
-	}
-	p, err := genai.NewLabelPolisher(genai.Config{ModelPath: modelPath, Device: device})
-	if err != nil {
-		return nil, nil, err
-	}
-	return p, p.Close, nil
-}
-
 // streamAndEmit runs the fork pipeline for one upstream and emits NDJSON
 // records tagged with the upstream's full name. Used by topic mode, where
 // several upstreams share one output stream.
@@ -1254,6 +1211,7 @@ func streamAndEmit(ctx context.Context, db *store.Store, auth forge.AuthInfo, pr
 			opts.Cluster.SiblingSearcher = gh.NewGHSiblingSearcher(client)
 		}
 	}
+	opts.CachedT2 = storeCachedT2(ctx, db, auth, owner, name, opts.Refresh)
 	// Cancel on any early return so the background goroutine spawned by
 	// forksops.Stream doesn't keep consuming API rate limit after we stop
 	// draining ch (e.g. a stdout write failure below).

@@ -9,7 +9,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/svnbjrn/spoon/internal/forge"
-	gh "github.com/svnbjrn/spoon/internal/github"
 )
 
 // needsBranchSweep reports whether a fork's divergence data is still missing
@@ -100,63 +99,20 @@ func (m *Model) handleBranchDivergence(msg branchDivergenceMsg) (tea.Model, tea.
 		m.assignDuplicateGroups()
 		m.reapplySort()
 		m.restoreCursorByID(selectedID)
-		m.persistForkListCounts()
 	}
 
 	if len(msg.truncated) > 0 {
 		m.errMsg = fmt.Sprintf("%d fork(s) have more branches than could be listed; their BRANCH counts are lower bounds", len(msg.truncated))
 		m.errMsgTime = time.Now()
 	}
+	if applied {
+		// Re-persist the fork list (T1-only snapshots) so the counts and
+		// fingerprints are available on the next run without another sweep.
+		// Store rows are per-fork upserts, so ghost forks filtered out of
+		// m.forks keep their existing rows untouched.
+		return m, m.persistForkList()
+	}
 	return m, nil
-}
-
-// persistForkListCounts rewrites the cached fork list so the newly obtained
-// branch counts are available on the next run without another sweep.
-//
-// SaveForkList resets the entry's FetchedAt, which also renews the fork-list
-// TTL. That is correct here: the fork list being written is the one just
-// fetched or just validated, not stale data being laundered as fresh.
-func (m *Model) persistForkListCounts() {
-	if m.auth.Provider != forge.ProviderGitHub || m.parent == nil {
-		return
-	}
-	owner, name, ok := splitFullName(m.parent.FullName)
-	if !ok {
-		return
-	}
-
-	// m.forks is not the full fork list: scoreForks drops ghost forks before
-	// scoring, and SaveForkList replaces the stored Forks/T1Extras wholesale.
-	// Rebuilding the cache from m.forks alone would therefore silently evict
-	// every ghost from disk on the first sweep. Start from the on-disk list and
-	// overlay the rows this model actually holds, keyed by FullName (the IDs
-	// are hashes of it, so the two are interchangeable as keys).
-	var ghForks []gh.ForkInfo
-	ghExtras := make(map[string]gh.T1Extra, len(m.forks))
-	if existing := gh.LoadCache(owner, name); existing != nil {
-		ghForks = existing.Forks
-		for full, extra := range existing.T1Extras {
-			ghExtras[full] = extra
-		}
-	}
-	index := make(map[string]int, len(ghForks))
-	for i, f := range ghForks {
-		index[f.FullName] = i
-	}
-
-	for _, sf := range m.forks {
-		ghF := forgeT1ToGHForkInfo(sf.Fork)
-		if i, ok := index[ghF.FullName]; ok {
-			ghForks[i] = ghF
-		} else {
-			ghForks = append(ghForks, ghF)
-		}
-		if sf.Fork.OpenPRCount > 0 || sf.Fork.ReleaseCount > 0 ||
-			len(sf.Fork.Branches) > 0 || sf.Fork.DivergentBranches != nil {
-			ghExtras[ghF.FullName] = forgeT1ToGHExtra(sf.Fork)
-		}
-	}
-	_ = gh.SaveForkList(owner, name, forgeParentToGHRepoInfo(*m.parent), ghForks, ghExtras)
 }
 
 // splitFullName splits "owner/name", reporting false for anything else.

@@ -113,6 +113,12 @@ type Options struct {
 	// Logger receives cluster-pipeline progress and warnings. May be nil
 	// (defaults to io.Discard).
 	Logger io.Writer
+
+	// CachedT2, when non-nil, returns a stored compare for a fork (nil = miss).
+	// The caller keys validity on the fork's current pushed_at, so a hit is
+	// authoritative: it skips the Compare API call and the rate-reserve gate.
+	// Left nil on --refresh.
+	CachedT2 func(forge.T1Data) *forge.T2Data
 }
 
 // ownerProfileDefaultCap is the per-run cap on the number of distinct
@@ -152,9 +158,6 @@ type ClusterOptions struct {
 	// Categorize enables zero-shot category assignment for embedded forks.
 	Categorize bool
 
-	// LabelPolisher, when non-nil, rewrites cluster labels (in-process LLM).
-	LabelPolisher cluster.LabelPolisher
-
 	// Embedder, when non-nil, replaces the built-in lexical embedder
 	// (fastembed when the CLI installed it, else the test seam; nil →
 	// built-in lexical embedder). EmbedderID must identify it for cache keying.
@@ -187,6 +190,12 @@ type Result struct {
 	T3   *forge.T3Data
 	Heat heat.HeatResult
 	Err  *Error
+
+	// T2FromCache marks a compare served by Options.CachedT2 rather than
+	// fetched live. Persistence must then leave the stored compare rows alone:
+	// cached T2s carry no patch text (the store's read path skips it), and
+	// re-persisting them would overwrite full rows with patch-less ones.
+	T2FromCache bool
 
 	// ExpectedRank / RankConfidence are set only when ShortlistN > 0 (Robbins
 	// expected-rank shortlist). Lower ExpectedRank ≈ more likely the best fork;
@@ -535,7 +544,16 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 							}
 						}
 					}
-					if enrich && tier >= 2 && !opts.ReserveDisabled && provider.Headroom() < ReserveHeadroom {
+					// A stored compare costs no API budget, so it is consulted
+					// before the rate-reserve gate: even a drained window can
+					// serve cached divergence.
+					if enrich && tier >= 2 && opts.CachedT2 != nil {
+						if t2 := opts.CachedT2(s.fork); t2 != nil {
+							r.T2 = t2
+							r.T2FromCache = true
+						}
+					}
+					if enrich && tier >= 2 && r.T2 == nil && !opts.ReserveDisabled && provider.Headroom() < ReserveHeadroom {
 						enrich = false
 						r.BudgetSkip = &StageSkip{
 							Stage:  "compare",
@@ -544,7 +562,7 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 						}
 						budgetSkipped.Add(1)
 					}
-					if tier >= 2 && enrich {
+					if tier >= 2 && enrich && r.T2 == nil {
 						t2, terr := provider.Compare(ctx, s.fork, s.fork.DefaultBranch)
 						if terr != nil {
 							var rl *gh.RateLimitError
@@ -879,7 +897,6 @@ func runForksClusterPipeline(
 	pipelineOpts.Embedder = opts.Embedder
 	pipelineOpts.EmbedderID = opts.EmbedderID
 	pipelineOpts.Categorize = opts.Categorize
-	pipelineOpts.LabelPolisher = opts.LabelPolisher
 	pipelineOpts.SiblingSimEnabled = opts.SiblingSimEnabled
 	pipelineOpts.SiblingSearcher = opts.SiblingSearcher
 	pipelineOpts.SiblingSimMode = opts.SiblingSimMode

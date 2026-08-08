@@ -2,15 +2,12 @@
 
 Spoon runs every model-backed feature **in-process** — no external service, no
 model server. There is one embedder, **fastembed**, plus a zero-setup lexical
-fallback and two optional OpenVINO-backed features (a `--query` reranker and an
-LLM label polisher).
+fallback.
 
 | Feature | What it does | Model (default) | Runtime |
 |---|---|---|---|
 | Semantic embedder | persistence, `spn search`, clustering, categories | fastembed `fast-bge-small-en-v1.5` (384-dim) | ONNX Runtime |
-| Lexical fallback | clustering when fastembed is unavailable / in the TUI | built-in (deterministic) | none |
-| Query reranker | `spn forks list --query "intent"` relevance | bge-reranker-base | OpenVINO (`libopenvino_c`) |
-| Label polish | LLM rewrites cluster labels into natural titles | Qwen2.5-1.5B-int4 | OpenVINO GenAI (`libopenvino_genai_c`) |
+| Lexical fallback | clustering when fastembed is unavailable / in the TUI; `--query` relevance | built-in (deterministic) | none |
 
 ## FastEmbed — the embedder
 
@@ -24,8 +21,9 @@ It is the **default** on every `spn forks list` — opt-out, not opt-in — and
 powers:
 
 - **Persistence + semantic index** — after each run, new or changed fork
-  documents are embedded and stored in the durable SQLite store
-  (`$XDG_DATA_HOME/spoon/spoon.db`).
+  documents are embedded and stored in the global libsql store
+  (`$XDG_CONFIG_HOME/spoon/spoon.db`; `/var/lib/spoon/spoon.db` on no-home
+  hosts).
 - **`spn search "<query>"`** — cosine ranking over the stored vectors.
 - **Clustering** — when fastembed is active it embeds the modality blobs (see
   below); otherwise the lexical fallback does.
@@ -45,8 +43,9 @@ spoon setup                                    # downloads the model, writes con
   listing, scoring, and (lexical) clustering are unaffected. A missing native
   runtime never fails a run.
 - Pass `--no-embed` (or `SPOON_NO_EMBED=1`) to skip embedding entirely.
-- The durable store is likewise best-effort: a locked DB, full disk, or
-  read-only data dir yields a `store_unavailable` warning, not a failed run.
+- The global store, by contrast, is mandatory: it is the cross-invocation
+  cache and the persistence layer in one, and a run that cannot open it fails
+  loudly rather than running silently uncached.
 
 ### Semantic search
 
@@ -118,39 +117,10 @@ spn forks list owner/repo --query "wayland support"
 ```
 
 Every enriched fork's change digest (commit subjects + touched paths) is scored
-against the query and output is sorted by relevance; each NDJSON record gains
-`queryScore` (0..1) and `queryMethod` ("openvino" when the cross-encoder
-reranker is configured, "lexical" otherwise). The reranker reimplements OVMS's
-`/v3/rerank`: pairs are framed with the tokenizer's own pair template (parsed
-from tokenizer.json), scored by the cross-encoder, and squashed with a sigmoid.
-This is distinct from `spn search`, which is vector-similarity retrieval over
-the persistent fastembed index.
-
-## Cluster label polish
-
-With a labeler configured (and the openvino-genai runtime loadable), each
-cluster's heuristic label is rewritten by a small instruct LLM running
-in-process via OpenVINO GenAI — greedy decoding, ≤24 new tokens, the model's own
-chat template. Errors silently keep the heuristic label. Example:
-`markdown/  ·  grammar, upstream, tests` → "Go Tree-sitter Grammar Updates".
-
-## OpenVINO runtime (reranker + labeler)
-
-The `--query` reranker and the label polisher load the OpenVINO runtime at
-**run time** via `dlopen` (no build tags), so a default build needs no OpenVINO
-SDK and stays portable — those features simply report unavailable (and `--query`
-falls back to lexical scoring) when the libraries are absent. cgo is still
-required, as elsewhere in spoon.
-
-To run them, install the runtime (`openvino` + `openvino-intel-gpu-plugin`, and
-`openvino-genai` + `libopenvino_tokenizers.so` for the labeler). spoon loads
-`libopenvino_c.so` / `libopenvino_genai_c.so` from the openvino-genai prefix
-(`/opt/intel/...` on Arch) and then the ldconfig path; override with
-`SPOON_OPENVINO_LIB` / `SPOON_OPENVINO_GENAI_LIB`. `spoon setup` downloads the
-default reranker/labeler models (pure-Go HuggingFace download, consent-gated;
-`--auto-pull` to skip the prompt). On Intel Arc the first GPU load JIT-compiles
-kernels; spoon caches them under `~/.cache/spoon/openvino` so subsequent loads
-take ~1 s.
+against the query by the built-in lexical scorer and output is sorted by
+relevance; each NDJSON record gains `queryScore` (0..1) and `queryMethod`
+("lexical"). This is distinct from `spn search`, which is vector-similarity
+retrieval over the persistent fastembed index.
 
 ## Building
 
@@ -158,33 +128,17 @@ take ~1 s.
 go build ./cmd/spoon ./cmd/spn   # all features; no build tags
 ```
 
-FastEmbed links ONNX Runtime; the reranker/labeler `dlopen` OpenVINO at run
-time. Neither needs an SDK at build time beyond cgo.
-
-## Choosing models
-
-The reranker and labeler defaults were re-validated on 2026-06-12 against
-pre-converted alternatives from the OpenVINO HF org, on the hand-labeled
-behavioral-embeddings dataset (53 same/different-intent pairs over real PR
-feature sets; harnesses: `TestEval*_Manual` in internal/embed and
-internal/genai):
-
-| Feature | Default (kept) | Challenger | Result |
-|---|---|---|---|
-| Reranker | bge-reranker-base-fp16 | Qwen3-Reranker-0.6B-seq-cls-fp16 | acc@1 0.63 / MRR 0.77 in 1.7 s |
-| Labeler | Qwen2.5-1.5B-Instruct-int4 | Qwen3-0.6B-int4 | 3/3 good labels @109 ms warm vs 0/3 (thinking mode eats the token budget) |
-
-The dataset is small (CI ≈ ±0.16 on AUC), so only clear wins justify a default
-switch; none of the challengers produced one. The semantic embedder is fixed at
-fastembed `fast-bge-small-en-v1.5` and is not user-selectable.
+FastEmbed links ONNX Runtime; nothing needs an SDK at build time beyond cgo
+(required for the libsql store and tree-sitter as well).
 
 ## History
 
 Earlier versions delegated embedding to external services (Ollama, a Python
 sidecar serving arctic-embed-l-v2.0, or any OpenAI-compatible endpoint), then to
-an in-process OpenVINO encoder. Both are gone: the semantic embedder is now
-fastembed (a fixed BGE model over ONNX Runtime), which gives stable,
-cross-run-comparable vectors — the prerequisite for the persistent SQLite index
-and `spn search`. The built-in lexical embedder remains as the zero-setup
-clustering fallback. The evaluation that informed earlier model choices is
+an in-process OpenVINO encoder. Both are gone — as are the later OpenVINO
+reranker and label-polisher features: the semantic embedder is now fastembed
+(a fixed BGE model over ONNX Runtime), which gives stable, cross-run-comparable
+vectors — the prerequisite for the persistent index and `spn search`. The
+built-in lexical embedder remains as the zero-setup clustering fallback and
+`--query` scorer. The evaluation that informed earlier model choices is
 preserved under `experiments/started/behavioral-embeddings/`.

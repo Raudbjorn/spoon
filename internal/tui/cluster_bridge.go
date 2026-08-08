@@ -36,9 +36,6 @@ type ClusterOptions struct {
 	// Categorize enables zero-shot category assignment.
 	Categorize bool
 
-	// LabelPolisher, when non-nil, rewrites cluster labels (in-process LLM).
-	LabelPolisher cluster.LabelPolisher
-
 	// CentralityBackend is forwarded to cluster.PipelineOptions. "" or
 	// "directory" → directory-centrality proxy. "mdg" → Module Dependency
 	// Graph. See `--full-mdg` in `spoon --help`.
@@ -197,7 +194,6 @@ func runTUIClusterPipeline(
 		Embedder:          opts.Embedder,
 		EmbedderID:        opts.EmbedderID,
 		Categorize:        opts.Categorize,
-		LabelPolisher:     opts.LabelPolisher,
 		CentralityBackend: opts.CentralityBackend,
 		CentralityHeadSHA: pin,
 		StrictMDG:         opts.StrictMDG,

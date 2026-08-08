@@ -20,10 +20,12 @@ func sfDiv(id string, score float64, ahead, files, adds, dels int, head, fingerp
 	}
 }
 
-func TestAssignDuplicateGroups_identicalDiffShapeIsGrouped(t *testing.T) {
+func TestAssignDuplicateGroups_identicalDiffShapeIsCandidateOnly(t *testing.T) {
 	// Observed in the qvr/nonraid export: emtee40, ghenry22 and jsebean all
 	// reported (10 ahead, 7 files, +11210, -0) — the same pre-restructure work,
-	// listed three times as if independent.
+	// listed three times as if independent. Without commit identity (no head
+	// SHA, no fingerprint) the equal shape is a signal, never proof: candidate
+	// tag only, no group, no primary a consumer could fold on.
 	m := &Model{forks: []ScoredFork{
 		sfDiv("emtee40/nonraid", 26.4, 10, 7, 11210, 0, "", ""),
 		sfDiv("ghenry22/nonraid", 26.3, 10, 7, 11210, 0, "", ""),
@@ -34,21 +36,63 @@ func TestAssignDuplicateGroups_identicalDiffShapeIsGrouped(t *testing.T) {
 	m.assignDuplicateGroups()
 
 	for _, i := range []int{0, 1, 2} {
-		if m.forks[i].SiblingCount != 3 {
-			t.Errorf("%s: SiblingCount = %d, want 3", m.forks[i].Fork.ID, m.forks[i].SiblingCount)
+		f := m.forks[i]
+		if f.SiblingGroup != "" || f.SiblingCount != 0 || f.SiblingPrimary {
+			t.Errorf("%s: shape-only match set confirmed-group fields (%+v)", f.Fork.ID, f)
+		}
+		if f.SiblingCandidate == "" || f.SiblingCandidate != m.forks[0].SiblingCandidate {
+			t.Errorf("%s: SiblingCandidate = %q, want shared non-empty key", f.Fork.ID, f.SiblingCandidate)
 		}
 	}
-	if m.forks[0].SiblingGroup != m.forks[1].SiblingGroup || m.forks[1].SiblingGroup != m.forks[2].SiblingGroup {
-		t.Error("the three identical forks did not share a group")
+	if m.forks[3].SiblingCandidate != "" {
+		t.Errorf("iiLaurens has a different shape, SiblingCandidate = %q, want empty", m.forks[3].SiblingCandidate)
+	}
+}
+
+func TestAssignDuplicateGroups_equalTotalsDifferentWorkNotGrouped(t *testing.T) {
+	// The false-positive scenario: two forks whose diffs total the same
+	// (ahead, files, adds, dels) but whose head SHAs differ. They must not be
+	// confirmed duplicates — no group, no count, no primary — and the shape
+	// match survives only as a candidate signal.
+	m := &Model{forks: []ScoredFork{
+		sfDiv("alice/x", 10, 3, 1, 200, 40, "sha-alice", ""),
+		sfDiv("bob/x", 9, 3, 1, 200, 40, "sha-bob", ""),
+	}}
+
+	m.assignDuplicateGroups()
+
+	for _, f := range m.forks {
+		if f.SiblingGroup != "" || f.SiblingCount != 0 || f.SiblingPrimary {
+			t.Errorf("%s: equal totals with different work was treated as a duplicate (%+v)", f.Fork.ID, f)
+		}
+	}
+	if m.forks[0].SiblingCandidate == "" || m.forks[0].SiblingCandidate != m.forks[1].SiblingCandidate {
+		t.Errorf("shape match should set a shared candidate key, got %q / %q",
+			m.forks[0].SiblingCandidate, m.forks[1].SiblingCandidate)
+	}
+}
+
+func TestAssignDuplicateGroups_sharedHeadSHAIsConfirmed(t *testing.T) {
+	// Commit identity present and equal: the full trio applies, and the
+	// highest-scoring member is the primary.
+	m := &Model{forks: []ScoredFork{
+		sfDiv("emtee40/nonraid", 26.4, 10, 7, 11210, 0, "shared-head", ""),
+		sfDiv("ghenry22/nonraid", 26.3, 10, 7, 11210, 0, "shared-head", ""),
+		sfDiv("jsebean/nonraid", 26.3, 10, 7, 11210, 0, "shared-head", ""),
+	}}
+
+	m.assignDuplicateGroups()
+
+	for _, f := range m.forks {
+		if f.SiblingCount != 3 || f.SiblingGroup != "h:shared-head" {
+			t.Errorf("%s: group/count = %q/%d, want h:shared-head/3", f.Fork.ID, f.SiblingGroup, f.SiblingCount)
+		}
 	}
 	if !m.forks[0].SiblingPrimary {
 		t.Error("emtee40 (highest score) should be the primary")
 	}
 	if m.forks[1].SiblingPrimary || m.forks[2].SiblingPrimary {
 		t.Error("only one member of a group may be primary")
-	}
-	if m.forks[3].SiblingGroup != "" || m.forks[3].SiblingCount != 0 {
-		t.Errorf("iiLaurens should not be grouped, got %+v", m.forks[3])
 	}
 }
 
@@ -116,15 +160,16 @@ func TestAssignDuplicateGroups_inertForksAreNeverGrouped(t *testing.T) {
 // enrichment land, and a group formed under the weaker key must not persist.
 func TestAssignDuplicateGroups_isIdempotentAndClearsStaleTags(t *testing.T) {
 	m := &Model{forks: []ScoredFork{
-		sfDiv("a/x", 2, 10, 7, 11210, 0, "", ""),
-		sfDiv("b/x", 1, 10, 7, 11210, 0, "", ""),
+		sfDiv("a/x", 2, 10, 7, 11210, 0, "shared-head", ""),
+		sfDiv("b/x", 1, 10, 7, 11210, 0, "shared-head", ""),
 	}}
 	m.assignDuplicateGroups()
 	if m.forks[0].SiblingCount != 2 {
 		t.Fatalf("expected an initial group, got %d", m.forks[0].SiblingCount)
 	}
 
-	// b/x turns out to have distinct work once its fingerprint arrives.
+	// b/x turns out to have distinct work once its fingerprint arrives (the
+	// fingerprint outranks the compared branch's head SHA).
 	m.forks[1].Fork.BranchFingerprint = "unique"
 	m.assignDuplicateGroups()
 
@@ -132,6 +177,12 @@ func TestAssignDuplicateGroups_isIdempotentAndClearsStaleTags(t *testing.T) {
 		if f.SiblingGroup != "" || f.SiblingCount != 0 || f.SiblingPrimary {
 			t.Errorf("fork %d kept a stale tag: %+v", i, f)
 		}
+	}
+	// The equal diff shape still stands as a candidate signal — it is
+	// independent of the identity tier and was never proof to begin with.
+	if m.forks[0].SiblingCandidate == "" || m.forks[0].SiblingCandidate != m.forks[1].SiblingCandidate {
+		t.Errorf("candidate signal lost on re-assignment: %q / %q",
+			m.forks[0].SiblingCandidate, m.forks[1].SiblingCandidate)
 	}
 }
 

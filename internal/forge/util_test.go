@@ -1,8 +1,9 @@
 package forge
 
-import "strings"
-
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestCompareURL_emptyHostFallsBackToCanonicalHost(t *testing.T) {
 	// Regression: AuthStatus.Host was never populated on the GitHub path, so
