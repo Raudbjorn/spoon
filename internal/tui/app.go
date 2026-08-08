@@ -320,7 +320,7 @@ func (m *Model) applyCachedCompares(cache *gh.CacheEntry) {
 
 		m.recomputeT2Score(i)
 	}
-	m.sortForks()
+	m.reapplySort()
 }
 
 // findGHForkID looks up the numeric GitHub fork ID from the cache by matching FullName.
@@ -900,7 +900,7 @@ func (m *Model) scoreForks(forks []forge.T1Data) {
 		sf := ScoredFork{Fork: f, Heat: result, statID: int64(i)}
 		m.forks = append(m.forks, sf)
 	}
-	m.sortForks()
+	m.reapplySort()
 }
 
 // makeTUIStats builds ForkStats for heat.NewScorer from a slice of T1 forks.
