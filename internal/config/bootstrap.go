@@ -47,7 +47,7 @@ func EnsureDefault(stderr io.Writer) (*Config, error) {
 		return cfg, nil
 	}
 	readmePath := filepath.Join(filepath.Dir(path), "README.md")
-	if err := os.WriteFile(readmePath, []byte(configReadme), 0o644); err != nil {
+	if err := WriteReadme(path); err != nil {
 		readmePath = "(README write failed: " + err.Error() + ")"
 	}
 	fmt.Fprintf(stderr, "first run: wrote default config to %s (instructions in %s)\n", path, readmePath)
@@ -55,6 +55,13 @@ func EnsureDefault(stderr io.Writer) (*Config, error) {
 		fmt.Fprintf(stderr, "  %s\n", line)
 	}
 	return cfg, nil
+}
+
+// WriteReadme (re)generates the README.md documenting every config field and
+// environment variable, beside the given config path. Called by the first-run
+// bootstrap and by `spoon setup`.
+func WriteReadme(configPath string) error {
+	return os.WriteFile(filepath.Join(filepath.Dir(configPath), "README.md"), []byte(configReadme), 0o644)
 }
 
 // defaultConfig is the everything-enabled zero-configuration baseline. The

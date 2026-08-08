@@ -1,6 +1,9 @@
-// cmd/spoon/setup.go — `spoon setup` preflight: verify provider credentials
-// and the FastEmbed embedder, then persist the validated result to the config
-// file. Everything runs in-process; there are no external services to manage.
+// cmd/spoon/setup.go — `spoon setup` preflight: verify provider credentials,
+// the global store, and the FastEmbed embedder, then persist the validated
+// result to the config file (regenerating its README). Everything runs
+// in-process; there are no external services to manage. First-run defaults
+// need no setup at all — config.EnsureDefault bootstraps them automatically;
+// this command exists to re-detect and repair.
 package main
 
 import (
@@ -15,10 +18,15 @@ import (
 	"github.com/svnbjrn/spoon/internal/config"
 	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/forge"
+	"github.com/svnbjrn/spoon/internal/store"
 )
 
-// Indirection point so tests can stub the network credential probe.
-var setupProviderFn = createProvider
+// Indirection points so tests can stub the network credential probe and the
+// store open.
+var (
+	setupProviderFn = createProvider
+	setupStoreFn    = store.OpenDefault
+)
 
 func runSetup(args []string) int {
 	interactive := isatty.IsTerminal(os.Stdin.Fd()) || isatty.IsCygwinTerminal(os.Stdin.Fd())
@@ -129,6 +137,9 @@ func runSetupWith(ctx context.Context, args []string, stdin io.Reader, interacti
 	provOK, provLines := providerStatusLines(provider, auth, provErr)
 	printCheck(stdout, fmt.Sprintf("Provider (%s)", provider), provOK, provLines, f.noColor)
 
+	// --- Global store ---------------------------------------------------------
+	storeOK := setupStore(f.noColor, stdout)
+
 	// --- Embedder + proxy -----------------------------------------------------
 	cfg := loadedCfg
 	if cfg == nil {
@@ -145,17 +156,41 @@ func runSetupWith(ctx context.Context, args []string, stdin io.Reader, interacti
 	// --- Summary --------------------------------------------------------------
 	// FastEmbed is advisory: a missing onnxruntime does not fail setup (the
 	// config still records fastembed and the feature activates once the runtime
-	// is installed). Credentials gate the exit code.
-	if provOK {
+	// is installed). Credentials and the store gate the exit code — every run
+	// needs both.
+	if provOK && storeOK {
 		if fastOK {
-			fmt.Fprintln(stdout, colorize("✓ All set — credentials and FastEmbed are ready.", "\033[32m", f.noColor))
+			fmt.Fprintln(stdout, colorize("✓ All set — credentials, the store, and FastEmbed are ready.", "\033[32m", f.noColor))
 		} else {
-			fmt.Fprintln(stdout, colorize("✓ Credentials ready; FastEmbed needs onnxruntime — semantic search stays off until it is installed (see above).", "\033[33m", f.noColor))
+			fmt.Fprintln(stdout, colorize("✓ Credentials and store ready; FastEmbed needs onnxruntime — semantic search stays off until it is installed (see above).", "\033[33m", f.noColor))
 		}
 		return 0
 	}
 	fmt.Fprintln(stdout, colorize("Some checks need attention — see the suggestions above.", "\033[33m", f.noColor))
 	return 1
+}
+
+// setupStore reports the mandatory global store: its location and whether it
+// opens. An unusable store fails every spoon/spn run, so it fails setup too.
+func setupStore(noColor bool, out io.Writer) bool {
+	path, _ := store.DefaultPath()
+	s, err := setupStoreFn()
+	if err != nil {
+		printCheck(out, "Store", false, []string{
+			"Cannot open " + path + ": " + err.Error(),
+			"Every run needs the store (it is the cache and the persistence layer).",
+			"Check disk space and directory permissions.",
+		}, noColor)
+		return false
+	}
+	defer s.Close()
+	lines := []string{"Open: " + path}
+	if info, statErr := os.Stat(path); statErr == nil {
+		lines = append(lines, fmt.Sprintf("Size: %.1f MB", float64(info.Size())/(1024*1024)))
+	}
+	lines = append(lines, "Compares are content-addressed: entries refresh automatically when a fork is pushed.")
+	printCheck(out, "Store", true, lines, noColor)
+	return true
 }
 
 // mergeConfigDefaults fills unset flag fields from a loaded config, so the
@@ -176,7 +211,7 @@ func mergeConfigDefaults(f *setupFlags, c *config.Config) {
 }
 
 // writeSetupConfig updates (or creates) the config file with the validated
-// forge provider and embedder settings.
+// forge provider and embedder settings, and refreshes the README beside it.
 func writeSetupConfig(path string, existed bool, cfg *config.Config, provider forge.Provider, forgeHost string, stdout, stderr io.Writer) {
 	cfg.Version = config.CurrentVersion
 	cfg.Forge.Provider = provider.String()
@@ -188,6 +223,9 @@ func writeSetupConfig(path string, existed bool, cfg *config.Config, provider fo
 	if err := config.Save(path, cfg); err != nil {
 		fmt.Fprintf(stderr, "warning: could not write config %s: %v\n", path, err)
 		return
+	}
+	if err := config.WriteReadme(path); err != nil {
+		fmt.Fprintf(stderr, "warning: could not refresh config README: %v\n", err)
 	}
 	fmt.Fprintf(stdout, "%s config at %s\n\n", verb, path)
 }
@@ -268,13 +306,17 @@ func setupMark(ok bool, noColor bool) string {
 }
 
 func printSetupHelp(w io.Writer) {
-	fmt.Fprint(w, `spoon setup — verify credentials and the embedding backend
+	fmt.Fprint(w, `spoon setup — verify credentials, the store, and the embedder
 
-Checks forge credentials and the FastEmbed embedder (BGE small EN v1.5 through
-ONNX Runtime; set ONNX_PATH if the runtime is not on the loader path — the
-model itself self-provisions on first use). Existing ProxyScrape files are
-referenced by path only and their contents are never copied into spoon's
-config. Exits 0 when ready, 1 when credentials need attention.
+spoon is zero-configuration: the first run writes a documented default config
+automatically (see the README.md beside it). This command re-detects and
+repairs — checking forge credentials, the mandatory global store
+(~/.config/spoon/spoon.db; /var/lib/spoon on no-home hosts), and the FastEmbed
+embedder (BGE small EN v1.5 through ONNX Runtime; set ONNX_PATH if the runtime
+is not on the loader path — the model itself self-provisions on first use).
+Existing ProxyScrape files are referenced by path only and their contents are
+never copied into spoon's config. Exits 0 when ready, 1 when credentials or
+the store need attention.
 
 Usage:
   spoon setup [flags]

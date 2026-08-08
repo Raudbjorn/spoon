@@ -6,11 +6,13 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/svnbjrn/spoon/internal/config"
 	"github.com/svnbjrn/spoon/internal/forge"
+	"github.com/svnbjrn/spoon/internal/store"
 )
 
 func TestProviderStatusLines(t *testing.T) {
@@ -41,10 +43,11 @@ func TestProviderStatusLines(t *testing.T) {
 	}
 }
 
-// stubProvider isolates the config file and replaces the provider probe.
+// stubProvider isolates the config file/store and replaces the provider probe.
 func stubProvider(t *testing.T, auth forge.AuthInfo, err error) {
 	t.Helper()
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	prev := setupProviderFn
 	t.Cleanup(func() { setupProviderFn = prev })
 	setupProviderFn = func(_ context.Context, _, _, _ string) (forge.Forge, forge.AuthInfo, string, error) {
@@ -117,6 +120,52 @@ func TestRunSetup_noConfigSkipsWrite(t *testing.T) {
 	path, _ := config.DefaultPath()
 	if _, err := config.Load(path); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("expected no config file with --no-config, got err=%v", err)
+	}
+}
+
+func TestRunSetup_storeSectionReported(t *testing.T) {
+	stubProvider(t, forge.AuthInfo{Tier: forge.AuthCLI, RateLimit: 5000, RateUnit: "hour"}, nil)
+
+	var stdout, stderr bytes.Buffer
+	exit := runSetupWith(context.Background(), []string{"--no-color"}, strings.NewReader(""), false, &stdout, &stderr)
+	if exit != 0 {
+		t.Fatalf("exit=%d\n%s\n%s", exit, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "✓ Store") {
+		t.Errorf("store section missing or failed:\n%s", stdout.String())
+	}
+}
+
+func TestRunSetup_unusableStoreExitsOne(t *testing.T) {
+	stubProvider(t, forge.AuthInfo{Tier: forge.AuthCLI, RateLimit: 5000, RateUnit: "hour"}, nil)
+	prev := setupStoreFn
+	t.Cleanup(func() { setupStoreFn = prev })
+	setupStoreFn = func() (*store.Store, error) { return nil, errors.New("disk full") }
+
+	var stdout, stderr bytes.Buffer
+	exit := runSetupWith(context.Background(), []string{"--no-color"}, strings.NewReader(""), false, &stdout, &stderr)
+	if exit != 1 {
+		t.Fatalf("exit=%d want 1 — an unusable store fails every run and must fail setup\n%s", exit, stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "disk full") {
+		t.Errorf("store failure not surfaced:\n%s", stdout.String())
+	}
+}
+
+func TestRunSetup_refreshesReadme(t *testing.T) {
+	stubProvider(t, forge.AuthInfo{Tier: forge.AuthCLI, RateLimit: 5000, RateUnit: "hour"}, nil)
+
+	var stdout, stderr bytes.Buffer
+	if exit := runSetupWith(context.Background(), []string{"--no-color"}, strings.NewReader(""), false, &stdout, &stderr); exit != 0 {
+		t.Fatalf("exit=%d\n%s", exit, stdout.String())
+	}
+	path, _ := config.DefaultPath()
+	readme, err := os.ReadFile(filepath.Join(filepath.Dir(path), "README.md"))
+	if err != nil {
+		t.Fatalf("setup did not write the config README: %v", err)
+	}
+	if !strings.Contains(string(readme), "SPOON_NO_CONFIG") {
+		t.Error("README content missing env var table")
 	}
 }
 
