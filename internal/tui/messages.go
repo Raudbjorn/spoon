@@ -3,7 +3,7 @@ package tui
 import (
 	"github.com/svnbjrn/spoon/internal/cluster"
 	"github.com/svnbjrn/spoon/internal/forge"
-	gh "github.com/svnbjrn/spoon/internal/github"
+	"github.com/svnbjrn/spoon/internal/store"
 )
 
 // Message types for Bubble Tea update loop.
@@ -17,6 +17,10 @@ type authReadyMsg struct {
 type parentFetchedMsg struct {
 	parent forge.ParentData
 	err    error
+	// snap is the stored snapshot for this repo (nil on refresh or first run).
+	// Carried so per-fork compares can be reused even when the fork list itself
+	// is stale enough to refetch.
+	snap *store.RepoSnapshot
 }
 
 type forksFetchedMsg struct {
@@ -46,12 +50,13 @@ type enrichmentDoneMsg struct{}
 
 type errMsg struct{ err error }
 
-// cachedLoadMsg is used when loading from the GitHub-specific cache.
-// The cache bridge converts gh types to forge types.
+// cachedLoadMsg is used when the whole fork list is served from the store
+// (parent + forks fresh within forkListTTL). snap keeps the cached compares
+// for per-fork reuse.
 type cachedLoadMsg struct {
 	parent forge.ParentData
 	forks  []forge.T1Data
-	cache  *gh.CacheEntry // kept for compare cache lookups
+	snap   *store.RepoSnapshot
 }
 
 // clusterResultMsg is published when the cluster pipeline finishes (or

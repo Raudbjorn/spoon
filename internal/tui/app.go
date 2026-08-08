@@ -13,8 +13,8 @@ import (
 
 	"github.com/svnbjrn/spoon/internal/forge"
 	"github.com/svnbjrn/spoon/internal/forksops"
-	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/heat"
+	"github.com/svnbjrn/spoon/internal/store"
 	"github.com/svnbjrn/spoon/internal/topics"
 )
 
@@ -91,8 +91,11 @@ type Model struct {
 	enrichCtx    context.Context
 	enrichCancel context.CancelFunc
 
-	// GitHub cache (kept for backward compat)
-	ghCache *gh.CacheEntry
+	// Global store (mandatory at runtime; nil only in unit tests). cached is
+	// the repo's stored snapshot, used to serve fork lists within forkListTTL
+	// and to reuse per-fork compares whose pushed_at is unchanged.
+	db     *store.Store
+	cached *store.RepoSnapshot
 
 	// Buffered updates for batch rendering
 	pendingUpdates []tier2ResultMsg
@@ -162,6 +165,20 @@ func (m Model) WithHeatWeights(w map[string]float64) Model {
 	m.heatWeights = w
 	return m
 }
+
+// WithStore returns a copy of the model backed by the global store. The store
+// is mandatory at runtime — the caller (cmd/spoon) fails hard when it cannot
+// be opened — but stays nil-able so unit tests can run modelless.
+func (m Model) WithStore(db *store.Store) Model {
+	m.db = db
+	return m
+}
+
+// forkListTTL bounds how long a stored fork enumeration serves as the full
+// list: membership can change (new forks) with no push to any cached fork, so
+// list freshness is time-based, unlike compare validity which is keyed on each
+// fork's pushed_at.
+const forkListTTL = 12 * time.Hour
 
 func (m Model) Init() tea.Cmd {
 	if m.auth.Authenticated() {
@@ -245,7 +262,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *Model) handleCachedLoad(msg cachedLoadMsg) (tea.Model, tea.Cmd) {
 	m.parent = &msg.parent
-	m.ghCache = msg.cache
+	m.cached = msg.snap
 	m.loading = false
 	m.loadMsg = fmt.Sprintf("Loaded %d forks from cache", len(msg.forks))
 
@@ -254,9 +271,7 @@ func (m *Model) handleCachedLoad(msg cachedLoadMsg) (tea.Model, tea.Cmd) {
 	m.cursor = 0
 
 	// Apply cached compare data
-	if msg.cache != nil && msg.cache.Compares != nil {
-		m.applyCachedCompares(msg.cache)
-	}
+	m.applyCachedCompares(msg.snap)
 
 	cmd := m.startEnrichment()
 	if cmd == nil {
@@ -269,39 +284,37 @@ func (m *Model) handleCachedLoad(msg cachedLoadMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m *Model) applyCachedCompares(cache *gh.CacheEntry) {
-	for i := range m.forks {
-		// Find the fork ID in the cache by matching FullName
-		forkID := m.findGHForkID(m.forks[i].Fork.ID)
-		if forkID == 0 {
-			continue
+// cachedT2For returns the stored compare for a fork when its pushed_at matches
+// the live listing. A push moves pushed_at, so equality means the compare is
+// still describing the fork's current state — no TTL involved.
+func cachedT2For(snap *store.RepoSnapshot, t1 forge.T1Data) *forge.T2Data {
+	if snap == nil {
+		return nil
+	}
+	for i := range snap.Forks {
+		cf := &snap.Forks[i]
+		if cf.T1.ID == t1.ID && cf.T2 != nil && cf.T1.PushedAt.Equal(t1.PushedAt) {
+			return cf.T2
 		}
-		ghCompare, ok := cache.Compares[forkID]
-		if !ok || !cache.CompareValid(forkID) {
-			continue
-		}
+	}
+	return nil
+}
 
-		// Convert gh.CompareResult to forge.T2Data via the adapter helper
-		t2 := ghCompareToForgeT2(ghCompare)
-		m.forks[i].T2 = &t2
+func (m *Model) applyCachedCompares(snap *store.RepoSnapshot) {
+	if snap == nil {
+		return
+	}
+	for i := range m.forks {
+		t2 := cachedT2For(snap, m.forks[i].Fork)
+		if t2 == nil {
+			continue
+		}
+		m.forks[i].T2 = t2
 		m.forks[i].Enriched = true
 
 		m.recomputeT2Score(i)
 	}
 	m.sortForks()
-}
-
-// findGHForkID looks up the numeric GitHub fork ID from the cache by matching FullName.
-func (m *Model) findGHForkID(forgeID string) int64 {
-	if m.ghCache == nil {
-		return 0
-	}
-	for _, f := range m.ghCache.Forks {
-		if f.FullName == forgeID {
-			return f.ID
-		}
-	}
-	return 0
 }
 
 func (m *Model) handleParentFetched(msg parentFetchedMsg) (tea.Model, tea.Cmd) {
@@ -312,6 +325,7 @@ func (m *Model) handleParentFetched(msg parentFetchedMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.parent = &msg.parent
+	m.cached = msg.snap
 	m.loadMsg = fmt.Sprintf("Fetching forks of %s...", m.parent.FullName)
 	return m, m.fetchForks()
 }
@@ -332,11 +346,19 @@ func (m *Model) handleForksFetched(msg forksFetchedMsg) (tea.Model, tea.Cmd) {
 	m.view = viewTable
 	m.cursor = 0
 
+	// Reuse stored compares for forks whose pushed_at is unchanged, then
+	// persist the freshly scored list.
+	m.applyCachedCompares(m.cached)
+	persist := m.persistForkList()
+
 	cmd := m.startEnrichment()
 	if cmd == nil {
 		if cc := m.maybeStartClusterPipeline(); cc != nil {
-			return m, cc
+			return m, tea.Batch(persist, cc)
 		}
+	}
+	if persist != nil {
+		return m, tea.Batch(persist, cmd)
 	}
 	return m, cmd
 }
@@ -384,17 +406,7 @@ func (m *Model) processPendingUpdates() (tea.Model, tea.Cmd) {
 
 				m.recomputeT2Score(i)
 
-				// Save to GitHub cache if applicable
-				if m.auth.Provider == forge.ProviderGitHub && m.parent != nil {
-					parts := strings.SplitN(m.parent.FullName, "/", 2)
-					if len(parts) == 2 {
-						ghCompare := forgeT2ToGHCompare(t2)
-						forkID := m.findGHForkID(m.forks[i].Fork.ID)
-						if forkID != 0 {
-							_ = gh.SaveCompare(parts[0], parts[1], forkID, ghCompare)
-						}
-					}
-				}
+				m.persistCompare(i)
 
 				break
 			}
@@ -700,32 +712,107 @@ func (m *Model) startFetch() tea.Cmd {
 	provider := m.provider
 	refresh := m.refresh
 
+	db := m.db
+	storeProvider, storeHost := m.storeIdentity()
+
 	return func() tea.Msg {
-		// Try GitHub cache first (only for GitHub provider)
-		if !refresh && m.auth.Provider == forge.ProviderGitHub {
-			cache := gh.LoadCache(owner, name)
-			if cache != nil && cache.ForkListValid() {
-				parent := ghRepoInfoToForge(*cache.Parent)
-				forks := make([]forge.T1Data, 0, len(cache.Forks))
-				for _, f := range cache.Forks {
-					var extra *gh.T1Extra
-					if cache.T1Extras != nil {
-						if e, ok := cache.T1Extras[f.ID]; ok {
-							extra = &e
-						}
-					}
-					forks = append(forks, ghForkInfoToForge(f, extra, owner+"/"+name))
-				}
-				return cachedLoadMsg{
-					parent: parent,
-					forks:  forks,
-					cache:  cache,
-				}
+		// The store is consulted for every provider. A refresh skips it
+		// entirely — both the fork list and the per-fork compare reuse.
+		var snap *store.RepoSnapshot
+		if !refresh && db != nil {
+			snap, _ = db.LoadRepoSnapshot(context.Background(), storeProvider, storeHost, owner, name)
+		}
+		if snap != nil && snap.Parent != nil && len(snap.Forks) > 0 && time.Since(snap.ForksSyncedAt) < forkListTTL {
+			forks := make([]forge.T1Data, 0, len(snap.Forks))
+			for _, cf := range snap.Forks {
+				forks = append(forks, cf.T1)
+			}
+			return cachedLoadMsg{
+				parent: *snap.Parent,
+				forks:  forks,
+				snap:   snap,
 			}
 		}
 
 		parent, err := provider.Parent(context.Background(), owner, name)
-		return parentFetchedMsg{parent: parent, err: err}
+		return parentFetchedMsg{parent: parent, err: err, snap: snap}
+	}
+}
+
+// storeIdentity returns the provider/host pair used in store repo keys.
+func (m *Model) storeIdentity() (string, string) {
+	host := m.auth.Host
+	if host == "" {
+		host = forge.DefaultHost(m.auth.Provider)
+	}
+	return m.auth.Provider.String(), host
+}
+
+// storeRepoRecord builds the RepoRecord for the current upstream. Parent and
+// ForksSyncedAt are attached only when requested — a per-fork compare save
+// must not overwrite what a full enumeration recorded.
+func (m *Model) storeRepoRecord(withParent bool, syncedAt time.Time) (store.RepoRecord, bool) {
+	if m.parent == nil {
+		return store.RepoRecord{}, false
+	}
+	parts := strings.SplitN(m.parent.FullName, "/", 2)
+	if len(parts) != 2 {
+		return store.RepoRecord{}, false
+	}
+	providerName, host := m.storeIdentity()
+	now := time.Now().UTC()
+	rec := store.RepoRecord{
+		Provider: providerName, Host: host, Owner: parts[0], Name: parts[1],
+		FirstSeen: now, LastSeen: now, ForksSyncedAt: syncedAt,
+	}
+	if withParent {
+		p := *m.parent
+		rec.Parent = &p
+	}
+	return rec, true
+}
+
+// persistForkList writes the freshly fetched (and scored) fork list to the
+// store as a background command, stamping the parent and the sync time.
+func (m *Model) persistForkList() tea.Cmd {
+	if m.db == nil {
+		return nil
+	}
+	repo, ok := m.storeRepoRecord(true, time.Now().UTC())
+	if !ok {
+		return nil
+	}
+	now := time.Now().UTC()
+	snaps := make([]store.Snapshot, 0, len(m.forks))
+	for i := range m.forks {
+		f := &m.forks[i]
+		snaps = append(snaps, store.SnapshotFromForge(repo, f.Fork, nil, f.Heat.Score, f.Heat.Tier, now))
+	}
+	db := m.db
+	return func() tea.Msg {
+		if err := db.UpsertSnapshots(context.Background(), snaps); err != nil {
+			return errMsg{err: fmt.Errorf("persist fork list: %w", err)}
+		}
+		return nil
+	}
+}
+
+// persistCompare writes one fork's fresh compare (with its full T1 context and
+// updated heat) to the store, synchronously — a single-fork snapshot is a few
+// milliseconds and keeps the update loop simple.
+func (m *Model) persistCompare(i int) {
+	if m.db == nil || i < 0 || i >= len(m.forks) {
+		return
+	}
+	repo, ok := m.storeRepoRecord(false, time.Time{})
+	if !ok {
+		return
+	}
+	f := &m.forks[i]
+	snap := store.SnapshotFromForge(repo, f.Fork, f.T2, f.Heat.Score, f.Heat.Tier, time.Now().UTC())
+	if err := m.db.UpsertSnapshot(context.Background(), snap); err != nil {
+		m.errMsg = fmt.Sprintf("Store write failed: %s", err)
+		m.errMsgTime = time.Now()
 	}
 }
 
@@ -767,21 +854,6 @@ func (m *Model) fetchForks() tea.Cmd {
 			return forksFetchedMsg{forks: forks, warn: streamErr}
 		}
 
-		// Save to GitHub cache if applicable
-		if m.auth.Provider == forge.ProviderGitHub {
-			ghForks := make([]gh.ForkInfo, 0, len(forks))
-			ghExtras := make(map[int64]gh.T1Extra)
-			for _, f := range forks {
-				ghF := forgeT1ToGHForkInfo(f)
-				ghForks = append(ghForks, ghF)
-				if f.OpenPRCount > 0 || f.ReleaseCount > 0 || len(f.Branches) > 0 {
-					ghExtras[ghF.ID] = forgeT1ToGHExtra(f)
-				}
-			}
-			ghParent := forgeParentToGHRepoInfo(*parent)
-			_ = gh.SaveForkList(parts[0], parts[1], ghParent, ghForks, ghExtras)
-		}
-
 		return forksFetchedMsg{forks: forks}
 	}
 }
@@ -791,7 +863,7 @@ func (m *Model) doRefresh() tea.Cmd {
 	m.cancelEnrichment()
 	m.forks = nil
 	m.parent = nil
-	m.ghCache = nil
+	m.cached = nil
 	m.enrichDone = 0
 	m.enrichTotal = 0
 	m.loading = true
@@ -943,7 +1015,7 @@ func (m *Model) startEnrichment() tea.Cmd {
 
 	provider := m.provider
 	refresh := m.refresh
-	ghCache := m.ghCache
+	cached := m.cached
 	sem := make(chan struct{}, concurrency)
 
 	cmds := make([]tea.Cmd, 0, len(toEnrich)+1)
@@ -954,13 +1026,11 @@ func (m *Model) startEnrichment() tea.Cmd {
 		forkID := f.ID
 
 		cmds = append(cmds, func() tea.Msg {
-			// Check GitHub cache for compare data
-			if !refresh && ghCache != nil && m.auth.Provider == forge.ProviderGitHub {
-				for _, ghF := range ghCache.Forks {
-					if ghF.FullName == forkID && ghCache.CompareValid(ghF.ID) {
-						t2 := ghCompareToForgeT2(ghCache.Compares[ghF.ID])
-						return tier2ResultMsg{forkID: forkID, t2: t2}
-					}
+			// Serve the compare from the store when the fork hasn't been pushed
+			// since it was recorded.
+			if !refresh {
+				if t2 := cachedT2For(cached, f); t2 != nil {
+					return tier2ResultMsg{forkID: forkID, t2: *t2}
 				}
 			}
 

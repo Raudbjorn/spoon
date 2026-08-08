@@ -17,6 +17,7 @@ import (
 	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/gitlab"
 	"github.com/svnbjrn/spoon/internal/heat"
+	"github.com/svnbjrn/spoon/internal/store"
 	"github.com/svnbjrn/spoon/internal/tui"
 )
 
@@ -194,7 +195,17 @@ func main() {
 			defer closePolisher()
 		}
 	}
-	m := tui.NewModelWithCluster(provider, auth, repoArg, refresh, tuiClusterOpts).WithHeatWeights(heatWeights)
+	// The global store is mandatory: every run reads and writes it, and an
+	// unusable store means silently uncached, unpersisted sessions — fail
+	// loudly instead.
+	db, err := store.OpenDefault()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: cannot open spoon store: %v\n", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	m := tui.NewModelWithCluster(provider, auth, repoArg, refresh, tuiClusterOpts).WithHeatWeights(heatWeights).WithStore(db)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 
 	if _, err := p.Run(); err != nil {
@@ -231,7 +242,6 @@ func newLabelPolisher() (cluster.LabelPolisher, func(), error) {
 	}
 	return p, p.Close, nil
 }
-
 
 // createProvider detects the forge provider from the repo URL and flags,
 // creates the appropriate Forge implementation, and returns it with auth info.

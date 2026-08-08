@@ -571,11 +571,33 @@ func ForkKey(repoKey, forgeID string) string { return repoKey + ":" + forgeID }
 func DocumentID(forkKey string) string       { return "fork:" + forkKey }
 
 func (s *Store) UpsertSnapshot(ctx context.Context, snap Snapshot) error {
+	return s.UpsertSnapshots(ctx, []Snapshot{snap})
+}
+
+// UpsertSnapshots writes several snapshots in one immediate transaction —
+// a full fork listing is hundreds of rows, and one transaction beats one
+// write-lock acquisition per fork.
+func (s *Store) UpsertSnapshots(ctx context.Context, snaps []Snapshot) error {
+	if len(snaps) == 0 {
+		return nil
+	}
 	tx, err := beginImmediate(ctx, s.db)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
+	for _, snap := range snaps {
+		if err := upsertSnapshotTx(ctx, tx, snap); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	return s.secureArtifactsOnce()
+}
+
+func upsertSnapshotTx(ctx context.Context, tx *wtx, snap Snapshot) error {
 	repoKey := RepoKey(snap.Repo.Provider, snap.Repo.Host, snap.Repo.Owner, snap.Repo.Name)
 	forkKey := ForkKey(repoKey, snap.Fork.ForgeID)
 	topics := append([]string(nil), snap.Fork.Topics...)
@@ -666,10 +688,56 @@ func (s *Store) UpsertSnapshot(ctx context.Context, snap Snapshot) error {
 			return fmt.Errorf("insert document: %w", err)
 		}
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return err
+	return nil
+}
+
+// SnapshotFromForge assembles a Snapshot straight from forge types, converting
+// T2 diffs/commits into their relational records. heat/tier may be zero when
+// scoring has not run yet.
+func SnapshotFromForge(repo RepoRecord, t1 forge.T1Data, t2 *forge.T2Data, heat float64, tier int, now time.Time) Snapshot {
+	snap := Snapshot{
+		Repo: repo,
+		Fork: ForkRecord{
+			ForgeID: t1.ID, Owner: t1.Owner, Name: t1.Name, URL: t1.URL,
+			Description: t1.Description, Language: t1.Language, Topics: t1.Topics,
+			Stars: t1.Stars, PushedAt: t1.PushedAt, Heat: heat, Tier: tier, UpdatedAt: now,
+		},
+		T1: &t1,
 	}
-	return s.secureArtifactsOnce()
+	if t2 != nil {
+		snap.T2Present = true
+		snap.T2 = t2
+		snap.CompareFiles = FilesFromForge(t2.Diffs)
+		snap.Commits = make([]CommitRecord, 0, len(t2.Commits))
+		for _, c := range t2.Commits {
+			snap.Commits = append(snap.Commits, CommitRecord{
+				SHA: c.SHA, Message: c.Message, AuthorLogin: c.AuthorLogin,
+				AuthorEmail: c.AuthorEmail, CommittedAt: c.Timestamp, Files: FilesFromForge(c.Files),
+			})
+		}
+	}
+	return snap
+}
+
+// FilesFromForge converts forge file diffs to store records. Empty patches
+// become NULL so "no patch" is distinguishable from an empty diff.
+func FilesFromForge(diffs []forge.FileDiff) []FileRecord {
+	if len(diffs) == 0 {
+		return nil
+	}
+	out := make([]FileRecord, 0, len(diffs))
+	for _, d := range diffs {
+		fr := FileRecord{
+			Path: d.Path, PreviousPath: d.PreviousPath, Status: d.Status,
+			Additions: d.Additions, Deletions: d.Deletions, PatchSource: d.PatchSource,
+		}
+		if d.Patch != "" {
+			p := d.Patch
+			fr.Patch = &p
+		}
+		out = append(out, fr)
+	}
+	return out
 }
 
 func insertFile(ctx context.Context, tx *wtx, table, forkKey, sha string, f FileRecord) error {
