@@ -59,7 +59,7 @@ var noopSiblingSearcher SiblingSearcher = DefaultSiblingSearcher{}
 //
 // A nil or non-positive-candidateLimit is normalized to 50 (the
 // default in the plan). The function is a no-op when the embedder is
-// nil (e.g. the OpenVINO model failed to load).
+// nil (e.g. the embedder failed to construct).
 func SearchSiblings(
 	ctx context.Context,
 	searcher SiblingSearcher,

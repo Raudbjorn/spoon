@@ -21,22 +21,14 @@ const CurrentVersion = 1
 
 // Config is the root user configuration. Zero values mean "unset"; omitempty
 // keeps the written file minimal.
+// Config is the on-disk configuration. Old files may carry keys from removed
+// features (reranker/labeler); encoding/json ignores unknown keys, so they
+// load fine and the stale keys drop on the next Save.
 type Config struct {
 	Version  int            `json:"version"`
 	Forge    ForgeConfig    `json:"forge,omitempty"`
 	GitHub   GitHubConfig   `json:"github,omitempty"`
 	Embedder EmbedderConfig `json:"embedder,omitempty"`
-	Reranker ModelConfig    `json:"reranker,omitempty"`
-	Labeler  ModelConfig    `json:"labeler,omitempty"`
-}
-
-// ModelConfig points one OpenVINO-backed feature (reranker, labeler) at a
-// model directory and device.
-type ModelConfig struct {
-	// ModelPath is the OVMS-style model directory.
-	ModelPath string `json:"modelPath,omitempty"`
-	// Device is the OpenVINO device ("GPU" default).
-	Device string `json:"device,omitempty"`
 }
 
 // EmbedderConfig configures the in-process fastembed embedder that powers

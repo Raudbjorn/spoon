@@ -158,9 +158,6 @@ type ClusterOptions struct {
 	// Categorize enables zero-shot category assignment for embedded forks.
 	Categorize bool
 
-	// LabelPolisher, when non-nil, rewrites cluster labels (in-process LLM).
-	LabelPolisher cluster.LabelPolisher
-
 	// Embedder, when non-nil, replaces the built-in lexical embedder
 	// (fastembed when the CLI installed it, else the test seam; nil →
 	// built-in lexical embedder). EmbedderID must identify it for cache keying.
@@ -893,7 +890,6 @@ func runForksClusterPipeline(
 	pipelineOpts.Embedder = opts.Embedder
 	pipelineOpts.EmbedderID = opts.EmbedderID
 	pipelineOpts.Categorize = opts.Categorize
-	pipelineOpts.LabelPolisher = opts.LabelPolisher
 	pipelineOpts.SiblingSimEnabled = opts.SiblingSimEnabled
 	pipelineOpts.SiblingSearcher = opts.SiblingSearcher
 	pipelineOpts.SiblingSimMode = opts.SiblingSimMode

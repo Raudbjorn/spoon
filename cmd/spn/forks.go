@@ -20,7 +20,6 @@ import (
 	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/forge"
 	"github.com/svnbjrn/spoon/internal/forksops"
-	"github.com/svnbjrn/spoon/internal/genai"
 	"github.com/svnbjrn/spoon/internal/gitea"
 	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/gitlab"
@@ -479,31 +478,8 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 		remaining.Store(int64(budget))
 		opts.CommitFileRunBudget = remaining
 	}
-	// Label polishing: only when a labeler model is configured and the
-	// openvino-genai runtime loads. Like the reranker, a configured but
-	// unloadable labeler is a hard error.
-	if opts.Cluster.Enabled {
-		polisher, closePolisher, lerr := newLabelPolisher()
-		if lerr != nil {
-			return agentio.NewError(agentio.CodeBadInput, lerr.Error(),
-				"Run 'spoon setup' to download the default labeler, install openvino-genai (or set SPOON_OPENVINO_GENAI_LIB), or unset the labeler config.").Emit(stderr)
-		}
-		if polisher != nil {
-			opts.Cluster.LabelPolisher = polisher
-			defer closePolisher()
-		}
-	}
-
+	// Query relevance uses the built-in lexical scorer (opts.QueryScorer nil).
 	opts.Query = query
-	if query != "" {
-		scorer, closeScorer, qerr := newQueryScorer(stderr)
-		if qerr != nil {
-			return agentio.NewError(agentio.CodeBadInput, qerr.Error(),
-				"Run 'spoon setup' to download the default reranker, or unset the reranker config to fall back to lexical query scoring.").Emit(stderr)
-		}
-		opts.QueryScorer = scorer
-		defer closeScorer()
-	}
 
 	ctx := context.WithValue(context.Background(), githubRPMContextKey{}, githubRPM)
 
@@ -1222,48 +1198,6 @@ func resolveFastEmbedConfig(model, cacheDir string) embed.FastEmbedConfig {
 	return embed.FastEmbedConfig{
 		Model: model, CacheDir: cacheDir, MaxLength: fileCfg.MaxLength, BatchSize: fileCfg.BatchSize,
 	}
-}
-
-// newQueryScorer builds the query relevance scorer: the OpenVINO
-// cross-encoder when a reranker model is configured (config file or
-// $SPOON_OPENVINO_RERANKER) and this binary supports it; otherwise nil so
-// the stream falls back to the built-in lexical scorer. A configured but
-// unloadable reranker is a hard error — never a silent quality downgrade.
-func newQueryScorer(stderr io.Writer) (embed.QueryScorer, func(), error) {
-	modelPath := os.Getenv("SPOON_OPENVINO_RERANKER")
-	device := os.Getenv("SPOON_OPENVINO_DEVICE")
-	if cfg, cerr := config.LoadDefault(); cerr == nil && cfg != nil {
-		modelPath = config.Coalesce(modelPath, cfg.Reranker.ModelPath)
-		device = config.Coalesce(device, cfg.Reranker.Device)
-	}
-	if modelPath == "" {
-		return nil, func() {}, nil // lexical fallback
-	}
-	r, err := embed.NewReranker(embed.RerankConfig{ModelPath: modelPath, Device: device})
-	if err != nil {
-		return nil, nil, err
-	}
-	return r, r.Close, nil
-}
-
-// newLabelPolisher builds the cluster label polisher from config/env
-// (labeler.modelPath or $SPOON_OPENVINO_LABELER). Returns (nil, nil, nil)
-// when no labeler is configured.
-func newLabelPolisher() (cluster.LabelPolisher, func(), error) {
-	modelPath := os.Getenv("SPOON_OPENVINO_LABELER")
-	device := ""
-	if cfg, cerr := config.LoadDefault(); cerr == nil && cfg != nil {
-		modelPath = config.Coalesce(modelPath, cfg.Labeler.ModelPath)
-		device = cfg.Labeler.Device
-	}
-	if modelPath == "" {
-		return nil, nil, nil
-	}
-	p, err := genai.NewLabelPolisher(genai.Config{ModelPath: modelPath, Device: device})
-	if err != nil {
-		return nil, nil, err
-	}
-	return p, p.Close, nil
 }
 
 // streamAndEmit runs the fork pipeline for one upstream and emits NDJSON

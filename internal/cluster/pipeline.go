@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/svnbjrn/spoon/internal/embed"
@@ -41,11 +40,6 @@ type PipelineOptions struct {
 	// EmbedderID identifies the embedder for cluster-cache keying. Must be
 	// set whenever Embedder is; empty means the built-in lexical embedder.
 	EmbedderID string
-
-	// LabelPolisher, when non-nil, rewrites each non-noise cluster's
-	// heuristic label (in-process LLM). Errors fall back silently to the
-	// heuristic.
-	LabelPolisher LabelPolisher
 
 	// Categorize enables zero-shot category assignment (ClassifyForks) for
 	// the embedded candidates. Callers gate this on a semantic embedder —
@@ -401,30 +395,6 @@ func RunPipeline(ctx context.Context, opts PipelineOptions, inputs PipelineInput
 		clusters[i].Label = labels[clusters[i].ID]
 	}
 
-	// 8a. Optional label polish over each non-noise cluster. Errors keep
-	//     the heuristic label.
-	if opts.LabelPolisher != nil {
-		upstreamRepo := inputs.UpstreamOwner + "/" + inputs.UpstreamRepo
-		for i := range clusters {
-			if clusters[i].ID == "noise" {
-				continue
-			}
-			hint := PolishHint{
-				Heuristic:    clusters[i].Label,
-				UpstreamRepo: upstreamRepo,
-			}
-			hint.SampleCommits, hint.SamplePaths = sampleClusterTexts(clusters[i], features, idxByForkID, 6)
-			polished, perr := opts.LabelPolisher.PolishLabel(ctx, hint)
-			if perr != nil {
-				fmt.Fprintf(logger, "[cluster] label polish failed for %s: %v (keeping heuristic)\n", clusters[i].ID, perr)
-				continue
-			}
-			fmt.Fprintf(logger, "[cluster] polish %s: %q (heuristic %q)\n", clusters[i].ID, polished, hint.Heuristic)
-			if polished != "" {
-				clusters[i].Label = polished
-			}
-		}
-	}
 	// 9. Write back cluster metadata into each candidate's HeatResult.
 	// 8b. P2 distant-relation discovery (opt-in). Runs after the
 	// cluster pass so the embedder is already constructed; populates
@@ -856,32 +826,6 @@ func changeImpactFor(c repo.Centrality, ok bool, paths []string) float32 {
 		return 0
 	}
 	return float32(c.ScoreFork(paths))
-}
-
-// sampleClusterTexts collects up to n member commit subjects and up to n
-// member file paths for a cluster, for the label polisher's context.
-func sampleClusterTexts(c Cluster, features []embed.ForkFeatures, idxByForkID map[string]int, n int) (commits, paths []string) {
-	for _, id := range c.Members {
-		idx, ok := idxByForkID[id]
-		if !ok || idx < 0 || idx >= len(features) {
-			continue
-		}
-		f := features[idx]
-		for _, line := range strings.Split(f.Commits, "\n") {
-			if line = strings.TrimSpace(line); line != "" && len(commits) < n {
-				commits = append(commits, line)
-			}
-		}
-		for _, line := range strings.Split(f.Paths, "\n") {
-			if line = strings.TrimSpace(line); line != "" && len(paths) < n {
-				paths = append(paths, line)
-			}
-		}
-		if len(commits) >= n && len(paths) >= n {
-			break
-		}
-	}
-	return commits, paths
 }
 
 // isEmptyNoiseFork reports whether a fork has no T2 divergence signal:

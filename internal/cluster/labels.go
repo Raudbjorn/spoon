@@ -1,28 +1,12 @@
 package cluster
 
 import (
-	"context"
 	"math"
 	"sort"
 	"strings"
 
 	"github.com/svnbjrn/spoon/internal/embed"
 )
-
-// LabelPolisher rewrites a cluster's heuristic label using broader context
-// (e.g. an in-process LLM). Returning an error or an empty string keeps the
-// heuristic label; polish never fails the pipeline.
-type LabelPolisher interface {
-	PolishLabel(ctx context.Context, hint PolishHint) (string, error)
-}
-
-// PolishHint is the context handed to a LabelPolisher for one cluster.
-type PolishHint struct {
-	Heuristic     string   // the deterministic label from HeuristicLabel
-	UpstreamRepo  string   // "owner/repo"
-	SampleCommits []string // up to a handful of member commit subjects
-	SamplePaths   []string // up to a handful of member file paths
-}
 
 // labelSeparator joins the dir-prefix and tokens portions of a heuristic
 // label. The doubled spaces and middle dot are intentional — they make the
