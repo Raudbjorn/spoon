@@ -131,9 +131,9 @@ func TestCompareValid_GatesOnPerformed(t *testing.T) {
 	t.Run("performed compare is served", func(t *testing.T) {
 		e := &CacheEntry{
 			FetchedAt: within,
-			Compares:  map[int64]CompareResult{7: {Performed: true, AheadBy: 3}},
+			Compares:  map[string]CompareResult{"attacker/fork": {Performed: true, AheadBy: 3}},
 		}
-		if !e.CompareValid(7) {
+		if !e.CompareValid("attacker/fork") {
 			t.Error("a real compare within TTL was rejected")
 		}
 	})
@@ -141,9 +141,9 @@ func TestCompareValid_GatesOnPerformed(t *testing.T) {
 	t.Run("unperformed compare is refetched", func(t *testing.T) {
 		e := &CacheEntry{
 			FetchedAt: within,
-			Compares:  map[int64]CompareResult{7: {Performed: false}},
+			Compares:  map[string]CompareResult{"attacker/fork": {Performed: false}},
 		}
-		if e.CompareValid(7) {
+		if e.CompareValid("attacker/fork") {
 			t.Error("a compare that never ran was served as valid cache data")
 		}
 	})
@@ -155,8 +155,8 @@ func TestCompareValid_GatesOnPerformed(t *testing.T) {
 			`{"status":"identical","ahead_by":0,"behind_by":0,"total_commits":0}`), &legacy); err != nil {
 			t.Fatalf("unmarshal: %v", err)
 		}
-		e := &CacheEntry{FetchedAt: within, Compares: map[int64]CompareResult{7: legacy}}
-		if e.CompareValid(7) {
+		e := &CacheEntry{FetchedAt: within, Compares: map[string]CompareResult{"attacker/fork": legacy}}
+		if e.CompareValid("attacker/fork") {
 			t.Error("a pre-Performed cache entry was served as a real 'identical' result")
 		}
 	})
@@ -180,12 +180,12 @@ func TestSaveCompare_RefusesUnperformedResult(t *testing.T) {
 		t.Fatal("fork list did not persist")
 	}
 
-	if err := SaveCompare("parent", "repo", 7, CompareResult{Performed: false, Status: "identical"}); err != nil {
+	if err := SaveCompare("parent", "repo", "attacker/fork", CompareResult{Performed: false, Status: "identical"}); err != nil {
 		t.Fatalf("SaveCompare: %v", err)
 	}
 
 	after := LoadCache("parent", "repo")
-	if _, ok := after.Compares[7]; ok {
+	if _, ok := after.Compares["attacker/fork"]; ok {
 		t.Error("an unperformed compare was persisted to the cache")
 	}
 	if after.FetchedAt != before.FetchedAt {

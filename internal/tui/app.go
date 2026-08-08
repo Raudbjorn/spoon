@@ -303,13 +303,10 @@ func (m *Model) handleCachedLoad(msg cachedLoadMsg) (tea.Model, tea.Cmd) {
 
 func (m *Model) applyCachedCompares(cache *gh.CacheEntry) {
 	for i := range m.forks {
-		// Find the fork ID in the cache by matching FullName
-		forkID := m.findGHForkID(m.forks[i].Fork.ID)
-		if forkID == 0 {
-			continue
-		}
-		ghCompare, ok := cache.Compares[forkID]
-		if !ok || !cache.CompareValid(forkID) {
+		// The forge ID is the fork's FullName, which is also the cache key.
+		fullName := m.forks[i].Fork.ID
+		ghCompare, ok := cache.Compares[fullName]
+		if !ok || !cache.CompareValid(fullName) {
 			continue
 		}
 
@@ -321,19 +318,6 @@ func (m *Model) applyCachedCompares(cache *gh.CacheEntry) {
 		m.recomputeT2Score(i)
 	}
 	m.reapplySort()
-}
-
-// findGHForkID looks up the numeric GitHub fork ID from the cache by matching FullName.
-func (m *Model) findGHForkID(forgeID string) int64 {
-	if m.ghCache == nil {
-		return 0
-	}
-	for _, f := range m.ghCache.Forks {
-		if f.FullName == forgeID {
-			return f.ID
-		}
-	}
-	return 0
 }
 
 func (m *Model) handleParentFetched(msg parentFetchedMsg) (tea.Model, tea.Cmd) {
@@ -438,10 +422,7 @@ func (m *Model) processPendingUpdates() (tea.Model, tea.Cmd) {
 					parts := strings.SplitN(m.parent.FullName, "/", 2)
 					if len(parts) == 2 {
 						ghCompare := forgeT2ToGHCompare(t2)
-						forkID := m.findGHForkID(m.forks[i].Fork.ID)
-						if forkID != 0 {
-							_ = gh.SaveCompare(parts[0], parts[1], forkID, ghCompare)
-						}
+						_ = gh.SaveCompare(parts[0], parts[1], m.forks[i].Fork.ID, ghCompare)
 					}
 				}
 
@@ -784,7 +765,7 @@ func (m *Model) startFetch() tea.Cmd {
 				for _, f := range cache.Forks {
 					var extra *gh.T1Extra
 					if cache.T1Extras != nil {
-						if e, ok := cache.T1Extras[f.ID]; ok {
+						if e, ok := cache.T1Extras[f.FullName]; ok {
 							extra = &e
 						}
 					}
@@ -844,12 +825,12 @@ func (m *Model) fetchForks() tea.Cmd {
 		// Save to GitHub cache if applicable
 		if m.auth.Provider == forge.ProviderGitHub {
 			ghForks := make([]gh.ForkInfo, 0, len(forks))
-			ghExtras := make(map[int64]gh.T1Extra)
+			ghExtras := make(map[string]gh.T1Extra)
 			for _, f := range forks {
 				ghF := forgeT1ToGHForkInfo(f)
 				ghForks = append(ghForks, ghF)
 				if f.OpenPRCount > 0 || f.ReleaseCount > 0 || len(f.Branches) > 0 || f.DivergentBranches != nil {
-					ghExtras[ghF.ID] = forgeT1ToGHExtra(f)
+					ghExtras[ghF.FullName] = forgeT1ToGHExtra(f)
 				}
 			}
 			ghParent := forgeParentToGHRepoInfo(*parent)
@@ -1028,13 +1009,12 @@ func (m *Model) startEnrichment() tea.Cmd {
 		forkID := f.ID
 
 		cmds = append(cmds, func() tea.Msg {
-			// Check GitHub cache for compare data
+			// Check GitHub cache for compare data. forkID is the forge ID,
+			// i.e. the fork's FullName — the cache key.
 			if !refresh && ghCache != nil && m.auth.Provider == forge.ProviderGitHub {
-				for _, ghF := range ghCache.Forks {
-					if ghF.FullName == forkID && ghCache.CompareValid(ghF.ID) {
-						t2 := ghCompareToForgeT2(ghCache.Compares[ghF.ID])
-						return tier2ResultMsg{forkID: forkID, t2: t2}
-					}
+				if ghCache.CompareValid(forkID) {
+					t2 := ghCompareToForgeT2(ghCache.Compares[forkID])
+					return tier2ResultMsg{forkID: forkID, t2: t2}
 				}
 			}
 

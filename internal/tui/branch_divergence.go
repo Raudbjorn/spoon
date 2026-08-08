@@ -132,11 +132,11 @@ func (m *Model) persistForkListCounts() {
 	// overlay the rows this model actually holds, keyed by FullName (the IDs
 	// are hashes of it, so the two are interchangeable as keys).
 	var ghForks []gh.ForkInfo
-	ghExtras := make(map[int64]gh.T1Extra, len(m.forks))
+	ghExtras := make(map[string]gh.T1Extra, len(m.forks))
 	if existing := gh.LoadCache(owner, name); existing != nil {
 		ghForks = existing.Forks
-		for id, extra := range existing.T1Extras {
-			ghExtras[id] = extra
+		for full, extra := range existing.T1Extras {
+			ghExtras[full] = extra
 		}
 	}
 	index := make(map[string]int, len(ghForks))
@@ -153,7 +153,7 @@ func (m *Model) persistForkListCounts() {
 		}
 		if sf.Fork.OpenPRCount > 0 || sf.Fork.ReleaseCount > 0 ||
 			len(sf.Fork.Branches) > 0 || sf.Fork.DivergentBranches != nil {
-			ghExtras[ghF.ID] = forgeT1ToGHExtra(sf.Fork)
+			ghExtras[ghF.FullName] = forgeT1ToGHExtra(sf.Fork)
 		}
 	}
 	_ = gh.SaveForkList(owner, name, forgeParentToGHRepoInfo(*m.parent), ghForks, ghExtras)

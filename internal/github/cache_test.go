@@ -54,7 +54,7 @@ func TestCacheRoundTrip(t *testing.T) {
 		BehindBy:  2,
 		Status:    "ahead",
 	}
-	err = SaveCompare("test", "repo", 1, compare)
+	err = SaveCompare("test", "repo", "user1/repo", compare)
 	if err != nil {
 		t.Fatalf("SaveCompare: %v", err)
 	}
@@ -64,14 +64,14 @@ func TestCacheRoundTrip(t *testing.T) {
 	if entry == nil {
 		t.Fatal("LoadCache returned nil after SaveCompare")
 	}
-	if !entry.CompareValid(1) {
-		t.Error("CompareValid(1) should be true")
+	if !entry.CompareValid("user1/repo") {
+		t.Error("CompareValid(user1/repo) should be true")
 	}
-	if entry.CompareValid(999) {
-		t.Error("CompareValid(999) should be false")
+	if entry.CompareValid("no-such/fork") {
+		t.Error("CompareValid(no-such/fork) should be false")
 	}
-	if entry.Compares[1].AheadBy != 5 {
-		t.Errorf("Expected AheadBy=5, got %d", entry.Compares[1].AheadBy)
+	if entry.Compares["user1/repo"].AheadBy != 5 {
+		t.Errorf("Expected AheadBy=5, got %d", entry.Compares["user1/repo"].AheadBy)
 	}
 }
 
@@ -151,7 +151,7 @@ func TestSaveCompare_DoesNotResurrectExpiredForkList(t *testing.T) {
 		t.Fatal("fork list should already be expired at 13h (TTL 12h) before the test begins")
 	}
 
-	if err := SaveCompare("test", "repo", 1, CompareResult{Performed: true, AheadBy: 5}); err != nil {
+	if err := SaveCompare("test", "repo", "user1/repo", CompareResult{Performed: true, AheadBy: 5}); err != nil {
 		t.Fatalf("SaveCompare: %v", err)
 	}
 
@@ -162,14 +162,78 @@ func TestSaveCompare_DoesNotResurrectExpiredForkList(t *testing.T) {
 	if after.FetchedAt != old {
 		t.Errorf("entry FetchedAt changed from %q to %q; SaveCompare must not touch it", old, after.FetchedAt)
 	}
-	if !after.CompareValid(1) {
+	if !after.CompareValid("user1/repo") {
 		t.Error("the compare just saved should be valid on its own per-compare timestamp")
 	}
 	// CompareValid alone cannot prove the per-compare stamp exists: an entry
 	// FetchedAt of -13h is still within the 24h compare TTL, so the fallback
 	// path would also report valid. Assert the stamp directly.
-	if after.Compares[1].FetchedAt == "" {
+	if after.Compares["user1/repo"].FetchedAt == "" {
 		t.Error("SaveCompare did not stamp the compare's own FetchedAt; validity above came from the entry-level fallback")
+	}
+}
+
+// T1Extras and Compares used to be keyed by a synthetic int64 hash of the
+// fork's FullName, so on-disk maps carry numeric-string JSON keys. Those files
+// must still load — and their entries must read as absent (re-fetch once)
+// rather than error out or be served under the wrong fork.
+func TestCache_LegacyNumericKeysSelfHeal(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", tmp)
+
+	legacy := []byte(`{
+		"fetched_at": "` + time.Now().UTC().Format(time.RFC3339) + `",
+		"repo_key": "test/repo",
+		"parent": {"full_name": "test/repo", "default_branch": "main"},
+		"forks": [{"id": 4009534899, "full_name": "user1/repo"}],
+		"t1_extras": {"4009534899": {"OpenPRCount": 3}},
+		"compares": {"4009534899": {"performed": true, "ahead_by": 5}}
+	}`)
+	path, err := cacheFile("test", "repo")
+	if err != nil {
+		t.Fatalf("cacheFile: %v", err)
+	}
+	if err := os.WriteFile(path, legacy, 0644); err != nil {
+		t.Fatalf("write legacy cache: %v", err)
+	}
+
+	entry := LoadCache("test", "repo")
+	if entry == nil {
+		t.Fatal("a legacy numeric-keyed cache file failed to load at all")
+	}
+	if entry.CompareValid("user1/repo") {
+		t.Error("a compare keyed under the legacy numeric ID was served for the FullName; it must read as absent and re-fetch")
+	}
+	if _, ok := entry.T1Extras["user1/repo"]; ok {
+		t.Error("a T1Extra keyed under the legacy numeric ID was served for the FullName")
+	}
+}
+
+// SaveCompare used to require resolving the fork's numeric ID from m.ghCache,
+// which is nil after a cold start or an explicit refresh — findGHForkID
+// returned 0 and the save was silently skipped for exactly the runs that had
+// just paid for fresh compares. Keying by FullName removes the lookup: a
+// compare must persist as long as the fork-list entry exists, no numeric ID
+// involved.
+func TestSaveCompare_PersistsWithoutNumericIDResolution(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", tmp)
+
+	parent := RepoInfo{FullName: "test/repo", DefaultBranch: "main"}
+	// The fork list as a cold fetch writes it: numeric IDs all zero, because
+	// the forge layer identifies forks by FullName alone.
+	forks := []ForkInfo{{FullName: "user1/repo"}}
+	if err := SaveForkList("test", "repo", parent, forks, nil); err != nil {
+		t.Fatalf("SaveForkList: %v", err)
+	}
+
+	if err := SaveCompare("test", "repo", "user1/repo", CompareResult{Performed: true, AheadBy: 2}); err != nil {
+		t.Fatalf("SaveCompare: %v", err)
+	}
+
+	after := LoadCache("test", "repo")
+	if !after.CompareValid("user1/repo") {
+		t.Error("a compare saved right after a cold fork-list write was dropped; the cold-start path must persist compares")
 	}
 }
 
@@ -183,17 +247,17 @@ func TestCompareValid_FallsBackToEntryTimestampForLegacyEntries(t *testing.T) {
 
 	freshEntry := &CacheEntry{
 		FetchedAt: fresh,
-		Compares:  map[int64]CompareResult{1: {Performed: true, AheadBy: 5}}, // no FetchedAt
+		Compares:  map[string]CompareResult{"user1/repo": {Performed: true, AheadBy: 5}}, // no FetchedAt
 	}
-	if !freshEntry.CompareValid(1) {
+	if !freshEntry.CompareValid("user1/repo") {
 		t.Error("a legacy compare in a fresh entry should fall back to the entry timestamp and be valid")
 	}
 
 	staleEntry := &CacheEntry{
 		FetchedAt: stale,
-		Compares:  map[int64]CompareResult{1: {Performed: true, AheadBy: 5}},
+		Compares:  map[string]CompareResult{"user1/repo": {Performed: true, AheadBy: 5}},
 	}
-	if staleEntry.CompareValid(1) {
+	if staleEntry.CompareValid("user1/repo") {
 		t.Error("a legacy compare in a stale entry should fall back to the entry timestamp and be expired")
 	}
 }

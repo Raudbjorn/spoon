@@ -17,13 +17,26 @@ type CacheEntry struct {
 	FetchedAt string `json:"fetched_at"`
 	RepoKey   string `json:"repo_key"`
 
-	// Tier 1: fork list + parent
-	Parent   *RepoInfo         `json:"parent,omitempty"`
-	Forks    []ForkInfo        `json:"forks,omitempty"`
-	T1Extras map[int64]T1Extra `json:"t1_extras,omitempty"`
+	// Tier 1: fork list + parent.
+	//
+	// T1Extras and Compares are keyed by the fork's FullName ("owner/repo") —
+	// the identity everything else in the pipeline already uses. They were
+	// previously keyed by a synthetic int64 derived from hashing the FullName,
+	// which invited collisions: any two forks sharing a key silently merge
+	// their extras and compare data, one fork's divergence rendered under the
+	// other's row, and because the derivation was deterministic the merge
+	// recurred on every cache rebuild. Keying by the name itself removes the
+	// class — two distinct forks cannot share a FullName.
+	//
+	// Files written under the old keying unmarshal cleanly (JSON map keys are
+	// strings either way) but their numeric-string keys never match a
+	// FullName, so old entries read as absent and are re-fetched once.
+	Parent   *RepoInfo          `json:"parent,omitempty"`
+	Forks    []ForkInfo         `json:"forks,omitempty"`
+	T1Extras map[string]T1Extra `json:"t1_extras,omitempty"`
 
-	// Tier 2: compare results keyed by fork ID
-	Compares map[int64]CompareResult `json:"compares,omitempty"`
+	// Tier 2: compare results keyed by fork FullName.
+	Compares map[string]CompareResult `json:"compares,omitempty"`
 }
 
 const (
@@ -97,11 +110,11 @@ func (e *CacheEntry) ForkListValid() bool {
 // A compare saved before this field existed has no FetchedAt of its own; it
 // falls back to the entry-level timestamp, which was accurate for it at the
 // time it was written, until it ages out on its own.
-func (e *CacheEntry) CompareValid(forkID int64) bool {
+func (e *CacheEntry) CompareValid(forkName string) bool {
 	if e == nil || e.Compares == nil {
 		return false
 	}
-	c, ok := e.Compares[forkID]
+	c, ok := e.Compares[forkName]
 	if !ok || !c.Performed {
 		return false
 	}
@@ -125,7 +138,7 @@ func withinTTL(ts string, ttl time.Duration) bool {
 }
 
 // SaveForkList saves parent + forks + optional T1 extras to the cache.
-func SaveForkList(owner, repo string, parent RepoInfo, forks []ForkInfo, extras map[int64]T1Extra) error {
+func SaveForkList(owner, repo string, parent RepoInfo, forks []ForkInfo, extras map[string]T1Extra) error {
 	path, err := cacheFile(owner, repo)
 	if err != nil {
 		return err
@@ -158,7 +171,7 @@ func SaveForkList(owner, repo string, parent RepoInfo, forks []ForkInfo, extras 
 // continuous use (a new compare typically lands well within every 24h window,
 // which kept the list looking fresh forever) — the same shape of bug this
 // field's Performed gate exists to close, one layer up.
-func SaveCompare(owner, repo string, forkID int64, compare CompareResult) error {
+func SaveCompare(owner, repo, forkName string, compare CompareResult) error {
 	if !compare.Performed {
 		return nil
 	}
@@ -174,15 +187,15 @@ func SaveCompare(owner, repo string, forkID int64, compare CompareResult) error 
 		// A caller checking only the error can't tell this apart from "saved" —
 		// this is the observable trace of that silent decline.
 		slog.Debug("github: skipping compare save, no fork-list cache entry yet",
-			"owner", owner, "repo", repo, "fork_id", forkID)
+			"owner", owner, "repo", repo, "fork", forkName)
 		return nil
 	}
 
 	if existing.Compares == nil {
-		existing.Compares = make(map[int64]CompareResult)
+		existing.Compares = make(map[string]CompareResult)
 	}
 	compare.FetchedAt = time.Now().UTC().Format(time.RFC3339)
-	existing.Compares[forkID] = compare
+	existing.Compares[forkName] = compare
 
 	return writeCache(path, existing)
 }
