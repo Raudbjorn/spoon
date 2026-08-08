@@ -113,6 +113,12 @@ type Options struct {
 	// Logger receives cluster-pipeline progress and warnings. May be nil
 	// (defaults to io.Discard).
 	Logger io.Writer
+
+	// CachedT2, when non-nil, returns a stored compare for a fork (nil = miss).
+	// The caller keys validity on the fork's current pushed_at, so a hit is
+	// authoritative: it skips the Compare API call and the rate-reserve gate.
+	// Left nil on --refresh.
+	CachedT2 func(forge.T1Data) *forge.T2Data
 }
 
 // ownerProfileDefaultCap is the per-run cap on the number of distinct
@@ -535,7 +541,15 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 							}
 						}
 					}
-					if enrich && tier >= 2 && !opts.ReserveDisabled && provider.Headroom() < ReserveHeadroom {
+					// A stored compare costs no API budget, so it is consulted
+					// before the rate-reserve gate: even a drained window can
+					// serve cached divergence.
+					if enrich && tier >= 2 && opts.CachedT2 != nil {
+						if t2 := opts.CachedT2(s.fork); t2 != nil {
+							r.T2 = t2
+						}
+					}
+					if enrich && tier >= 2 && r.T2 == nil && !opts.ReserveDisabled && provider.Headroom() < ReserveHeadroom {
 						enrich = false
 						r.BudgetSkip = &StageSkip{
 							Stage:  "compare",
@@ -544,7 +558,7 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 						}
 						budgetSkipped.Add(1)
 					}
-					if tier >= 2 && enrich {
+					if tier >= 2 && enrich && r.T2 == nil {
 						t2, terr := provider.Compare(ctx, s.fork, s.fork.DefaultBranch)
 						if terr != nil {
 							var rl *gh.RateLimitError

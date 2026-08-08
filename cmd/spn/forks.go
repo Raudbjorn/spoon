@@ -534,20 +534,16 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 		}})
 	}
 
-	// The durable store enhances a run (persistence + semantic index) but is
-	// never a prerequisite for listing forks: a locked DB, full disk, or
-	// read-only data dir degrades to a warning, not a failed run.
+	// The global store is mandatory: it is both the persistence layer and the
+	// cross-invocation cache, and a silently uncached run would refetch every
+	// compare. Fail loudly instead of degrading.
 	db, storeErr := store.OpenDefault()
 	if storeErr != nil {
-		_ = json.NewEncoder(stderr).Encode(map[string]any{"warning": map[string]any{
-			"code":        "store_unavailable",
-			"message":     "durable store unavailable; continuing without persistence/semantic index: " + storeErr.Error(),
-			"remediation": "Check disk space and permissions on ~/.local/share/spoon; listing/output is unaffected.",
-		}})
-		db = nil
-	} else {
-		defer db.Close()
+		return agentio.NewError(agentio.CodeInternal,
+			"cannot open spoon store: "+storeErr.Error(),
+			"Check disk space and permissions on ~/.config/spoon; the store is required for every run.").Emit(stderr)
 	}
+	defer db.Close()
 
 	if topicName, isTopic := strings.CutPrefix(repo, "topic:"); isTopic {
 		if csvMode {
@@ -627,6 +623,7 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 			opts.Cluster.SiblingSearcher = gh.NewGHSiblingSearcher(client)
 		}
 	}
+	opts.CachedT2 = storeCachedT2(ctx, db, auth, owner, name, opts.Refresh)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	ch, streamErr := forksops.Stream(ctx, provider, owner, name, opts)
@@ -708,6 +705,35 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// storeCachedT2 returns a compare-lookup closure over the repo's stored
+// snapshot, or nil when the cache must not be consulted (--refresh) or no
+// snapshot exists. Validity is content-addressed: a stored compare is served
+// only when the fork's live pushed_at matches the one it was recorded under —
+// a push moves pushed_at, so stale compares never surface and re-fetching
+// overwrites them (self-eviction).
+func storeCachedT2(ctx context.Context, db *store.Store, auth forge.AuthInfo, owner, name string, refresh bool) func(forge.T1Data) *forge.T2Data {
+	if db == nil || refresh {
+		return nil
+	}
+	host := auth.Host
+	if host == "" {
+		host = forge.DefaultHost(auth.Provider)
+	}
+	snap, err := db.LoadRepoSnapshot(ctx, auth.Provider.String(), host, owner, name)
+	if err != nil || snap == nil {
+		return nil
+	}
+	return func(t1 forge.T1Data) *forge.T2Data {
+		for i := range snap.Forks {
+			cf := &snap.Forks[i]
+			if cf.T1.ID == t1.ID && cf.T2 != nil && cf.T1.PushedAt.Equal(t1.PushedAt) {
+				return cf.T2
+			}
+		}
+		return nil
+	}
+}
+
 // persistForkSnapshot stores a fork snapshot and reports whether the fork's
 // embedding document had its diff section truncated to fit the model window.
 func persistForkSnapshot(ctx context.Context, db *store.Store, auth forge.AuthInfo, owner, name, modelID string, r forksops.Result) (diffTruncated bool, err error) {
@@ -731,6 +757,11 @@ func persistForkSnapshot(ctx context.Context, db *store.Store, auth forge.AuthIn
 			Stars: r.Fork.Stars, PushedAt: r.Fork.PushedAt, Heat: r.Heat.Score,
 			Tier: r.Heat.Tier, UpdatedAt: now,
 		},
+		// Full-fidelity halves: T1 makes the fork reusable as a listing entry
+		// (t1_json), T2 preserves the triage scalars alongside the relational
+		// compare rows so later runs can serve the compare from the store.
+		T1: &r.Fork,
+		T2: r.T2,
 	}
 	if r.T2 != nil {
 		// T2 was fetched: its compare/commit data is authoritative and replaces
@@ -1247,6 +1278,7 @@ func streamAndEmit(ctx context.Context, db *store.Store, auth forge.AuthInfo, pr
 			opts.Cluster.SiblingSearcher = gh.NewGHSiblingSearcher(client)
 		}
 	}
+	opts.CachedT2 = storeCachedT2(ctx, db, auth, owner, name, opts.Refresh)
 	// Cancel on any early return so the background goroutine spawned by
 	// forksops.Stream doesn't keep consuming API rate limit after we stop
 	// draining ch (e.g. a stdout write failure below).
