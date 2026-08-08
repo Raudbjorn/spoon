@@ -9,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/svnbjrn/spoon/internal/config"
 	"github.com/svnbjrn/spoon/internal/forge"
 	"github.com/svnbjrn/spoon/internal/gitea"
 	gh "github.com/svnbjrn/spoon/internal/github"
@@ -21,6 +22,13 @@ import (
 var version = "0.3.0-dev"
 
 func main() {
+	// Zero-configuration first run: make sure a documented default config
+	// exists before anything consults it. Never fatal — a bad or unwritable
+	// config degrades to built-in defaults with a warning.
+	if _, err := config.EnsureDefault(os.Stderr); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: ignoring config: %v\n", err)
+	}
+
 	// Subcommand dispatch: "spoon threads <pr-ref> ..."
 	if len(os.Args) >= 2 && os.Args[1] == "threads" {
 		os.Exit(runThreads(os.Args[2:]))

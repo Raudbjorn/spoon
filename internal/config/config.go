@@ -1,7 +1,10 @@
-// Package config defines spoon's on-disk user configuration: the persisted,
-// validated settings that `spoon setup` writes and re-checks. It is JSON
-// (the house format across spoon's caches) at
-// $XDG_CONFIG_HOME/spoon/config.json (falling back to ~/.config/spoon/).
+// Package config defines spoon's on-disk configuration: the persisted,
+// validated settings written automatically on first run (EnsureDefault) and
+// re-checked by `spoon setup`. It is JSON at
+// $XDG_CONFIG_HOME/spoon/config.json (~/.config/spoon/ by default), with
+// /etc/spoon/config.json serving no-home hosts and as an admin-provided
+// defaults layer. Fork/compare data lives in the libsql store
+// (internal/store), not here.
 package config
 
 import (
@@ -69,17 +72,26 @@ type ForgeConfig struct {
 }
 
 // DefaultPath returns $XDG_CONFIG_HOME/spoon/config.json, falling back to
-// ~/.config/spoon/config.json.
+// ~/.config/spoon/config.json. On hosts without a resolvable home (system
+// accounts, containers) it falls back to the system path /etc/spoon/config.json
+// rather than erroring — spoon must run configured even there.
 func DefaultPath() (string, error) {
 	cfgHome := os.Getenv("XDG_CONFIG_HOME")
 	if cfgHome == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return "", fmt.Errorf("resolve home dir: %w", err)
+			return SystemPath(), nil
 		}
 		cfgHome = filepath.Join(home, ".config")
 	}
 	return filepath.Join(cfgHome, "spoon", "config.json"), nil
+}
+
+// SystemPath is the machine-wide config location. It doubles as an
+// admin-provided defaults layer: LoadDefault falls back to it when the user
+// has no personal config.
+func SystemPath() string {
+	return filepath.Join("/etc", "spoon", "config.json")
 }
 
 // Load reads and validates the config at path. If the file does not exist it
@@ -213,11 +225,12 @@ func validateCredentialFile(path, field string) error {
 	return nil
 }
 
-// LoadDefault loads the config from DefaultPath as an optional defaults layer.
-// Returns (nil, nil) when no config exists; (nil, err) when one exists but is
-// unreadable/invalid (callers should warn but continue — a run must not fail on
-// a bad config); (cfg, nil) on success. Honors $SPOON_NO_CONFIG=1 (returns
-// nil, nil) so the layer can be disabled.
+// LoadDefault loads the config from DefaultPath as an optional defaults layer,
+// falling back to the system config (/etc/spoon/config.json — admin-provided
+// defaults) when the user has none. Returns (nil, nil) when no config exists;
+// (nil, err) when one exists but is unreadable/invalid (callers should warn
+// but continue — a run must not fail on a bad config); (cfg, nil) on success.
+// Honors $SPOON_NO_CONFIG=1 (returns nil, nil) so the layer can be disabled.
 func LoadDefault() (*Config, error) {
 	if os.Getenv("SPOON_NO_CONFIG") == "1" {
 		return nil, nil
@@ -227,6 +240,9 @@ func LoadDefault() (*Config, error) {
 		return nil, err
 	}
 	c, err := Load(path)
+	if errors.Is(err, os.ErrNotExist) && path != SystemPath() {
+		c, err = Load(SystemPath())
+	}
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
@@ -247,12 +263,12 @@ func Coalesce(vals ...string) string {
 // normalizeLegacy rewrites embedder backends written by older spoon versions
 // to the empty backend (which resolves to fastembed), so a stale config file
 // degrades cleanly instead of failing every load. Covers since-removed
-// external backends (ollama, sidecar, openai) and the retired in-process
-// backends (builtin, lexical). Non-backend embedder fields (fastembed
-// model/cache) are preserved.
+// external backends (ollama, sidecar, openai), the retired in-process
+// backends (builtin, lexical), and the removed OpenVINO model embedder.
+// Non-backend embedder fields (fastembed model/cache) are preserved.
 func (c *Config) normalizeLegacy() {
 	switch strings.ToLower(c.Embedder.Backend) {
-	case "ollama", "sidecar", "openai", "builtin", "lexical":
+	case "ollama", "sidecar", "openai", "builtin", "lexical", "openvino":
 		c.Embedder.Backend = ""
 	}
 }
