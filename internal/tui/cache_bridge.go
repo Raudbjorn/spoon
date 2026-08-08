@@ -5,6 +5,8 @@ package tui
 // for the GitHub provider while the TUI works exclusively with forge types.
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 	"time"
 
@@ -239,16 +241,24 @@ func forgeT2ToGHCompare(t2 forge.T2Data) gh.CompareResult {
 
 // forkNameToID generates a deterministic int64 ID from a fork name string.
 // This is used when converting forge T1Data (string ID) back to GitHub ForkInfo (int64 ID).
+//
+// The ID keys the cache's T1Extras and Compares maps, so a collision silently
+// merges two forks' data. The previous 31-base polynomial hash made that
+// craftable: owner names are user-chosen, and constructing two full names with
+// equal polynomial hashes is straightforward. SHA-256 truncated to 63 bits
+// leaves only the birthday bound (~2^-63 per pair), which no realistic fork
+// network approaches.
+//
+// Changing the derivation orphans map entries keyed under old IDs, but each
+// cache file stays self-consistent: lookups go through findGHForkID, which
+// reads the ID stored in the entry's own fork list, so old files keep working
+// until rewritten. After a rewrite the orphaned entries simply miss on lookup
+// and the data is re-fetched once — the same self-healing path pre-Performed
+// cache entries already take.
 func forkNameToID(name string) int64 {
-	// Use a simple hash to generate a stable numeric ID
-	var h int64
-	for _, c := range name {
-		h = h*31 + int64(c)
-	}
-	if h < 0 {
-		h = -h
-	}
-	// Ensure non-zero
+	sum := sha256.Sum256([]byte(name))
+	h := int64(binary.BigEndian.Uint64(sum[:8]) &^ (1 << 63))
+	// Ensure non-zero: 0 is the "not found" sentinel in findGHForkID.
 	if h == 0 {
 		h = 1
 	}

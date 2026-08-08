@@ -12,6 +12,19 @@ import (
 	gh "github.com/svnbjrn/spoon/internal/github"
 )
 
+// needsBranchSweep reports whether a fork's divergence data is still missing
+// and the sweep should include it.
+//
+// A fork with zero divergent branches legitimately has no fingerprint — there
+// is no work to fingerprint — so an empty fingerprint only counts as missing
+// when the fork actually has divergent branches. Testing the fingerprint
+// unconditionally would re-sweep every inert mirror on every run, which is
+// most of a typical fork network.
+func needsBranchSweep(f forge.T1Data) bool {
+	count := f.DivergentBranches
+	return count == nil || (*count > 0 && f.BranchFingerprint == "")
+}
+
 // startBranchDivergenceSweep counts, for every loaded fork, how many of its
 // branches carry commits the upstream lacks.
 //
@@ -29,17 +42,9 @@ func (m *Model) startBranchDivergenceSweep() tea.Cmd {
 
 	// Only sweep forks whose data is still missing. On a cache hit that is
 	// usually none, so a second run costs nothing.
-	//
-	// A fork with zero divergent branches legitimately has no fingerprint —
-	// there is no work to fingerprint — so an empty fingerprint only counts as
-	// missing when the fork actually has divergent branches. Testing the
-	// fingerprint unconditionally would re-sweep every inert mirror on every
-	// run, which is most of a typical fork network.
 	pending := make([]forge.T1Data, 0, len(m.forks))
 	for _, sf := range m.forks {
-		count := sf.Fork.DivergentBranches
-		needsSweep := count == nil || (*count > 0 && sf.Fork.BranchFingerprint == "")
-		if needsSweep {
+		if needsBranchSweep(sf.Fork) {
 			pending = append(pending, sf.Fork)
 		}
 	}

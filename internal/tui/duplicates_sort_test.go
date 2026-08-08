@@ -174,7 +174,11 @@ func TestViewTable_GutterKeepsHeaderAndRowsAligned(t *testing.T) {
 	out := m.viewTable()
 
 	var rows []string
+	var header string
 	for _, l := range strings.Split(out, "\n") {
+		if strings.Contains(l, "REPOSITORY") {
+			header = l
+		}
 		for _, owner := range []string{"emtee40", "ghenry22", "Gelma"} {
 			if strings.Contains(l, owner) {
 				rows = append(rows, l)
@@ -185,18 +189,27 @@ func TestViewTable_GutterKeepsHeaderAndRowsAligned(t *testing.T) {
 	if len(rows) != 3 {
 		t.Fatalf("expected 3 fork rows, got %d:\n%s", len(rows), out)
 	}
+	if header == "" {
+		t.Fatalf("header row not rendered:\n%s", out)
+	}
 	// STATUS (badges) is a deliberately variable-width trailing column, so
 	// compare everything up to it: the gutter must shift no column right of it.
-	col := func(row string) int {
-		idx := strings.Index(row, "unknown") // the fixture's PUSHED value
+	col := func(row, marker string) int {
+		idx := strings.Index(row, marker)
 		if idx < 0 {
 			t.Fatalf("row is missing the PUSHED column:\n  %q", row)
 		}
 		return lipgloss.Width(row[:idx])
 	}
-	want := col(rows[0])
+	// The header carries no gutter glyph, only the space the gutter occupies;
+	// its PUSHED label must sit at the same cell as every row's PUSHED value.
+	want := col(rows[0], "unknown") // the fixture's PUSHED value
+	if got := col(header, "PUSHED"); got != want {
+		t.Errorf("header has PUSHED at cell %d, rows at cell %d — the gutter shifted rows but not the header\n  %q\n  %q",
+			got, want, header, rows[0])
+	}
 	for i, r := range rows[1:] {
-		if got := col(r); got != want {
+		if got := col(r, "unknown"); got != want {
 			t.Errorf("row %d has PUSHED at cell %d, want %d — the gutter shifted a column\n  %q\n  %q",
 				i+1, got, want, rows[0], r)
 		}
@@ -233,10 +246,11 @@ func TestStartBranchDivergenceSweep_DoesNotResweepInertForks(t *testing.T) {
 		{Fork: forge.T1Data{ID: "fresh/x"}},
 	}}
 
+	// Exercise the production predicate itself, not a copy of it — an inline
+	// re-statement would keep passing if the real one regressed.
 	var swept []string
 	for _, sf := range m.forks {
-		count := sf.Fork.DivergentBranches
-		if count == nil || (*count > 0 && sf.Fork.BranchFingerprint == "") {
+		if needsBranchSweep(sf.Fork) {
 			swept = append(swept, sf.Fork.ID)
 		}
 	}

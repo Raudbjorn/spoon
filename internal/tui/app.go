@@ -772,7 +772,11 @@ func (m *Model) startFetch() tea.Cmd {
 				// This path returns without calling provider.Parent, which is
 				// what normally latches the upstream baseline onto the provider.
 				// Restore it from the cache, or every Compare below is issued
-				// against an empty upstream and 404s.
+				// against an empty upstream and 404s. The assertion cannot fail
+				// for the real provider — GHProvider pins the interface at
+				// compile time (adapter.go) — so the ok-guard only tolerates
+				// test doubles; a real miss would surface loudly anyway via
+				// Compare's own unresolved-baseline error.
 				if setter, ok := provider.(forge.CompareBaselineSetter); ok {
 					setter.SetCompareBaseline(owner, name, parent.DefaultBranch)
 				}
