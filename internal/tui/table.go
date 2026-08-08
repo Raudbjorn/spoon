@@ -497,11 +497,18 @@ func clusterNumericKey(id string) int {
 	return math.MaxInt
 }
 
-// sortForksByCluster orders forks by cluster, then by heat descending
-// within each group. Cluster order: real clusters first (sorted by
-// numeric suffix asc so "c10" follows "c2"), then the ungrouped bucket,
+// sortForksByCluster orders forks by cluster, then by the active sort column
+// and direction within each group. Cluster order: real clusters first (sorted
+// by numeric suffix asc so "c10" follows "c2"), then the ungrouped bucket,
 // then "noise" last.
+//
+// Within-cluster ordering delegates to forkLess rather than hard-coding heat
+// descending: the header renders ▲/▼ from sortCol/sortAsc regardless of
+// grouping, so an ordering that ignored them would make the indicator claim a
+// sort the rows do not have, and the s/S keys would silently do nothing in
+// grouped mode. The default (heat, descending) is unchanged.
 func (m *Model) sortForksByCluster() {
+	less := m.forkLess()
 	sort.SliceStable(m.forks, func(i, j int) bool {
 		ri, ni, ki := clusterGroupRank(m.forks[i].Heat.ClusterID)
 		rj, nj, kj := clusterGroupRank(m.forks[j].Heat.ClusterID)
@@ -514,8 +521,7 @@ func (m *Model) sortForksByCluster() {
 		if ki != kj {
 			return ki < kj
 		}
-		// Within a cluster, higher heat first.
-		return m.forks[i].Heat.Score > m.forks[j].Heat.Score
+		return less(i, j)
 	})
 	// Gather inside each cluster block so cluster grouping stays the outer
 	// structure; a duplicate group spanning two clusters is left split rather
