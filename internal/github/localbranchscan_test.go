@@ -12,8 +12,11 @@ import (
 )
 
 // fakeGitRunner scripts responses by command (joined args, space-separated,
-// after stripping the leading "-q" quiet flag so scripting doesn't have to
-// care about it). Mirrors internal/mdg/clone_test.go's fakeRunner.
+// after stripping the leading "-q" quiet flag and "--" end-of-options marker
+// so scripting doesn't have to care about either). Mirrors
+// internal/mdg/clone_test.go's fakeRunner. Records every invocation
+// verbatim in cmds so tests can assert on exact argv -- in particular, that
+// no untrusted branch name is ever passed as a bare positional argument.
 type fakeGitRunner struct {
 	cmds      [][]string
 	responses map[string]fakeResponse
@@ -31,7 +34,7 @@ type fakeResponse struct {
 func (f *fakeGitRunner) key(args []string) string {
 	filtered := make([]string, 0, len(args))
 	for _, a := range args {
-		if a == "-q" {
+		if a == "-q" || a == "--" {
 			continue
 		}
 		filtered = append(filtered, a)
@@ -62,69 +65,117 @@ func (f *fakeGitRunner) Run(ctx context.Context, dir string, args ...string) ([]
 	return []byte{}, nil
 }
 
-func TestListRemoteBranches_ParsesLsRemoteOutput(t *testing.T) {
+func TestListForkTips_ParsesForEachRefOutput(t *testing.T) {
 	fr := &fakeGitRunner{responses: map[string]fakeResponse{
-		"ls-remote --heads https://github.com/o/r.git": {
-			out: []byte("aaa111\trefs/heads/main\nbbb222\trefs/heads/feature/quiet-work\n"),
+		"for-each-ref --format=%(refname:short)|%(objectname)|%(committerdate:iso-strict) refs/remotes/fork/": {
+			out: []byte("fork/main|aaa111|2026-01-01T00:00:00Z\n" +
+				"fork/feature/quiet-work|bbb222|2026-06-01T00:00:00Z\n"),
 		},
 	}}
-	branches, err := listRemoteBranches(context.Background(), fr, "https://github.com/o/r.git")
+	tips, err := listForkTips(context.Background(), fr, "/scratch")
 	if err != nil {
-		t.Fatalf("listRemoteBranches: %v", err)
+		t.Fatalf("listForkTips: %v", err)
 	}
-	want := []remoteBranch{{Name: "main", SHA: "aaa111"}, {Name: "feature/quiet-work", SHA: "bbb222"}}
-	if len(branches) != len(want) || branches[0] != want[0] || branches[1] != want[1] {
-		t.Errorf("branches = %+v, want %+v", branches, want)
+	if len(tips) != 2 {
+		t.Fatalf("tips = %+v, want 2", tips)
+	}
+	if tips[0].Name != "main" || tips[0].SHA != "aaa111" {
+		t.Errorf("tips[0] = %+v", tips[0])
+	}
+	if tips[1].Name != "feature/quiet-work" || tips[1].SHA != "bbb222" {
+		t.Errorf("tips[1] = %+v", tips[1])
+	}
+	wantDate := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	if !tips[1].Date.Equal(wantDate) {
+		t.Errorf("tips[1].Date = %v, want %v", tips[1].Date, wantDate)
 	}
 }
 
-func TestListRemoteBranches_EmptyOutput(t *testing.T) {
+func TestListForkTips_SkipsHeadPseudoRef(t *testing.T) {
 	fr := &fakeGitRunner{responses: map[string]fakeResponse{
-		"ls-remote --heads https://github.com/o/r.git": {out: []byte("")},
+		"for-each-ref --format=%(refname:short)|%(objectname)|%(committerdate:iso-strict) refs/remotes/fork/": {
+			out: []byte("fork/HEAD|aaa111|2026-01-01T00:00:00Z\nfork/main|bbb222|2026-01-01T00:00:00Z\n"),
+		},
 	}}
-	branches, err := listRemoteBranches(context.Background(), fr, "https://github.com/o/r.git")
+	tips, err := listForkTips(context.Background(), fr, "/scratch")
 	if err != nil {
-		t.Fatalf("listRemoteBranches: %v", err)
+		t.Fatalf("listForkTips: %v", err)
 	}
-	if len(branches) != 0 {
-		t.Errorf("want no branches, got %+v", branches)
+	if len(tips) != 1 || tips[0].Name != "main" {
+		t.Errorf("tips = %+v, want only main", tips)
 	}
 }
 
-func TestListRemoteBranches_RunnerErrorPropagates(t *testing.T) {
+func TestFetchAllForkHeads_NoBranchNameInArgs(t *testing.T) {
+	fr := &fakeGitRunner{}
+	if err := fetchAllForkHeads(context.Background(), fr, "/scratch"); err != nil {
+		t.Fatalf("fetchAllForkHeads: %v", err)
+	}
+	if len(fr.cmds) != 1 {
+		t.Fatalf("want 1 command, got %d: %v", len(fr.cmds), fr.cmds)
+	}
+	got := fr.cmds[0]
+	for _, arg := range got {
+		if arg == "" {
+			continue
+		}
+		// The only bare, non-flag positional argument allowed here is the
+		// literal remote name "fork" -- never a branch name, since none is
+		// ever passed to this call.
+		if !strings.HasPrefix(arg, "-") && arg != "fetch" && arg != "fork" && arg != "/scratch" {
+			t.Errorf("unexpected positional arg %q in %v -- fetchAllForkHeads must never take a branch name", arg, got)
+		}
+	}
+}
+
+// Regression test for the argument-injection finding: a hostile fork branch
+// literally named "--upload-pack=evil" must never appear as a bare
+// positional argument anywhere probeAhead invokes git. It is only ever
+// legitimate when prefixed "fork/" or "upstream/" (merge-base, rev-list),
+// which can't be interpreted as an option since the resulting string can't
+// start with "-".
+func TestProbeAhead_HostileBranchNameNeverBarePositionalArg(t *testing.T) {
+	const hostile = "--upload-pack=touch /tmp/pwned"
 	fr := &fakeGitRunner{responses: map[string]fakeResponse{
-		"ls-remote --heads https://github.com/o/r.git": {err: errors.New("network unreachable")},
+		"merge-base upstream/main fork/" + hostile: {out: []byte("sha_mb\n")},
+		"rev-list --count sha_mb..fork/" + hostile: {out: []byte("3\n")},
 	}}
-	if _, err := listRemoteBranches(context.Background(), fr, "https://github.com/o/r.git"); err == nil {
-		t.Error("want error, got nil")
+
+	ahead, mergeBase, _, err := probeAhead(context.Background(), fr, "/scratch", "main", hostile, 50)
+	if err != nil {
+		t.Fatalf("probeAhead: %v", err)
+	}
+	if ahead != 3 || mergeBase != "sha_mb" {
+		t.Errorf("ahead=%d mergeBase=%q", ahead, mergeBase)
+	}
+
+	for _, cmd := range fr.cmds {
+		for _, arg := range cmd {
+			if arg == hostile {
+				t.Fatalf("hostile branch name appeared as a bare positional arg in %v", cmd)
+			}
+			if strings.HasPrefix(arg, "--upload-pack") {
+				t.Fatalf("hostile branch name was interpretable as a git option in %v", cmd)
+			}
+		}
 	}
 }
 
-func TestProbeBranchAhead_DeepensOnMergeBaseFailure(t *testing.T) {
+func TestProbeAhead_DeepensOnMergeBaseFailure(t *testing.T) {
 	fr := &fakeGitRunner{
 		failMergeBaseTimes: 2,
 		responses: map[string]fakeResponse{
 			"rev-list --count sha_mb..fork/feature": {out: []byte("3\n")},
-			"log -1 --format=%cI fork/feature":      {out: []byte("2026-01-02T00:00:00Z\n")},
-			"rev-parse fork/feature":                {out: []byte("sha_tip\n")},
 		},
 	}
-	// merge-base succeeds on the 3rd call; script that call's output via the
-	// runner's generic key match won't distinguish attempts, so give the
-	// success response through the default (empty) path instead: patch fake
-	// to return sha_mb once mergeBaseCalls > failMergeBaseTimes.
 	fr.responses["merge-base upstream/main fork/feature"] = fakeResponse{out: []byte("sha_mb\n")}
 
-	probe, depth, err := probeBranchAhead(context.Background(), fr, "/scratch", "main", "feature", 50)
+	ahead, mergeBase, depth, err := probeAhead(context.Background(), fr, "/scratch", "main", "feature", 50)
 	if err != nil {
-		t.Fatalf("probeBranchAhead: %v", err)
+		t.Fatalf("probeAhead: %v", err)
 	}
-	if probe.Ahead != 3 || probe.TipSHA != "sha_tip" || probe.BaseSHA != "sha_mb" {
-		t.Errorf("probe = %+v", probe)
-	}
-	wantDate := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
-	if !probe.TipDate.Equal(wantDate) {
-		t.Errorf("TipDate = %v, want %v", probe.TipDate, wantDate)
+	if ahead != 3 || mergeBase != "sha_mb" {
+		t.Errorf("ahead=%d mergeBase=%q", ahead, mergeBase)
 	}
 	if depth != 50+2*deepenStep {
 		t.Errorf("depth = %d, want %d (2 deepen rounds)", depth, 50+2*deepenStep)
@@ -132,11 +183,21 @@ func TestProbeBranchAhead_DeepensOnMergeBaseFailure(t *testing.T) {
 	if fr.mergeBaseCalls != 3 {
 		t.Errorf("merge-base called %d times, want 3 (2 failures + 1 success)", fr.mergeBaseCalls)
 	}
+	// Deepen fetches must not carry a branch name either.
+	for _, cmd := range fr.cmds {
+		if len(cmd) > 1 && cmd[1] == "fetch" {
+			for _, arg := range cmd {
+				if arg == "feature" || arg == "main" {
+					t.Errorf("deepen fetch %v carries a bare branch name", cmd)
+				}
+			}
+		}
+	}
 }
 
-func TestProbeBranchAhead_GivesUpAfterMaxDeepenAttempts(t *testing.T) {
+func TestProbeAhead_GivesUpAfterMaxDeepenAttempts(t *testing.T) {
 	fr := &fakeGitRunner{failMergeBaseTimes: maxDeepenAttempts + 5} // never succeeds
-	_, _, err := probeBranchAhead(context.Background(), fr, "/scratch", "main", "feature", 50)
+	_, _, _, err := probeAhead(context.Background(), fr, "/scratch", "main", "feature", 50)
 	if err == nil {
 		t.Fatal("want error after exhausting deepen attempts, got nil")
 	}
@@ -145,11 +206,21 @@ func TestProbeBranchAhead_GivesUpAfterMaxDeepenAttempts(t *testing.T) {
 	}
 }
 
+func forkTipsResponse(triples ...string) fakeResponse {
+	// triples: name, sha, date, name, sha, date, ... (len must be a multiple of 3)
+	var b strings.Builder
+	for i := 0; i < len(triples); i += 3 {
+		b.WriteString("fork/" + triples[i] + "|" + triples[i+1] + "|" + triples[i+2] + "\n")
+	}
+	return fakeResponse{out: []byte(b.String())}
+}
+
+const forkTipsKey = "for-each-ref --format=%(refname:short)|%(objectname)|%(committerdate:iso-strict) refs/remotes/fork/"
+
 // End-to-end orchestration test: fake git runner for the local side, the
 // existing scanTestServer (branches_test.go) for the REST tipUpstreamed/
 // FetchCompare leg. Two branches diverge; the newer one (by real committer
-// date, not GraphQL metadata) must win, exactly like the REST-only
-// ScanBranches tests assert for their own ordering signal.
+// date, read off the bulk-fetched tips) must win.
 func TestScanBranchesLocal_PicksNewestGenuineBranch(t *testing.T) {
 	srv := scanTestServer(t, "up/stream", map[string]branchMeta{
 		"feature-new": {ahead: 2, tipSHA: "sha_new", mergedPR: 0},
@@ -158,17 +229,14 @@ func TestScanBranchesLocal_PicksNewestGenuineBranch(t *testing.T) {
 	c := newTestClient(t, srv)
 
 	fr := &fakeGitRunner{responses: map[string]fakeResponse{
-		"ls-remote --heads https://github.com/maint/proj.git": {
-			out: []byte("sha_old\trefs/heads/feature-old\nsha_new\trefs/heads/feature-new\n"),
-		},
-		"rev-list --count sha_mb_old..fork/feature-old": {out: []byte("1\n")},
-		"log -1 --format=%cI fork/feature-old":          {out: []byte("2025-01-01T00:00:00Z\n")},
-		"rev-parse fork/feature-old":                    {out: []byte("sha_old\n")},
+		forkTipsKey: forkTipsResponse(
+			"feature-old", "sha_old", "2025-01-01T00:00:00Z",
+			"feature-new", "sha_new", "2026-06-01T00:00:00Z",
+		),
 		"merge-base upstream/main fork/feature-old":     {out: []byte("sha_mb_old\n")},
-		"rev-list --count sha_mb_new..fork/feature-new": {out: []byte("2\n")},
-		"log -1 --format=%cI fork/feature-new":          {out: []byte("2026-06-01T00:00:00Z\n")},
-		"rev-parse fork/feature-new":                    {out: []byte("sha_new\n")},
+		"rev-list --count sha_mb_old..fork/feature-old": {out: []byte("1\n")},
 		"merge-base upstream/main fork/feature-new":     {out: []byte("sha_mb_new\n")},
+		"rev-list --count sha_mb_new..fork/feature-new": {out: []byte("2\n")},
 	}}
 
 	scan, err := c.scanBranchesLocalWith(context.Background(), "up", "stream", "main", testFork(),
@@ -192,6 +260,64 @@ func TestScanBranchesLocal_PicksNewestGenuineBranch(t *testing.T) {
 	}
 }
 
+// Regression test for the cap-before-sort finding: a fork with more
+// candidates than maxLocalScanBranches must still find the true newest one,
+// as long as tip listing (which carries real dates) happens before the cap.
+func TestScanBranchesLocal_CapAppliesAfterDateSort(t *testing.T) {
+	srv := scanTestServer(t, "up/stream", map[string]branchMeta{
+		"zz-newest": {ahead: 1, tipSHA: "sha_zz", mergedPR: 0},
+	})
+	defer srv.Close()
+	c := newTestClient(t, srv)
+
+	// maxLocalScanBranches stale branches, alphabetically ahead of the one
+	// true newest branch ("zz-newest") -- ls-remote/for-each-ref's own
+	// output order is alphabetical, so this only passes if sorting by real
+	// date happens BEFORE the cap discards anything.
+	pairs := make([]string, 0, (maxLocalScanBranches+1)*3)
+	responses := map[string]fakeResponse{}
+	for i := 0; i < maxLocalScanBranches; i++ {
+		name := "a-stale-" + string(rune('a'+i))
+		pairs = append(pairs, name, "sha_"+name, "2020-01-01T00:00:00Z")
+		responses["merge-base upstream/main fork/"+name] = fakeResponse{out: []byte("sha_mb_" + name + "\n")}
+		responses["rev-list --count sha_mb_"+name+"..fork/"+name] = fakeResponse{out: []byte("0\n")}
+	}
+	pairs = append(pairs, "zz-newest", "sha_zz", "2026-06-01T00:00:00Z")
+	responses["merge-base upstream/main fork/zz-newest"] = fakeResponse{out: []byte("sha_mb_zz\n")}
+	responses["rev-list --count sha_mb_zz..fork/zz-newest"] = fakeResponse{out: []byte("1\n")}
+	responses[forkTipsKey] = forkTipsResponse(pairs...)
+
+	fr := &fakeGitRunner{responses: responses}
+	scan, err := c.scanBranchesLocalWith(context.Background(), "up", "stream", "main", testFork(),
+		localScanOpts{runner: fr, gitAvailable: true})
+	if err != nil {
+		t.Fatalf("scanBranchesLocalWith: %v", err)
+	}
+	if scan == nil || scan.Branch != "zz-newest" {
+		t.Errorf("scan = %+v, want zz-newest", scan)
+	}
+}
+
+// Regression test for the "confidently nothing" vs "could not scan"
+// distinction: when every attempted probe fails, ScanBranchesLocal must
+// error (triggering the REST fallback in scanSideBranches) rather than
+// return (nil, nil), which scanSideBranches would treat as a clean,
+// authoritative "no divergent branches".
+func TestScanBranchesLocal_AllProbesFailReturnsError(t *testing.T) {
+	c := &Client{}
+	fr := &fakeGitRunner{
+		failMergeBaseTimes: 999, // every merge-base call fails, forever
+		responses: map[string]fakeResponse{
+			forkTipsKey: forkTipsResponse("feature", "sha_f", "2026-01-01T00:00:00Z"),
+		},
+	}
+	_, err := c.scanBranchesLocalWith(context.Background(), "up", "stream", "main", testFork(),
+		localScanOpts{runner: fr, gitAvailable: true})
+	if err == nil {
+		t.Error("want an error when every candidate probe fails, got nil (would look like a clean 'nothing found' to scanSideBranches)")
+	}
+}
+
 func TestScanBranchesLocal_GitUnavailableReturnsError(t *testing.T) {
 	c := &Client{}
 	_, err := c.scanBranchesLocalWith(context.Background(), "up", "stream", "main", testFork(),
@@ -206,13 +332,55 @@ func TestScanBranchesLocal_TimeoutFallsBackGracefully(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // already cancelled
 
-	fr := &fakeGitRunner{responses: map[string]fakeResponse{
-		"ls-remote --heads https://github.com/maint/proj.git": {out: []byte("")},
-	}}
+	fr := &fakeGitRunner{}
 	_, err := c.scanBranchesLocalWith(ctx, "up", "stream", "main", testFork(),
 		localScanOpts{runner: fr, gitAvailable: true})
 	if err == nil {
 		t.Error("want context error to propagate so the caller falls back to REST, got nil")
+	}
+}
+
+// Exercises scanSideBranches itself (not scanBranchesLocalWith directly), so
+// the REST-fallback path production code actually takes is under test, not
+// just the local-scan function in isolation.
+func TestScanSideBranchesWith_LocalFailureFallsBackToRESTScanBranches(t *testing.T) {
+	srv := scanTestServer(t, "up/stream", map[string]branchMeta{
+		"main":        {ahead: 0},
+		"feature-new": {ahead: 5, tipSHA: "sha_new", mergedPR: 0},
+	})
+	defer srv.Close()
+	c := newTestClient(t, srv)
+	c.localBranchScan = true
+
+	// gitAvailable: false forces scanBranchesLocalWith to fail immediately,
+	// so scanSideBranchesWith must fall through to the REST ScanBranches
+	// path below, using the branches list REST would have used all along.
+	branches := []BranchInfo{{Name: "feature-new", LastCommitAt: "2026-06-01T00:00:00Z"}}
+	scan, err := c.scanSideBranchesWith(context.Background(), "up", "stream", "main", testFork(), branches,
+		localScanOpts{runner: &fakeGitRunner{}, gitAvailable: false})
+	if err != nil {
+		t.Fatalf("scanSideBranchesWith: %v", err)
+	}
+	if scan == nil || scan.Branch != "feature-new" {
+		t.Errorf("scan = %+v, want REST fallback to find feature-new", scan)
+	}
+}
+
+func TestScanSideBranchesWith_LocalFlagOffSkipsLocalEntirely(t *testing.T) {
+	srv := scanTestServer(t, "up/stream", map[string]branchMeta{
+		"feature-new": {ahead: 3, tipSHA: "sha_new", mergedPR: 0},
+	})
+	defer srv.Close()
+	c := newTestClient(t, srv) // localBranchScan left false
+
+	branches := []BranchInfo{{Name: "feature-new", LastCommitAt: "2026-06-01T00:00:00Z"}}
+	scan, err := c.scanSideBranchesWith(context.Background(), "up", "stream", "main", testFork(), branches,
+		localScanOpts{runner: &fakeGitRunner{}, gitAvailable: true})
+	if err != nil {
+		t.Fatalf("scanSideBranchesWith: %v", err)
+	}
+	if scan == nil || scan.Branch != "feature-new" {
+		t.Errorf("scan = %+v, want REST path (flag off)", scan)
 	}
 }
 
