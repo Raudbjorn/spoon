@@ -1,9 +1,12 @@
 package tui
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -77,14 +80,28 @@ type ExportFork struct {
 
 	// Duplicate fields identify forks carrying the SAME work, which is common in
 	// a fork network: a popular fork gets re-forked, or many forks branch from
-	// one pre-restructure commit and all report an identical diff. Grouping is by
-	// exact diff shape and is unrelated to the embedder-backed cluster_* fields
-	// above — it needs no model and always runs.
+	// one pre-restructure commit and all report an identical diff. Detection is
+	// unrelated to the embedder-backed cluster_* fields above — it needs no
+	// model and always runs. There are two tiers:
+	//
+	// Confirmed (proof): the forks share an identical ahead-commit SHA set. Only
+	// these get the group/count/primary trio; the primary is the member a
+	// consumer may keep when folding the rest.
+	//
+	// Candidate (signal): the forks merely report the same diff shape (commit,
+	// file and line counts). They get only DuplicateCandidate — never a primary
+	// — because equal totals do not prove equal work. Consumers must verify
+	// before collapsing candidate rows.
 	//
 	// Rows are never dropped — collapsing is the consumer's decision.
-	DuplicateGroup   string `json:"duplicate_group,omitempty"`
-	DuplicateCount   int    `json:"duplicate_count,omitempty"`
-	DuplicatePrimary bool   `json:"duplicate_primary,omitempty"`
+	DuplicateGroup     string `json:"duplicate_group,omitempty"`
+	DuplicateCount     int    `json:"duplicate_count,omitempty"`
+	DuplicatePrimary   bool   `json:"duplicate_primary,omitempty"`
+	DuplicateCandidate string `json:"duplicate_candidate,omitempty"`
+
+	// workKey is the confirmed-tier identity (digest of the sorted ahead-commit
+	// SHA set), computed at export time and never marshalled.
+	workKey string
 }
 
 // ExportLoneWolf is the lone wolf signal export (v2 shape).
@@ -281,6 +298,7 @@ func (m *Model) doExport(toExport []ScoredFork, filename string) tea.Cmd {
 			}
 
 			ef.Divergence = forgeT2ToExportDiv(sf.T2)
+			ef.workKey = workIdentityKey(sf.T2)
 			if sf.Enriched {
 				data.EnrichedCount++
 			}
@@ -344,14 +362,34 @@ func (m *Model) doExport(toExport []ScoredFork, filename string) tea.Cmd {
 	}
 }
 
-// duplicateKey returns the identity used to detect forks carrying the same work,
-// and whether the fork is eligible for grouping at all.
+// workIdentityKey returns the confirmed-tier duplicate identity: a digest of
+// the fork's complete ahead-commit SHA set, prefixed "c:". Two forks sharing
+// this key provably carry the same commits.
 //
-// The key is the diff shape: same commit count, same file count, same line
-// counts. That is a strong signal but not proof — two forks could coincide. It
-// is prefixed "d:" so a future exact key (a shared head commit, which would be
-// proof) can be added under a different prefix without ambiguity. T2Data does
-// not currently resolve a head SHA.
+// It returns "" when the commit list is absent or incomplete (len(Commits) !=
+// AheadCount — e.g. GitHub's compare API caps the list at 250 commits): a
+// truncated set could collide across forks that differ only in the tail. The
+// SHAs are sorted before hashing so the key is independent of the order a
+// provider returns commits in.
+func workIdentityKey(t2 *forge.T2Data) string {
+	if t2 == nil || len(t2.Commits) == 0 || len(t2.Commits) != t2.AheadCount {
+		return ""
+	}
+	shas := make([]string, len(t2.Commits))
+	for i, c := range t2.Commits {
+		shas[i] = c.SHA
+	}
+	sort.Strings(shas)
+	sum := sha256.Sum256([]byte(strings.Join(shas, "\n")))
+	return "c:" + hex.EncodeToString(sum[:])[:12]
+}
+
+// duplicateKey returns the candidate-tier grouping key — the diff shape: same
+// commit count, same file count, same line counts — and whether the fork is
+// eligible for grouping at all. Equal shape is a strong signal but not proof
+// (two forks could coincide, or carry rebased copies of the same work), so
+// shape matches only ever set DuplicateCandidate. The "d:" prefix keeps the
+// namespace disjoint from the confirmed "c:" keys of workIdentityKey.
 //
 // Forks with no divergence are never grouped: every unmodified mirror would
 // otherwise collapse into one meaningless bucket.
@@ -362,18 +400,29 @@ func duplicateKey(d *ExportDiv) (string, bool) {
 	return fmt.Sprintf("d:%d/%d/%d/%d", d.Ahead, d.FilesChanged, d.Additions, d.Deletions), true
 }
 
-// AssignDuplicateGroups tags forks that carry identical work. The highest-scoring
-// member of each group is marked DuplicatePrimary so a consumer can show one row
-// and fold the rest. Groups of one are left untagged.
+// AssignDuplicateGroups tags forks that carry identical work.
+//
+// Forks with a shared work identity (identical ahead-commit SHA sets) form a
+// confirmed group: every member gets DuplicateGroup/DuplicateCount, and the
+// highest-scoring member is marked DuplicatePrimary so a consumer can show one
+// row and fold the rest.
+//
+// Forks that merely share a diff shape get DuplicateCandidate only — no
+// primary, nothing foldable — since equal totals with different (or unknown)
+// commit sets do not prove duplicate work. Groups of one are left untagged.
 func AssignDuplicateGroups(forks []ExportFork) {
-	groups := make(map[string][]int, len(forks))
+	confirmed := make(map[string][]int, len(forks))
+	candidates := make(map[string][]int, len(forks))
 	for i := range forks {
+		if forks[i].workKey != "" {
+			confirmed[forks[i].workKey] = append(confirmed[forks[i].workKey], i)
+		}
 		if key, ok := duplicateKey(forks[i].Divergence); ok {
-			groups[key] = append(groups[key], i)
+			candidates[key] = append(candidates[key], i)
 		}
 	}
 
-	for key, idxs := range groups {
+	for key, idxs := range confirmed {
 		if len(idxs) < 2 {
 			continue
 		}
@@ -387,6 +436,15 @@ func AssignDuplicateGroups(forks []ExportFork) {
 			forks[i].DuplicateGroup = key
 			forks[i].DuplicateCount = len(idxs)
 			forks[i].DuplicatePrimary = i == primary
+		}
+	}
+
+	for key, idxs := range candidates {
+		if len(idxs) < 2 {
+			continue
+		}
+		for _, i := range idxs {
+			forks[i].DuplicateCandidate = key
 		}
 	}
 }
