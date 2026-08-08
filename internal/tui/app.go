@@ -622,7 +622,7 @@ func (m *Model) handleTableKey(key string) (tea.Model, tea.Cmd) {
 		m.cycleSortColumn()
 	case "S":
 		m.sortAsc = !m.sortAsc
-		m.sortForks()
+		m.reapplySort()
 	case "o":
 		return m, m.openInBrowser()
 	case "c":

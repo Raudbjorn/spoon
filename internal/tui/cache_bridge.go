@@ -161,15 +161,21 @@ func ghCompareToForgeT2(c gh.CompareResult) forge.T2Data {
 	}
 
 	return forge.T2Data{
-		Performed:      c.Performed,
-		BaseSHA:        c.BaseSHA,
-		HeadSHA:        c.HeadSHA,
-		AheadCount:     c.AheadBy,
-		BehindCount:    c.BehindBy,
-		TotalAdditions: totalAdd,
-		TotalDeletions: totalDel,
-		Diffs:          diffs,
-		Commits:        commits,
+		Performed:          c.Performed,
+		BaseSHA:            c.BaseSHA,
+		HeadSHA:            c.HeadSHA,
+		AheadCount:         c.AheadBy,
+		BehindCount:        c.BehindBy,
+		MNA:                c.MNA,
+		FeatureCommitRatio: c.FeatureCommitRatio,
+		IsBranchWork:       c.IsBranchWork,
+		ActiveBranch:       c.ActiveBranch,
+		Upstreamed:         c.Upstreamed,
+		UpstreamedPR:       c.UpstreamedPR,
+		TotalAdditions:     totalAdd,
+		TotalDeletions:     totalDel,
+		Diffs:              diffs,
+		Commits:            commits,
 	}
 }
 
@@ -213,15 +219,21 @@ func forgeT2ToGHCompare(t2 forge.T2Data) gh.CompareResult {
 	}
 
 	return gh.CompareResult{
-		Performed:    t2.Performed,
-		BaseSHA:      t2.BaseSHA,
-		HeadSHA:      t2.HeadSHA,
-		Status:       status,
-		AheadBy:      t2.AheadCount,
-		BehindBy:     t2.BehindCount,
-		TotalCommits: len(t2.Commits),
-		Files:        files,
-		Commits:      commits,
+		Performed:          t2.Performed,
+		BaseSHA:            t2.BaseSHA,
+		HeadSHA:            t2.HeadSHA,
+		Status:             status,
+		AheadBy:            t2.AheadCount,
+		BehindBy:           t2.BehindCount,
+		MNA:                t2.MNA,
+		FeatureCommitRatio: t2.FeatureCommitRatio,
+		IsBranchWork:       t2.IsBranchWork,
+		ActiveBranch:       t2.ActiveBranch,
+		Upstreamed:         t2.Upstreamed,
+		UpstreamedPR:       t2.UpstreamedPR,
+		TotalCommits:       len(t2.Commits),
+		Files:              files,
+		Commits:            commits,
 	}
 }
 
