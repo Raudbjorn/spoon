@@ -139,12 +139,17 @@ type Store struct {
 	secured atomic.Bool
 }
 
+// DefaultPath returns $XDG_CONFIG_HOME/spoon/spoon.db (~/.config/spoon by
+// default). Hosts without a resolvable home fall back to /var/lib/spoon —
+// FHS state territory, matching /etc/spoon for config — rather than erroring:
+// the store is mandatory, so a system account must still have a location, and
+// Open's hard failure surfaces an unwritable one loudly.
 func DefaultPath() (string, error) {
 	root := os.Getenv("XDG_CONFIG_HOME")
 	if root == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return "", fmt.Errorf("resolve home: %w", err)
+			return filepath.Join("/var", "lib", "spoon", "spoon.db"), nil
 		}
 		root = filepath.Join(home, ".config")
 	}
@@ -176,15 +181,20 @@ func OpenDefault() (*Store, error) {
 	return Open(path)
 }
 
-// migrateLegacyDB copies the old data-dir database (and its -wal/-shm
-// companions — the WAL may hold committed pages not yet checkpointed into the
-// main file) to the new default path, once: it only runs when the old main
-// file exists and the new one does not. The old files are left in place so a
-// downgraded binary still works; they simply stop being written.
+// migrateLegacyDB copies the old data-dir database to the new default path,
+// once: it only runs when the old main file exists and the new one does not.
+// The old files are left in place so a downgraded binary still works; they
+// simply stop being written.
+//
+// The legacy WAL is checkpointed into the main file before the copy, and only
+// the main file is copied. Copying -wal/-shm alongside is unreliable: the -shm
+// file is a shared-memory index that is only meaningful to the process that
+// built it, and a copied one can make WAL replay silently miss committed pages.
 func migrateLegacyDB(newPath string) error {
 	old, err := legacyPath()
 	if err != nil {
-		return err
+		// No home → no legacy XDG data dir to migrate from.
+		return nil
 	}
 	if _, err := os.Stat(old); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -197,21 +207,39 @@ func migrateLegacyDB(newPath string) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	if err := checkpointLegacyDB(old); err != nil {
+		return fmt.Errorf("checkpoint legacy store %s: %w", old, err)
+	}
 	if err := os.MkdirAll(filepath.Dir(newPath), 0o700); err != nil {
 		return fmt.Errorf("create store directory: %w", err)
 	}
-	for _, suffix := range []string{"", "-wal", "-shm"} {
-		src, dst := old+suffix, newPath+suffix
-		data, err := os.ReadFile(src)
+	data, err := os.ReadFile(old)
+	if err != nil {
+		return fmt.Errorf("read legacy store %s: %w", old, err)
+	}
+	if err := os.WriteFile(newPath, data, 0o600); err != nil {
+		return fmt.Errorf("migrate legacy store to %s: %w", newPath, err)
+	}
+	return nil
+}
+
+// checkpointLegacyDB folds any pending WAL pages into the legacy main file so
+// a plain file copy carries every committed row. busy_timeout first: a
+// just-released writer (or its native handle mid-teardown) briefly holds the
+// lock, and the checkpoint should wait it out rather than fail the open.
+func checkpointLegacyDB(path string) error {
+	db, err := sql.Open("libsql", storeDSN(path, nil))
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	for _, pragma := range []string{"PRAGMA busy_timeout=5000", "PRAGMA wal_checkpoint(TRUNCATE)"} {
+		rows, err := db.Query(pragma)
 		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return fmt.Errorf("read legacy store %s: %w", src, err)
+			return err
 		}
-		if err := os.WriteFile(dst, data, 0o600); err != nil {
-			return fmt.Errorf("migrate legacy store to %s: %w", dst, err)
-		}
+		rows.Close()
 	}
 	return nil
 }
