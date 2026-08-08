@@ -107,6 +107,10 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 	details := detailOptions{}
 	var githubRPM float64
 	webDiffEnabled := false
+	// Opt-in: ScanBranchesLocal shells out to git (ls-remote/fetch/merge-base),
+	// a new failure mode (missing binary, unreachable merge-base) that the
+	// REST/GraphQL-only branch scan doesn't have. REST stays the default.
+	localBranchScanEnabled := os.Getenv("SPOON_LOCAL_BRANCH_SCAN") == "1"
 	csvMode := false
 	opts := forksops.Options{
 		// Default: clustering enabled — the built-in embedder is always
@@ -174,6 +178,8 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 			opts.CommitFileBudget = value
 		case "--web-diff":
 			webDiffEnabled = true
+		case "--local-branch-scan":
+			localBranchScanEnabled = true
 		case "--tier":
 			if i+1 >= len(args) {
 				return agentio.NewError(agentio.CodeBadInput, "--tier requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
@@ -566,6 +572,7 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 			return e.Emit(stderr)
 		}
 		enableWebDiffIfRequested(provider, webDiffEnabled)
+		enableLocalBranchScanIfRequested(provider, localBranchScanEnabled)
 		parsedLanes, perr := topics.ParseLanes(topicLanesRaw)
 		if perr != nil {
 			return agentio.NewError(agentio.CodeBadInput, perr.Error(),
@@ -616,6 +623,7 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 		return e.Emit(stderr)
 	}
 	enableWebDiffIfRequested(provider, webDiffEnabled)
+	enableLocalBranchScanIfRequested(provider, localBranchScanEnabled)
 	owner, name := splitRepoArg(repoArg)
 	warnDuplicateIdentityFor(provider, stderr)
 	if owner == "" || name == "" {
@@ -770,6 +778,18 @@ func enableWebDiffIfRequested(provider forge.Forge, enabled bool) {
 	}
 	if ghp, ok := provider.(*gh.GHProvider); ok && ghp.Client() != nil {
 		ghp.Client().EnableWebDiff(os.Getenv("SPOON_GH_COOKIE"))
+	}
+}
+
+// enableLocalBranchScanIfRequested turns on the git-ls-remote/fetch/merge-base
+// branch scan for GitHub providers. Non-GitHub forges have no equivalent and
+// are left alone.
+func enableLocalBranchScanIfRequested(provider forge.Forge, enabled bool) {
+	if !enabled {
+		return
+	}
+	if ghp, ok := provider.(*gh.GHProvider); ok && ghp.Client() != nil {
+		ghp.Client().EnableLocalBranchScan()
 	}
 }
 
