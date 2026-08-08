@@ -57,6 +57,16 @@ type OwnerInfo struct {
 
 // CompareResult represents the response from the compare endpoint.
 type CompareResult struct {
+	// Performed reports whether the comparison actually ran. False means the
+	// compare could not be carried out (typically a 404: fork deleted, made
+	// private, or DMCA'd) and every other field is meaningless. This is not a
+	// GitHub API field; it is set by FetchCompare and persisted to the on-disk
+	// cache so a cached entry cannot be mistaken for a real "identical".
+	//
+	// Cache entries written before this field existed unmarshal to false and
+	// are therefore correctly treated as "never compared" rather than as a
+	// fork with no divergence.
+	Performed       bool         `json:"performed"`
 	Status          string       `json:"status"` // "ahead", "behind", "diverged", "identical"
 	AheadBy         int          `json:"ahead_by"`
 	BehindBy        int          `json:"behind_by"`
@@ -66,6 +76,36 @@ type CompareResult struct {
 	BaseCommit      Commit       `json:"base_commit"`
 	MergeBaseCommit Commit       `json:"merge_base_commit"`
 	HTMLURL         string       `json:"html_url"`
+
+	// BaseSHA/HeadSHA are resolved by the adapter rather than returned under
+	// these names by the API, and are persisted so a cached compare keeps the
+	// exact identity of the work. Without them a warm run silently loses the
+	// SHA-grade sibling key and degrades to the fuzzy diff-shape fallback,
+	// producing different grouping than the cold run that wrote the cache.
+	BaseSHA string `json:"base_sha,omitempty"`
+	HeadSHA string `json:"head_sha,omitempty"`
+
+	// Divergence signals computed during enrichment (the upstreamed PR probe,
+	// the branch scan, and MNA/feature-ratio derivation). Like BaseSHA/HeadSHA
+	// these are not GitHub API fields; they are persisted so a warm run scores
+	// and exports the same fork the same way as the cold run that wrote the
+	// cache. Without them a cached compare rehydrated with zeros: the heat
+	// score silently changed (MNA and the upstreamed penalty both feed it) and
+	// the export dropped every one of these keys via omitempty.
+	Upstreamed         bool    `json:"upstreamed,omitempty"`
+	UpstreamedPR       int     `json:"upstreamed_pr,omitempty"`
+	MNA                int     `json:"mna,omitempty"`
+	FeatureCommitRatio float64 `json:"feature_commit_ratio,omitempty"`
+	IsBranchWork       bool    `json:"is_branch_work,omitempty"`
+	ActiveBranch       string  `json:"active_branch,omitempty"`
+
+	// FetchedAt is this compare's own freshness timestamp, stamped by
+	// SaveCompare. It exists so a compare write never has to touch
+	// CacheEntry.FetchedAt (which governs the fork list's own TTL) in order to
+	// record its own — see CompareValid and SaveCompare. Empty on entries
+	// written before this field existed; CompareValid falls back to the
+	// shared entry timestamp for those.
+	FetchedAt string `json:"fetched_at,omitempty"`
 }
 
 // FileChange represents a changed file in a compare response.
@@ -137,6 +177,14 @@ type T1Extra struct {
 	OpenPRCount  int
 	ReleaseCount int
 	TopBranches  []BranchInfo
+
+	// DivergentBranches is the count of branches ahead of upstream. A pointer
+	// so a cache entry written before the sweep ran is "unknown", not zero.
+	DivergentBranches *int `json:"DivergentBranches,omitempty"`
+
+	// BranchFingerprint identifies the fork's divergent work by its branch tip
+	// OIDs; two forks sharing one carry identical work.
+	BranchFingerprint string `json:"BranchFingerprint,omitempty"`
 }
 
 // BranchInfo describes a branch with its last commit timestamp.

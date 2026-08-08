@@ -27,6 +27,11 @@ func TestCompareURL_emptyHostFallsBackToCanonicalHost(t *testing.T) {
 			"https://gitlab.com/qvr/nonraid/-/compare/main...Raudbjorn:main",
 		},
 		{
+			"gitea with empty host",
+			ProviderGitea, "",
+			"https://codeberg.org/qvr/nonraid/compare/main...Raudbjorn:main",
+		},
+		{
 			"explicit host is preserved",
 			ProviderGitHub, "github.example.com",
 			"https://github.example.com/qvr/nonraid/compare/main...Raudbjorn:main",

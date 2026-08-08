@@ -62,6 +62,41 @@ func (p *GHProvider) Headroom() float64 {
 	return p.client.Headroom()
 }
 
+// The TUI's cached-fork-list path restores the compare baseline through this
+// interface via a type assertion. A failed assertion would silently no-op and
+// reinstate the all-zeros bug, so pin it at compile time.
+var _ forge.CompareBaselineSetter = (*GHProvider)(nil)
+
+// DivergentBranchCounts implements forge.BranchDivergenceProvider. The whole
+// batch costs two GraphQL queries regardless of how many forks or branches are
+// involved, so unlike the REST branch scan it needs no per-branch budget gate.
+//
+// Compares against the network root (sourceOwner/sourceRepo), not a fork's
+// direct parent — planning/spoon-plan.md:159.
+func (p *GHProvider) DivergentBranchCounts(ctx context.Context, forks []forge.T1Data) (map[string]int, map[string]string, []string, error) {
+	targets := make([]ForkTarget, 0, len(forks))
+	for _, f := range forks {
+		targets = append(targets, ForkTarget{ID: f.ID, Owner: f.Owner, Name: f.Name})
+	}
+	counts, err := p.client.FetchDivergentBranchCounts(ctx, p.sourceOwner, p.sourceRepo, p.sourceDefaultBranch, targets)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return counts.Divergent, counts.Fingerprint, counts.Truncated, nil
+}
+
+var _ forge.BranchDivergenceProvider = (*GHProvider)(nil)
+
+// SetCompareBaseline implements forge.CompareBaselineSetter. Parent() calls it
+// on the live path; a caller that serves the fork list from a local cache must
+// call it explicitly, or every Compare that follows has no upstream to compare
+// against.
+func (p *GHProvider) SetCompareBaseline(owner, repo, defaultBranch string) {
+	p.sourceOwner = owner
+	p.sourceRepo = repo
+	p.sourceDefaultBranch = defaultBranch
+}
+
 // Parent implements forge.Forge.
 func (p *GHProvider) Parent(ctx context.Context, owner, repo string) (forge.ParentData, error) {
 	info, err := p.client.FetchParent(ctx, owner, repo)
@@ -70,9 +105,7 @@ func (p *GHProvider) Parent(ctx context.Context, owner, repo string) (forge.Pare
 	}
 
 	// Cache for Compare() calls.
-	p.sourceOwner = owner
-	p.sourceRepo = repo
-	p.sourceDefaultBranch = info.DefaultBranch
+	p.SetCompareBaseline(owner, repo, info.DefaultBranch)
 
 	pushed, _ := time.Parse(time.RFC3339, info.PushedAt)
 
@@ -147,6 +180,14 @@ func (p *GHProvider) Branches(_ context.Context, fork forge.T1Data, n int) ([]fo
 
 // Compare implements forge.Forge.
 func (p *GHProvider) Compare(ctx context.Context, fork forge.T1Data, branch string) (forge.T2Data, error) {
+	// Without a baseline the compare path degrades to "repos///compare/HEAD...",
+	// which 404s for every fork and — because a 404 is not a run-ending error —
+	// used to surface as a fork list where everything is 0 ahead / 0 behind.
+	// Fail loudly instead; the gitea provider already guards this the same way.
+	if p.sourceOwner == "" || p.sourceRepo == "" {
+		return forge.T2Data{}, fmt.Errorf("compare %s@%s: upstream not resolved (Parent not called)", fork.ID, branch)
+	}
+
 	parentBranch := p.sourceDefaultBranch
 	if parentBranch == "" {
 		parentBranch = "HEAD"
@@ -329,13 +370,36 @@ func compareToT2(r CompareResult) forge.T2Data {
 	mna := computeMNAFromDiffs(diffs)
 	fcr := featureCommitRatio(ahead)
 
+	// Identity of the compared work: the merge base it diverged from and the
+	// tip it diverged to. Both are needed to tell two forks carrying the same
+	// commits apart from two that merely have similar diff statistics.
+	baseSHA := r.MergeBaseCommit.SHA
+	if baseSHA == "" {
+		baseSHA = r.BaseCommit.SHA
+	}
+	// GitHub's compare endpoint caps the returned commit list (250 at time of
+	// writing) and reports the true count separately as TotalCommits. Above
+	// that cap, Commits[len-1] is just the deepest commit the API happened to
+	// return, not the fork's actual tip — trusting it would let two forks that
+	// share a base and their first N ahead-commits, then diverge, collide on
+	// a HeadSHA neither of them actually has at that position. Only trust it
+	// when the list is known-complete, mirroring the Gitea provider's !capped
+	// guard for the same reason.
+	headSHA := ""
+	if len(r.Commits) > 0 && r.TotalCommits == len(r.Commits) {
+		headSHA = r.Commits[len(r.Commits)-1].SHA
+	}
+
 	return forge.T2Data{
+		Performed:          r.Performed,
 		AheadCount:         r.AheadBy,
 		BehindCount:        r.BehindBy,
 		MNA:                mna,
 		TotalAdditions:     totalAdd,
 		TotalDeletions:     totalDel,
 		FeatureCommitRatio: fcr,
+		BaseSHA:            baseSHA,
+		HeadSHA:            headSHA,
 		Diffs:              diffs,
 		Commits:            ahead,
 	}

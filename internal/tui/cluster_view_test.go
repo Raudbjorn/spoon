@@ -168,8 +168,8 @@ func TestDetailView_ClusterBlockShowsSiblings_Cluster6(t *testing.T) {
 
 	out := m.viewDetail()
 
-	if !strings.Contains(out, "Siblings (5):") {
-		t.Errorf("expected 'Siblings (5):' in output\n%s", out)
+	if !strings.Contains(out, "Cluster peers (5):") {
+		t.Errorf("expected 'Cluster peers (5):' in output\n%s", out)
 	}
 	// All 5 other forks should be listed.
 	for _, sib := range []string{"b/two", "c/three", "d/four", "e/five", "f/six"} {
@@ -195,8 +195,8 @@ func TestDetailView_ClusterBlockShowsSiblings_Cluster8(t *testing.T) {
 
 	out := m.viewDetail()
 
-	if !strings.Contains(out, "Siblings (7):") {
-		t.Errorf("expected 'Siblings (7):' header\n%s", out)
+	if !strings.Contains(out, "Cluster peers (7):") {
+		t.Errorf("expected 'Cluster peers (7):' header\n%s", out)
 	}
 	if !strings.Contains(out, "... and 2 more") {
 		t.Errorf("expected '... and 2 more' line\n%s", out)

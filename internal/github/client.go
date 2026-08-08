@@ -534,7 +534,11 @@ func (c *Client) doGraphQL(ctx context.Context, query string, variables map[stri
 			}
 			if statusCode(err) == http.StatusUnauthorized {
 				c.pool.disableUntil(b, time.Time{}, true)
-			} else if !isGatewayOrTransportError(err) {
+			} else if !isGatewayOrTransportError(err) && !isGraphQLResponseError(err) {
+				// A GraphQL-level error rides on an HTTP 200: the backend
+				// answered correctly and the query was at fault. Counting it
+				// against the token would, after five partial-result queries,
+				// trip the 70% failure ratio and disable a healthy identity.
 				c.pool.reportFailure(b)
 			}
 			return err

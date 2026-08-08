@@ -49,6 +49,17 @@ type ScoredFork struct {
 	// fork as such instead of as zero divergence.
 	Enriched      bool
 	BudgetSkipped bool
+
+	// Duplicate-group membership: forks carrying identical work. SiblingGroup
+	// is the shared identity key (empty when this fork is unique), SiblingCount
+	// the group size, and SiblingPrimary marks the highest-scoring member. The
+	// trio is set only on commit-identity proof (branch fingerprint or head
+	// SHA); SiblingCandidate carries the weaker same-diff-shape signal, which
+	// never folds. Assigned by assignDuplicateGroups; see duplicates.go.
+	SiblingGroup     string
+	SiblingCount     int
+	SiblingPrimary   bool
+	SiblingCandidate string
 }
 
 // Model is the top-level Bubble Tea model.
@@ -60,10 +71,12 @@ type Model struct {
 	quitting bool
 
 	// Input
-	input    string
-	inputErr string
-	initRepo string // from CLI arg
-	refresh  bool   // bypass cache
+	input string
+	// inputCursor is the insertion point as a rune offset into input.
+	inputCursor int
+	inputErr    string
+	initRepo    string // from CLI arg
+	refresh     bool   // bypass cache
 
 	// Auth
 	provider forge.Forge
@@ -106,8 +119,13 @@ type Model struct {
 	errMsgTime  time.Time
 
 	// Export path prompt
-	exportPath  string       // editable path shown in prompt
-	exportForks []ScoredFork // forks staged for export (nil = export all)
+	exportPath string // editable path shown in prompt
+	// exportCursor is the insertion point as a rune offset into exportPath,
+	// in [0, len([]rune(exportPath))]. Without it the prompt was append-only,
+	// so a suggested filename could not be corrected — every keystroke landed
+	// after ".json".
+	exportCursor int
+	exportForks  []ScoredFork // forks staged for export (nil = export all)
 
 	// Cluster pipeline
 	// Topic picker state (topic mode).
@@ -231,6 +249,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case enrichBatchTickMsg:
 		return m.processPendingUpdates()
 
+	case branchDivergenceMsg:
+		return m.handleBranchDivergence(msg)
+
 	case enrichmentDoneMsg:
 		m.enriching = false
 		return m, nil
@@ -273,15 +294,29 @@ func (m *Model) handleCachedLoad(msg cachedLoadMsg) (tea.Model, tea.Cmd) {
 	// Apply cached compare data
 	m.applyCachedCompares(msg.snap)
 
+	// Group immediately. Cached forks already carry everything the fingerprint
+	// and head-SHA keys need, so waiting for the first enrichment batch would
+	// render the initial table without badges or gutters for no reason.
+	// applyCachedCompares sorts, so gather has to follow it, not precede it.
+	m.assignDuplicateGroups()
+	m.gatherDuplicateGroups(0, len(m.forks))
+
+	cmds := []tea.Cmd{}
+	if bc := m.startBranchDivergenceSweep(); bc != nil {
+		cmds = append(cmds, bc)
+	}
+
 	cmd := m.startEnrichment()
 	if cmd == nil {
 		// No T2 enrichment scheduled (e.g. rate-limited). Still try
 		// clustering on whatever T1+cached-T2 data we have.
 		if cc := m.maybeStartClusterPipeline(); cc != nil {
-			return m, cc
+			cmds = append(cmds, cc)
+			return m, tea.Batch(cmds...)
 		}
 	}
-	return m, cmd
+	cmds = append(cmds, cmd)
+	return m, tea.Batch(cmds...)
 }
 
 // cachedT2For returns the stored compare for a fork when its pushed_at matches
@@ -314,7 +349,7 @@ func (m *Model) applyCachedCompares(snap *store.RepoSnapshot) {
 
 		m.recomputeT2Score(i)
 	}
-	m.sortForks()
+	m.reapplySort()
 }
 
 func (m *Model) handleParentFetched(msg parentFetchedMsg) (tea.Model, tea.Cmd) {
@@ -349,18 +384,24 @@ func (m *Model) handleForksFetched(msg forksFetchedMsg) (tea.Model, tea.Cmd) {
 	// Reuse stored compares for forks whose pushed_at is unchanged, then
 	// persist the freshly scored list.
 	m.applyCachedCompares(m.cached)
-	persist := m.persistForkList()
+
+	cmds := []tea.Cmd{}
+	if persist := m.persistForkList(); persist != nil {
+		cmds = append(cmds, persist)
+	}
+	if bc := m.startBranchDivergenceSweep(); bc != nil {
+		cmds = append(cmds, bc)
+	}
 
 	cmd := m.startEnrichment()
 	if cmd == nil {
 		if cc := m.maybeStartClusterPipeline(); cc != nil {
-			return m, tea.Batch(persist, cc)
+			cmds = append(cmds, cc)
+			return m, tea.Batch(cmds...)
 		}
 	}
-	if persist != nil {
-		return m, tea.Batch(persist, cmd)
-	}
-	return m, cmd
+	cmds = append(cmds, cmd)
+	return m, tea.Batch(cmds...)
 }
 
 func (m *Model) processPendingUpdates() (tea.Model, tea.Cmd) {
@@ -400,6 +441,16 @@ func (m *Model) processPendingUpdates() (tea.Model, tea.Cmd) {
 		for i := range m.forks {
 			if m.forks[i].Fork.ID == update.forkID {
 				t2 := update.t2
+
+				// A compare that never ran carries no divergence to show,
+				// score or persist. Leaving T2 nil renders AHEAD/BEHIND as
+				// "-" and keeps the T1 heat, rather than reporting the fork
+				// as verified-stagnant and hard-zeroing it via no_ahead.
+				if !t2.Performed {
+					m.forks[i].Enriching = false
+					break
+				}
+
 				m.forks[i].T2 = &t2
 				m.forks[i].Enriching = false
 				m.forks[i].Enriched = true
@@ -413,6 +464,21 @@ func (m *Model) processPendingUpdates() (tea.Model, tea.Cmd) {
 		}
 	}
 	m.pendingUpdates = m.pendingUpdates[:0]
+
+	// Re-group after each settled batch: T2 landing can sharpen a fork's key
+	// from the diff-shape fallback to an exact head SHA. Gather rather than
+	// re-sort: the rows are already in the user's chosen order, and gathering
+	// only moves the members of a freshly-formed group next to each other
+	// instead of reordering everything. It can still move rows, though — so
+	// capture the fork under the cursor first and restore it afterward, same
+	// as the sweep handler does for its own re-sort.
+	var selectedID string
+	if m.cursor >= 0 && m.cursor < len(m.forks) {
+		selectedID = m.forks[m.cursor].Fork.ID
+	}
+	m.assignDuplicateGroups()
+	m.gatherDuplicateGroups(0, len(m.forks))
+	m.restoreCursorByID(selectedID)
 
 	if m.enrichDone >= m.enrichTotal && m.enriching {
 		m.enriching = false
@@ -487,15 +553,19 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 
+	// Text prompts need the literal runes, not the key name: a paste is one
+	// KeyRunes event whose String() is bracketed and never matches a binding.
+	typed := typedText(msg)
+
 	switch m.view {
 	case viewInput:
-		return m.handleInputKey(key)
+		return m.handleInputKey(key, typed)
 	case viewTable:
 		return m.handleTableKey(key)
 	case viewDetail:
 		return m.handleDetailKey(key)
 	case viewExportPath:
-		return m.handleExportPathKey(key)
+		return m.handleExportPathKey(key, typed)
 	case viewTopicPicker:
 		return m.handleTopicPickerKey(key)
 	case viewHelp:
@@ -508,7 +578,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *Model) handleInputKey(key string) (tea.Model, tea.Cmd) {
+func (m *Model) handleInputKey(key string, typed string) (tea.Model, tea.Cmd) {
 	switch key {
 	case "enter":
 		m.inputErr = ""
@@ -519,18 +589,12 @@ func (m *Model) handleInputKey(key string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, m.startFetch()
-	case "backspace":
-		if len(m.input) > 0 {
-			m.input = m.input[:len(m.input)-1]
-		}
 	case "esc":
 		if m.parent != nil {
 			m.view = viewTable
 		}
 	default:
-		if len(key) == 1 {
-			m.input += key
-		}
+		m.input, m.inputCursor, _ = lineEdit(m.input, m.inputCursor, key, typed)
 	}
 	return m, nil
 }
@@ -572,7 +636,7 @@ func (m *Model) handleTableKey(key string) (tea.Model, tea.Cmd) {
 		m.cycleSortColumn()
 	case "S":
 		m.sortAsc = !m.sortAsc
-		m.sortForks()
+		m.reapplySort()
 	case "o":
 		return m, m.openInBrowser()
 	case "c":
@@ -691,6 +755,7 @@ func (m *Model) startFetch() tea.Cmd {
 	if m.initRepo != "" {
 		repo = m.initRepo
 		m.input = repo
+		m.inputCursor = len([]rune(m.input))
 		m.initRepo = ""
 	}
 
@@ -723,6 +788,14 @@ func (m *Model) startFetch() tea.Cmd {
 			snap, _ = db.LoadRepoSnapshot(context.Background(), storeProvider, storeHost, owner, name)
 		}
 		if snap != nil && snap.Parent != nil && len(snap.Forks) > 0 && time.Since(snap.ForksSyncedAt) < forkListTTL {
+			// This path returns without calling provider.Parent, which is
+			// what normally latches the upstream baseline onto the provider.
+			// Restore it from the snapshot, or every Compare below is issued
+			// against an empty upstream and 404s. The ok-guard only tolerates
+			// test doubles — the real providers implement the setter.
+			if setter, ok := provider.(forge.CompareBaselineSetter); ok {
+				setter.SetCompareBaseline(owner, name, snap.Parent.DefaultBranch)
+			}
 			forks := make([]forge.T1Data, 0, len(snap.Forks))
 			for _, cf := range snap.Forks {
 				forks = append(forks, cf.T1)
@@ -898,7 +971,7 @@ func (m *Model) scoreForks(forks []forge.T1Data) {
 		sf := ScoredFork{Fork: f, Heat: result, statID: int64(i)}
 		m.forks = append(m.forks, sf)
 	}
-	m.sortForks()
+	m.reapplySort()
 }
 
 // makeTUIStats builds ForkStats for heat.NewScorer from a slice of T1 forks.
@@ -1148,8 +1221,7 @@ func (m Model) viewInput() string {
 		}
 	}
 
-	b.WriteString("  Repository: " + m.input)
-	b.WriteString("█\n")
+	b.WriteString("  Repository: " + renderWithCursor(m.input, m.inputCursor) + "\n")
 
 	if m.inputErr != "" {
 		b.WriteString("  " + errorStyle.Render(m.inputErr) + "\n")
@@ -1162,7 +1234,7 @@ func (m Model) viewInput() string {
 		b.WriteString("\n  " + m.loadMsg + "\n")
 	} else {
 		b.WriteString("\n  " + helpStyle.Render("Enter a GitHub or GitLab repository (e.g., golang/go)") + "\n")
-		b.WriteString("  " + helpStyle.Render("Press Enter to search, Ctrl+C to quit") + "\n")
+		b.WriteString("  " + helpStyle.Render("←/→ move  Home/End  paste supported  Enter to search  Ctrl+C to quit") + "\n")
 	}
 
 	return b.String()

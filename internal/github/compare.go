@@ -18,12 +18,16 @@ func (c *Client) FetchCompare(ctx context.Context, parentOwner, parentRepo, pare
 	var result CompareResult
 	err := c.Get(ctx, path, &result)
 	if err != nil {
-		// 404 means the fork is inaccessible — return empty, not error
+		// 404 means the fork is inaccessible (deleted, private, DMCA'd) — that
+		// is not a run-ending error, so it stays a nil error. It is emphatically
+		// not a comparison that found no divergence, so Performed stays false
+		// and callers must not persist or score it.
 		if isNotFound(err) {
 			return CompareResult{}, nil
 		}
 		return CompareResult{}, err
 	}
+	result.Performed = true
 	return result, nil
 }
 

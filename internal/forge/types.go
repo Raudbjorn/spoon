@@ -107,6 +107,19 @@ type T1Data struct {
 	// populated lazily via Branches() for GitLab).
 	Branches []BranchRef
 
+	// DivergentBranches counts this fork's branches holding at least one commit
+	// the upstream lacks. Nil means the count was never obtained (provider
+	// cannot supply it, the sweep failed, or the fork was unresolvable) and must
+	// render as unknown rather than as zero — a real 0 means "checked, nothing
+	// diverges anywhere".
+	DivergentBranches *int
+
+	// BranchFingerprint identifies this fork's divergent work by the tip OIDs of
+	// its ahead-of-upstream branches. Two forks sharing a non-empty fingerprint
+	// carry byte-identical work — one fork re-forked, or both branched from the
+	// same point. Empty means unknown or nothing divergent, and never groups.
+	BranchFingerprint string
+
 	// Fork lineage
 	SourceFullPath string // network root used for compare baseline; never the direct parent.
 	ParentFullPath string // direct parent
@@ -162,6 +175,15 @@ type AheadCommit struct {
 
 // T2Data is code-divergence data from comparing the fork to its upstream source.
 type T2Data struct {
+	// Performed reports whether the comparison actually ran against the
+	// upstream. It is false when the compare could not be carried out at all
+	// (fork deleted, made private, DMCA'd, or the upstream baseline was never
+	// resolved). The zero value is deliberately "not performed": every other
+	// field on a !Performed T2Data is meaningless, and treating it as a real
+	// "0 ahead, 0 behind, identical" result is what made a whole fork list
+	// render as heat 0. Callers must check this before persisting, scoring, or
+	// displaying divergence.
+	Performed          bool
 	AheadCount         int
 	BehindCount        int
 	MNA                int     // Meaningful Net Additions -- junk/generated stripped.
@@ -172,6 +194,8 @@ type T2Data struct {
 	ActiveBranch       string  // non-empty when IsBranchWork == true
 	Upstreamed         bool    // true when the active branch tip heads a merged upstream PR (work already integrated)
 	UpstreamedPR       int     // the merged upstream PR number when Upstreamed == true
+	BaseSHA            string  // merge-base commit used for the comparison
+	HeadSHA            string  // resolved tip of the compared fork branch
 	Diffs              []FileDiff
 	Commits            []AheadCommit // used by the T3 lone-wolf gate
 	PatchSkipReason    string
@@ -230,6 +254,33 @@ type CommitFileProvider interface {
 	CommitFiles(context.Context, T1Data, string) ([]FileDiff, error)
 }
 
+// BranchDivergenceProvider is an optional provider capability for counting,
+// per fork, the branches carrying commits the upstream lacks. Implementations
+// are expected to answer for the whole batch in bounded API cost; a provider
+// that would need one request per branch should simply not implement it.
+//
+// A fork absent from the returned map was not resolved, which is distinct from
+// a present zero.
+type BranchDivergenceProvider interface {
+	// Returns per-fork divergent-branch counts and per-fork work fingerprints.
+	// Forks sharing a non-empty fingerprint carry byte-identical work.
+	// truncated lists fork IDs whose branch list was too large to enumerate in
+	// full, so their counts (and any fingerprint derived from them) are lower
+	// bounds rather than exact.
+	DivergentBranchCounts(ctx context.Context, forks []T1Data) (counts map[string]int, fingerprints map[string]string, truncated []string, err error)
+}
+
+// CompareBaselineSetter is an optional provider capability for restoring the
+// upstream baseline that Parent() would normally establish.
+//
+// Compare needs to know which upstream to compare against, and providers latch
+// that from Parent(). A caller that serves the fork list from a local cache
+// never calls Parent(), so without this the baseline stays empty and every
+// subsequent Compare is issued against a malformed upstream. Providers that do
+// not implement it remain valid Forge values.
+type CompareBaselineSetter interface {
+	SetCompareBaseline(owner, repo, defaultBranch string)
+}
 type TopicLane string
 
 const (

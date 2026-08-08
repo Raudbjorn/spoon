@@ -34,6 +34,8 @@ func forgeT2ToExportDiv(t2 *forge.T2Data) *ExportDiv {
 		FeatureRatio: t2.FeatureCommitRatio,
 		IsBranchWork: t2.IsBranchWork,
 		ActiveBranch: t2.ActiveBranch,
+		BaseSHA:      t2.BaseSHA,
+		HeadSHA:      t2.HeadSHA,
 	}
 }
 

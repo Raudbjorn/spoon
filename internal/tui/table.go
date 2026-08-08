@@ -32,6 +32,10 @@ func (m Model) viewTable() string {
 		return " "
 	}
 
+	// Colour duplicate groups by order of appearance so two groups that end up
+	// adjacent never share a colour.
+	gutterOrd := gutterOrdinals(m.forks)
+
 	hasCompare := false
 	for _, f := range m.forks {
 		if f.T2 != nil {
@@ -40,16 +44,39 @@ func (m Model) viewTable() string {
 		}
 	}
 
+	// Header field widths mirror the row cell layout exactly: rows lead with
+	// gutter(1) + cursor prefix(2) + heat bar(4) + score(2) = 9 cells, matched
+	// here by " %-4s %3s"; the name field is %-26s / %-30s in the rows, so the
+	// same width is used for REPOSITORY. Any width changed on one side must
+	// change on the other, or every column right of it drifts — asserted by
+	// TestViewTable_HeaderAndRowsAlign.
+	//
+	// The glyph labels (★, ⑂) go through padLeftCells rather than a %Ns verb:
+	// fmt pads by rune count, but lipgloss measures ★ at two cells, so a
+	// rune-padded field is one cell wider on screen than the number columns
+	// under it.
+	padLeftCells := func(s string, w int) string {
+		if n := w - lipgloss.Width(s); n > 0 {
+			return strings.Repeat(" ", n) + s
+		}
+		return s
+	}
+	// headerStyle carries Padding(0,1), so its left pad is the header's first
+	// cell; the format strings therefore start one cell earlier than the rows.
 	if hasCompare {
-		header := fmt.Sprintf(" %-4s %3s  %-28s  %5s %6s %7s  %-10s  %s",
+		header := fmt.Sprintf("%-4s %3s  %-26s  %s %6s %7s %7s  %-10s  %s",
 			"HEAT", sortInd("heat"), "REPOSITORY",
-			"★"+sortInd("stars"), "AHEAD"+sortInd("ahead"), "BEHIND",
+			padLeftCells("★"+sortInd("stars"), 5),
+			"AHEAD"+sortInd("ahead"), "BEHIND",
+			"BRANCH"+sortInd("branches"),
 			"PUSHED"+sortInd("pushed"), "STATUS")
 		b.WriteString(headerStyle.Render(header))
 	} else {
-		header := fmt.Sprintf(" %-4s %3s  %-30s %5s %5s  %-12s",
+		header := fmt.Sprintf("%-4s %3s  %-30s %s %s %7s  %-12s",
 			"HEAT", sortInd("heat"), "REPOSITORY",
-			"★"+sortInd("stars"), "⑂"+sortInd("forks"),
+			padLeftCells("★"+sortInd("stars"), 5),
+			padLeftCells("⑂"+sortInd("forks"), 5),
+			"BRANCH"+sortInd("branches"),
 			"PUSHED"+sortInd("pushed"))
 		b.WriteString(headerStyle.Render(header))
 	}
@@ -120,6 +147,18 @@ func (m Model) viewTable() string {
 		// Badges
 		badges := renderBadges(sf)
 
+		// Branches carrying commits upstream lacks. Nil means never counted
+		// (non-GitHub provider, or the sweep has not landed yet) and renders
+		// "-", distinct from a counted 0.
+		branches := "      -"
+		if n := sf.Fork.DivergentBranches; n != nil {
+			branches = fmt.Sprintf("%7d", *n)
+		}
+
+		// Duplicate-group gutter. Members of a contiguous group all draw the
+		// same coloured bar, so the group reads as one unbroken line.
+		gutter := duplicateGutter(sf, gutterOrd)
+
 		var row string
 		if hasCompare {
 			if len(name) > 26 {
@@ -134,14 +173,14 @@ func (m Model) viewTable() string {
 				ahead = "   ~"
 				behind = "    ~"
 			}
-			row = fmt.Sprintf("%s%s%s%s  %-26s  %5d %6s %7s  %-10s  %s",
-				prefix, scorePrefix, heatBar, scoreStyled, name, sf.Fork.Stars, ahead, behind, pushed, badges)
+			row = fmt.Sprintf("%s%s%s%s%s  %-26s  %5d %6s %7s %7s  %-10s  %s",
+				gutter, prefix, scorePrefix, heatBar, scoreStyled, name, sf.Fork.Stars, ahead, behind, branches, pushed, badges)
 		} else {
 			if len(name) > 30 {
 				name = name[:27] + "..."
 			}
-			row = fmt.Sprintf("%s%s%s%s  %-30s %5d %5d  %-12s",
-				prefix, scorePrefix, heatBar, scoreStyled, name, sf.Fork.Stars, sf.Fork.SubForkCount, pushed)
+			row = fmt.Sprintf("%s%s%s%s%s  %-30s %5d %5d %7s  %-12s",
+				gutter, prefix, scorePrefix, heatBar, scoreStyled, name, sf.Fork.Stars, sf.Fork.SubForkCount, branches, pushed)
 		}
 
 		if isSelected {
@@ -198,13 +237,18 @@ func renderBadges(sf ScoredFork) string {
 		badges = append(badges, "🏷️")
 	}
 
+	// Duplicate work: this fork is one of N carrying identical changes.
+	if sf.SiblingCount > 1 {
+		badges = append(badges, fmt.Sprintf("👯%d", sf.SiblingCount))
+	}
+
 	return strings.Join(badges, " ")
 }
 
 // badgeLegend returns a one-line legend for badges visible in the current fork list.
 // Only includes badges that actually appear, so the legend stays compact.
 func (m Model) badgeLegend() string {
-	var hasWolf, hasPR, hasSubFork, hasBranch, hasRelease bool
+	var hasWolf, hasPR, hasSubFork, hasBranch, hasRelease, hasDupe bool
 	for _, sf := range m.forks {
 		if sf.Heat.LoneWolfV2 != nil && sf.Heat.LoneWolfV2.Detected {
 			hasWolf = true
@@ -220,6 +264,9 @@ func (m Model) badgeLegend() string {
 		}
 		if sf.Fork.ReleaseCount > 0 {
 			hasRelease = true
+		}
+		if sf.SiblingCount > 1 {
+			hasDupe = true
 		}
 	}
 
@@ -238,6 +285,9 @@ func (m Model) badgeLegend() string {
 	}
 	if hasRelease {
 		parts = append(parts, "🏷️ releases")
+	}
+	if hasDupe {
+		parts = append(parts, "👯 duplicate work (same line = same group)")
 	}
 	if len(parts) == 0 {
 		return ""
@@ -281,29 +331,56 @@ func (m Model) renderStatusBar() string {
 }
 
 func (m *Model) cycleSortColumn() {
-	cols := []string{"heat", "stars", "ahead", "forks", "pushed"}
+	cols := []string{"heat", "stars", "ahead", "branches", "forks", "pushed"}
 	for i, c := range cols {
 		if c == m.sortCol {
 			m.sortCol = cols[(i+1)%len(cols)]
 			m.sortAsc = false
-			m.sortForks()
+			m.reapplySort()
 			return
 		}
 	}
 	m.sortCol = "heat"
-	m.sortForks()
+	m.reapplySort()
 }
 
 func (m *Model) sortForks() {
-	sort.SliceStable(m.forks, func(i, j int) bool {
-		var less bool
+	sort.SliceStable(m.forks, m.forkLess())
+	// Duplicates share a score, so they usually land adjacent — but ties are
+	// not ordered by group, so an unrelated fork with identical stats could
+	// sort between two members and fall inside their gutter line. Gather makes
+	// the grouping exact rather than incidental.
+	m.gatherDuplicateGroups(0, len(m.forks))
+	if m.cursor >= len(m.forks) {
+		m.cursor = len(m.forks) - 1
+	}
+	if m.cursor < 0 {
+		m.cursor = 0
+	}
+}
+
+// forkLess returns the row comparator for the active sort column. Extracted so
+// the strict-weak-ordering property can be asserted directly rather than
+// inferred from sorted output.
+func (m *Model) forkLess() func(i, j int) bool {
+	return func(i, j int) bool {
+		// less and equal are computed separately so ties can be reported as
+		// "neither less nor greater". Deriving the descending case as !less
+		// alone would return true for both (i,j) and (j,i) on a tie, which is
+		// not a strict weak ordering: sort is then free to reorder equal
+		// elements, defeating SliceStable and making the row order that
+		// gatherDuplicateGroups anchors to non-deterministic.
+		var less, equal bool
 		switch m.sortCol {
 		case "heat":
-			less = m.forks[i].Heat.Score < m.forks[j].Heat.Score
+			a, b := m.forks[i].Heat.Score, m.forks[j].Heat.Score
+			less, equal = a < b, a == b
 		case "stars":
-			less = m.forks[i].Fork.Stars < m.forks[j].Fork.Stars
+			a, b := m.forks[i].Fork.Stars, m.forks[j].Fork.Stars
+			less, equal = a < b, a == b
 		case "forks":
-			less = m.forks[i].Fork.SubForkCount < m.forks[j].Fork.SubForkCount
+			a, b := m.forks[i].Fork.SubForkCount, m.forks[j].Fork.SubForkCount
+			less, equal = a < b, a == b
 		case "ahead":
 			ai, aj := 0, 0
 			if m.forks[i].T2 != nil {
@@ -312,22 +389,32 @@ func (m *Model) sortForks() {
 			if m.forks[j].T2 != nil {
 				aj = m.forks[j].T2.AheadCount
 			}
-			less = ai < aj
+			less, equal = ai < aj, ai == aj
+		case "branches":
+			// Unknown (nil) sorts as -1 so it lands below a genuine 0 rather
+			// than tying with it.
+			bi, bj := -1, -1
+			if n := m.forks[i].Fork.DivergentBranches; n != nil {
+				bi = *n
+			}
+			if n := m.forks[j].Fork.DivergentBranches; n != nil {
+				bj = *n
+			}
+			less, equal = bi < bj, bi == bj
 		case "pushed":
-			less = m.forks[i].Fork.PushedAt.Before(m.forks[j].Fork.PushedAt)
+			a, b := m.forks[i].Fork.PushedAt, m.forks[j].Fork.PushedAt
+			less, equal = a.Before(b), a.Equal(b)
 		default:
-			less = m.forks[i].Heat.Score < m.forks[j].Heat.Score
+			a, b := m.forks[i].Heat.Score, m.forks[j].Heat.Score
+			less, equal = a < b, a == b
+		}
+		if equal {
+			return false
 		}
 		if m.sortAsc {
 			return less
 		}
 		return !less
-	})
-	if m.cursor >= len(m.forks) {
-		m.cursor = len(m.forks) - 1
-	}
-	if m.cursor < 0 {
-		m.cursor = 0
 	}
 }
 
@@ -410,11 +497,18 @@ func clusterNumericKey(id string) int {
 	return math.MaxInt
 }
 
-// sortForksByCluster orders forks by cluster, then by heat descending
-// within each group. Cluster order: real clusters first (sorted by
-// numeric suffix asc so "c10" follows "c2"), then the ungrouped bucket,
+// sortForksByCluster orders forks by cluster, then by the active sort column
+// and direction within each group. Cluster order: real clusters first (sorted
+// by numeric suffix asc so "c10" follows "c2"), then the ungrouped bucket,
 // then "noise" last.
+//
+// Within-cluster ordering delegates to forkLess rather than hard-coding heat
+// descending: the header renders ▲/▼ from sortCol/sortAsc regardless of
+// grouping, so an ordering that ignored them would make the indicator claim a
+// sort the rows do not have, and the s/S keys would silently do nothing in
+// grouped mode. The default (heat, descending) is unchanged.
 func (m *Model) sortForksByCluster() {
+	less := m.forkLess()
 	sort.SliceStable(m.forks, func(i, j int) bool {
 		ri, ni, ki := clusterGroupRank(m.forks[i].Heat.ClusterID)
 		rj, nj, kj := clusterGroupRank(m.forks[j].Heat.ClusterID)
@@ -427,9 +521,19 @@ func (m *Model) sortForksByCluster() {
 		if ki != kj {
 			return ki < kj
 		}
-		// Within a cluster, higher heat first.
-		return m.forks[i].Heat.Score > m.forks[j].Heat.Score
+		return less(i, j)
 	})
+	// Gather inside each cluster block so cluster grouping stays the outer
+	// structure; a duplicate group spanning two clusters is left split rather
+	// than breaking the cluster headers.
+	for lo := 0; lo < len(m.forks); {
+		hi := lo + 1
+		for hi < len(m.forks) && m.forks[hi].Heat.ClusterID == m.forks[lo].Heat.ClusterID {
+			hi++
+		}
+		m.gatherDuplicateGroups(lo, hi)
+		lo = hi
+	}
 	if m.cursor >= len(m.forks) {
 		m.cursor = len(m.forks) - 1
 	}

@@ -61,6 +61,7 @@ func (m *Model) handleTopicPickerKey(key string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.input = m.topicSelections[m.topicCursor].FullName
+		m.inputCursor = len([]rune(m.input))
 		m.view = viewTable
 		return m, func() tea.Msg { return startFetchMsg{} }
 	case "esc", "q":

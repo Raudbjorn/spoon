@@ -251,7 +251,7 @@ func (m *Model) handleClusterResult(msg clusterResultMsg) (tea.Model, tea.Cmd) {
 	}
 	// Re-sort so any score-influencing fields (none currently, but
 	// reserved) settle into a stable order.
-	m.sortForks()
+	m.reapplySort()
 	// Re-arm the message pump so we continue to receive any later
 	// cluster-related messages.
 	return m, waitForClusterMsg(m.clusterMsgs, m.lifecycleCtx)

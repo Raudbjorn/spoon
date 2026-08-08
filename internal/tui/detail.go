@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/svnbjrn/spoon/internal/forge"
 )
@@ -30,18 +30,17 @@ func (m Model) viewDetail() string {
 
 	b.WriteString("\n")
 	b.WriteString("╭" + hr + "╮\n")
-	b.WriteString("│ " + lipgloss.NewStyle().Bold(true).Render("Fork: "+sf.Fork.ID) + pad(boxWidth-8-len(sf.Fork.ID), " ") + " │\n")
+	b.WriteString(fitBoxLine("│ "+lipgloss.NewStyle().Bold(true).Render("Fork: "+sf.Fork.ID), boxWidth) + "\n")
 
 	// Heat bar
 	scoreColor := HeatColor(sf.Heat.Score)
 	scoreStr := lipgloss.NewStyle().Foreground(scoreColor).Bold(true).Render(fmt.Sprintf("%.0f/100", sf.Heat.Score))
-	b.WriteString(fmt.Sprintf("│ Heat: %s %s  %s", RenderHeatBar(sf.Heat.Score), scoreStr,
-		pad(boxWidth-30, " ")+"│\n"))
+	b.WriteString(fitBoxLine(fmt.Sprintf("│ Heat: %s %s", RenderHeatBar(sf.Heat.Score), scoreStr), boxWidth) + "\n")
 
 	b.WriteString("├" + hr + "┤\n")
 
 	// Why it's hot
-	b.WriteString("│ 🔥 Why it's hot:" + pad(boxWidth-20, " ") + " │\n")
+	b.WriteString(fitBoxLine("│ 🔥 Why it's hot:", boxWidth) + "\n")
 
 	// Component breakdown (v2)
 	for _, c := range sf.Heat.Components {
@@ -69,7 +68,7 @@ func (m Model) viewDetail() string {
 	if len(sf.Heat.Penalties) > 0 {
 		for _, p := range sf.Heat.Penalties {
 			desc := penaltyDescription(p)
-			b.WriteString(fmt.Sprintf("│  ↓ %-48s │\n", desc))
+			b.WriteString(fitBoxLine("│  ↓ "+desc, boxWidth) + "\n")
 		}
 	}
 
@@ -83,20 +82,16 @@ func (m Model) viewDetail() string {
 			archLabel = lwV2.Archetype.String()
 		}
 		wolfStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Bold(true)
-		b.WriteString(fmt.Sprintf("│ %s", wolfStyle.Render("🐺 The "+archLabel)))
-		b.WriteString(pad(boxWidth-8-len(archLabel), " ") + " │\n")
-		b.WriteString(fmt.Sprintf("│  Solo dev, active over %.0f days%s │\n",
-			lwV2.CommitSpanDays, pad(boxWidth-32-len(fmt.Sprintf("%.0f", lwV2.CommitSpanDays)), " ")))
-		b.WriteString(fmt.Sprintf("│  %d commits · MNA %d%s │\n",
-			lwV2.MeaningfulCommits, lwV2.MNA,
-			pad(boxWidth-22-len(fmt.Sprintf("%d", lwV2.MeaningfulCommits))-len(fmt.Sprintf("%d", lwV2.MNA)), " ")))
+		b.WriteString(fitBoxLine("│ "+wolfStyle.Render("🐺 The "+archLabel), boxWidth) + "\n")
+		b.WriteString(fitBoxLine(fmt.Sprintf("│  Solo dev, active over %.0f days", lwV2.CommitSpanDays), boxWidth) + "\n")
+		b.WriteString(fitBoxLine(fmt.Sprintf("│  %d commits · MNA %d", lwV2.MeaningfulCommits, lwV2.MNA), boxWidth) + "\n")
 	}
 
 	// Branch info
 	if sf.T2 != nil && sf.T2.IsBranchWork && sf.T2.ActiveBranch != sf.Fork.DefaultBranch {
 		b.WriteString("├" + hr + "┤\n")
-		b.WriteString(fmt.Sprintf("│ ⚠  Work is on branch: %-28s │\n", sf.T2.ActiveBranch))
-		b.WriteString(fmt.Sprintf("│    [y] Yank clone & checkout command%-14s │\n", ""))
+		b.WriteString(fitBoxLine("│ ⚠  Work is on branch: "+sf.T2.ActiveBranch, boxWidth) + "\n")
+		b.WriteString(fitBoxLine("│    [y] Yank clone & checkout command", boxWidth) + "\n")
 	}
 
 	// Cluster info (only present after a successful cluster pipeline run).
@@ -106,7 +101,7 @@ func (m Model) viewDetail() string {
 		if label == "" {
 			label = sf.Heat.ClusterID
 		}
-		// "noise" gets a minimal block — no label noise, no siblings.
+		// "noise" gets a minimal block — no label noise, no peers.
 		isNoise := sf.Heat.ClusterID == "noise"
 
 		line := fmt.Sprintf("│ Cluster: %s", label)
@@ -141,12 +136,12 @@ func (m Model) viewDetail() string {
 		}
 
 		if !isNoise {
-			siblings := m.collectSiblings(sf.Heat.ClusterID, sf.Fork.ID)
-			if len(siblings) > 0 {
+			peers := m.collectClusterPeers(sf.Heat.ClusterID, sf.Fork.ID)
+			if len(peers) > 0 {
 				const maxShown = 5
-				header := fmt.Sprintf("│  Siblings (%d):", len(siblings))
+				header := fmt.Sprintf("│  Cluster peers (%d):", len(peers))
 				b.WriteString(fitBoxLine(header, boxWidth) + "\n")
-				shown := siblings
+				shown := peers
 				extra := 0
 				if len(shown) > maxShown {
 					extra = len(shown) - maxShown
@@ -166,9 +161,8 @@ func (m Model) viewDetail() string {
 
 	// Metadata
 	b.WriteString("├" + hr + "┤\n")
-	b.WriteString(fmt.Sprintf("│ ★ %d stars   ⑂ %d forks   Pushed %s",
-		sf.Fork.Stars, sf.Fork.SubForkCount, relativeTimeSince(sf.Fork.PushedAt)))
-	b.WriteString(pad(boxWidth-45, " ") + " │\n")
+	b.WriteString(fitBoxLine(fmt.Sprintf("│ ★ %d stars   ⑂ %d forks   Pushed %s",
+		sf.Fork.Stars, sf.Fork.SubForkCount, relativeTimeSince(sf.Fork.PushedAt)), boxWidth) + "\n")
 
 	if sf.T2 != nil {
 		t2 := sf.T2
@@ -177,11 +171,9 @@ func (m Model) viewDetail() string {
 			totalAdds += d.Additions
 			totalDels += d.Deletions
 		}
-		b.WriteString(fmt.Sprintf("│ Ahead: %d (+%d/-%d)  Behind: %d  Files: %d",
-			t2.AheadCount, totalAdds, totalDels, t2.BehindCount, len(t2.Diffs)))
-		b.WriteString(pad(boxWidth-50, " ") + " │\n")
-		b.WriteString(fmt.Sprintf("│ Authors: %d", len(forge.UniqueAuthors(t2.Commits))))
-		b.WriteString(pad(boxWidth-14, " ") + " │\n")
+		b.WriteString(fitBoxLine(fmt.Sprintf("│ Ahead: %d (+%d/-%d)  Behind: %d  Files: %d",
+			t2.AheadCount, totalAdds, totalDels, t2.BehindCount, len(t2.Diffs)), boxWidth) + "\n")
+		b.WriteString(fitBoxLine(fmt.Sprintf("│ Authors: %d", len(forge.UniqueAuthors(t2.Commits))), boxWidth) + "\n")
 	}
 
 	// Bottom badges
@@ -196,21 +188,21 @@ func (m Model) viewDetail() string {
 		bottomBadges = append(bottomBadges, "⛓ Fork of fork")
 	}
 	if len(bottomBadges) > 0 {
-		b.WriteString("│" + pad(boxWidth-1, " ") + "│\n")
+		b.WriteString(fitBoxLine("│", boxWidth) + "\n")
 		for _, badge := range bottomBadges {
-			b.WriteString(fmt.Sprintf("│ %s", badge))
-			b.WriteString(pad(boxWidth-4-len(badge), " ") + " │\n")
+			b.WriteString(fitBoxLine("│ "+badge, boxWidth) + "\n")
 		}
 	}
 
 	if sf.Fork.Description != "" {
-		b.WriteString("│" + pad(boxWidth-1, " ") + "│\n")
+		b.WriteString(fitBoxLine("│", boxWidth) + "\n")
+		// Truncate by display cells, then quote: %q on an already-truncated
+		// string keeps the closing quote inside the box.
 		desc := sf.Fork.Description
-		if len(desc) > boxWidth-6 {
-			desc = desc[:boxWidth-9] + "..."
+		if lipgloss.Width(desc) > boxWidth-6 {
+			desc = ansi.Truncate(desc, boxWidth-9, "") + "..."
 		}
-		b.WriteString(fmt.Sprintf("│ %q", desc))
-		b.WriteString(pad(boxWidth-4-len(desc), " ") + " │\n")
+		b.WriteString(fitBoxLine(fmt.Sprintf("│ %q", desc), boxWidth) + "\n")
 	}
 
 	b.WriteString("╰" + hr + "╯\n")
@@ -265,10 +257,10 @@ func pad(n int, ch string) string {
 	return strings.Repeat(ch, n)
 }
 
-// collectSiblings returns the fork IDs of other members of the given
+// collectClusterPeers returns the fork IDs of other members of the given
 // cluster, sorted by Heat.Score descending. The caller's own fork (by
 // ID) is excluded.
-func (m Model) collectSiblings(clusterID, selfID string) []string {
+func (m Model) collectClusterPeers(clusterID, selfID string) []string {
 	type sib struct {
 		id    string
 		score float64
@@ -313,28 +305,16 @@ func fitBoxLine(line string, boxWidth int) string {
 	// the line as-is must occupy boxWidth-1 columns (runes) before the
 	// trailing "│" is added.
 	target := boxWidth - 1
-	width := utf8.RuneCountInString(line)
+	// Terminal cells, not runes or bytes: 🔥 and ★ are one rune but two cells,
+	// and a lipgloss-styled string carries ANSI sequences that occupy no cells
+	// at all. Measuring with len() or utf8.RuneCountInString put the closing
+	// border in the wrong column for any line containing either.
+	width := lipgloss.Width(line)
 	if width > target {
-		// Truncate at a rune boundary, leaving room for the closing border.
-		line = runeTruncate(line, target)
-	} else {
-		line += pad(target-width, " ")
+		// ansi.Truncate is width-aware and will not cut a rune in half or
+		// strand an unterminated escape sequence.
+		line = ansi.Truncate(line, target, "")
+		width = lipgloss.Width(line)
 	}
-	return line + "│"
-}
-
-// runeTruncate returns the longest prefix of s that contains at most
-// target runes. Truncation always happens on a rune boundary.
-func runeTruncate(s string, target int) string {
-	if target <= 0 {
-		return ""
-	}
-	r := 0
-	for j := range s {
-		if r >= target {
-			return s[:j]
-		}
-		r++
-	}
-	return s
+	return line + pad(target-width, " ") + "│"
 }

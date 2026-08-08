@@ -42,7 +42,8 @@ func (p *Provider) Compare(ctx context.Context, fork forge.T1Data, branch string
 		return forge.T2Data{}, fmt.Errorf("fork commits %s@%s: %w", fork.ID, branch, err)
 	}
 	if len(commits) == 0 {
-		return forge.T2Data{}, nil
+		// A real comparison that found nothing, unlike an unreachable fork.
+		return forge.T2Data{Performed: true}, nil
 	}
 
 	// 1. Merge-base walk.
@@ -75,12 +76,17 @@ func (p *Provider) Compare(ctx context.Context, fork forge.T1Data, branch string
 	}
 
 	t2 := forge.T2Data{
+		Performed:          true,
 		AheadCount:         len(aheadCommits),
 		FeatureCommitRatio: featureCommitRatio(aheadCommits),
 		Commits:            aheadCommits,
 	}
 	if capped {
 		t2.AheadCount = len(commits) // lower bound: at least this many
+	}
+	if !capped {
+		t2.BaseSHA = mergeBase
+		t2.HeadSHA = commits[0].SHA
 	}
 
 	// 2. Behind: intra-upstream compare (merge-base is in upstream, so this works).

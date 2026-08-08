@@ -1,12 +1,9 @@
 package tui
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
-	"sort"
 	"strings"
 	"time"
 
@@ -78,30 +75,27 @@ type ExportFork struct {
 	ClusterMemberCount int     `json:"cluster_member_count,omitempty"`
 	ChangeImpact       float64 `json:"change_impact,omitempty"`
 
-	// Duplicate fields identify forks carrying the SAME work, which is common in
-	// a fork network: a popular fork gets re-forked, or many forks branch from
-	// one pre-restructure commit and all report an identical diff. Detection is
-	// unrelated to the embedder-backed cluster_* fields above — it needs no
-	// model and always runs. There are two tiers:
+	// Sibling fields identify forks carrying the SAME work, which is common in a
+	// fork network: a popular fork gets re-forked, or many forks branch from one
+	// pre-restructure commit and all report an identical diff. Detection runs on
+	// the model (duplicates.go) and is unrelated to the embedder-backed
+	// cluster_* fields above. There are two tiers:
 	//
-	// Confirmed (proof): the forks share an identical ahead-commit SHA set. Only
-	// these get the group/count/primary trio; the primary is the member a
-	// consumer may keep when folding the rest.
+	// Confirmed (proof): the forks share commit identity — a branch fingerprint
+	// ("f:") or the compared head SHA ("h:"). Only these get the
+	// group/count/primary trio; the primary is the member a consumer may keep
+	// when folding the rest.
 	//
-	// Candidate (signal): the forks merely report the same diff shape (commit,
-	// file and line counts). They get only DuplicateCandidate — never a primary
-	// — because equal totals do not prove equal work. Consumers must verify
-	// before collapsing candidate rows.
+	// Candidate (signal): the forks merely report the same diff shape ("d:" —
+	// commit, file and line counts). They get only SiblingCandidate — never a
+	// primary — because equal totals do not prove equal work. Consumers must
+	// verify before collapsing candidate rows.
 	//
 	// Rows are never dropped — collapsing is the consumer's decision.
-	DuplicateGroup     string `json:"duplicate_group,omitempty"`
-	DuplicateCount     int    `json:"duplicate_count,omitempty"`
-	DuplicatePrimary   bool   `json:"duplicate_primary,omitempty"`
-	DuplicateCandidate string `json:"duplicate_candidate,omitempty"`
-
-	// workKey is the confirmed-tier identity (digest of the sorted ahead-commit
-	// SHA set), computed at export time and never marshalled.
-	workKey string
+	SiblingGroup     string `json:"sibling_group,omitempty"`
+	SiblingCount     int    `json:"sibling_count,omitempty"`
+	SiblingPrimary   bool   `json:"sibling_primary,omitempty"`
+	SiblingCandidate string `json:"sibling_candidate,omitempty"`
 }
 
 // ExportLoneWolf is the lone wolf signal export (v2 shape).
@@ -158,6 +152,8 @@ type ExportDiv struct {
 	FeatureRatio float64 `json:"feature_commit_ratio,omitempty"`
 	IsBranchWork bool    `json:"is_branch_work,omitempty"`
 	ActiveBranch string  `json:"active_branch,omitempty"`
+	BaseSHA      string  `json:"base_sha,omitempty"`
+	HeadSHA      string  `json:"head_sha,omitempty"`
 }
 
 type exportDoneMsg struct {
@@ -195,6 +191,7 @@ func (m *Model) promptExportMarked() tea.Cmd {
 
 	m.exportForks = toExport
 	m.exportPath = m.defaultExportPath()
+	m.exportCursor = len([]rune(m.exportPath))
 	m.view = viewExportPath
 	return nil
 }
@@ -209,12 +206,13 @@ func (m *Model) promptExportAll() tea.Cmd {
 	copy(toExport, m.forks)
 	m.exportForks = toExport
 	m.exportPath = m.defaultExportPath()
+	m.exportCursor = len([]rune(m.exportPath))
 	m.view = viewExportPath
 	return nil
 }
 
 // handleExportPathKey handles input in the export path prompt.
-func (m *Model) handleExportPathKey(key string) (tea.Model, tea.Cmd) {
+func (m *Model) handleExportPathKey(key string, typed string) (tea.Model, tea.Cmd) {
 	switch key {
 	case "enter":
 		path := strings.TrimSpace(m.exportPath)
@@ -229,16 +227,8 @@ func (m *Model) handleExportPathKey(key string) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.exportForks = nil
 		m.view = viewTable
-	case "backspace":
-		if len(m.exportPath) > 0 {
-			m.exportPath = m.exportPath[:len(m.exportPath)-1]
-		}
-	case "ctrl+u":
-		m.exportPath = ""
 	default:
-		if len(key) == 1 {
-			m.exportPath += key
-		}
+		m.exportPath, m.exportCursor, _ = lineEdit(m.exportPath, m.exportCursor, key, typed)
 	}
 	return m, nil
 }
@@ -249,8 +239,8 @@ func (m Model) viewExportPath() string {
 	b.WriteString("\n")
 	count := len(m.exportForks)
 	b.WriteString(fmt.Sprintf("  Exporting %d fork(s) to JSON\n\n", count))
-	b.WriteString("  Save to: " + m.exportPath + "█\n\n")
-	b.WriteString("  " + helpStyle.Render("Enter confirm  Esc cancel  Ctrl+U clear") + "\n")
+	b.WriteString("  Save to: " + renderWithCursor(m.exportPath, m.exportCursor) + "\n\n")
+	b.WriteString("  " + helpStyle.Render("←/→ move  Home/End  Enter confirm  Esc cancel  Ctrl+U clear") + "\n")
 	return b.String()
 }
 
@@ -298,7 +288,6 @@ func (m *Model) doExport(toExport []ScoredFork, filename string) tea.Cmd {
 			}
 
 			ef.Divergence = forgeT2ToExportDiv(sf.T2)
-			ef.workKey = workIdentityKey(sf.T2)
 			if sf.Enriched {
 				data.EnrichedCount++
 			}
@@ -344,13 +333,19 @@ func (m *Model) doExport(toExport []ScoredFork, filename string) tea.Cmd {
 			}
 
 			ef.WhyDistinct = GenerateWhyDistinct(sf, parent)
+
+			// Grouping is computed on the model (duplicates.go) so the export
+			// and the screen cannot disagree about what is a duplicate.
+			ef.SiblingGroup = sf.SiblingGroup
+			ef.SiblingCount = sf.SiblingCount
+			ef.SiblingPrimary = sf.SiblingPrimary
+			ef.SiblingCandidate = sf.SiblingCandidate
+
 			data.Forks = append(data.Forks, ef)
 		}
 
 		data.TotalCount = len(data.Forks)
 		data.Degraded = data.EnrichedCount < data.TotalCount
-
-		AssignDuplicateGroups(data.Forks)
 
 		jsonData, err := json.MarshalIndent(data, "", "  ")
 		if err != nil {
@@ -359,93 +354,6 @@ func (m *Model) doExport(toExport []ScoredFork, filename string) tea.Cmd {
 
 		err = os.WriteFile(filename, jsonData, 0644)
 		return exportDoneMsg{path: filename, err: err}
-	}
-}
-
-// workIdentityKey returns the confirmed-tier duplicate identity: a digest of
-// the fork's complete ahead-commit SHA set, prefixed "c:". Two forks sharing
-// this key provably carry the same commits.
-//
-// It returns "" when the commit list is absent or incomplete (len(Commits) !=
-// AheadCount — e.g. GitHub's compare API caps the list at 250 commits): a
-// truncated set could collide across forks that differ only in the tail. The
-// SHAs are sorted before hashing so the key is independent of the order a
-// provider returns commits in.
-func workIdentityKey(t2 *forge.T2Data) string {
-	if t2 == nil || len(t2.Commits) == 0 || len(t2.Commits) != t2.AheadCount {
-		return ""
-	}
-	shas := make([]string, len(t2.Commits))
-	for i, c := range t2.Commits {
-		shas[i] = c.SHA
-	}
-	sort.Strings(shas)
-	sum := sha256.Sum256([]byte(strings.Join(shas, "\n")))
-	return "c:" + hex.EncodeToString(sum[:])[:12]
-}
-
-// duplicateKey returns the candidate-tier grouping key — the diff shape: same
-// commit count, same file count, same line counts — and whether the fork is
-// eligible for grouping at all. Equal shape is a strong signal but not proof
-// (two forks could coincide, or carry rebased copies of the same work), so
-// shape matches only ever set DuplicateCandidate. The "d:" prefix keeps the
-// namespace disjoint from the confirmed "c:" keys of workIdentityKey.
-//
-// Forks with no divergence are never grouped: every unmodified mirror would
-// otherwise collapse into one meaningless bucket.
-func duplicateKey(d *ExportDiv) (string, bool) {
-	if d == nil || d.Ahead == 0 {
-		return "", false
-	}
-	return fmt.Sprintf("d:%d/%d/%d/%d", d.Ahead, d.FilesChanged, d.Additions, d.Deletions), true
-}
-
-// AssignDuplicateGroups tags forks that carry identical work.
-//
-// Forks with a shared work identity (identical ahead-commit SHA sets) form a
-// confirmed group: every member gets DuplicateGroup/DuplicateCount, and the
-// highest-scoring member is marked DuplicatePrimary so a consumer can show one
-// row and fold the rest.
-//
-// Forks that merely share a diff shape get DuplicateCandidate only — no
-// primary, nothing foldable — since equal totals with different (or unknown)
-// commit sets do not prove duplicate work. Groups of one are left untagged.
-func AssignDuplicateGroups(forks []ExportFork) {
-	confirmed := make(map[string][]int, len(forks))
-	candidates := make(map[string][]int, len(forks))
-	for i := range forks {
-		if forks[i].workKey != "" {
-			confirmed[forks[i].workKey] = append(confirmed[forks[i].workKey], i)
-		}
-		if key, ok := duplicateKey(forks[i].Divergence); ok {
-			candidates[key] = append(candidates[key], i)
-		}
-	}
-
-	for key, idxs := range confirmed {
-		if len(idxs) < 2 {
-			continue
-		}
-		primary := idxs[0]
-		for _, i := range idxs[1:] {
-			if forks[i].Heat.Score > forks[primary].Heat.Score {
-				primary = i
-			}
-		}
-		for _, i := range idxs {
-			forks[i].DuplicateGroup = key
-			forks[i].DuplicateCount = len(idxs)
-			forks[i].DuplicatePrimary = i == primary
-		}
-	}
-
-	for key, idxs := range candidates {
-		if len(idxs) < 2 {
-			continue
-		}
-		for _, i := range idxs {
-			forks[i].DuplicateCandidate = key
-		}
 	}
 }
 
