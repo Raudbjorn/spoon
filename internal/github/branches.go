@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 	"time"
 )
@@ -212,8 +213,26 @@ func (c *Client) scanSideBranches(
 	fork ForkInfo,
 	branches []BranchInfo,
 ) (*BranchScan, error) {
+	return c.scanSideBranchesWith(ctx, parentOwner, parentRepo, parentBranch, fork, branches, localScanOpts{
+		runner:       execGitRunner{},
+		gitAvailable: gitOnPath(),
+	})
+}
+
+// scanSideBranchesWith is the testable inner form of scanSideBranches,
+// mirroring ScanBranchesLocal/scanBranchesLocalWith's split: production
+// wires real opts; tests inject a fake gitRunner so the REST-fallback branch
+// below can actually be exercised, instead of only ever running against the
+// real git binary.
+func (c *Client) scanSideBranchesWith(
+	ctx context.Context,
+	parentOwner, parentRepo, parentBranch string,
+	fork ForkInfo,
+	branches []BranchInfo,
+	opts localScanOpts,
+) (*BranchScan, error) {
 	if c.localBranchScan {
-		scan, err := c.ScanBranchesLocal(ctx, parentOwner, parentRepo, parentBranch, fork)
+		scan, err := c.scanBranchesLocalWith(ctx, parentOwner, parentRepo, parentBranch, fork, opts)
 		if err == nil {
 			return scan, nil
 		}
@@ -221,7 +240,12 @@ func (c *Client) scanSideBranches(
 			return nil, ctxErr
 		}
 		// Local scan failed for a non-cancellation reason (git missing, no
-		// merge-base found, subprocess error): fall through to REST.
+		// merge-base found, subprocess error, REST compare failed for a
+		// confirmed local winner): fall through to REST. Debug, not Warn --
+		// same rationale as graphql.go's REST fallback: stderr is reserved
+		// for structured envelopes in the agent-facing `spn` command.
+		slog.Debug("branch scan: local scan failed, falling back to REST",
+			"fork", fork.Owner.Login+"/"+fork.Name, "err", err)
 	}
 	if len(branches) == 0 {
 		return nil, nil
