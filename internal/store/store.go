@@ -19,6 +19,8 @@ import (
 	"time"
 
 	libsql "github.com/tursodatabase/go-libsql"
+
+	"github.com/svnbjrn/spoon/internal/forge"
 )
 
 // SchemaVersion is derived from the migration list so a bump cannot silently
@@ -29,6 +31,14 @@ var SchemaVersion = migrations[len(migrations)-1].version
 type RepoRecord struct {
 	Provider, Host, Owner, Name string
 	FirstSeen, LastSeen         time.Time
+	// Parent, when non-nil, is persisted as parent_json so the TUI can rebuild
+	// the upstream header without refetching.
+	Parent *forge.ParentData
+	// ForksSyncedAt, when non-zero, records the completion time of a full fork
+	// enumeration. Fork-list freshness is time-based (membership changes with
+	// no push to any cached fork), unlike per-fork compare validity which is
+	// keyed on pushed_at.
+	ForksSyncedAt time.Time
 }
 
 type ForkRecord struct {
@@ -70,6 +80,33 @@ type Snapshot struct {
 	// compare_files/commits rather than deleting them — a degraded scan must
 	// not erase prior enrichment.
 	T2Present bool
+
+	// T1, when non-nil, is persisted whole as t1_json so a later run can
+	// rebuild the fork's listing data without refetching.
+	T1 *forge.T1Data
+	// T2 carries the compare scalars (ahead/behind, MNA, upstreamed, branch
+	// work …). Its Diffs and Commits are NOT serialised into t2_json — they
+	// already live relationally in compare_files/commits and would double the
+	// row size (patches included). Written only when T2Present.
+	T2 *forge.T2Data
+}
+
+// RepoSnapshot is the read-side view of one upstream and its cached forks.
+type RepoSnapshot struct {
+	Parent        *forge.ParentData
+	ForksSyncedAt time.Time
+	Forks         []CachedFork
+}
+
+// CachedFork is one fork reconstructed from the store. T2 is nil when the fork
+// was never enriched. Callers decide freshness: compare T1.PushedAt against
+// the live listing — a push moves it, invalidating the cached compare.
+type CachedFork struct {
+	T1          forge.T1Data
+	T2          *forge.T2Data
+	T2FetchedAt time.Time
+	Heat        float64
+	Tier        int
 }
 
 type PendingDocument struct {
@@ -446,6 +483,7 @@ var migrations = []struct {
 	stmts   []string
 }{
 	{version: 1, stmts: schemaV1},
+	{version: 2, stmts: schemaV2},
 }
 
 func (s *Store) initialize(ctx context.Context) error {
@@ -479,6 +517,13 @@ func (s *Store) initialize(ctx context.Context) error {
 		}
 		for _, stmt := range m.stmts {
 			if _, err := tx.ExecContext(ctx, stmt); err != nil {
+				// ALTER TABLE ... ADD COLUMN has no IF NOT EXISTS, so a re-run
+				// over an already-migrated schema (user_version lost or reset)
+				// must tolerate the column existing — the CREATE TABLE steps get
+				// the same tolerance from IF NOT EXISTS.
+				if strings.HasPrefix(stmt, "ALTER TABLE") && strings.Contains(err.Error(), "duplicate column name") {
+					continue
+				}
 				return fmt.Errorf("migrate store to v%d: %w", m.version, err)
 			}
 		}
@@ -543,10 +588,53 @@ func (s *Store) UpsertSnapshot(ctx context.Context, snap Snapshot) error {
 		ON CONFLICT(repo_key) DO UPDATE SET last_seen=excluded.last_seen`, repoKey, snap.Repo.Provider, strings.ToLower(snap.Repo.Host), snap.Repo.Owner, snap.Repo.Name, ts(snap.Repo.FirstSeen), ts(snap.Repo.LastSeen)); err != nil {
 		return fmt.Errorf("upsert repo: %w", err)
 	}
+	// Parent and sync-time updates are separate conditional statements so a
+	// snapshot that lacks them (per-fork compare save, degraded scan) preserves
+	// what an earlier full enumeration wrote.
+	if snap.Repo.Parent != nil {
+		parentJSON, err := json.Marshal(snap.Repo.Parent)
+		if err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE repos SET parent_json=? WHERE repo_key=?`, string(parentJSON), repoKey); err != nil {
+			return fmt.Errorf("update repo parent: %w", err)
+		}
+	}
+	if !snap.Repo.ForksSyncedAt.IsZero() {
+		if _, err = tx.ExecContext(ctx, `UPDATE repos SET forks_synced_at=? WHERE repo_key=?`, ts(snap.Repo.ForksSyncedAt), repoKey); err != nil {
+			return fmt.Errorf("update repo sync time: %w", err)
+		}
+	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO forks(fork_key,repo_key,forge_id,owner,name,url,description,language,topics_json,stars,pushed_at,heat,tier,updated_at)
 		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(fork_key) DO UPDATE SET owner=excluded.owner,name=excluded.name,url=excluded.url,description=excluded.description,language=excluded.language,topics_json=excluded.topics_json,stars=excluded.stars,pushed_at=excluded.pushed_at,heat=excluded.heat,tier=excluded.tier,updated_at=excluded.updated_at`,
 		forkKey, repoKey, snap.Fork.ForgeID, snap.Fork.Owner, snap.Fork.Name, snap.Fork.URL, snap.Fork.Description, snap.Fork.Language, string(topicsJSON), snap.Fork.Stars, ts(snap.Fork.PushedAt), snap.Fork.Heat, snap.Fork.Tier, ts(snap.Fork.UpdatedAt)); err != nil {
 		return fmt.Errorf("upsert fork: %w", err)
+	}
+	if snap.T1 != nil {
+		t1JSON, err := json.Marshal(snap.T1)
+		if err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE forks SET t1_json=?, created_at=? WHERE fork_key=?`,
+			string(t1JSON), ts(snap.T1.CreatedAt), forkKey); err != nil {
+			return fmt.Errorf("update fork t1: %w", err)
+		}
+	}
+	if snap.T2Present && snap.T2 != nil {
+		// Diffs/Commits are stripped before marshalling: they are persisted
+		// relationally below, and t2_json must stay scalar-sized (patches would
+		// otherwise be stored twice).
+		t2 := *snap.T2
+		t2.Diffs = nil
+		t2.Commits = nil
+		t2JSON, err := json.Marshal(t2)
+		if err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE forks SET t2_json=?, head_sha=?, t2_fetched_at=? WHERE fork_key=?`,
+			string(t2JSON), headSHA(snap.T2), ts(snap.Fork.UpdatedAt), forkKey); err != nil {
+			return fmt.Errorf("update fork t2: %w", err)
+		}
 	}
 	// Only replace compare/commit rows when the incoming data is authoritative
 	// (T2 was fetched). Otherwise a degraded scan would erase prior enrichment.
@@ -603,6 +691,157 @@ func insertFile(ctx context.Context, tx *wtx, table, forkKey, sha string, f File
 		return fmt.Errorf("insert %s: %w", table, err)
 	}
 	return nil
+}
+
+// headSHA returns the fork's head commit SHA when the complete ahead-commit
+// list is known (providers return compare commits in chronological order, so
+// the last one is the head). A truncated list — e.g. GitHub caps compare
+// commits at 250 — yields "": its last element is not the head.
+func headSHA(t2 *forge.T2Data) string {
+	if t2 == nil || len(t2.Commits) == 0 || len(t2.Commits) != t2.AheadCount {
+		return ""
+	}
+	return t2.Commits[len(t2.Commits)-1].SHA
+}
+
+// LoadRepoSnapshot reconstructs the cached upstream and forks for one repo.
+// It returns nil (no error) when the repo has never been persisted. Forks are
+// returned in fork_key order; a fork whose compare was never fetched has a nil
+// T2. Freshness is the caller's call: compare each fork's T1.PushedAt with the
+// live listing, and ForksSyncedAt for list-level staleness.
+func (s *Store) LoadRepoSnapshot(ctx context.Context, provider, host, owner, name string) (*RepoSnapshot, error) {
+	repoKey := RepoKey(provider, host, owner, name)
+	var parentJSON, syncedAt string
+	err := s.db.QueryRowContext(ctx, `SELECT parent_json, forks_synced_at FROM repos WHERE repo_key=?`, repoKey).Scan(&parentJSON, &syncedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load repo %s: %w", repoKey, err)
+	}
+	snap := &RepoSnapshot{}
+	if parentJSON != "" {
+		snap.Parent = &forge.ParentData{}
+		if err := json.Unmarshal([]byte(parentJSON), snap.Parent); err != nil {
+			return nil, fmt.Errorf("decode parent for %s: %w", repoKey, err)
+		}
+	}
+	if syncedAt != "" {
+		snap.ForksSyncedAt, _ = time.Parse(time.RFC3339Nano, syncedAt)
+	}
+
+	rows, err := s.db.QueryContext(ctx, `SELECT fork_key, t1_json, t2_json, t2_fetched_at, heat, tier FROM forks WHERE repo_key=? AND t1_json<>'' ORDER BY fork_key`, repoKey)
+	if err != nil {
+		return nil, fmt.Errorf("load forks for %s: %w", repoKey, err)
+	}
+	defer rows.Close()
+	type pendingT2 struct{ idx int }
+	byKey := map[string]pendingT2{}
+	for rows.Next() {
+		var forkKey, t1JSON, t2JSON, fetchedAt string
+		var cf CachedFork
+		if err := rows.Scan(&forkKey, &t1JSON, &t2JSON, &fetchedAt, &cf.Heat, &cf.Tier); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(t1JSON), &cf.T1); err != nil {
+			return nil, fmt.Errorf("decode fork %s: %w", forkKey, err)
+		}
+		if t2JSON != "" {
+			cf.T2 = &forge.T2Data{}
+			if err := json.Unmarshal([]byte(t2JSON), cf.T2); err != nil {
+				return nil, fmt.Errorf("decode compare for %s: %w", forkKey, err)
+			}
+			cf.T2FetchedAt, _ = time.Parse(time.RFC3339Nano, fetchedAt)
+			byKey[forkKey] = pendingT2{idx: len(snap.Forks)}
+		}
+		snap.Forks = append(snap.Forks, cf)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(byKey) == 0 {
+		return snap, nil
+	}
+
+	// Rehydrate the relational halves of T2: compare files, then commits with
+	// their per-commit files.
+	fileRows, err := s.db.QueryContext(ctx, `SELECT cf.fork_key, cf.path, cf.previous_path, cf.status, cf.additions, cf.deletions, cf.patch, cf.patch_source
+		FROM compare_files cf JOIN forks f ON f.fork_key=cf.fork_key WHERE f.repo_key=? ORDER BY cf.fork_key, cf.path`, repoKey)
+	if err != nil {
+		return nil, fmt.Errorf("load compare files for %s: %w", repoKey, err)
+	}
+	defer fileRows.Close()
+	for fileRows.Next() {
+		var forkKey string
+		var fd forge.FileDiff
+		var patch sql.NullString
+		if err := fileRows.Scan(&forkKey, &fd.Path, &fd.PreviousPath, &fd.Status, &fd.Additions, &fd.Deletions, &patch, &fd.PatchSource); err != nil {
+			return nil, err
+		}
+		fd.Patch = patch.String
+		if p, ok := byKey[forkKey]; ok {
+			snap.Forks[p.idx].T2.Diffs = append(snap.Forks[p.idx].T2.Diffs, fd)
+		}
+	}
+	if err := fileRows.Err(); err != nil {
+		return nil, err
+	}
+
+	commitRows, err := s.db.QueryContext(ctx, `SELECT c.fork_key, c.sha, c.message, c.author_login, c.author_email, c.committed_at
+		FROM commits c JOIN forks f ON f.fork_key=c.fork_key WHERE f.repo_key=? ORDER BY c.fork_key, c.committed_at, c.sha`, repoKey)
+	if err != nil {
+		return nil, fmt.Errorf("load commits for %s: %w", repoKey, err)
+	}
+	defer commitRows.Close()
+	commitIdx := map[string]map[string]int{}
+	for commitRows.Next() {
+		var forkKey, committedAt string
+		var ac forge.AheadCommit
+		if err := commitRows.Scan(&forkKey, &ac.SHA, &ac.Message, &ac.AuthorLogin, &ac.AuthorEmail, &committedAt); err != nil {
+			return nil, err
+		}
+		ac.Timestamp, _ = time.Parse(time.RFC3339Nano, committedAt)
+		p, ok := byKey[forkKey]
+		if !ok {
+			continue
+		}
+		if commitIdx[forkKey] == nil {
+			commitIdx[forkKey] = map[string]int{}
+		}
+		commitIdx[forkKey][ac.SHA] = len(snap.Forks[p.idx].T2.Commits)
+		snap.Forks[p.idx].T2.Commits = append(snap.Forks[p.idx].T2.Commits, ac)
+	}
+	if err := commitRows.Err(); err != nil {
+		return nil, err
+	}
+
+	cfRows, err := s.db.QueryContext(ctx, `SELECT cf.fork_key, cf.sha, cf.path, cf.previous_path, cf.status, cf.additions, cf.deletions, cf.patch, cf.patch_source
+		FROM commit_files cf JOIN forks f ON f.fork_key=cf.fork_key WHERE f.repo_key=? ORDER BY cf.fork_key, cf.sha, cf.path`, repoKey)
+	if err != nil {
+		return nil, fmt.Errorf("load commit files for %s: %w", repoKey, err)
+	}
+	defer cfRows.Close()
+	for cfRows.Next() {
+		var forkKey, sha string
+		var fd forge.FileDiff
+		var patch sql.NullString
+		if err := cfRows.Scan(&forkKey, &sha, &fd.Path, &fd.PreviousPath, &fd.Status, &fd.Additions, &fd.Deletions, &patch, &fd.PatchSource); err != nil {
+			return nil, err
+		}
+		fd.Patch = patch.String
+		p, ok := byKey[forkKey]
+		if !ok {
+			continue
+		}
+		if ci, ok := commitIdx[forkKey][sha]; ok {
+			commits := snap.Forks[p.idx].T2.Commits
+			commits[ci].Files = append(commits[ci].Files, fd)
+		}
+	}
+	if err := cfRows.Err(); err != nil {
+		return nil, err
+	}
+	return snap, nil
 }
 
 func (s *Store) PendingDocuments(ctx context.Context, model string) ([]PendingDocument, error) {
@@ -727,4 +966,18 @@ var schemaV1 = []string{
 	`CREATE TABLE IF NOT EXISTS embeddings (document_id TEXT NOT NULL REFERENCES documents(document_id) ON DELETE CASCADE, model TEXT NOT NULL, dim INTEGER NOT NULL, vector BLOB NOT NULL, content_hash TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(document_id,model))`,
 	`CREATE INDEX IF NOT EXISTS embeddings_model_idx ON embeddings(model)`,
 	`CREATE INDEX IF NOT EXISTS forks_repo_idx ON forks(repo_key)`,
+}
+
+// schemaV2 turns the store into the single global cache: the upstream and the
+// full per-fork listing data ride along as JSON (parent_json/t1_json), and the
+// compare scalars land in t2_json + head_sha/t2_fetched_at. forks_synced_at
+// timestamps a completed fork enumeration for list-level freshness.
+var schemaV2 = []string{
+	`ALTER TABLE repos ADD COLUMN parent_json TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE repos ADD COLUMN forks_synced_at TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE forks ADD COLUMN t1_json TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE forks ADD COLUMN created_at TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE forks ADD COLUMN head_sha TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE forks ADD COLUMN t2_json TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE forks ADD COLUMN t2_fetched_at TEXT NOT NULL DEFAULT ''`,
 }
