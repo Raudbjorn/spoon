@@ -355,11 +355,10 @@ func (m *Model) doExport(toExport []ScoredFork, filename string) tea.Cmd {
 //
 // Forks with no divergence are never grouped: every unmodified mirror would
 // otherwise collapse into one meaningless bucket.
-func duplicateKey(ef ExportFork) (string, bool) {
-	if ef.Divergence == nil || ef.Divergence.Ahead == 0 {
+func duplicateKey(d *ExportDiv) (string, bool) {
+	if d == nil || d.Ahead == 0 {
 		return "", false
 	}
-	d := ef.Divergence
 	return fmt.Sprintf("d:%d/%d/%d/%d", d.Ahead, d.FilesChanged, d.Additions, d.Deletions), true
 }
 
@@ -368,8 +367,8 @@ func duplicateKey(ef ExportFork) (string, bool) {
 // and fold the rest. Groups of one are left untagged.
 func AssignDuplicateGroups(forks []ExportFork) {
 	groups := make(map[string][]int, len(forks))
-	for i, ef := range forks {
-		if key, ok := duplicateKey(ef); ok {
+	for i := range forks {
+		if key, ok := duplicateKey(forks[i].Divergence); ok {
 			groups[key] = append(groups[key], i)
 		}
 	}
