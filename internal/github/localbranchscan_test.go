@@ -326,23 +326,51 @@ func TestScanBranchesLocal_AllProbesFailReturnsError(t *testing.T) {
 // examined, so this must error into the REST fallback rather than report a
 // clean nil -- REST walks a different (alphabetical) candidate set and may
 // hold a divergent branch the recency cap excluded.
+// The boundary matters: hitting maxLocalScanBranches is only inconclusive if
+// the cap actually skipped something. A fork with exactly that many eligible
+// branches was scanned in full, and must not pay for a redundant REST scan.
 func TestScanBranchesLocal_CapHitWithNoDivergenceReturnsError(t *testing.T) {
-	c := &Client{}
-
-	tips := make([]string, 0, (maxLocalScanBranches+5)*3)
-	responses := map[string]fakeResponse{}
-	for i := 0; i < maxLocalScanBranches+5; i++ {
-		name := fmt.Sprintf("branch-%02d", i)
-		tips = append(tips, name, fmt.Sprintf("sha_%02d", i), fmt.Sprintf("2026-01-%02dT00:00:00Z", i+1))
-		responses["merge-base upstream/main fork/"+name] = fakeResponse{out: []byte("sha_mb\n")}
-		responses["rev-list --count sha_mb..fork/"+name] = fakeResponse{out: []byte("0\n")} // no divergence
+	// nonDivergentFork scripts n side branches that all probe cleanly with
+	// ahead == 0, so the only variable is whether the cap truncated the list.
+	nonDivergentFork := func(n int) *fakeGitRunner {
+		tips := make([]string, 0, n*3)
+		responses := map[string]fakeResponse{}
+		for i := 0; i < n; i++ {
+			name := fmt.Sprintf("branch-%02d", i)
+			tips = append(tips, name, fmt.Sprintf("sha_%02d", i), fmt.Sprintf("2026-01-01T00:00:%02dZ", i))
+			responses["merge-base upstream/main fork/"+name] = fakeResponse{out: []byte("sha_mb\n")}
+			responses["rev-list --count sha_mb..fork/"+name] = fakeResponse{out: []byte("0\n")}
+		}
+		responses[forkTipsKey] = forkTipsResponse(tips...)
+		return &fakeGitRunner{responses: responses}
 	}
-	responses[forkTipsKey] = forkTipsResponse(tips...)
 
-	_, err := c.scanBranchesLocalWith(context.Background(), "up", "stream", "main", testFork(),
-		localScanOpts{runner: &fakeGitRunner{responses: responses}, gitAvailable: true})
-	if err == nil {
-		t.Error("want an error when the candidate cap is hit with nothing divergent found, got nil (would suppress the REST fallback)")
+	tests := []struct {
+		name     string
+		branches int
+		wantErr  bool
+	}{
+		{"cap truncated the list", maxLocalScanBranches + 5, true},
+		{"exactly at the cap, nothing skipped", maxLocalScanBranches, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &Client{}
+			scan, err := c.scanBranchesLocalWith(context.Background(), "up", "stream", "main", testFork(),
+				localScanOpts{runner: nonDivergentFork(tc.branches), gitAvailable: true})
+			if tc.wantErr {
+				if err == nil {
+					t.Error("want an error when the cap skipped candidates and nothing divergent was found, got nil (would suppress the REST fallback)")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("want no error for a complete scan of exactly %d branches, got %v", tc.branches, err)
+			}
+			if scan != nil {
+				t.Errorf("want nil scan, got %+v", scan)
+			}
+		})
 	}
 }
 
