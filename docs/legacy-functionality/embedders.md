@@ -12,7 +12,11 @@ Spoon has had four embedding families:
 The first three old integration styles and the OpenVINO encoder are no longer
 part of the production path. The current semantic embedder is fixed FastEmbed;
 the deterministic lexical embedder remains for clustering and degradation.
-The source-level history is `355dcd8`, `45601e4`, and `031cbc8`.
+The source-level history is `355dcd8` (external services → in-process
+OpenVINO, 2026-06-12), `45601e4` (FastEmbed sole persistent backend,
+2026-07-12), `031cbc8` (OpenVINO embedder deleted, 2026-07-26), and
+`19dd9f5` (reranker, GenAI labeler, and `internal/models` registry deleted,
+2026-08-08 — generic model downloading is gone).
 
 ## 1. Historical external services
 
@@ -155,9 +159,10 @@ selection path remained, and no production caller constructed
 `NewOpenVINOEmbedder`. This was a dead-code removal with no intended runtime
 behavior change.
 
-The shared OpenVINO tokenizer/compiler/tensor helpers survived because the
-reranker still uses them. `L2NormalizeAll` moved to `normalize.go` for the
-FastEmbed path.
+The shared OpenVINO tokenizer/compiler/tensor helpers survived `031cbc8`
+because the reranker still used them at that point; `19dd9f5` then deleted
+them along with the reranker. `L2NormalizeAll` moved to `normalize.go` for
+the FastEmbed path and survives at HEAD.
 
 ## 3. Surviving FastEmbed implementation
 
@@ -167,16 +172,43 @@ FastEmbed path.
 fastembed:fast-bge-small-en-v1.5:maxlen=512:prompts=bge
 ```
 
+> **⚠ Documentation divergence (flagged, not hidden):** the live
+> `docs/embedders.md:16` quotes the short form
+> `fastembed:fast-bge-small-en-v1.5:maxlen=512` — missing the trailing
+> `:prompts=bge` segment. The code (`internal/embed/fastembed.go:23`,
+> `FastEmbedModelID`) is authoritative; the persisted `model` column and all
+> cache-identity logic carry the full form with prompts.
+
 The model is 384-dimensional, uses BGE v1.5's passage/query convention, and
 runs through native Go `fastembed` backed by ONNX Runtime. Model files are
 cached under `$XDG_CACHE_HOME/spoon/models/fastembed` (or the equivalent user
 cache fallback). `ONNX_PATH` points at `libonnxruntime.so`.
 
-`fastembed_provision.go` downloads a pinned archive, verifies its SHA-256 when
-`SPOON_FASTEMBED_SHA256` is set, enforces archive byte/entry limits, rejects
-path traversal, and extracts atomically. A bad/incomplete cache is discarded
-and re-provisioned. The model is embedded in batches of 32 by default, with
-bounded concurrent ONNX sessions; the configured max length is fixed at 512.
+### Safe provisioning
+
+`fastembed_provision.go` downloads the pinned archive
+`https://storage.googleapis.com/qdrant-fastembed/fast-bge-small-en-v1.5.tar.gz`
+and enforces hard bounds (`fastembed_provision.go:31-38`):
+
+| Guard | Value |
+|---|---|
+| archive size cap | `fastEmbedMaxArchiveBytes = 1 << 30` (1 GiB) |
+| entry size cap | `fastEmbedMaxEntryBytes = 1 << 30` |
+| entry count cap | `fastEmbedMaxEntries = 4096` |
+| download timeout | `fastEmbedDownloadTimeout = 15 * time.Minute` |
+
+SHA-256 verification is **opt-in**: set `SPOON_FASTEMBED_SHA256` and the
+downloaded archive is checked before extraction
+(`fastembed_provision.go:43-46`). Path traversal entries are rejected,
+extraction is atomic (temp dir → rename), and a bad/incomplete cache is
+discarded and re-provisioned. This is now the *only* model-download path in
+Spoon: the generic `internal/models` HF downloader was deleted in `19dd9f5`.
+
+The model is embedded in batches of 32 by default, with bounded concurrent
+ONNX sessions; the configured max length is fixed at 512. Config resolution
+(`cmd/spn/forks.go:resolveFastEmbedConfig`, lines 1190-1196) coalesces CLI
+flag → `SPOON_FASTEMBED_MODEL` / `SPOON_FASTEMBED_CACHE` → `config.json`
+`fastembed.model` / `fastembed.cacheDir`.
 
 FastEmbed powers:
 
@@ -202,7 +234,10 @@ persistent cross-run semantic index. It remains the intentional zero-setup
 engine for:
 
 - interactive TUI clustering;
-- `--query` fallback when no reranker is configured;
+- `--query` relevance scoring — now unconditional in production (`cmd/spn`
+  leaves `opts.QueryScorer` nil, so `LexicalQueryScorer` is the only scorer;
+  the reranker and its configuration no longer exist, see
+  [current-state.md](current-state.md));
 - cluster fallback when FastEmbed is absent;
 - tests and deterministic offline operation.
 
@@ -210,6 +245,45 @@ The four multimodal lexical blobs are weighted paths `0.3`, commits `0.3`,
 README `0.2`, and diff `0.2`. Current cluster epsilon defaults are `0.35` for
 FastEmbed and `0.55` for lexical vectors (`docs/embedders.md` and
 `internal/cluster/pipeline.go`).
+
+## 4a. Multimodal fork-feature contract (surviving)
+
+`internal/embed/multimodal.go` defines the fork-feature embedding contract
+that both FastEmbed and the lexical backend feed:
+
+- four modalities in fixed order: **paths, commits, readme, diff**;
+- weights `modalityWeights = [0.3, 0.3, 0.2, 0.2]`
+  (`multimodal.go:9`);
+- each modality blob is rune-truncated at `maxEmbedModalityChars = 16000`
+  (`multimodal.go:21`);
+- missing (empty) modalities contribute a zero block;
+- the concatenated weighted vector is **L2-normalized** before use.
+
+These weights and caps are part of the model-quality contract and must be
+frozen during any model comparison (see
+[architecture-and-data-flow.md](architecture-and-data-flow.md) §5).
+
+## 4b. Environment variable census
+
+Surviving embedding-relevant variables at HEAD:
+
+| Variable | Effect |
+|---|---|
+| `SPOON_FASTEMBED_MODEL` | override the pinned FastEmbed model name |
+| `SPOON_FASTEMBED_CACHE` | override the FastEmbed cache dir (default `$XDG_CACHE_HOME/spoon/models/fastembed`) |
+| `SPOON_FASTEMBED_SHA256` | opt-in SHA-256 verification of the provisioned archive |
+| `SPOON_NO_EMBED` | `=1` disables the semantic embedder; lexical clustering continues |
+| `ONNX_PATH` | path to `libonnxruntime.so` for the FastEmbed backend |
+
+Retired by the removal series: `SPOON_OPENVINO_RERANKER`,
+`SPOON_OPENVINO_LABELER`, `SPOON_OPENVINO_DEVICE`, `SPOON_OPENVINO_LIB`,
+`SPOON_OPENVINO_GENAI_LIB`, `SPOON_EVAL_RERANKERS`, `SPOON_EVAL_LABELERS`,
+and the `SPOON_FETCH_*` download limits — all consumed only by code deleted
+in `19dd9f5`. (`SPOON_EVAL_EMBEDDERS` survives: manual embedder comparison,
+see [evaluation.md](evaluation.md). Historical external-service variables —
+`SPOON_EMBEDDER_URL`, `SPOON_EMBEDDER_MODEL`, `SPOON_OPENAI_BASE_URL`,
+`OPENAI_API_KEY`, `SPOON_SIDECAR_MODEL`, `SPOON_SIDECAR_DEVICE` — died with
+`355dcd8`.)
 
 ## 5. Models considered but not blindly restoreable
 

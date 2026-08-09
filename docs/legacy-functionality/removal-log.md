@@ -1,83 +1,92 @@
-# Removal and restoration log
+# Removal Log
 
-This table separates historical deletion from current retention. Use the commit
-SHA with `git show` to recover exact source when a future implementation needs
-behavior that prose cannot capture.
+Chronological log of features removed or displaced from the codebase, most
+recent last. Re-baselined at HEAD `426049c` (`fix/export-compare-url-and-created-at`),
+2026-08-08.
 
-The pre-removal provenance includes the sidecar introduction sequence
-`dcb7ff0`, `44f2c5a`, `01f588b`, `80da595` (2026-05-13) and the
-OpenAI-compatible backend addition `4937fbc` (2026-06-08). Those commits are
-useful when recovering the original CLI semantics, but the deleted blobs at
-`355dcd8^` are the authoritative implementation snapshot used below.
+## 2026-08-08 — OpenVINO reranker and labeler removed entirely (`19dd9f5`)
 
-| Commit | Removed/changed | Why | Restoration source |
-|---|---|---|---|
-| `355dcd8` (2026-06-12) | Ollama/OpenAI/sidecar embedders; Ollama chat labeler; endpoint config, detection, pull prompts, sidecar command/service/assets | Replaced external services with in-process OpenVINO embedding/reranking and GenAI label-polishing features; removed process/network/lifecycle dependencies | `git show 355dcd8^:internal/embed/{ollama.go,openai.go,sidecar.go,bootstrap.go,detect.go}`; `git show 355dcd8^:internal/cluster/llm_labeler.go`; `git show 355dcd8^:embed/sidecar/{README.md,server.py}` |
-| `ac0dcf0` (2026-06-14) | Added the deterministic builtin lexical embedder and wired it as the zero-setup clustering/fallback engine | Portable offline clustering and graceful degradation | `git show ac0dcf0`; current `internal/embed/local.go` |
-| `806c4f6` (2026-06-14) | Deleted OpenVINO/GenAI build-tag stubs and removed `openvino`/`genai` build-tag requirement | Lazy runtime `dlopen` made the default build portable while preserving optional features | `git show 806c4f6^:internal/embed/openvino_stub.go`, `rerank_stub.go`, `internal/genai/genai_stub.go`; current `ovffi.*`, `ovload.go` |
-| `45601e4` (2026-07-12) | Removed user-selectable `openvino`, `builtin`, and external backend selection; removed backend flags; made FastEmbed default/opt-out | FastEmbed became the stable persistent semantic model; lexical remained internal fallback/TUI engine | `git show 45601e4^:internal/embed/backend.go`, old `cmd/spn/forks.go`, old `internal/config/config.go`; current `backend.go`, `fastembed.go`, `local.go` |
-| `031cbc8` (2026-07-26) | Deleted OpenVINO encoder integration tests, `ovconfig.go`, pooling files; trimmed `openvino.go`; moved normalization | OpenVINO embedder was unreachable after `45601e4`: validation accepted only empty/fastembed, no production caller constructed it, and no reachable selection path remained | `git show 031cbc8^:internal/embed/openvino.go`, `ovconfig.go`, `pooling.go`; commit body gives the reachability proof |
-| current `07e94ee` | Reranker, GenAI labeler, OpenVINO C ABI loader, tokenizer/compiler helpers, FastEmbed, lexical, semantic index remain | The inspected branch has no pending/untracked removal | `internal/embed/rerank.go`, `internal/genai/`, `internal/embed/ovffi.{c,h}`, `internal/embed/ovload.go` |
+Commit `19dd9f5` — "refactor: remove OpenVINO reranker and labeler entirely".
+The commit message's own summary: *"Embedding is fastembed + lexical, full
+stop."*
 
-## File-level consequences
+### Removed
 
-### After `355dcd8`
+| Feature | Files deleted | Contract |
+|---|---|---|
+| In-process OpenVINO cross-encoder reranker | `internal/embed/rerank.go`, `rerankconfig.go`, `pairtemplate.go` (+ test), `rerank_integration_test.go` | [reranker-labeler.md](reranker-labeler.md) |
+| Shared OpenVINO runtime/FFI support (reranker dependency) | `internal/embed/openvino.go` (residual 227 lines), `ovffi.c`, `ovffi.h`, `ovload.go`, `ovshared.go` | [reranker-labeler.md](reranker-labeler.md) |
+| GenAI LLM labeler (labels, categories, summaries) | `internal/genai/genai.go`, `internal/genai/labeler.go`, `internal/genai/config.go` (+ tests) | [reranker-labeler.md](reranker-labeler.md) |
+| Model registry + downloader | `internal/models/models.go` (+ tests) | [reimplementation-notes.md](reimplementation-notes.md) |
+| `LabelPolisher` pipeline seam | field removed from `internal/cluster/pipeline.go` `PipelineOptions` | [reranker-labeler.md](reranker-labeler.md) |
+| `Reranker` / `Labeler` / `ModelConfig` config blocks | `internal/config/config.go` | [current-state.md](current-state.md) |
+| Reranker/labeler eval legs | `internal/embed/eval_models_test.go` changed +5/−96; `internal/genai/eval_labelers_test.go` deleted | [evaluation.md](evaluation.md) |
 
-Deleted paths included:
+### Retired environment variables
 
-- `cmd/spn/embed.go`, `cmd/spn/sidecar.go` and their tests;
-- `cmd/spoon/embed.go`, `cmd/spoon/sidecar.go` and their tests;
-- `internal/embed/ollama.go`, `openai.go`, `sidecar.go`, `bootstrap.go`,
-  `detect.go`, `preflight.go`, `prompter.go` and tests;
-- `internal/sidecar/sidecar.go` and tests;
-- `embed/sidecar/` Docker, Python, systemd, benchmark, and README assets;
-- `internal/cluster/llm_labeler.go` and its tests.
+`SPOON_OPENVINO_*` (model dir / URL / SHA256 / timeout / cache),
+`SPOON_EVAL_RERANKERS`, `SPOON_EVAL_LABELERS`, `SPOON_FETCH_*` (downloader
+limits). Verified absent from non-test sources at HEAD.
 
-The surviving replacement was not a drop-in protocol swap: it moved model
-loading, tokenization, pooling, runtime errors, and cleanup into the Go process.
-A reimplementation should decide first whether that operational complexity is
-still justified.
+### Survived the removal (still in tree at HEAD)
 
-### After `45601e4`
+- `embed.QueryScorer` interface and `LexicalQueryScorer`
+  (`internal/embed/queryscore.go`) — the seam stays injectable; production
+  `cmd/spn` leaves it nil, so `--query` scoring is lexical.
+- The `method` column on search results — but see the stale `"openvino"`
+  default label flagged in [reranker-labeler.md](reranker-labeler.md).
+- `HeuristicLabel` deterministic cluster labeling (`internal/cluster/labels.go`).
 
-This was a behavior/configuration consolidation rather than a large deletion.
-It changed `internal/embed/backend.go`, CLI parsers, setup, config validation,
-semantic indexing, and docs. Legacy values (`ollama`, `sidecar`, `openai`,
-`builtin`, `lexical`) were normalized to the empty backend, which means
-FastEmbed. `validBackends` accepted only empty/`fastembed`.
+### Stale text left behind by the removal
 
-Important compatibility result: old JSON config files remain parseable because
-unknown removed fields are ignored, but old backend selection no longer revives
-old services.
+Flagged here rather than hidden:
 
-### After `031cbc8`
+- `cmd/spn/main.go:114` — help still says *"cross-encoder reranker when
+  configured, lexical fallback otherwise"*.
+- `cmd/spn/main.go:117` — help still says *"a configured labeler polishes"*.
+- `internal/embed/queryscore.go:5-7` — package comment still names the OpenVINO
+  reranker as a `QueryScorer` implementation.
+- `internal/forksops/stream.go` — when an injected `QueryScorer` is non-nil the
+  result `method` is labeled `"openvino"`, which no longer corresponds to any
+  implementation.
 
-The OpenVINO encoder's pooling and model config were removed, but the shared
-runtime helpers were deliberately preserved for reranking. Do not restore the
-whole old `openvino.go` blindly: that would reintroduce an encoder whose cache
-identity, pooling, dimension, and persistence semantics no longer match the
-current FastEmbed index.
+## 2026-08-08 — Zero-config + store/config relocation series
 
-## Future removal checklist for reranker/labeler
+`2f1560a`, `7d56911`, `b425566`, `9abb5dc` (2026-08-08). Not a feature removal:
+configuration and the persistent store moved so that `spn` works with zero
+setup. Current layout (verified at HEAD, `internal/store/store.go:173-205`,
+`internal/config/config.go`):
 
-If the pending cleanup removes the reranker and labeler, audit all of these
-surfaces together:
+| What | Where now | Notes |
+|---|---|---|
+| Persistent store | `$XDG_CONFIG_HOME/spoon/spoon.db` (default `~/.config/spoon/spoon.db`) | one-time migration moves a legacy `$XDG_DATA_HOME/spoon/spoon.db` if present |
+| Store, no-home hosts | `/var/lib/spoon/spoon.db` | fallback when `$HOME` is empty |
+| Config file | `$XDG_CONFIG_HOME/spoon/config.json`, `/etc/spoon` fallback | unknown JSON keys are ignored — old `reranker`/`labeler` blocks are silently inert |
+| FastEmbed model cache | `$XDG_CACHE_HOME/spoon/models/fastembed` | overridable via `SPOON_FASTEMBED_CACHE` |
 
-- `internal/embed/rerank.go`, `rerankconfig.go`, `pairtemplate.go`,
-  `rerank_integration_test.go`, and reranker paths in `eval_models_test.go`;
-- `internal/genai/` runtime, config, labeler, integration/evaluation tests;
-- `internal/embed/ovffi.{c,h}`, `ovload.go`, `ovshared.go` — retain only if
-  another feature still needs OpenVINO;
-- `internal/models/models.go` feature registry and model-download tests;
-- `cmd/spn/forks.go` query scorer and label-polisher constructors;
-- `cmd/spoon/main.go` label-polisher constructor and help text;
-- `cmd/spoon/setup.go` OpenVINO checks, model slots, config persistence;
-- `internal/config/config.go` `Reranker`/`Labeler` fields and env/config docs;
-- `internal/forksops/stream.go` `QueryScorer` plumbing and `queryMethod` output;
-- `internal/cluster/pipeline.go` `LabelPolisher` and polish fallback;
-- `docs/embedders.md`, README, CLI contract tests, setup tests, and integration
-  tests.
+## Earlier removals (historical, preserved)
 
-Remove the feature as one contract change, not merely by deleting the model
-constructor. Otherwise stale config keys, setup downloads, output metadata,
-runtime loaders, or test fixtures will imply a capability that no longer works.
+| Commit | Date | Removed / displaced | Successor | Contract doc |
+|---|---|---|---|---|
+| `355dcd8` | 2026-06-12 | External ML services: OpenAI/Ollama API clients, Python embedding sidecar (`embed/sidecar/`) | in-process OpenVINO | [embedders.md](embedders.md) |
+| `ac0dcf0` | 2026-06-14 | OpenVINO as the only embedder (introduced the builtin/lexical embedder) | builtin default, openvino opt-in | [embedders.md](embedders.md) |
+| `45601e4` | 2026-07-12 | FastEmbed as sole embedder (default, opt-out); backend selection narrowed | `fastembed` | [embedders.md](embedders.md) |
+| `031cbc8` | 2026-07-26 | OpenVINO model embedder (kept fastembed + lexical) | FastEmbed | [embedders.md](embedders.md) |
+
+## Current state (HEAD `426049c`)
+
+Full detail in [current-state.md](current-state.md). Summary:
+
+- **Embedding:** FastEmbed is the sole user-selectable persistent / semantic /
+  model-backed backend (`fastembed:fast-bge-small-en-v1.5:maxlen=512:prompts=bge`,
+  384 dims). The `builtin`/`lexical` `LocalEmbedder` remains for internal
+  callers (query scoring, clustering fallback, `SPOON_NO_EMBED`).
+- **Query scoring (`--query`):** lexical only in production —
+  `LexicalQueryScorer` embeds query + documents in one batch and uses cosine
+  similarity clamped to `[0,1]`. No decay factor.
+- **Labels:** deterministic `HeuristicLabel` only.
+- **Model downloads:** the generic `internal/models` registry/downloader
+  is gone; FastEmbed's dedicated provisioning (pinned archive download with
+  optional SHA-256 verification) remains.
+- **Store:** libsql at `$XDG_CONFIG_HOME/spoon/spoon.db` with legacy-data
+  migration.

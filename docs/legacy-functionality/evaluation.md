@@ -3,7 +3,10 @@
 ## 1. Preserved harness
 
 The complete experiment is under
-`experiments/started/behavioral-embeddings/`. Important artifacts:
+`experiments/started/behavioral-embeddings/` — the remaining cross-model,
+historical evaluation harness (Go-side manual gates are covered in §4; both
+survive `19dd9f5`, which removed only the reranker/labeler evaluators).
+Important artifacts:
 
 - `features.json`: extracted PR/fork feature records;
 - `judgments.json`: 53 hand-curated pairs, 27 same-intent and 26 different-intent;
@@ -76,24 +79,26 @@ implementation detail.
 ## 4. In-process model evaluation
 
 `internal/embed/eval_models_test.go` is a manual harness, enabled by environment
-variables rather than a CI gate:
+variables rather than a CI gate. **At HEAD only the embedder gate survives:**
+`19dd9f5` changed this file by +5/−96 (net −91 lines) — the reranker and
+labeler evaluation paths were excised along with the features. The reranker
+evaluator reported accuracy@1 and MRR over one positive against ten random
+negatives; the labeler evaluator was qualitative (representative cluster
+hints). Neither `TestEvalRerankers_Manual` nor `TestEvalLabelers_Manual`
+exists at HEAD.
 
 ```sh
+# survives at HEAD:
 SPOON_EVAL_EMBEDDERS="builtin,/path/model[:pooling],..." \
   go test -run TestEvalEmbedders_Manual -v ./internal/embed/
-SPOON_EVAL_RERANKERS="/path/model,..." \
-  go test -run TestEvalRerankers_Manual -v ./internal/embed/
-SPOON_EVAL_LABELERS="/path/model,..." \
-  go test -run TestEvalLabelers_Manual -v ./internal/genai/
 ```
 
 The embedder evaluator reports AUC: probability that same-intent cosine exceeds
-different-intent cosine. The reranker evaluator reports accuracy@1 and MRR over
-one positive against ten random negatives. The labeler evaluator is qualitative
-and checks representative cluster hints.
+different-intent cosine.
 
 The OpenVINO defaults retained by the current docs were revalidated on
-2026-06-12:
+2026-06-12 (historical record — the models themselves are removed at HEAD;
+see [reranker-labeler.md](reranker-labeler.md)):
 
 - reranker: `bge-reranker-base-fp16`, retained over
   `Qwen3-Reranker-0.6B-seq-cls-fp16` (`acc@1 0.63`, `MRR 0.77`, 1.7 s in the
