@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 	"time"
 )
@@ -174,25 +175,21 @@ func (c *Client) FetchCompareWithBranchScan(
 		}
 		// Default's own work is already merged; prefer a side branch with
 		// genuine work if one exists before falling back to the merged default.
-		if len(branches) > 0 {
-			scan, scanErr := c.ScanBranches(ctx, parentOwner, parentRepo, parentBranch, fork, branches)
-			if scanErr != nil {
-				// ScanBranches only errors on ctx cancellation; propagate it
-				// rather than masking it as a successful (merged) result.
-				return BranchScan{}, scanErr
-			}
-			if scan != nil && !scan.Upstreamed {
-				return *scan, nil
-			}
+		scan, scanErr := c.scanSideBranches(ctx, parentOwner, parentRepo, parentBranch, fork, branches)
+		if scanErr != nil {
+			// A hard error here can only be ctx cancellation -- scanSideBranches
+			// falls back to REST on any local-scan failure rather than erroring.
+			// Propagate rather than masking it as a successful (merged) result.
+			return BranchScan{}, scanErr
+		}
+		if scan != nil && !scan.Upstreamed {
+			return *scan, nil
 		}
 		return BranchScan{Compare: result, Branch: fork.DefaultBranch, Upstreamed: up, UpstreamedPR: pr}, nil
 	}
 
 	// Default shows no work: scan side branches.
-	if len(branches) == 0 {
-		return BranchScan{Compare: result, Branch: fork.DefaultBranch}, nil
-	}
-	scan, scanErr := c.ScanBranches(ctx, parentOwner, parentRepo, parentBranch, fork, branches)
+	scan, scanErr := c.scanSideBranches(ctx, parentOwner, parentRepo, parentBranch, fork, branches)
 	if scanErr != nil {
 		// ctx cancellation: propagate rather than returning a successful
 		// default-branch result the caller would treat as complete.
@@ -202,6 +199,58 @@ func (c *Client) FetchCompareWithBranchScan(
 		return BranchScan{Compare: result, Branch: fork.DefaultBranch}, nil
 	}
 	return *scan, nil
+}
+
+// scanSideBranches picks the branch scan strategy: ScanBranchesLocal
+// (git ls-remote/fetch/merge-base) when the client has opted in and git is
+// usable, REST/GraphQL-only ScanBranches otherwise. Any failure of the local
+// path (git missing, timeout, merge-base unreachable) falls back to
+// ScanBranches rather than surfacing an error -- the local path is additive,
+// never a coverage regression versus today's REST-only behavior.
+func (c *Client) scanSideBranches(
+	ctx context.Context,
+	parentOwner, parentRepo, parentBranch string,
+	fork ForkInfo,
+	branches []BranchInfo,
+) (*BranchScan, error) {
+	return c.scanSideBranchesWith(ctx, parentOwner, parentRepo, parentBranch, fork, branches, localScanOpts{
+		runner:       execGitRunner{},
+		gitAvailable: gitOnPath(),
+	})
+}
+
+// scanSideBranchesWith is the testable inner form of scanSideBranches,
+// mirroring ScanBranchesLocal/scanBranchesLocalWith's split: production
+// wires real opts; tests inject a fake gitRunner so the REST-fallback branch
+// below can actually be exercised, instead of only ever running against the
+// real git binary.
+func (c *Client) scanSideBranchesWith(
+	ctx context.Context,
+	parentOwner, parentRepo, parentBranch string,
+	fork ForkInfo,
+	branches []BranchInfo,
+	opts localScanOpts,
+) (*BranchScan, error) {
+	if c.localBranchScan {
+		scan, err := c.scanBranchesLocalWith(ctx, parentOwner, parentRepo, parentBranch, fork, opts)
+		if err == nil {
+			return scan, nil
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		// Local scan failed for a non-cancellation reason (git missing, no
+		// merge-base found, subprocess error, REST compare failed for a
+		// confirmed local winner): fall through to REST. Debug, not Warn --
+		// same rationale as graphql.go's REST fallback: stderr is reserved
+		// for structured envelopes in the agent-facing `spn` command.
+		slog.Debug("branch scan: local scan failed, falling back to REST",
+			"fork", fork.Owner.Login+"/"+fork.Name, "err", err)
+	}
+	if len(branches) == 0 {
+		return nil, nil
+	}
+	return c.ScanBranches(ctx, parentOwner, parentRepo, parentBranch, fork, branches)
 }
 
 // FormatBranchCloneCmd generates a clone + checkout command for a side branch.
