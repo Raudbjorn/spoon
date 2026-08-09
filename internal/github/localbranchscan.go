@@ -26,9 +26,10 @@ type execGitRunner struct{}
 // particular would make cmd.Dir a no-op and point every operation at
 // whatever repository the calling process happens to be inside (a git hook,
 // `rebase --exec`, etc), silently mutating it instead of the scratch repo --
-// and disables interactive credential prompting, which would otherwise
-// block the subprocess on /dev/tty for a private or deleted fork until
-// localScanTimeout kills it.
+// and disables interactive terminal credential prompting, which would
+// otherwise block the subprocess on /dev/tty for a private or deleted fork
+// until localScanTimeout kills it. See noPromptArgs for the other two ways
+// git can still ask for a password once the terminal is closed off.
 func gitEnv() []string {
 	env := make([]string, 0, len(os.Environ())+1)
 	for _, kv := range os.Environ() {
@@ -40,8 +41,28 @@ func gitEnv() []string {
 	return append(env, "GIT_TERMINAL_PROMPT=0")
 }
 
+// noPromptArgs closes the two credential paths GIT_TERMINAL_PROMPT=0 does
+// not: an askpass helper (git prompt.c consults GIT_ASKPASS, then
+// core.askPass, then SSH_ASKPASS, and treats an empty value as unset -- so
+// setting core.askPass empty short-circuits SSH_ASKPASS too), and credential
+// helpers, where an interactive one (Git Credential Manager) can pop a GUI
+// or browser and sit there. An empty credential.helper value resets the
+// whole helper list, per git-config(1).
+//
+// This is deliberately a hard reset rather than a terminal-only block: a
+// private or credential-gated repo is out of scope for the local path, which
+// clones over anonymous https and never carries the API token. Failing fast
+// here drops that fork to REST ScanBranches -- which does have the token and
+// gets the right answer -- instead of hanging out the full localScanTimeout
+// for a scan that could not have worked anyway.
+var noPromptArgs = []string{"-c", "credential.helper=", "-c", "core.askPass="}
+
 func (execGitRunner) Run(ctx context.Context, dir string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	// Prepended here rather than at the call sites so the scripted keys in
+	// localbranchscan_test.go's fakeGitRunner stay readable, and so the
+	// error message below quotes the caller's own argv without this noise.
+	argv := append(append([]string{}, noPromptArgs...), args...)
+	cmd := exec.CommandContext(ctx, "git", argv...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
@@ -327,6 +348,21 @@ func (c *Client) scanBranchesLocalWith(
 	// find real divergence these probes gave up on.
 	if attempted > 0 && failed == attempted {
 		return nil, fmt.Errorf("all %d local branch probes failed", failed)
+	}
+
+	// The cap was hit and nothing divergent turned up in it. Unlike an
+	// uncapped empty result, this is not "the fork has no side-branch work":
+	// candidates past the cap were never looked at, so the honest answer is
+	// inconclusive. Returning (nil, nil) here would tell scanSideBranches the
+	// scan succeeded and suppress the REST fallback, which is exactly the
+	// coverage regression this path promises never to cause -- REST
+	// ScanBranches walks a different (GraphQL-supplied, alphabetical)
+	// candidate set and may well hold a divergent branch this cap excluded.
+	// An error, not (nil, nil): the headroom bail-out above deliberately
+	// returns (nil, nil) to keep REST from spending the reserve, and these
+	// two cases must not collapse into one.
+	if attempted >= maxLocalScanBranches && len(probes) == 0 {
+		return nil, fmt.Errorf("hit the %d-candidate cap with no divergent branch found; inconclusive", maxLocalScanBranches)
 	}
 
 	sort.SliceStable(probes, func(i, j int) bool {
