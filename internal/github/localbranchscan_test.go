@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -318,6 +319,54 @@ func TestScanBranchesLocal_AllProbesFailReturnsError(t *testing.T) {
 	}
 }
 
+// The same "could not scan" vs "scanned and found nothing" distinction, for
+// the other way the local path can come up empty without having looked at
+// everything: every probe SUCCEEDS, all of them report ahead==0, and the
+// candidate cap cut the list short. Branches past the cap were never
+// examined, so this must error into the REST fallback rather than report a
+// clean nil -- REST walks a different (alphabetical) candidate set and may
+// hold a divergent branch the recency cap excluded.
+func TestScanBranchesLocal_CapHitWithNoDivergenceReturnsError(t *testing.T) {
+	c := &Client{}
+
+	tips := make([]string, 0, (maxLocalScanBranches+5)*3)
+	responses := map[string]fakeResponse{}
+	for i := 0; i < maxLocalScanBranches+5; i++ {
+		name := fmt.Sprintf("branch-%02d", i)
+		tips = append(tips, name, fmt.Sprintf("sha_%02d", i), fmt.Sprintf("2026-01-%02dT00:00:00Z", i+1))
+		responses["merge-base upstream/main fork/"+name] = fakeResponse{out: []byte("sha_mb\n")}
+		responses["rev-list --count sha_mb..fork/"+name] = fakeResponse{out: []byte("0\n")} // no divergence
+	}
+	responses[forkTipsKey] = forkTipsResponse(tips...)
+
+	_, err := c.scanBranchesLocalWith(context.Background(), "up", "stream", "main", testFork(),
+		localScanOpts{runner: &fakeGitRunner{responses: responses}, gitAvailable: true})
+	if err == nil {
+		t.Error("want an error when the candidate cap is hit with nothing divergent found, got nil (would suppress the REST fallback)")
+	}
+}
+
+// The uncapped counterpart: fewer candidates than the cap, every one probed
+// successfully, none divergent. That IS an authoritative "no side-branch
+// work" -- nothing went unexamined -- so it must stay (nil, nil) and not
+// spend a REST scan re-deriving the same answer.
+func TestScanBranchesLocal_UncappedNoDivergenceReturnsNilNil(t *testing.T) {
+	c := &Client{}
+	fr := &fakeGitRunner{responses: map[string]fakeResponse{
+		forkTipsKey: forkTipsResponse("only-branch", "sha_a", "2026-01-01T00:00:00Z"),
+		"merge-base upstream/main fork/only-branch": {out: []byte("sha_mb\n")},
+		"rev-list --count sha_mb..fork/only-branch": {out: []byte("0\n")},
+	}}
+	scan, err := c.scanBranchesLocalWith(context.Background(), "up", "stream", "main", testFork(),
+		localScanOpts{runner: fr, gitAvailable: true})
+	if err != nil {
+		t.Fatalf("want no error for a complete scan that found nothing, got %v", err)
+	}
+	if scan != nil {
+		t.Errorf("want nil scan, got %+v", scan)
+	}
+}
+
 func TestScanBranchesLocal_GitUnavailableReturnsError(t *testing.T) {
 	c := &Client{}
 	_, err := c.scanBranchesLocalWith(context.Background(), "up", "stream", "main", testFork(),
@@ -466,9 +515,11 @@ func TestScanBranchesLocal_RealGit_PicksNewestBranch(t *testing.T) {
 }
 
 // fileURLRunner rewrites the https://github.com/<owner>/<repo>.git clone URLs
-// scanBranchesLocalWith constructs into file:// paths under a local test
-// fixture directory, so the real-git integration test never touches the
-// network. owner/repo map 1:1 onto <base>/<repo-without-".git"-adjustment>.
+// scanBranchesLocalWith constructs into plain local filesystem paths (git
+// accepts a bare path as a remote), so the real-git integration test never
+// touches the network. The rewrite keys on the owner segment alone, which is
+// all the fixture needs: any .../upstream/... URL becomes <base>/upstream.git
+// and any .../fork/... URL becomes <base>/fork.git.
 type fileURLRunner struct {
 	base string
 }
