@@ -316,11 +316,16 @@ func (c *Client) scanBranchesLocalWith(
 
 	var probes []branchProbe
 	attempted, failed := 0, 0
+	// Whether the cap actually cut candidates off, which is not the same as
+	// attempted == maxLocalScanBranches: a fork with exactly that many
+	// eligible branches exhausts the list without anything being skipped.
+	truncated := false
 	for _, tip := range tips {
 		if tip.Name == fork.DefaultBranch {
 			continue
 		}
 		if attempted >= maxLocalScanBranches {
+			truncated = true
 			break
 		}
 		attempted++
@@ -350,9 +355,10 @@ func (c *Client) scanBranchesLocalWith(
 		return nil, fmt.Errorf("all %d local branch probes failed", failed)
 	}
 
-	// The cap was hit and nothing divergent turned up in it. Unlike an
-	// uncapped empty result, this is not "the fork has no side-branch work":
-	// candidates past the cap were never looked at, so the honest answer is
+	// The cap cut candidates off and nothing divergent turned up in the ones
+	// that survived it. Unlike an untruncated empty result, this is not "the
+	// fork has no side-branch work": the skipped candidates were never
+	// looked at, so the honest answer is
 	// inconclusive. Returning (nil, nil) here would tell scanSideBranches the
 	// scan succeeded and suppress the REST fallback, which is exactly the
 	// coverage regression this path promises never to cause -- REST
@@ -361,7 +367,7 @@ func (c *Client) scanBranchesLocalWith(
 	// An error, not (nil, nil): the headroom bail-out above deliberately
 	// returns (nil, nil) to keep REST from spending the reserve, and these
 	// two cases must not collapse into one.
-	if attempted >= maxLocalScanBranches && len(probes) == 0 {
+	if truncated && len(probes) == 0 {
 		return nil, fmt.Errorf("hit the %d-candidate cap with no divergent branch found; inconclusive", maxLocalScanBranches)
 	}
 
