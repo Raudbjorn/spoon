@@ -1,6 +1,11 @@
 package tui
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+
+	tea "github.com/charmbracelet/bubbletea"
+)
 
 // Row filtering for the fork table.
 //
@@ -51,6 +56,50 @@ func (m Model) visibleIdx() []int {
 		}
 	}
 	return idx
+}
+
+// applyFilter installs a new query and re-anchors the cursor: on the same fork
+// when it survives the filter, otherwise on the nearest visible row.
+func (m *Model) applyFilter(q string) {
+	var selectedID string
+	if m.cursor >= 0 && m.cursor < len(m.forks) {
+		selectedID = m.forks[m.cursor].Fork.ID
+	}
+	m.filter = q
+	m.restoreCursorByID(selectedID)
+	m.cursor = clampCursorVisible(m.cursor, m.visibleIdx())
+}
+
+// handleFilterKey drives the filter prompt. Mirrors handleExportPathKey: the
+// query is applied on Enter rather than as you type, which matches the other
+// two prompts in this TUI and keeps the cursor re-anchoring a single discrete
+// event instead of one per keystroke.
+//
+// Esc here cancels the edit and leaves the active filter untouched; Esc on the
+// table itself is what clears it. Enter on an empty query also clears.
+func (m *Model) handleFilterKey(key, typed string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "enter":
+		m.applyFilter(strings.TrimSpace(m.filterInput))
+		m.view = viewTable
+	case "esc":
+		m.filterInput = ""
+		m.filterCursor = 0
+		m.view = viewTable
+	default:
+		m.filterInput, m.filterCursor, _ = lineEdit(m.filterInput, m.filterCursor, key, typed)
+	}
+	return m, nil
+}
+
+// viewFilterPrompt renders the filter prompt.
+func (m Model) viewFilterPrompt() string {
+	var b strings.Builder
+	b.WriteString("\n")
+	b.WriteString(fmt.Sprintf("  Filter %d forks by owner/name\n\n", len(m.forks)))
+	b.WriteString("  Match: " + renderWithCursor(m.filterInput, m.filterCursor) + "\n\n")
+	b.WriteString("  " + helpStyle.Render("←/→ move  Home/End  Enter apply  Esc cancel  Ctrl+U clear  (empty clears the filter)") + "\n")
+	return b.String()
 }
 
 // visibleCount is the number of forks passing the active filter.

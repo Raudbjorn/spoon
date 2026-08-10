@@ -30,6 +30,9 @@ const (
 	viewHelp
 	viewExportPath
 	viewTopicPicker
+	// Appended rather than inserted: the enum is positional, and renumbering
+	// the existing values would make every diff below this line noise.
+	viewFilter
 )
 
 // ScoredFork holds a fork with its computed heat score.
@@ -112,6 +115,11 @@ type Model struct {
 	// the table renders and what the cursor may land on; it never reslices
 	// m.forks, which stays the canonical, complete list. See filter.go.
 	filter string
+	// filterInput is the in-progress prompt text, applied to filter on Enter;
+	// filterCursor is its insertion point as a rune offset, matching the
+	// input/export prompts.
+	filterInput  string
+	filterCursor int
 
 	// Scroll offsets for the two views that render a body taller than the
 	// terminal. Kept separate so opening help from the detail view does not
@@ -356,7 +364,9 @@ func (m *Model) handleCachedLoad(msg cachedLoadMsg) (tea.Model, tea.Cmd) {
 
 	m.scoreForks(msg.forks)
 	m.view = viewTable
-	m.cursor = 0
+	// Snap rather than assign 0: a filter carried across a refresh may hide
+	// the first fork, and the cursor must never land on a hidden row.
+	m.cursor = clampCursorVisible(0, m.visibleIdx())
 
 	// Apply cached compare data
 	m.applyCachedCompares(msg.snap)
@@ -430,7 +440,9 @@ func (m *Model) handleForksFetched(msg forksFetchedMsg) (tea.Model, tea.Cmd) {
 
 	m.scoreForks(msg.forks)
 	m.view = viewTable
-	m.cursor = 0
+	// Snap rather than assign 0: a filter carried across a refresh may hide
+	// the first fork, and the cursor must never land on a hidden row.
+	m.cursor = clampCursorVisible(0, m.visibleIdx())
 
 	// Reuse stored compares for forks whose pushed_at is unchanged, then
 	// persist the freshly scored list.
@@ -674,6 +686,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleExportPathKey(key, typed)
 	case viewTopicPicker:
 		return m.handleTopicPickerKey(key)
+	case viewFilter:
+		return m.handleFilterKey(key, typed)
 	case viewHelp:
 		switch key {
 		case "?", "esc", "q":
@@ -750,7 +764,14 @@ func (m *Model) handleTableKey(key string) (tea.Model, tea.Cmd) {
 	case "n":
 		m.view = viewInput
 	case "/":
-		m.view = viewInput
+		// Seed with the active filter so `/` edits rather than retypes.
+		m.filterInput = m.filter
+		m.filterCursor = len([]rune(m.filterInput))
+		m.view = viewFilter
+	case "esc":
+		if m.filter != "" {
+			m.applyFilter("")
+		}
 	case "?":
 		m.view = viewHelp
 	case "s":
@@ -771,9 +792,9 @@ func (m *Model) handleTableKey(key string) (tea.Model, tea.Cmd) {
 	case " ":
 		if m.cursor >= 0 && m.cursor < len(m.forks) {
 			m.forks[m.cursor].Marked = !m.forks[m.cursor].Marked
-			if m.cursor < len(m.forks)-1 {
-				m.cursor++
-			}
+			// Advance to the next VISIBLE fork: under a filter, cursor+1 could
+			// be a hidden row, which would strand the selection off-screen.
+			m.moveCursorBy(1)
 		}
 	case "e":
 		return m, m.promptExportMarked()
@@ -1489,6 +1510,8 @@ func (m Model) View() string {
 		return m.viewExportPath()
 	case viewTopicPicker:
 		return m.viewTopicPicker()
+	case viewFilter:
+		return m.viewFilterPrompt()
 	case viewHelp:
 		return m.viewHelp()
 	}

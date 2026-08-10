@@ -238,7 +238,15 @@ func (m Model) viewExportPath() string {
 	var b strings.Builder
 	b.WriteString("\n")
 	count := len(m.exportForks)
-	b.WriteString(fmt.Sprintf("  Exporting %d fork(s) to JSON\n\n", count))
+	b.WriteString(fmt.Sprintf("  Exporting %d fork(s) to JSON\n", count))
+	// Export deliberately ignores the filter -- marks are global and `E` means
+	// all forks -- so say so here, where the user can still back out, rather
+	// than let a filtered view imply a filtered export.
+	if m.filter != "" {
+		b.WriteString(fmt.Sprintf("  %s\n", helpStyle.Render(
+			fmt.Sprintf("filter %q is active but does not limit this export", m.filter))))
+	}
+	b.WriteString("\n")
 	b.WriteString("  Save to: " + renderWithCursor(m.exportPath, m.exportCursor) + "\n\n")
 	b.WriteString("  " + helpStyle.Render("←/→ move  Home/End  Enter confirm  Esc cancel  Ctrl+U clear") + "\n")
 	return b.String()

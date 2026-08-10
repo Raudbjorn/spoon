@@ -232,7 +232,7 @@ func (m Model) viewTable() string {
 	if legend := m.badgeLegend(); legend != "" {
 		b.WriteString(helpStyle.Render(" "+legend) + "\n")
 	}
-	b.WriteString(helpStyle.Render(" ↑↓ navigate  Enter detail  Space mark  e export marked  E export all  o open  y yank  s sort  g cluster  ? help  q quit"))
+	b.WriteString(helpStyle.Render(" ↑↓ navigate  PgUp/PgDn page  Enter detail  Space mark  / filter  e/E export  o open  y yank  s sort  g cluster  t tier  ? help  q quit"))
 
 	return b.String()
 }
@@ -277,7 +277,11 @@ func renderBadges(sf ScoredFork) string {
 // Only includes badges that actually appear, so the legend stays compact.
 func (m Model) badgeLegend() string {
 	var hasWolf, hasPR, hasSubFork, hasBranch, hasRelease, hasDupe bool
-	for _, sf := range m.forks {
+	// Over the visible forks only: the legend explains glyphs on screen, so
+	// advertising one no rendered row carries is noise -- and it would also
+	// cost a frame row that pageSize has budgeted away.
+	for _, i := range m.visibleIdx() {
+		sf := m.forks[i]
 		if sf.Heat.LoneWolfV2 != nil && sf.Heat.LoneWolfV2.Detected {
 			hasWolf = true
 		}
@@ -500,7 +504,9 @@ func (m Model) renderClusterHeader(clusterID string) string {
 func (m Model) clusterLabelAndCount(clusterID string) (string, int) {
 	label := ""
 	count := 0
-	for i := range m.forks {
+	// Counted over the visible forks: with a filter active, a header claiming
+	// "(12 members)" above two rendered rows is simply wrong.
+	for _, i := range m.visibleIdx() {
 		if m.forks[i].Heat.ClusterID != clusterID {
 			continue
 		}
