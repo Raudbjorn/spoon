@@ -509,6 +509,12 @@ func (t *wtx) QueryRowContext(ctx context.Context, query string, args ...any) *s
 	return t.conn.QueryRowContext(ctx, query, args...)
 }
 
+// QueryContext lets schemaIntact run against the open transaction. Routing it
+// through s.db instead would deadlock: this conn is the pool's only one.
+func (t *wtx) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	return t.conn.QueryContext(ctx, query, args...)
+}
+
 func (t *wtx) Commit(ctx context.Context) error {
 	if t.done {
 		return sql.ErrTxDone
@@ -546,20 +552,34 @@ var migrations = []struct {
 	{version: 2, stmts: schemaV2},
 }
 
-// addedColumn matches the exact shape every ALTER step in the migration list
-// uses. Anchored deliberately: a statement this does not match contributes no
-// expectation rather than a wrong one, and expectedColumns' test asserts the
-// live migration list is fully covered, so a future ALTER written in another
-// shape fails CI instead of silently dropping out of drift detection.
-var addedColumn = regexp.MustCompile(`^ALTER TABLE (\w+) ADD COLUMN (\w+)\b`)
+// createdTable and addedColumn match the exact shapes every step in the
+// migration list uses. Anchored deliberately: a statement neither matches
+// contributes no expectation rather than a wrong one, and
+// TestExpectedSchemaCoversEveryStep asserts the live migration list is fully
+// covered, so a future step written in another shape fails CI instead of
+// silently dropping out of drift detection.
+var (
+	createdTable = regexp.MustCompile(`^CREATE TABLE IF NOT EXISTS (\w+)\b`)
+	addedColumn  = regexp.MustCompile(`^ALTER TABLE (\w+) ADD COLUMN (\w+)\b`)
+)
 
-// expectedColumns derives, from the migration statements themselves, the
-// columns a fully-migrated database must have. Deriving beats a hand-kept
-// list: the expectation cannot drift from the migration that creates it.
-func expectedColumns() map[string][]string {
+// expectedSchema derives, from the migration statements themselves, what a
+// fully-migrated database must contain: every table a CREATE step makes, and
+// every column an ALTER step adds. Deriving beats a hand-kept list — the
+// expectation cannot drift from the migration that creates it.
+//
+// A CREATE-only table maps to an empty column slice, which still carries
+// meaning: schemaIntact treats a table with no columns at all as absent.
+func expectedSchema() map[string][]string {
 	want := map[string][]string{}
 	for _, m := range migrations {
 		for _, stmt := range m.stmts {
+			if g := createdTable.FindStringSubmatch(stmt); g != nil {
+				if _, ok := want[g[1]]; !ok {
+					want[g[1]] = nil
+				}
+				continue
+			}
 			if g := addedColumn.FindStringSubmatch(stmt); g != nil {
 				want[g[1]] = append(want[g[1]], g[2])
 			}
@@ -568,33 +588,58 @@ func expectedColumns() map[string][]string {
 	return want
 }
 
-// schemaIntact reports whether every column the migration list adds is
-// actually present. PRAGMA table_info on a missing table yields no rows, so a
-// dropped table reads as missing columns and is caught too.
-func (s *Store) schemaIntact(ctx context.Context) (bool, error) {
-	for table, cols := range expectedColumns() {
-		have := map[string]bool{}
-		// PRAGMA does not accept a bound parameter; table names here come from
-		// the migration constants in this file, never from user input.
-		rows, err := s.db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
+// querier is the read surface schemaIntact needs. It has two implementations
+// for one reason: with SetMaxOpenConns(1), beginImmediate's dedicated
+// *sql.Conn is the only connection, so a verification issued against s.db
+// while that transaction is open would block forever waiting for a conn that
+// the caller itself is holding. Pre-lock checks pass s.db; the post-lock
+// recheck passes the transaction.
+type querier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+// tableColumns returns the column set of one table, empty if the table does
+// not exist (PRAGMA table_info on a missing table yields no rows and no
+// error). Split out from schemaIntact so rows.Close can be a plain defer
+// rather than a manual call on every exit path.
+func tableColumns(ctx context.Context, q querier, table string) (map[string]bool, error) {
+	// PRAGMA does not accept a bound parameter; table names here come from
+	// the migration constants in this file, never from user input.
+	rows, err := q.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	have := map[string]bool{}
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, typ string
+		var dflt any
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			return nil, err
+		}
+		have[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return have, nil
+}
+
+// schemaIntact reports whether every table and column the migration list
+// creates is actually present. Coverage is exactly what expectedSchema
+// derives: a table no migration statement names is not checked at all.
+func schemaIntact(ctx context.Context, q querier) (bool, error) {
+	for table, cols := range expectedSchema() {
+		have, err := tableColumns(ctx, q, table)
 		if err != nil {
 			return false, err
 		}
-		for rows.Next() {
-			var cid, notnull, pk int
-			var name, typ string
-			var dflt any
-			if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
-				rows.Close()
-				return false, err
-			}
-			have[name] = true
+		// Every real table has at least one column, so an empty set means the
+		// table itself is gone -- caught even when no ALTER step names it.
+		if len(have) == 0 {
+			return false, nil
 		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			return false, err
-		}
-		rows.Close()
 		for _, c := range cols {
 			if !have[c] {
 				return false, nil
@@ -622,7 +667,7 @@ func (s *Store) initialize(ctx context.Context) error {
 	// duplicate-column tolerance below).
 	repair := false
 	if version == SchemaVersion {
-		intact, err := s.schemaIntact(ctx)
+		intact, err := schemaIntact(ctx, s.db)
 		if err != nil {
 			return fmt.Errorf("verify schema: %w", err)
 		}
@@ -642,10 +687,28 @@ func (s *Store) initialize(ctx context.Context) error {
 	if err := tx.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
 		return fmt.Errorf("re-read schema version: %w", err)
 	}
-	// The recheck is a race guard, not a repair guard: on the repair path the
-	// version was already current before the lock, so honouring it here would
-	// return without fixing anything.
-	if version >= SchemaVersion && !repair {
+	// Re-assert the ceiling under the lock, not just before it: a newer binary
+	// may have migrated past us while we waited, and replaying this binary's
+	// older steps over its schema would corrupt it. The repair path needs this
+	// most -- it is the one that ignores the version comparison below.
+	if version > SchemaVersion {
+		return fmt.Errorf("store schema %d is newer than supported version %d", version, SchemaVersion)
+	}
+	// The version recheck is a race guard, not a repair guard: on the repair
+	// path the version was already current before the lock, so honouring it
+	// here would return without fixing anything. Drift gets its own recheck
+	// instead -- a process that lost the race to another repairer must not
+	// replay the whole set a second time. Both run against tx, never s.db:
+	// this transaction holds the pool's only connection.
+	if repair {
+		intact, ierr := schemaIntact(ctx, tx)
+		if ierr != nil {
+			return fmt.Errorf("re-verify schema: %w", ierr)
+		}
+		if intact {
+			return tx.Commit(ctx)
+		}
+	} else if version >= SchemaVersion {
 		return tx.Commit(ctx)
 	}
 	for _, m := range migrations {

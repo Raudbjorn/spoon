@@ -2,10 +2,12 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -52,7 +54,7 @@ func TestOpenRepairsStampedSchemaDrift(t *testing.T) {
 	}
 	defer s.Close()
 
-	intact, err := s.schemaIntact(context.Background())
+	intact, err := schemaIntact(context.Background(), s.db)
 	if err != nil {
 		t.Fatalf("schemaIntact: %v", err)
 	}
@@ -98,34 +100,99 @@ func TestOpenLeavesIntactSchemaAlone(t *testing.T) {
 }
 
 // Drift detection is only as good as its coverage of the migration list. Every
-// ALTER step must be understood by addedColumn: one written in a shape the
-// regexp misses would drop silently out of the check, and the drift it guards
-// against would go undetected again.
-func TestExpectedColumnsCoversEveryAlterStep(t *testing.T) {
-	want := expectedColumns()
+// CREATE and ALTER step must be understood by the matchers: one written in a
+// shape they miss would drop silently out of the check, and the drift it
+// guards against would go undetected again.
+func TestExpectedSchemaCoversEveryStep(t *testing.T) {
+	want := expectedSchema()
 	for _, m := range migrations {
 		for _, stmt := range m.stmts {
-			if !strings.HasPrefix(stmt, "ALTER TABLE") {
-				continue
-			}
-			g := addedColumn.FindStringSubmatch(stmt)
-			if g == nil {
-				t.Errorf("v%d step not understood by addedColumn, so it is excluded from drift detection: %q", m.version, stmt)
-				continue
-			}
-			found := false
-			for _, c := range want[g[1]] {
-				if c == g[2] {
-					found = true
+			switch {
+			case strings.HasPrefix(stmt, "CREATE TABLE"):
+				g := createdTable.FindStringSubmatch(stmt)
+				if g == nil {
+					t.Errorf("v%d CREATE step not understood by createdTable, so it is excluded from drift detection: %q", m.version, stmt)
+					continue
 				}
-			}
-			if !found {
-				t.Errorf("v%d adds %s.%s but expectedColumns omits it", m.version, g[1], g[2])
+				if _, ok := want[g[1]]; !ok {
+					t.Errorf("v%d creates table %s but expectedSchema omits it", m.version, g[1])
+				}
+			case strings.HasPrefix(stmt, "ALTER TABLE"):
+				g := addedColumn.FindStringSubmatch(stmt)
+				if g == nil {
+					t.Errorf("v%d ALTER step not understood by addedColumn, so it is excluded from drift detection: %q", m.version, stmt)
+					continue
+				}
+				if !slices.Contains(want[g[1]], g[2]) {
+					t.Errorf("v%d adds %s.%s but expectedSchema omits it", m.version, g[1], g[2])
+				}
 			}
 		}
 	}
 	if len(want) == 0 {
-		t.Error("expectedColumns is empty; drift detection would be a no-op")
+		t.Error("expectedSchema is empty; drift detection would be a no-op")
+	}
+}
+
+// A dropped table is the other half of drift, and the half no ALTER step
+// names for most tables: expectedSchema must carry CREATE-only tables too, or
+// losing one would read as an intact schema.
+func TestOpenRepairsDroppedTable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "spoon.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	// embeddings is created by a CREATE step and never ALTERed, so it is only
+	// covered if CREATE statements feed expectedSchema.
+	if _, err := s.db.ExecContext(context.Background(), "DROP TABLE embeddings"); err != nil {
+		t.Fatalf("drop table: %v", err)
+	}
+	s.Close()
+
+	s, err = Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer s.Close()
+	have, err := tableColumns(context.Background(), s.db, "embeddings")
+	if err != nil {
+		t.Fatalf("tableColumns: %v", err)
+	}
+	if len(have) == 0 {
+		t.Error("embeddings still missing after Open; the dropped table was not repaired")
+	}
+}
+
+// The post-lock drift recheck must run against the transaction. With
+// SetMaxOpenConns(1) the transaction holds the pool's only connection, so a
+// recheck issued against s.db would block until the context died rather than
+// returning -- this pins that s.db is genuinely unavailable there, which is
+// the reason schemaIntact takes a querier at all.
+func TestVerifyingAgainstDBDuringTxWouldBlock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "spoon.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	tx, err := beginImmediate(context.Background(), s.db)
+	if err != nil {
+		t.Fatalf("beginImmediate: %v", err)
+	}
+	defer tx.Rollback(context.Background())
+
+	// Against the transaction: returns immediately.
+	if _, err := schemaIntact(context.Background(), tx); err != nil {
+		t.Fatalf("schemaIntact via tx: %v", err)
+	}
+
+	// Against the pool: no connection available, so this can only time out.
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	if _, err := schemaIntact(ctx, s.db); !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("schemaIntact via s.db during a transaction: err = %v, want DeadlineExceeded", err)
 	}
 }
 
