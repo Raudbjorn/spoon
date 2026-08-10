@@ -10,7 +10,124 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/svnbjrn/spoon/internal/forge"
 )
+
+// stampedDriftDB builds the broken state behind the reported TUI failure: the
+// v1 column set on disk, but user_version already claiming SchemaVersion. It
+// is what an out-of-band copy, a torn restore or a downgrade/upgrade cycle
+// leaves behind, and before the fix initialize trusted the stamp and never
+// looked at the columns.
+func stampedDriftDB(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "spoon.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	for _, col := range []string{"t1_json", "created_at", "head_sha", "t2_json", "t2_fetched_at"} {
+		if _, err := s.db.ExecContext(context.Background(), "ALTER TABLE forks DROP COLUMN "+col); err != nil {
+			t.Fatalf("drop %s: %v", col, err)
+		}
+	}
+	if _, err := s.db.ExecContext(context.Background(),
+		fmt.Sprintf("PRAGMA user_version=%d", SchemaVersion)); err != nil {
+		t.Fatalf("stamp version: %v", err)
+	}
+	s.Close()
+	return path
+}
+
+// The regression: reopening a stamped-but-drifted database must repair it.
+// Before the fix, initialize returned early on the version match and every
+// write touching a v2 column failed with "no such column: t1_json" — on every
+// run, permanently, since the stamp said there was nothing left to migrate.
+func TestOpenRepairsStampedSchemaDrift(t *testing.T) {
+	path := stampedDriftDB(t)
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen drifted store: %v", err)
+	}
+	defer s.Close()
+
+	intact, err := s.schemaIntact(context.Background())
+	if err != nil {
+		t.Fatalf("schemaIntact: %v", err)
+	}
+	if !intact {
+		t.Error("schema still missing columns after Open; the drift was not repaired")
+	}
+
+	// The end-to-end proof: the write the TUI was failing on now lands.
+	snap := Snapshot{
+		Repo: RepoRecord{Provider: "github", Host: "github.com", Owner: "up", Name: "stream",
+			FirstSeen: time.Now(), LastSeen: time.Now()},
+		Fork: ForkRecord{ForgeID: "1", Owner: "maint", Name: "proj", URL: "https://example.invalid",
+			PushedAt: time.Now(), UpdatedAt: time.Now()},
+		T1: &forge.T1Data{CreatedAt: time.Now()},
+	}
+	if err := s.UpsertSnapshot(context.Background(), snap); err != nil {
+		t.Errorf("UpsertSnapshot after repair: %v", err)
+	}
+}
+
+// An intact database must not pay for the repair path: no migration replay, no
+// write lock, and the version left exactly where it was.
+func TestOpenLeavesIntactSchemaAlone(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "spoon.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	s.Close()
+
+	s, err = Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer s.Close()
+	var v int
+	if err := s.db.QueryRowContext(context.Background(), "PRAGMA user_version").Scan(&v); err != nil {
+		t.Fatal(err)
+	}
+	if v != SchemaVersion {
+		t.Errorf("user_version = %d, want %d", v, SchemaVersion)
+	}
+}
+
+// Drift detection is only as good as its coverage of the migration list. Every
+// ALTER step must be understood by addedColumn: one written in a shape the
+// regexp misses would drop silently out of the check, and the drift it guards
+// against would go undetected again.
+func TestExpectedColumnsCoversEveryAlterStep(t *testing.T) {
+	want := expectedColumns()
+	for _, m := range migrations {
+		for _, stmt := range m.stmts {
+			if !strings.HasPrefix(stmt, "ALTER TABLE") {
+				continue
+			}
+			g := addedColumn.FindStringSubmatch(stmt)
+			if g == nil {
+				t.Errorf("v%d step not understood by addedColumn, so it is excluded from drift detection: %q", m.version, stmt)
+				continue
+			}
+			found := false
+			for _, c := range want[g[1]] {
+				if c == g[2] {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("v%d adds %s.%s but expectedColumns omits it", m.version, g[1], g[2])
+			}
+		}
+	}
+	if len(want) == 0 {
+		t.Error("expectedColumns is empty; drift detection would be a no-op")
+	}
+}
 
 // Reproduces the pre-fix "migrate store to v1: SQL logic error: table repos
 // already exists (1)": a database whose user_version sits below SchemaVersion
