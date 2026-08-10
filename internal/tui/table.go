@@ -328,11 +328,35 @@ func (m Model) renderStatusBar() string {
 
 	if m.parent != nil {
 		parts = append(parts, m.parent.FullName)
-		parts = append(parts, fmt.Sprintf("%d forks", len(m.forks)))
+		if m.filter != "" {
+			// Both numbers, so a filter can never quietly shrink the fork
+			// count into looking like the repo has fewer forks than it does.
+			parts = append(parts, fmt.Sprintf("%d/%d forks", m.visibleCount(), len(m.forks)))
+			parts = append(parts, fmt.Sprintf("filter: %q", m.filter))
+		} else {
+			parts = append(parts, fmt.Sprintf("%d forks", len(m.forks)))
+		}
 	}
 
 	if m.enriching {
 		parts = append(parts, fmt.Sprintf("T2: %d/%d", m.enrichDone, m.enrichTotal))
+	}
+
+	// Enrichment ceiling. Shown only when it is actually capping something --
+	// and with the skipped count, because lowering 2→1 changes nothing visible
+	// for forks that are already enriched, which reads as "t does nothing".
+	if ceiling := m.maxTier(); ceiling < defaultMaxTier {
+		skipped := 0
+		for i := range m.forks {
+			if m.forks[i].TierSkipped {
+				skipped++
+			}
+		}
+		seg := fmt.Sprintf("T≤%d", ceiling)
+		if skipped > 0 {
+			seg += fmt.Sprintf(" (%d skipped)", skipped)
+		}
+		parts = append(parts, seg)
 	}
 
 	if m.auth.RateLimit > 0 {

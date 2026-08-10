@@ -104,6 +104,21 @@ type RepoSnapshot struct {
 	byID map[string]int
 }
 
+// NewRepoSnapshot assembles a snapshot from already-materialised forks and
+// builds the by-ID index Fork/ValidT2 look through.
+//
+// RepoSnapshot has exported fields but a private index, so a value built as a
+// plain literal outside this package silently misses every lookup. Callers
+// that hold forks from somewhere other than LoadRepoSnapshot -- tests, and any
+// future non-SQL source -- need this to get a usable one.
+func NewRepoSnapshot(forks []CachedFork) *RepoSnapshot {
+	snap := &RepoSnapshot{Forks: forks, byID: make(map[string]int, len(forks))}
+	for i := range snap.Forks {
+		snap.byID[snap.Forks[i].T1.ID] = i
+	}
+	return snap
+}
+
 // Fork returns the cached fork with the given forge ID, or nil.
 func (s *RepoSnapshot) Fork(id string) *CachedFork {
 	if s == nil {

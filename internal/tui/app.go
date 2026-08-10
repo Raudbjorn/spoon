@@ -7,6 +7,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -50,6 +51,15 @@ type ScoredFork struct {
 	// fork as such instead of as zero divergence.
 	Enriched      bool
 	BudgetSkipped bool
+
+	// TierSkipped is true when the compare was not attempted because the
+	// user's enrichment ceiling (see Model.tierCeiling) sat below T2. It is
+	// deliberately distinct from BudgetSkipped: this one is undone by raising
+	// the ceiling, that one by waiting for the rate window. Heat.Tier cannot
+	// serve as this marker -- it is an output ("highest tier whose params
+	// were non-nil"), so a fork whose compare legitimately returned no
+	// commits is indistinguishable from one that was never compared.
+	TierSkipped bool
 
 	// Duplicate-group membership: forks carrying identical work. SiblingGroup
 	// is the shared identity key (empty when this fork is unique), SiblingCount
@@ -115,6 +125,21 @@ type Model struct {
 	enrichTotal  int
 	enrichCtx    context.Context
 	enrichCancel context.CancelFunc
+
+	// tierCeiling is the user's maximum enrichment tier, cycled by `t`.
+	// It is a pointer to an atomic rather than a plain int because
+	// startEnrichment hands every per-fork closure to tea.Batch up front:
+	// those closures run on bubbletea's goroutines and must read the ceiling
+	// at execution time, not the value captured when they were built. A plain
+	// field would also be copied by value on every Update and never observed
+	// by an in-flight closure at all. nil means "unset" -- read it through
+	// maxTier(), never directly, since tests build bare Model literals.
+	tierCeiling *atomic.Int32
+
+	// enrichSem bounds concurrent compares. Hoisted out of startEnrichment so
+	// a re-enrichment pass shares one limiter with the original run instead of
+	// doubling effective concurrency against the rate limit.
+	enrichSem chan struct{}
 
 	// Global store (mandatory at runtime; nil only in unit tests). cached is
 	// the repo's stored snapshot, used to serve fork lists within forkListTTL
@@ -193,6 +218,36 @@ func NewModelWithCluster(provider forge.Forge, auth forge.AuthInfo, repo string,
 // heat weights (see heat.LoadWeights).
 func (m Model) WithHeatWeights(w map[string]float64) Model {
 	m.heatWeights = w
+	return m
+}
+
+// defaultMaxTier is the enrichment ceiling when none is set: full enrichment,
+// matching the behavior that predates the ceiling entirely.
+const defaultMaxTier = 3
+
+// maxTier is the active enrichment ceiling, in [1,3]. Every read of the
+// ceiling goes through here rather than touching tierCeiling directly: the
+// field is nil on any Model built as a bare literal (which most tests in this
+// package do), and a direct Load would panic in all of them.
+func (m *Model) maxTier() int {
+	if m.tierCeiling == nil {
+		return defaultMaxTier
+	}
+	return clampInt(int(m.tierCeiling.Load()), 1, 3)
+}
+
+// setMaxTier stores a new ceiling, allocating the atomic on first use.
+func (m *Model) setMaxTier(n int) {
+	if m.tierCeiling == nil {
+		m.tierCeiling = &atomic.Int32{}
+	}
+	m.tierCeiling.Store(int32(clampInt(n, 1, 3)))
+}
+
+// WithMaxTier returns a copy of the model with the given enrichment ceiling,
+// for the `spoon --tier` flag. Mirrors `spn --tier`.
+func (m Model) WithMaxTier(n int) Model {
+	m.setMaxTier(n)
 	return m
 }
 
@@ -424,6 +479,19 @@ func (m *Model) processPendingUpdates() (tea.Model, tea.Cmd) {
 			continue
 		}
 
+		// Ceiling skip: same shape as the reserve skip, different cause and
+		// different remedy — raising the ceiling re-enriches exactly these.
+		if update.tierSkipped {
+			for i := range m.forks {
+				if m.forks[i].Fork.ID == update.forkID {
+					m.forks[i].Enriching = false
+					m.forks[i].TierSkipped = true
+					break
+				}
+			}
+			continue
+		}
+
 		if update.err != nil {
 			for i := range m.forks {
 				if m.forks[i].Fork.ID == update.forkID {
@@ -513,8 +581,12 @@ func (m *Model) recomputeT2Score(i int) {
 		FeatureCommitRatio: t2.FeatureCommitRatio,
 	}
 
-	// Wire v2 lone wolf when we have commits to analyze.
-	if len(t2.Commits) > 0 {
+	// Wire v2 lone wolf when we have commits to analyze -- but only up to the
+	// user's ceiling. At T2 the T3 params stay nil, so the lone-wolf component
+	// drops out of the score and the 🐺 badge clears on its own: result is
+	// freshly built by ScoreRaw below, and LoneWolfV2 is only set when
+	// input.T3 is non-nil.
+	if m.maxTier() >= 3 && len(t2.Commits) > 0 {
 		lw := buildTUILoneWolfInput(f, now, t2)
 		input.T3 = &heat.Tier3ParamsV2{
 			LoneWolf: heat.DetectLoneWolfV2(lw),
@@ -530,7 +602,41 @@ func (m *Model) recomputeT2Score(i int) {
 		AheadAllBranches: t2.AheadCount,
 		Archived:         f.IsArchived,
 	})
+
+	// result is a fresh HeatResult, so assigning it wholesale would erase
+	// everything the cluster pipeline wrote in place through &forks[i].Heat
+	// (cluster_bridge.go) -- cluster identity, novelty, category, sibling
+	// similarity. That is reachable today on the streaming path and becomes
+	// trivially reachable once `t` can trigger a rescore after clusters have
+	// landed, at which point `g` starts reporting "no clusters available" on
+	// a repo that has them.
+	carryClusterFields(&result, m.forks[i].Heat)
 	m.forks[i].Heat = result
+}
+
+// carryClusterFields copies the post-clustering signals from the previous
+// HeatResult onto a freshly scored one, then re-applies the two score bonuses
+// that depend on them.
+//
+// The two Apply* helpers are documented as NOT idempotent -- each call adds up
+// to +5 -- so they must run exactly once per HeatResult. That holds here
+// because dst is always fresh from ScoreRaw/Finalize: the bonuses were never
+// applied to it, only to the old result whose raw numbers are being replaced.
+func carryClusterFields(dst *heat.HeatResult, old heat.HeatResult) {
+	if old.ClusterID == "" && old.NoveltyScore == 0 && old.SiblingSim == 0 {
+		return // clustering never ran; nothing to carry and no bonus to re-apply
+	}
+	dst.ClusterID = old.ClusterID
+	dst.ClusterLabel = old.ClusterLabel
+	dst.ClusterMemberCount = old.ClusterMemberCount
+	dst.NoveltyScore = old.NoveltyScore
+	dst.ChangeImpact = old.ChangeImpact
+	dst.Category = old.Category
+	dst.CategoryScore = old.CategoryScore
+	dst.SiblingSim = old.SiblingSim
+
+	heat.ApplyNoveltyToScore(dst)
+	heat.ApplySiblingSimilarityToScore(dst)
 }
 
 // batchTick returns a command that fires after 150ms for batched UI updates.
@@ -658,6 +764,8 @@ func (m *Model) handleTableKey(key string) (tea.Model, tea.Cmd) {
 		return m, m.openCompare()
 	case "y":
 		return m, m.yankCloneCommand()
+	case "t":
+		return m, m.cycleMaxTier()
 	case "r":
 		return m, m.doRefresh()
 	case " ":
@@ -1074,6 +1182,20 @@ func (m *Model) startEnrichment() tea.Cmd {
 	// uncached forks are marked degraded per-fork at the reserve floor rather
 	// than silently skipped.
 
+	// Ceiling T1 spends nothing, so dispatch nothing: marking the forks here
+	// beats launching N closures that would each immediately report a skip.
+	// enriching stays false so handleForksFetched's nil-command branch still
+	// reaches the cluster pipeline.
+	if m.maxTier() < 2 {
+		for i := range m.forks {
+			m.forks[i].Enriching = false
+			m.forks[i].TierSkipped = true
+		}
+		m.enriching = false
+		m.enrichDone, m.enrichTotal = 0, 0
+		return nil
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	m.enrichCtx = ctx
 	m.enrichCancel = cancel
@@ -1111,49 +1233,81 @@ func (m *Model) startEnrichment() tea.Cmd {
 		concurrency = 2
 	}
 
-	provider := m.provider
-	refresh := m.refresh
-	cached := m.cached
-	sem := make(chan struct{}, concurrency)
+	m.enrichSem = make(chan struct{}, concurrency)
 
 	cmds := make([]tea.Cmd, 0, len(toEnrich)+1)
 	cmds = append(cmds, batchTick())
 
 	for _, idx := range toEnrich {
-		f := m.forks[idx].Fork
-		forkID := f.ID
-
-		cmds = append(cmds, func() tea.Msg {
-			// Serve the compare from the store when the fork hasn't been pushed
-			// since it was recorded.
-			if !refresh {
-				if t2 := cached.ValidT2(f); t2 != nil {
-					return tier2ResultMsg{forkID: forkID, t2: *t2, fromCache: true}
-				}
-			}
-
-			// Acquire semaphore
-			select {
-			case <-ctx.Done():
-				return tier2ResultMsg{forkID: forkID, err: ctx.Err()}
-			case sem <- struct{}{}:
-			}
-			defer func() { <-sem }()
-
-			// Auto-budget reserve: stop spending the rate window once headroom
-			// hits the floor. Best-first ordering means the forks already
-			// compared are the most promising; this one is marked degraded
-			// (not failed, not zeroed) so the export can say so.
-			if provider.Headroom() < forksops.ReserveHeadroom {
-				return tier2ResultMsg{forkID: forkID, budgetSkipped: true}
-			}
-
-			t2, err := provider.Compare(ctx, f, f.DefaultBranch)
-			return tier2ResultMsg{forkID: forkID, t2: t2, err: err}
-		})
+		cmds = append(cmds, m.compareCmd(m.forks[idx].Fork))
 	}
 
 	return tea.Batch(cmds...)
+}
+
+// compareCmd builds the per-fork enrichment command. Extracted so the initial
+// pass and a later re-enrichment (after the ceiling is raised) run byte-identical
+// logic -- the store fast path and the rate-limit reserve apply to both for
+// free, rather than one path drifting from the other.
+//
+// Gate order is deliberate and mirrors forksops/stream.go: a stored compare
+// costs no API budget, so it is consulted before both the ceiling and the
+// reserve floor. The consequence, worth knowing: at ceiling T1 a cached repo
+// still shows AHEAD/BEHIND. The ceiling is a spend ceiling, not a display one.
+func (m *Model) compareCmd(f forge.T1Data) tea.Cmd {
+	forkID := f.ID
+	provider := m.provider
+	refresh := m.refresh
+	cached := m.cached
+	ctx := m.enrichCtx
+	sem := m.enrichSem
+	ceiling := m.tierCeiling
+
+	// Read through the same clamping rule maxTier uses; a nil ceiling means
+	// no limit was ever set.
+	tierAllows := func() bool {
+		if ceiling == nil {
+			return defaultMaxTier >= 2
+		}
+		return clampInt(int(ceiling.Load()), 1, 3) >= 2
+	}
+
+	return func() tea.Msg {
+		// Serve the compare from the store when the fork hasn't been pushed
+		// since it was recorded.
+		if !refresh {
+			if t2 := cached.ValidT2(f); t2 != nil {
+				return tier2ResultMsg{forkID: forkID, t2: *t2, fromCache: true}
+			}
+		}
+
+		// Acquire semaphore
+		select {
+		case <-ctx.Done():
+			return tier2ResultMsg{forkID: forkID, err: ctx.Err()}
+		case sem <- struct{}{}:
+		}
+		defer func() { <-sem }()
+
+		// The user's ceiling, read here rather than when this closure was
+		// built: every command is handed to tea.Batch up front, so lowering
+		// the ceiling mid-run can only take effect if the value is read at
+		// execution time.
+		if !tierAllows() {
+			return tier2ResultMsg{forkID: forkID, tierSkipped: true}
+		}
+
+		// Auto-budget reserve: stop spending the rate window once headroom
+		// hits the floor. Best-first ordering means the forks already
+		// compared are the most promising; this one is marked degraded
+		// (not failed, not zeroed) so the export can say so.
+		if provider.Headroom() < forksops.ReserveHeadroom {
+			return tier2ResultMsg{forkID: forkID, budgetSkipped: true}
+		}
+
+		t2, err := provider.Compare(ctx, f, f.DefaultBranch)
+		return tier2ResultMsg{forkID: forkID, t2: t2, err: err}
+	}
 }
 
 func (m *Model) cancelEnrichment() {
@@ -1162,6 +1316,117 @@ func (m *Model) cancelEnrichment() {
 		m.enrichCancel = nil
 	}
 	m.enriching = false
+	// Drop the limiter with the run it belonged to, so a fresh fetch builds a
+	// new one rather than inheriting slots held by dead closures.
+	m.enrichSem = nil
+}
+
+// cycleMaxTier steps the enrichment ceiling T3 → T2 → T1 → T3.
+//
+// Lowering never cancels in-flight compares and never discards T2 already
+// fetched: cancelling would strand the batch mid-flight and block clustering,
+// and discarding would re-arm the no-ahead penalty, changing scores the user
+// did not ask to change while throwing away requests already paid for. What
+// changes immediately is scoring (the T3 lone-wolf component) and what future
+// compares are allowed to spend.
+func (m *Model) cycleMaxTier() tea.Cmd {
+	next := m.maxTier() - 1
+	if next < 1 {
+		next = 3
+	}
+	m.setMaxTier(next)
+	m.rescoreAllEnriched()
+
+	switch next {
+	case 3:
+		m.errMsg = "enrichment ceiling T3 — full scoring"
+	case 2:
+		m.errMsg = "enrichment ceiling T2 — lone-wolf scoring off"
+	default:
+		m.errMsg = "enrichment ceiling T1 — no further compares will be fetched"
+	}
+	m.errMsgTime = time.Now()
+
+	if next >= 2 {
+		return m.reenrichPending()
+	}
+	return nil
+}
+
+// rescoreAllEnriched re-derives the heat score of every fork that already has
+// T2 data, under the current ceiling, then re-establishes the list ordering
+// and the cursor. No network: raising 2→3 or lowering 3→2 only changes which
+// scoring components are wired.
+func (m *Model) rescoreAllEnriched() {
+	var selectedID string
+	if m.cursor >= 0 && m.cursor < len(m.forks) {
+		selectedID = m.forks[m.cursor].Fork.ID
+	}
+	for i := range m.forks {
+		if m.forks[i].T2 != nil {
+			m.recomputeT2Score(i)
+		}
+	}
+	m.assignDuplicateGroups()
+	m.reapplySort()
+	m.restoreCursorByID(selectedID)
+}
+
+// reenrichPending dispatches compares for forks that were skipped at a lower
+// ceiling. Errored forks are deliberately excluded: retrying them is a
+// separate concern and would risk a loop on a fork that fails every time.
+func (m *Model) reenrichPending() tea.Cmd {
+	if m.parent == nil || m.provider == nil {
+		return nil
+	}
+	var pending []int
+	for i := range m.forks {
+		sf := m.forks[i]
+		if !sf.Enriched && !sf.Enriching && (sf.TierSkipped || sf.BudgetSkipped) {
+			pending = append(pending, i)
+		}
+	}
+	if len(pending) == 0 {
+		return nil
+	}
+
+	// Reuse the live context and limiter when a pass is still running; minting
+	// new ones would orphan the original cancel func (so q/r would stop
+	// cancelling the first batch) and double the effective concurrency.
+	if m.enrichCtx == nil || m.enrichCtx.Err() != nil {
+		ctx, cancel := context.WithCancel(context.Background())
+		m.enrichCtx = ctx
+		m.enrichCancel = cancel
+	}
+	if m.enrichSem == nil {
+		concurrency := m.auth.Concurrency
+		if concurrency <= 0 {
+			concurrency = 2
+		}
+		m.enrichSem = make(chan struct{}, concurrency)
+	}
+
+	wasEnriching := m.enriching
+	if wasEnriching {
+		m.enrichTotal += len(pending)
+	} else {
+		m.enrichDone, m.enrichTotal = 0, len(pending)
+	}
+	m.enriching = true
+
+	cmds := make([]tea.Cmd, 0, len(pending)+1)
+	// Only start a tick chain when one is not already running: two concurrent
+	// chains would double the batch-apply rate.
+	if !wasEnriching {
+		cmds = append(cmds, batchTick())
+	}
+	for _, i := range pending {
+		m.forks[i].Enriching = true
+		m.forks[i].TierSkipped = false
+		m.forks[i].BudgetSkipped = false
+		cmds = append(cmds, m.compareCmd(m.forks[i].Fork))
+	}
+	return tea.Batch(cmds...)
 }
 
 // cancelLifecycle cancels the model's lifecycle context, signalling the
