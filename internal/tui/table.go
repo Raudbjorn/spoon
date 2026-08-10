@@ -16,6 +16,11 @@ func (m Model) viewTable() string {
 		return "\n  No forks found.\n"
 	}
 
+	// Absolute indices of the rows the active filter admits. Everything below
+	// -- the window, the cluster-header lookback, the gutter colouring, the
+	// counters -- works in this space; m.forks itself is never resliced.
+	vis := m.visibleIdx()
+
 	var b strings.Builder
 
 	b.WriteString(m.renderStatusBar())
@@ -33,8 +38,14 @@ func (m Model) viewTable() string {
 	}
 
 	// Colour duplicate groups by order of appearance so two groups that end up
-	// adjacent never share a colour.
-	gutterOrd := gutterOrdinals(m.forks)
+	// adjacent never share a colour. Computed over the visible forks: two
+	// groups the filter brings next to each other must still differ, and a
+	// group filtered out entirely should not consume a colour.
+	visForks := make([]ScoredFork, 0, len(vis))
+	for _, i := range vis {
+		visForks = append(visForks, m.forks[i])
+	}
+	gutterOrd := gutterOrdinals(visForks)
 
 	hasCompare := false
 	for _, f := range m.forks {
@@ -82,30 +93,44 @@ func (m Model) viewTable() string {
 	}
 	b.WriteString("\n")
 
-	// Rows
-	visibleRows := m.height - 4
-	if visibleRows < 1 {
-		visibleRows = 10
+	// A filter matching nothing is not the same as having no forks: the
+	// early return above only covers len(m.forks) == 0, so without this the
+	// frame renders a header, zero rows and no way out.
+	if len(vis) == 0 {
+		b.WriteString("\n  " + subtitleStyle.Render(fmt.Sprintf("No forks match %q", m.filter)) + "\n")
+		b.WriteString(helpStyle.Render("  Esc clear filter  /  edit filter  ? help  q quit"))
+		return b.String()
 	}
 
+	// Rows. The window is computed over VISIBLE positions, not raw fork
+	// indices, so a filter that hides rows does not leave gaps in the frame.
+	visibleRows := m.pageSize()
+
+	cursorPos := visiblePos(m.cursor, vis)
+	if cursorPos < 0 {
+		cursorPos = 0
+	}
 	start := 0
-	if m.cursor >= visibleRows {
-		start = m.cursor - visibleRows + 1
+	if cursorPos >= visibleRows {
+		start = cursorPos - visibleRows + 1
 	}
 	end := start + visibleRows
-	if end > len(m.forks) {
-		end = len(m.forks)
+	if end > len(vis) {
+		end = len(vis)
 	}
 
 	prevClusterID := ""
 	if m.groupByCluster && start > 0 {
 		// Track the cluster that the row immediately above `start` belongs
 		// to, so the first header is emitted only when the visible window
-		// actually starts a new group.
-		prevClusterID = m.forks[start-1].Heat.ClusterID
+		// actually starts a new group. Must read the previous VISIBLE row:
+		// reading m.forks[start-1] under a filter would compare against a
+		// hidden fork and swallow the header.
+		prevClusterID = m.forks[vis[start-1]].Heat.ClusterID
 	}
 
-	for i := start; i < end; i++ {
+	for p := start; p < end; p++ {
+		i := vis[p]
 		sf := m.forks[i]
 
 		// Emit a cluster header before the first row of each group when
@@ -114,7 +139,10 @@ func (m Model) viewTable() string {
 		// scrolled-past) row.
 		if m.groupByCluster {
 			curID := sf.Heat.ClusterID
-			if (start == 0 && i == start) || curID != prevClusterID {
+			// p, not i: start is a position in visible space, so comparing it
+			// against an absolute fork index would emit the first header at
+			// the wrong row whenever a filter is active.
+			if (start == 0 && p == start) || curID != prevClusterID {
 				b.WriteString(m.renderClusterHeader(curID))
 				b.WriteString("\n")
 			}
@@ -351,12 +379,7 @@ func (m *Model) sortForks() {
 	// sort between two members and fall inside their gutter line. Gather makes
 	// the grouping exact rather than incidental.
 	m.gatherDuplicateGroups(0, len(m.forks))
-	if m.cursor >= len(m.forks) {
-		m.cursor = len(m.forks) - 1
-	}
-	if m.cursor < 0 {
-		m.cursor = 0
-	}
+	m.cursor = clampCursorVisible(m.cursor, m.visibleIdx())
 }
 
 // forkLess returns the row comparator for the active sort column. Extracted so
@@ -534,10 +557,5 @@ func (m *Model) sortForksByCluster() {
 		m.gatherDuplicateGroups(lo, hi)
 		lo = hi
 	}
-	if m.cursor >= len(m.forks) {
-		m.cursor = len(m.forks) - 1
-	}
-	if m.cursor < 0 {
-		m.cursor = 0
-	}
+	m.cursor = clampCursorVisible(m.cursor, m.visibleIdx())
 }

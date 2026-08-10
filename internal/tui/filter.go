@@ -1,0 +1,68 @@
+package tui
+
+import "strings"
+
+// Row filtering for the fork table.
+//
+// The filter never reslices m.forks. m.cursor stays an absolute index into the
+// complete list, and only rendering and cursor movement go through the
+// visible-index projection below. That is not a stylistic choice: the cluster
+// pipeline hands the live slice to a background goroutine that writes back
+// through &forks[i].Heat (cluster_bridge.go) and requires callers not to
+// reslice it, and assignDuplicateGroups recomputes SiblingCount over the whole
+// slice -- filtering the slice itself would make a three-member duplicate
+// group report a count of one, and that wrong number reaches the export.
+//
+// The invariant every caller may rely on: m.cursor is either -1 (nothing
+// visible) or the index of a fork that passes the active filter.
+
+// matchesFilter reports whether a fork passes the query: a case-insensitive
+// substring test against the fork's "owner/name" identity.
+//
+// Deliberately substring rather than fuzzy. Fuzzy matching implies a relevance
+// ordering, which would fight the user's chosen sort column -- either the rows
+// reorder (breaking the sort and the contiguity that gatherDuplicateGroups
+// depends on) or the ranking is computed and thrown away. Substring preserves
+// list order exactly, so composing with sort and cluster grouping is free.
+//
+// Deliberately ID-only. Matching description, language or topics would make
+// rows appear for reasons that are invisible on screen, which reads as a
+// broken filter. Field-scoped queries ("lang:go", "topic:cli") are the natural
+// extension point if that is ever wanted; they are not implemented here.
+func matchesFilter(sf ScoredFork, q string) bool {
+	if q == "" {
+		return true
+	}
+	return strings.Contains(strings.ToLower(sf.Fork.ID), strings.ToLower(q))
+}
+
+// visibleIdx returns the absolute indices of the forks passing the active
+// filter, in list order. An empty filter yields every index.
+//
+// Recomputed on demand rather than cached: it is O(n) over a few thousand
+// forks per keystroke, which is irrelevant, and a cache would introduce a
+// staleness bug for every mutation of m.forks -- sort, resort, enrichment
+// write-back, duplicate gathering -- to remember to invalidate.
+func (m Model) visibleIdx() []int {
+	idx := make([]int, 0, len(m.forks))
+	for i := range m.forks {
+		if matchesFilter(m.forks[i], m.filter) {
+			idx = append(idx, i)
+		}
+	}
+	return idx
+}
+
+// visibleCount is the number of forks passing the active filter.
+func (m Model) visibleCount() int {
+	if m.filter == "" {
+		return len(m.forks)
+	}
+	n := 0
+	for i := range m.forks {
+		if matchesFilter(m.forks[i], m.filter) {
+			n++
+		}
+	}
+	return n
+}

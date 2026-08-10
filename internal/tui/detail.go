@@ -11,11 +11,33 @@ import (
 	"github.com/svnbjrn/spoon/internal/forge"
 )
 
+// detailFooterLines is how many lines viewDetail reserves for the pinned
+// action hint below the scrolled body (one blank + one hint).
+const detailFooterLines = 2
+
+// viewDetail renders the selected fork's detail box, scrolled to
+// m.detailOffset, with the action hint pinned below the window. The hint
+// stays outside the scrolled region deliberately: scrolling "[b/Esc] Back"
+// off the top would leave no visible way out of the view.
 func (m Model) viewDetail() string {
 	if m.cursor < 0 || m.cursor >= len(m.forks) {
 		return "\n  No fork selected.\n"
 	}
+	body := scrollLines(m.detailBody(), m.detailOffset, m.detailViewHeight())
+	return body + "\n\n  " + helpStyle.Render("[o] Open  [c] Compare  [y] Yank  [PgUp/PgDn] Scroll  [b/Esc] Back")
+}
 
+// detailViewHeight is how many body lines fit on screen. Zero (no
+// WindowSizeMsg yet, as in every model built directly in a test) makes
+// scrollLines a pass-through, so the body renders whole.
+func (m Model) detailViewHeight() int {
+	if m.height <= 0 {
+		return 0
+	}
+	return m.height - detailFooterLines
+}
+
+func (m Model) detailBody() string {
 	sf := m.forks[m.cursor]
 	var b strings.Builder
 
@@ -205,9 +227,7 @@ func (m Model) viewDetail() string {
 		b.WriteString(fitBoxLine(fmt.Sprintf("│ %q", desc), boxWidth) + "\n")
 	}
 
-	b.WriteString("╰" + hr + "╯\n")
-
-	b.WriteString("\n  " + helpStyle.Render("[o] Open in browser  [c] Compare  [y] Yank clone  [b/Esc] Back"))
+	b.WriteString("╰" + hr + "╯")
 
 	return b.String()
 }

@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"strings"
@@ -96,6 +97,17 @@ type Model struct {
 	cursor  int
 	sortCol string
 	sortAsc bool
+
+	// filter is the active row filter ("" = show everything). It narrows what
+	// the table renders and what the cursor may land on; it never reslices
+	// m.forks, which stays the canonical, complete list. See filter.go.
+	filter string
+
+	// Scroll offsets for the two views that render a body taller than the
+	// terminal. Kept separate so opening help from the detail view does not
+	// inherit the detail view's scroll position.
+	detailOffset int
+	helpOffset   int
 
 	// Enrichment
 	enriching    bool
@@ -557,8 +569,22 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case viewTopicPicker:
 		return m.handleTopicPickerKey(key)
 	case viewHelp:
-		if key == "?" || key == "esc" || key == "q" {
+		switch key {
+		case "?", "esc", "q":
+			m.helpOffset = 0
 			m.view = viewTable
+		case "up", "k":
+			m.scrollHelp(-1)
+		case "down", "j":
+			m.scrollHelp(1)
+		case "pgup":
+			m.scrollHelp(-m.helpViewHeight())
+		case "pgdown":
+			m.scrollHelp(m.helpViewHeight())
+		case "home":
+			m.helpOffset = 0
+		case "G", "end":
+			m.helpOffset = maxScrollOffset(helpBody(), m.helpViewHeight())
 		}
 		return m, nil
 	}
@@ -594,24 +620,25 @@ func (m *Model) handleTableKey(key string) (tea.Model, tea.Cmd) {
 		m.cancelEnrichment()
 		m.cancelLifecycle()
 		return m, tea.Quit
+	// All movement goes through visible space, so a filtered-out fork is never
+	// selectable and paging never has to know which rows are hidden.
 	case "up", "k":
-		if m.cursor > 0 {
-			m.cursor--
-		}
+		m.moveCursorBy(-1)
 	case "down", "j":
-		if m.cursor < len(m.forks)-1 {
-			m.cursor++
-		}
+		m.moveCursorBy(1)
+	case "pgup":
+		m.moveCursorBy(-m.pageSize())
+	case "pgdown":
+		m.moveCursorBy(m.pageSize())
 	case "home":
-		m.cursor = 0
+		m.moveCursorTo(0)
 	case "G", "end":
-		if len(m.forks) > 0 {
-			m.cursor = len(m.forks) - 1
-		}
+		m.moveCursorTo(math.MaxInt)
 	case "g":
 		m.toggleGroupByCluster()
 	case "enter":
 		if m.cursor >= 0 && m.cursor < len(m.forks) {
+			m.detailOffset = 0
 			m.view = viewDetail
 		}
 	case "n":
@@ -696,12 +723,7 @@ func (m *Model) restoreCursorByID(id string) {
 			return
 		}
 	}
-	if m.cursor >= len(m.forks) {
-		m.cursor = len(m.forks) - 1
-	}
-	if m.cursor < 0 {
-		m.cursor = 0
-	}
+	m.cursor = clampCursorVisible(m.cursor, m.visibleIdx())
 }
 
 // hasClusterData reports whether at least one fork carries a populated
@@ -719,7 +741,22 @@ func (m *Model) hasClusterData() bool {
 func (m *Model) handleDetailKey(key string) (tea.Model, tea.Cmd) {
 	switch key {
 	case "esc", "b", "q":
+		// Reset on the way out as well as on the way in: a stale offset from a
+		// tall fork would otherwise blank the view for the next, shorter one.
+		m.detailOffset = 0
 		m.view = viewTable
+	case "up", "k":
+		m.scrollDetail(-1)
+	case "down", "j":
+		m.scrollDetail(1)
+	case "pgup":
+		m.scrollDetail(-m.detailViewHeight())
+	case "pgdown":
+		m.scrollDetail(m.detailViewHeight())
+	case "home":
+		m.detailOffset = 0
+	case "G", "end":
+		m.detailOffset = maxScrollOffset(m.detailBody(), m.detailViewHeight())
 	case "o":
 		return m, m.openInBrowser()
 	case "c":
