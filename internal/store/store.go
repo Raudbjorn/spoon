@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -545,6 +546,64 @@ var migrations = []struct {
 	{version: 2, stmts: schemaV2},
 }
 
+// addedColumn matches the exact shape every ALTER step in the migration list
+// uses. Anchored deliberately: a statement this does not match contributes no
+// expectation rather than a wrong one, and expectedColumns' test asserts the
+// live migration list is fully covered, so a future ALTER written in another
+// shape fails CI instead of silently dropping out of drift detection.
+var addedColumn = regexp.MustCompile(`^ALTER TABLE (\w+) ADD COLUMN (\w+)\b`)
+
+// expectedColumns derives, from the migration statements themselves, the
+// columns a fully-migrated database must have. Deriving beats a hand-kept
+// list: the expectation cannot drift from the migration that creates it.
+func expectedColumns() map[string][]string {
+	want := map[string][]string{}
+	for _, m := range migrations {
+		for _, stmt := range m.stmts {
+			if g := addedColumn.FindStringSubmatch(stmt); g != nil {
+				want[g[1]] = append(want[g[1]], g[2])
+			}
+		}
+	}
+	return want
+}
+
+// schemaIntact reports whether every column the migration list adds is
+// actually present. PRAGMA table_info on a missing table yields no rows, so a
+// dropped table reads as missing columns and is caught too.
+func (s *Store) schemaIntact(ctx context.Context) (bool, error) {
+	for table, cols := range expectedColumns() {
+		have := map[string]bool{}
+		// PRAGMA does not accept a bound parameter; table names here come from
+		// the migration constants in this file, never from user input.
+		rows, err := s.db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
+		if err != nil {
+			return false, err
+		}
+		for rows.Next() {
+			var cid, notnull, pk int
+			var name, typ string
+			var dflt any
+			if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+				rows.Close()
+				return false, err
+			}
+			have[name] = true
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return false, err
+		}
+		rows.Close()
+		for _, c := range cols {
+			if !have[c] {
+				return false, nil
+			}
+		}
+	}
+	return true, nil
+}
+
 func (s *Store) initialize(ctx context.Context) error {
 	var version int
 	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
@@ -553,8 +612,24 @@ func (s *Store) initialize(ctx context.Context) error {
 	if version > SchemaVersion {
 		return fmt.Errorf("store schema %d is newer than supported version %d", version, SchemaVersion)
 	}
+	// A stamp equal to SchemaVersion is a claim, not proof. A database whose
+	// columns do not match it -- an out-of-band file copy, a restore from a
+	// torn backup, a downgrade/upgrade cycle -- would otherwise be trusted
+	// forever, and every write touching a missing column fails with "no such
+	// column" on every run, with no path back: the version says there is
+	// nothing left to migrate. Re-running the set repairs it, which the steps
+	// are already written to survive (CREATE TABLE IF NOT EXISTS, and the
+	// duplicate-column tolerance below).
+	repair := false
 	if version == SchemaVersion {
-		return nil
+		intact, err := s.schemaIntact(ctx)
+		if err != nil {
+			return fmt.Errorf("verify schema: %w", err)
+		}
+		if intact {
+			return nil
+		}
+		repair = true
 	}
 	tx, err := beginImmediate(ctx, s.db)
 	if err != nil {
@@ -567,11 +642,17 @@ func (s *Store) initialize(ctx context.Context) error {
 	if err := tx.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
 		return fmt.Errorf("re-read schema version: %w", err)
 	}
-	if version >= SchemaVersion {
+	// The recheck is a race guard, not a repair guard: on the repair path the
+	// version was already current before the lock, so honouring it here would
+	// return without fixing anything.
+	if version >= SchemaVersion && !repair {
 		return tx.Commit(ctx)
 	}
 	for _, m := range migrations {
-		if m.version <= version {
+		// A repair pass replays every step, not just those above the stamped
+		// version -- the drift can be anywhere in the set, and the steps are
+		// idempotent.
+		if m.version <= version && !repair {
 			continue
 		}
 		for _, stmt := range m.stmts {
