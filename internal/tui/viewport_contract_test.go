@@ -66,15 +66,35 @@ func TestViewViewportFloorAllowsFullViewAtAndAboveBoundary(t *testing.T) {
 	}
 }
 
-func TestStatusBarContentCapsAtMaximumWidth(t *testing.T) {
+func TestLongStatusStaysOnOneLineAndPagingRemainsAligned(t *testing.T) {
+	filter := strings.Repeat("filter", 20)
+	forks := make([]ScoredFork, 50)
+	for i := range forks {
+		forks[i] = ScoredFork{Fork: forge.T1Data{ID: "fork-" + filter}}
+	}
 	m := Model{
+		view:   viewTable,
 		width:  160,
 		height: 50,
-		parent: &forge.ParentData{FullName: "owner/repository", DefaultBranch: "main"},
-		forks:  []ScoredFork{{Fork: forge.T1Data{ID: "owner/repository"}}},
+		parent: &forge.ParentData{FullName: "owner/" + strings.Repeat("parent", 25), DefaultBranch: "main"},
+		filter: filter,
+		forks:  forks,
 	}
-	if got := lipgloss.Width(m.renderStatusBar()); got != ui.MaxContentWidth {
-		t.Fatalf("160-column status width = %d, want cap %d", got, ui.MaxContentWidth)
+
+	status := m.renderStatusBar()
+	if strings.Count(status, "\n") != 0 {
+		t.Fatalf("long 160-column status wrapped: %q", status)
+	}
+	if got := lipgloss.Width(status); got != ui.MaxContentWidth {
+		t.Fatalf("long status width = %d, want cap %d", got, ui.MaxContentWidth)
+	}
+
+	_, _ = m.handleTableKey("pgdown")
+	if got, want := m.cursor, m.pageSize(); got != want {
+		t.Fatalf("PgDown cursor = %d, want page-size %d", got, want)
+	}
+	if got, want := strings.Count(m.viewTable(), "fork-"), m.pageSize(); got != want {
+		t.Fatalf("rendered rows after PgDown = %d, want page-size %d", got, want)
 	}
 }
 
@@ -97,26 +117,56 @@ func TestGoldenViewportTableSizes(t *testing.T) {
 				view:   viewTable,
 				width:  tt.width,
 				height: tt.height,
-				parent: &forge.ParentData{FullName: "owner/库e\u0301", DefaultBranch: "main"},
+				parent: &forge.ParentData{FullName: "owner/e\u0301", DefaultBranch: "main"},
 				forks: []ScoredFork{{
-					Fork: forge.T1Data{ID: "owner/库e\u0301", DefaultBranch: "main"},
+					Fork: forge.T1Data{ID: "owner/库", DefaultBranch: "main"},
 				}},
 			}.WithTheme(ctx).View()
 			if strings.Contains(got, "\x1b[") {
 				t.Fatalf("no-color golden contains ANSI escape: %q", got)
 			}
-			rendertest.Golden(t, tt.name, got)
+			rendertest.Golden(t, tt.name, trimViewportGolden(got))
 		})
 	}
 }
 
-func TestViewportGoldenInputHasExpectedCJKAndCombiningWidth(t *testing.T) {
-	const input = "owner/库e\u0301"
-	if got, want := lipgloss.Width(input), 9; got != want {
-		t.Fatalf("input display width = %d, want %d", got, want)
+func TestViewportCJKAndCombiningContentUseDistinctCellWidths(t *testing.T) {
+	const (
+		cjk       = "owner/库"
+		combining = "owner/e\u0301"
+	)
+	if got, want := lipgloss.Width(cjk), 8; got != want {
+		t.Fatalf("CJK display width = %d, want %d", got, want)
 	}
+	if got, want := lipgloss.Width(combining), 7; got != want {
+		t.Fatalf("combining display width = %d, want %d", got, want)
+	}
+
+	input := cjk + " | " + combining
 	got := Model{view: viewInput, width: 80, height: 24, input: input}.View()
-	if !strings.Contains(got, input) {
+	line := ""
+	for _, candidate := range strings.Split(got, "\n") {
+		if strings.Contains(candidate, input) {
+			line = candidate
+			break
+		}
+	}
+	if line == "" {
 		t.Fatalf("80x24 input view lost CJK/combining content: %q", got)
 	}
+	left, _, found := strings.Cut(line, " | ")
+	if !found {
+		t.Fatalf("rendered input lost delimiter: %q", line)
+	}
+	if got, want := lipgloss.Width(left), lipgloss.Width("  Repository: "+cjk); got != want {
+		t.Fatalf("delimiter starts at cell %d, want %d: %q", got, want, line)
+	}
+}
+
+func trimViewportGolden(view string) string {
+	lines := strings.Split(view, "\n")
+	for i := range lines {
+		lines[i] = strings.TrimRight(lines[i], " ")
+	}
+	return strings.Join(lines, "\n")
 }

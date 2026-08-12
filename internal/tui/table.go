@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/svnbjrn/spoon/internal/tui/theme"
 	"github.com/svnbjrn/spoon/internal/tui/ui"
@@ -364,7 +365,16 @@ func (m Model) renderStatusBar() string {
 	if marked > 0 {
 		parts = append(parts, fmt.Sprintf("%d marked", marked))
 	}
-	return styles.statusBar.Width(ui.ContentWidth(m.width)).Render(strings.Join(parts, " "+ctx.Glyph(theme.BoxVertical)+" "))
+	contentWidth := ui.ContentWidth(m.width)
+	if contentWidth <= 0 {
+		return ""
+	}
+	contentLimit := contentWidth - 2 // statusBar supplies one cell of padding on either side.
+	if contentLimit < 0 {
+		contentLimit = 0
+	}
+	content := ansi.Truncate(strings.Join(parts, " "+ctx.Glyph(theme.BoxVertical)+" "), contentLimit, "")
+	return styles.statusBar.Width(contentWidth).Render(content)
 }
 
 func (m *Model) cycleSortColumn() {

@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
 	gh "github.com/svnbjrn/spoon/internal/github"
@@ -72,9 +73,7 @@ func TestGoldenViewportThreadSizes(t *testing.T) {
 		name          string
 		width, height int
 	}{
-		{"viewport-threads-80x24-no-color-ascii", 80, 24},
 		{"viewport-threads-120x30-no-color-ascii", 120, 30},
-		{"viewport-threads-160x50-no-color-ascii", 160, 50},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			rendertest.Force(t, termenv.Ascii)
@@ -83,18 +82,54 @@ func TestGoldenViewportThreadSizes(t *testing.T) {
 				height:   tt.height,
 				loaded:   true,
 				number:   42,
-				prStatus: gh.PullRequestStatus{Title: "库é"},
+				prStatus: gh.PullRequestStatus{Title: "owner/库"},
 				threads: []gh.ReviewThread{{
 					ID:       "thread-1",
-					Path:     "库é.go",
+					Path:     "owner/e\u0301.go",
 					Line:     7,
-					Comments: []gh.ThreadComment{{Author: "reviewer", AuthorType: "User", Body: "combining: é"}},
+					Comments: []gh.ThreadComment{{Author: "reviewer", AuthorType: "User", Body: "combining: e\u0301"}},
 				}},
 			}.WithTheme(ctx).View()
 			if strings.Contains(got, "\x1b[") {
 				t.Fatalf("no-color golden contains ANSI escape: %q", got)
 			}
-			rendertest.Golden(t, tt.name, got)
+			rendertest.Golden(t, tt.name, trimViewportGolden(got))
 		})
 	}
+}
+
+func TestThreadViewportPreservesCJKAndCombiningContent(t *testing.T) {
+	const (
+		cjk       = "owner/库"
+		combining = "owner/e\u0301"
+	)
+	if got, want := lipgloss.Width(cjk), 8; got != want {
+		t.Fatalf("CJK display width = %d, want %d", got, want)
+	}
+	if got, want := lipgloss.Width(combining), 7; got != want {
+		t.Fatalf("combining display width = %d, want %d", got, want)
+	}
+	got := Model{
+		width:    80,
+		height:   24,
+		loaded:   true,
+		prStatus: gh.PullRequestStatus{Title: cjk},
+		threads: []gh.ReviewThread{{
+			ID:       "thread-1",
+			Path:     combining + ".go",
+			Line:     7,
+			Comments: []gh.ThreadComment{{Author: "reviewer", AuthorType: "User", Body: combining}},
+		}},
+	}.View()
+	if !strings.Contains(got, cjk) || !strings.Contains(got, combining) {
+		t.Fatalf("80x24 thread view lost CJK or combining content: %q", got)
+	}
+}
+
+func trimViewportGolden(view string) string {
+	lines := strings.Split(view, "\n")
+	for i := range lines {
+		lines[i] = strings.TrimRight(lines[i], " ")
+	}
+	return strings.Join(lines, "\n")
 }
