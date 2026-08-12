@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/svnbjrn/spoon/internal/forge"
+	"github.com/svnbjrn/spoon/internal/tui/theme"
 )
 
 // ExportData is the top-level JSON export structure.
@@ -184,7 +185,7 @@ func (m *Model) promptExportMarked() tea.Cmd {
 		}
 	}
 	if len(toExport) == 0 {
-		m.errMsg = "No forks marked — use Space to mark, then e to export"
+		m.errMsg = "No forks marked - use Space to mark, then e to export"
 		m.errMsgTime = time.Now()
 		return nil
 	}
@@ -243,12 +244,12 @@ func (m Model) viewExportPath() string {
 	// all forks -- so say so here, where the user can still back out, rather
 	// than let a filtered view imply a filtered export.
 	if m.filter != "" {
-		b.WriteString(fmt.Sprintf("  %s\n", helpStyle.Render(
+		b.WriteString(fmt.Sprintf("  %s\n", m.styles().help.Render(
 			fmt.Sprintf("filter %q is active but does not limit this export", m.filter))))
 	}
 	b.WriteString("\n")
-	b.WriteString("  Save to: " + renderWithCursor(m.exportPath, m.exportCursor) + "\n\n")
-	b.WriteString("  " + helpStyle.Render("←/→ move  Home/End  Enter confirm  Esc cancel  Ctrl+U clear") + "\n")
+	b.WriteString("  Save to: " + renderWithCursor(m.exportPath, m.exportCursor, m.themeContext()) + "\n\n")
+	b.WriteString("  " + m.styles().help.Render(m.themeContext().Glyph(theme.ArrowLeft)+"/"+m.themeContext().Glyph(theme.ArrowRight)+" move  Home/End  Enter confirm  Esc cancel  Ctrl+U clear") + "\n")
 	return b.String()
 }
 

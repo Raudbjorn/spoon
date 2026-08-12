@@ -181,12 +181,9 @@ func TestGutterRampsAreDistinctAndSeparateFromHeat(t *testing.T) {
 	}
 }
 
-
 func TestNoProductionLipglossColorOutsideTheme(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", "..", ".."))
-	approved := map[string]struct{}{
-		filepath.Join(repoRoot, "internal", "tui", "theme", "palette_gen.go"): {},
-	}
+	approvedDir := filepath.Join(repoRoot, "internal", "tui", "theme") + string(filepath.Separator)
 	var offenders []string
 	err := filepath.WalkDir(repoRoot, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -202,7 +199,7 @@ func TestNoProductionLipglossColorOutsideTheme(t *testing.T) {
 		if filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-		if _, ok := approved[path]; ok {
+		if strings.HasPrefix(path, approvedDir) {
 			return nil
 		}
 		file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)

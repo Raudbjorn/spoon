@@ -6,117 +6,108 @@ import (
 	"github.com/svnbjrn/spoon/internal/tui/theme"
 )
 
-// Heat color gradient: text-faint -> info -> accent -> warning -> error.
-var heatColors = []lipgloss.Color{
-	theme.Dark.TextFaint, // 0-19: dim
-	theme.Dark.Info,      // 20-39: informational
-	theme.Dark.Accent,    // 40-59: accent
-	theme.Dark.Warning,   // 60-79: warning
-	theme.Dark.Error,     // 80-100: error
-}
-
-// gutterColors tint the duplicate-group gutter. Deliberately distinct from
-// heatColors so a group line is never mistaken for part of the heat bar, and
-// cycled by group so two groups that end up adjacent stay separable.
+// gutterColors and duplicateGutter preserve deterministic default helpers for
+// existing tests; production rendering receives its colors from Model.styles.
 var gutterColors = theme.GutterColors(theme.Dark)
 
-// gutterStyleFor returns the colour for the ordinal-th duplicate group in the
-// rendered list.
-//
-// Colours are assigned by order of appearance rather than by hashing the group
-// key: hashing cannot guarantee that two groups landing next to each other get
-// different colours, and when they collide the two lines read as one group —
-// exactly the confusion the gutter exists to prevent. Cycling by position makes
-// adjacent groups always differ.
-func gutterStyleFor(ordinal int) lipgloss.Style {
-	return lipgloss.NewStyle().Foreground(gutterColour(ordinal))
+type styleSet struct {
+	title, subtitle, warn, error, statusBar, help, selected, header, cell lipgloss.Style
+	heat                                                                  []lipgloss.Color
+	gutter                                                                [6]lipgloss.Color
 }
 
-// gutterColour is the colour choice alone, separated from rendering so it stays
-// assertable: lipgloss strips colour with no TTY attached, which would make any
-// test over rendered output pass vacuously.
-func gutterColour(ordinal int) lipgloss.Color {
-	if ordinal < 0 {
-		ordinal = 0
+func (m Model) themeContext() theme.Context {
+	if m.theme.Palette == (theme.Palette{}) {
+		return theme.DefaultContext()
 	}
-	return gutterColors[ordinal%len(gutterColors)]
+	return m.theme
 }
 
-// HeatBarChars are the block characters used for the heat bar.
-var heatBarChars = [4]rune{'░', '▒', '▓', '█'}
+func stylesFor(ctx theme.Context) styleSet {
+	palette := ctx.Palette
+	return styleSet{
+		title:     lipgloss.NewStyle().Bold(true).Foreground(palette.Accent),
+		subtitle:  lipgloss.NewStyle().Foreground(palette.TextMuted),
+		warn:      lipgloss.NewStyle().Foreground(palette.Warning).Bold(true),
+		error:     lipgloss.NewStyle().Foreground(palette.Error).Bold(true),
+		statusBar: lipgloss.NewStyle().Foreground(palette.Text).Background(palette.Surface2).Padding(0, 1),
+		help:      lipgloss.NewStyle().Foreground(palette.TextFaint),
+		selected:  lipgloss.NewStyle().Bold(true).Foreground(palette.TextStrong).Background(palette.Surface3),
+		header:    lipgloss.NewStyle().Bold(true).Foreground(palette.TextStrong).Padding(0, 1),
+		cell:      lipgloss.NewStyle().Foreground(palette.Text).Padding(0, 1),
+		heat:      []lipgloss.Color{palette.TextFaint, palette.Info, palette.Accent, palette.Warning, palette.Error},
+		gutter:    ctx.GutterColors(),
+	}
+}
 
-// HeatColor returns the color for a given heat score (0-100).
-func HeatColor(score float64) lipgloss.Color {
+func (m Model) styles() styleSet { return stylesFor(m.themeContext()) }
+
+func heatColor(colors []lipgloss.Color, score float64) lipgloss.Color {
 	idx := int(score / 20)
 	if idx < 0 {
 		idx = 0
 	}
-	if idx >= len(heatColors) {
-		idx = len(heatColors) - 1
+	if idx >= len(colors) {
+		idx = len(colors) - 1
 	}
-	return heatColors[idx]
+	return colors[idx]
 }
 
-// HeatBar renders a 4-character heat bar for the given score (0-100).
-func HeatBar(score float64) string {
+// HeatColor retains the deterministic default-context helper used by legacy
+// tests. Renderers use Model.heatColor so selected startup context wins.
+func HeatColor(score float64) lipgloss.Color {
+	return heatColor(stylesFor(theme.DefaultContext()).heat, score)
+}
+
+func (m Model) heatColor(score float64) lipgloss.Color { return heatColor(m.styles().heat, score) }
+
+func heatBar(ctx theme.Context, score float64) string {
 	filled := int(score / 25)
 	if filled > 4 {
 		filled = 4
 	}
-	bar := make([]rune, 4)
-	for i := range 4 {
+	out := make([]string, 4)
+	for i := range out {
 		if i < filled {
-			bar[i] = heatBarChars[3] // █
+			out[i] = ctx.Glyph(theme.HeatFull)
 		} else {
-			bar[i] = heatBarChars[0] // ░
+			out[i] = ctx.Glyph(theme.HeatEmpty)
 		}
 	}
-	return string(bar)
+	return out[0] + out[1] + out[2] + out[3]
 }
 
-// RenderHeatBar renders a colored heat bar.
+// HeatBar retains a Unicode default for legacy callers. Model renderers use
+// Model.heatBar and therefore follow their immutable glyph context.
+func HeatBar(score float64) string { return heatBar(theme.DefaultContext(), score) }
+
+func (m Model) heatBar(score float64) string { return heatBar(m.themeContext(), score) }
+
+// RenderHeatBar retains a deterministic default-context helper for callers
+// outside a Model. Main views use Model.renderHeatBar.
 func RenderHeatBar(score float64) string {
-	bar := HeatBar(score)
-	color := HeatColor(score)
-	return lipgloss.NewStyle().Foreground(color).Render(bar)
+	return lipgloss.NewStyle().Foreground(HeatColor(score)).Render(HeatBar(score))
 }
 
-// Common styles
-var (
-	titleStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(theme.Dark.Accent)
+func (m Model) renderHeatBar(score float64) string {
+	return lipgloss.NewStyle().Foreground(m.heatColor(score)).Render(m.heatBar(score))
+}
 
-	subtitleStyle = lipgloss.NewStyle().
-			Foreground(theme.Dark.TextMuted)
+func (m Model) gutterStyleFor(ordinal int) lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(m.gutterColour(ordinal))
+}
 
-	warnStyle = lipgloss.NewStyle().
-			Foreground(theme.Dark.Warning).
-			Bold(true)
+func (m Model) gutterColour(ordinal int) lipgloss.Color {
+	if ordinal < 0 {
+		ordinal = 0
+	}
+	colors := m.styles().gutter
+	return colors[ordinal%len(colors)]
+}
 
-	errorStyle = lipgloss.NewStyle().
-			Foreground(theme.Dark.Error).
-			Bold(true)
+// gutterColour retains the dark default for existing color-choice tests.
+func gutterColour(ordinal int) lipgloss.Color { return Model{}.gutterColour(ordinal) }
 
-	statusBarStyle = lipgloss.NewStyle().
-			Foreground(theme.Dark.Text).
-			Background(theme.Dark.Surface2).
-			Padding(0, 1)
-
-	helpStyle = lipgloss.NewStyle().
-			Foreground(theme.Dark.TextFaint)
-
-	selectedStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(theme.Dark.TextStrong).
-			Background(theme.Dark.Surface3)
-
-	headerStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(theme.Dark.TextStrong).
-			Padding(0, 1)
-
-	cellStyle = lipgloss.NewStyle().
-			Foreground(theme.Dark.Text).
-			Padding(0, 1)
-)
+func duplicateGutter(sf ScoredFork, ordinals map[string]int) string {
+	return Model{}.duplicateGutter(sf, ordinals)
+}

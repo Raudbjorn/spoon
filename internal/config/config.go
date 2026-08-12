@@ -33,6 +33,16 @@ type Config struct {
 	Forge    ForgeConfig    `json:"forge,omitempty"`
 	GitHub   GitHubConfig   `json:"github,omitempty"`
 	Embedder EmbedderConfig `json:"embedder,omitempty"`
+	UI       UIConfig       `json:"ui,omitempty"`
+}
+
+// UIConfig supplies terminal appearance defaults. Environment variables remain
+// higher precedence and invalid values are reported by TUI startup resolution.
+// Versioning and settings-save migration are deliberately owned by Task 9.
+type UIConfig struct {
+	Theme  string `json:"theme,omitempty"`
+	Color  string `json:"color,omitempty"`
+	Glyphs string `json:"glyphs,omitempty"`
 }
 
 // EmbedderConfig configures the in-process fastembed embedder that powers

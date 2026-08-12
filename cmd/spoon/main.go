@@ -18,6 +18,7 @@ import (
 	"github.com/svnbjrn/spoon/internal/heat"
 	"github.com/svnbjrn/spoon/internal/store"
 	"github.com/svnbjrn/spoon/internal/tui"
+	"github.com/svnbjrn/spoon/internal/tui/theme"
 )
 
 var version = "0.3.0-dev"
@@ -26,8 +27,9 @@ func main() {
 	// Zero-configuration first run: make sure a documented default config
 	// exists before anything consults it. Never fatal — a bad or unwritable
 	// config degrades to built-in defaults with a warning.
-	if _, err := config.EnsureDefault(os.Stderr); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: ignoring config: %v\n", err)
+	cfg, cfgErr := config.EnsureDefault(os.Stderr)
+	if cfgErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: ignoring config: %v\n", cfgErr)
 	}
 
 	// Subcommand dispatch: "spoon threads <pr-ref> ..."
@@ -178,6 +180,13 @@ func main() {
 		os.Setenv("NO_COLOR", "1")
 	}
 
+	tuiContext, err := resolveTUIContext(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	theme.PinColorProfile(tuiContext)
+
 	ctx := context.Background()
 
 	// The interactive TUI clusters with the built-in lexical embedder
@@ -215,7 +224,7 @@ func main() {
 
 	m := tui.NewModelWithCluster(provider, auth, repoArg, refresh, tuiClusterOpts).
 		WithHeatWeights(heatWeights).WithMaxTier(maxTier).WithStore(db).
-		WithQueryScorer(tuiQueryScorer(db))
+		WithQueryScorer(tuiQueryScorer(db)).WithTheme(tuiContext)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 
 	if _, err := p.Run(); err != nil {

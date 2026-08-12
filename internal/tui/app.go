@@ -19,6 +19,7 @@ import (
 	"github.com/svnbjrn/spoon/internal/heat"
 	"github.com/svnbjrn/spoon/internal/store"
 	"github.com/svnbjrn/spoon/internal/topics"
+	"github.com/svnbjrn/spoon/internal/tui/theme"
 )
 
 // View state
@@ -85,6 +86,10 @@ type Model struct {
 	width    int
 	height   int
 	quitting bool
+
+	// theme is resolved once by command startup. Bare test literals use
+	// themeContext's deterministic default instead.
+	theme theme.Context
 
 	// Input
 	input string
@@ -228,6 +233,7 @@ func NewModel(provider forge.Forge, auth forge.AuthInfo, repo string, refresh bo
 		clusterMsgs:     make(chan tea.Msg, 16),
 		lifecycleCtx:    lifecycleCtx,
 		lifecycleCancel: lifecycleCancel,
+		theme:           theme.DefaultContext(),
 	}
 }
 
@@ -282,6 +288,13 @@ func (m Model) WithMaxTier(n int) Model {
 // be opened — but stays nil-able so unit tests can run modelless.
 func (m Model) WithStore(db *store.Store) Model {
 	m.db = db
+	return m
+}
+
+// WithTheme returns a copy of the model with an immutable startup-resolved
+// rendering context.
+func (m Model) WithTheme(ctx theme.Context) Model {
+	m.theme = ctx
 	return m
 }
 
@@ -727,7 +740,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "home":
 			m.helpOffset = 0
 		case "G", "end":
-			m.helpOffset = maxScrollOffset(helpBody(), m.helpViewHeight())
+			m.helpOffset = maxScrollOffset(helpBody(m.themeContext()), m.helpViewHeight())
 		}
 		return m, nil
 	}
@@ -1393,11 +1406,11 @@ func (m *Model) cycleMaxTier() tea.Cmd {
 
 	switch next {
 	case 3:
-		m.errMsg = "enrichment ceiling T3 — full scoring"
+		m.errMsg = "enrichment ceiling T3 - full scoring"
 	case 2:
-		m.errMsg = "enrichment ceiling T2 — lone-wolf scoring off"
+		m.errMsg = "enrichment ceiling T2 - lone-wolf scoring off"
 	default:
-		m.errMsg = "enrichment ceiling T1 — no further compares will be fetched"
+		m.errMsg = "enrichment ceiling T1 - no further compares will be fetched"
 	}
 	m.errMsgTime = time.Now()
 
@@ -1555,36 +1568,34 @@ func (m Model) View() string {
 
 func (m Model) viewInput() string {
 	var b strings.Builder
+	s := m.styles()
 
 	b.WriteString("\n")
-	b.WriteString(titleStyle.Render("  spoon"))
-	b.WriteString(subtitleStyle.Render(" — find useful forks"))
+	b.WriteString(s.title.Render("  spoon"))
+	b.WriteString(s.subtitle.Render(" " + m.themeContext().Glyph(theme.EmDash) + " find useful forks"))
 	b.WriteString("\n\n")
 
 	if m.authMsg != "" {
 		if m.auth.Authenticated() {
-			b.WriteString("  " + subtitleStyle.Render(m.authMsg) + "\n\n")
+			b.WriteString("  " + s.subtitle.Render(m.authMsg) + "\n\n")
 		} else {
-			b.WriteString("  " + warnStyle.Render("! ") + m.authMsg + "\n\n")
+			b.WriteString("  " + s.warn.Render("! ") + m.authMsg + "\n\n")
 		}
 	}
 
-	b.WriteString("  Repository: " + renderWithCursor(m.input, m.inputCursor) + "\n")
-
+	b.WriteString("  Repository: " + renderWithCursor(m.input, m.inputCursor, m.themeContext()) + "\n")
 	if m.inputErr != "" {
-		b.WriteString("  " + errorStyle.Render(m.inputErr) + "\n")
+		b.WriteString("  " + s.error.Render(m.inputErr) + "\n")
 	}
 	if m.errMsg != "" {
-		b.WriteString("  " + errorStyle.Render(m.errMsg) + "\n")
+		b.WriteString("  " + s.error.Render(m.errMsg) + "\n")
 	}
-
 	if m.loading {
 		b.WriteString("\n  " + m.loadMsg + "\n")
 	} else {
-		b.WriteString("\n  " + helpStyle.Render("Enter a GitHub or GitLab repository (e.g., golang/go)") + "\n")
-		b.WriteString("  " + helpStyle.Render("←/→ move  Home/End  paste supported  Enter to search  Ctrl+C to quit") + "\n")
+		b.WriteString("\n  " + s.help.Render("Enter a GitHub or GitLab repository (e.g., golang/go)") + "\n")
+		b.WriteString("  " + s.help.Render(m.themeContext().Glyph(theme.ArrowLeft)+"/"+m.themeContext().Glyph(theme.ArrowRight)+" move  Home/End  paste supported  Enter to search  Ctrl+C to quit") + "\n")
 	}
-
 	return b.String()
 }
 

@@ -11,6 +11,7 @@ import (
 	"github.com/cli/browser"
 	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/threadsops"
+	"github.com/svnbjrn/spoon/internal/tui/theme"
 )
 
 // Model is the bubbletea model for the threads view.
@@ -27,6 +28,7 @@ type Model struct {
 	width    int
 	height   int
 
+	theme      theme.Context
 	composing  bool
 	composeBuf []rune
 	composeFor string // "reply" or "resolve"
@@ -88,11 +90,25 @@ func NewWithFilter(client *gh.Client, owner, repo string, number int, mode threa
 		// launchEditor is intentionally left nil in production. The counter-propose
 		// flow uses tea.ExecProcess directly. Tests set launchEditor to a non-nil
 		// stub to bypass the real editor invocation (Option B test seam).
+		theme: theme.DefaultContext(),
 	}
 	m.replyFunc = func(ctx context.Context, threadID, body string) (gh.ThreadComment, error) {
 		return m.client.ReplyToThread(ctx, threadID, body)
 	}
 	return m
+}
+
+// WithTheme returns a copy with a startup-resolved immutable render context.
+func (m Model) WithTheme(ctx theme.Context) Model {
+	m.theme = ctx
+	return m
+}
+
+func (m Model) themeContext() theme.Context {
+	if m.theme.Palette == (theme.Palette{}) {
+		return theme.DefaultContext()
+	}
+	return m.theme
 }
 
 // loadedMsg is delivered when FetchPR completes.
@@ -183,9 +199,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case mutationDoneMsg:
 		m.mutating = false
 		if msg.err != nil {
-			m.status = "❌ error: " + msg.err.Error()
+			m.status = "ERROR: " + msg.err.Error()
 		} else {
-			m.status = "✅ " + msg.what + " ok"
+			m.status = "OK: " + msg.what
 		}
 		// Refresh the thread list (skip for browser open — it's fire-and-forget).
 		if msg.what == "open" {

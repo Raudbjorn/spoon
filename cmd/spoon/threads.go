@@ -11,8 +11,10 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/mattn/go-isatty"
+	"github.com/svnbjrn/spoon/internal/config"
 	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/threadsops"
+	"github.com/svnbjrn/spoon/internal/tui/theme"
 	threadstui "github.com/svnbjrn/spoon/internal/tui/threads"
 )
 
@@ -389,6 +391,18 @@ func runThreads(args []string) int {
 		return 2
 	}
 
+	cfg, cfgErr := config.LoadDefault()
+	if cfgErr != nil {
+		fmt.Fprintln(os.Stderr, "Error: invalid config:", cfgErr)
+		return 1
+	}
+	tuiContext, err := resolveTUIContext(cfg)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error:", err)
+		return 1
+	}
+	theme.PinColorProfile(tuiContext)
+
 	fallbackOwner, fallbackRepo := detectRepoContext()
 
 	// --interactive with a PR ref already supplied is a user error in
@@ -433,7 +447,7 @@ func runThreads(args []string) int {
 			fmt.Println("No open PRs in this repo")
 			return 0
 		}
-		picker := threadstui.NewPicker(prs)
+		picker := threadstui.NewPicker(prs).WithTheme(tuiContext)
 		final, runErr := tea.NewProgram(picker, tea.WithAltScreen()).Run()
 		if runErr != nil {
 			fmt.Fprintln(os.Stderr, "❌ Error:", runErr)
@@ -707,7 +721,7 @@ func runThreads(args []string) int {
 		return 0
 
 	case modeTUI:
-		return runThreadsTUI(ctx, client, owner, repo, number, flags.filter, flags.showCodeLines, flags.verbose)
+		return runThreadsTUI(ctx, client, owner, repo, number, flags.filter, flags.showCodeLines, flags.verbose, tuiContext)
 
 	default:
 		fmt.Fprintln(os.Stderr, "❌ Error: unknown mode")
@@ -784,14 +798,14 @@ Examples:
 `)
 }
 
-func runThreadsTUI(ctx context.Context, client *gh.Client, owner, repo string, number int, mode threadsops.FilterMode, showCodeLines int, verbose bool) int {
+func runThreadsTUI(ctx context.Context, client *gh.Client, owner, repo string, number int, mode threadsops.FilterMode, showCodeLines int, verbose bool, tuiContext theme.Context) int {
 	_ = ctx // reserved for future cancellable Init paths
-	m := threadstui.NewWithFilter(client, owner, repo, number, mode)
+	m := threadstui.NewWithFilter(client, owner, repo, number, mode).WithTheme(tuiContext)
 	m.ShowCodeLines = showCodeLines
 	m.Verbose = verbose
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
-		fmt.Fprintln(os.Stderr, "❌ Error:", err)
+		fmt.Fprintln(os.Stderr, "Error:", err)
 		return 1
 	}
 	return 0

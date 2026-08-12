@@ -256,7 +256,7 @@ func TestCycleMaxTier_PreservesClusterFields(t *testing.T) {
 
 func TestStatusBar_ShowsCeilingAndSkipCount(t *testing.T) {
 	m := movementModel(3)
-	if strings.Contains(m.renderStatusBar(), "T≤") {
+	if strings.Contains(m.renderStatusBar(), "T<=") {
 		t.Error("ceiling shown at the default T3; it should be omitted when nothing is capped")
 	}
 
@@ -264,7 +264,7 @@ func TestStatusBar_ShowsCeilingAndSkipCount(t *testing.T) {
 	m.forks[0].TierSkipped = true
 	m.forks[1].TierSkipped = true
 	bar := m.renderStatusBar()
-	if !strings.Contains(bar, "T≤1") {
+	if !strings.Contains(bar, "T<=1") {
 		t.Errorf("status bar missing the ceiling: %q", bar)
 	}
 	if !strings.Contains(bar, "2 skipped") {

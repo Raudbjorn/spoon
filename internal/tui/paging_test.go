@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/svnbjrn/spoon/internal/tui/theme"
 )
 
 func TestHandleTableKey_PageDownMovesOnePage(t *testing.T) {
@@ -175,7 +176,7 @@ func TestViewHelp_Scrolls(t *testing.T) {
 // Every key the help screen advertises must have a handler. This is the test
 // that would have caught `t` and `/` being advertised with nothing behind them.
 func TestHelpAdvertisesOnlyImplementedKeys(t *testing.T) {
-	body := helpBody()
+	body := helpBody(theme.DefaultContext())
 	for _, k := range []string{"PgUp/PgDn", "/", "Esc", "t", "branches"} {
 		if !strings.Contains(body, k) {
 			t.Errorf("help body missing %q", k)

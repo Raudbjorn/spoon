@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"github.com/svnbjrn/spoon/internal/tui/theme"
 	"sort"
 )
 
@@ -218,11 +219,11 @@ func gutterOrdinals(forks []ScoredFork) map[string]int {
 // is nothing for the colour to falsely claim continuity with.
 //
 // Always exactly one cell wide, or every column to the right would shift.
-func duplicateGutter(sf ScoredFork, ordinals map[string]int) string {
+func (m Model) duplicateGutter(sf ScoredFork, ordinals map[string]int) string {
 	if sf.SiblingGroup == "" {
 		return " "
 	}
-	return gutterStyleFor(ordinals[sf.SiblingGroup]).Render("┃")
+	return m.gutterStyleFor(ordinals[sf.SiblingGroup]).Render(m.themeContext().Glyph(theme.Gutter))
 }
 
 // sortedGroupKeys is a deterministic helper for tests and for any consumer that

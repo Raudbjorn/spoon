@@ -158,7 +158,7 @@ func (m *Model) scrollDetail(delta int) {
 
 // scrollHelp moves the help overlay by delta lines, clamped to the body.
 func (m *Model) scrollHelp(delta int) {
-	max := maxScrollOffset(helpBody(), m.helpViewHeight())
+	max := maxScrollOffset(helpBody(m.themeContext()), m.helpViewHeight())
 	m.helpOffset = clampInt(m.helpOffset+delta, 0, max)
 }
 

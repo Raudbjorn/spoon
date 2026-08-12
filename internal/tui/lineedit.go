@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/svnbjrn/spoon/internal/tui/theme"
 )
 
 // typedText returns the literal characters a key event contributes to a text
@@ -109,13 +110,13 @@ func lineEdit(text string, cursor int, key, typed string) (string, int, bool) {
 // the end of the string the block sits past the last character; anywhere else
 // it inverts the character it covers, so the caret is visible mid-string
 // instead of always appearing parked at the tail.
-func renderWithCursor(text string, cursor int) string {
+func renderWithCursor(text string, cursor int, ctx theme.Context) string {
 	r := []rune(text)
 	if cursor < 0 {
 		cursor = 0
 	}
 	if cursor >= len(r) {
-		return text + "█"
+		return text + ctx.Glyph(theme.Cursor)
 	}
 	under := lipgloss.NewStyle().Reverse(true).Render(string(r[cursor]))
 	return string(r[:cursor]) + under + string(r[cursor+1:])

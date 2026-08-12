@@ -216,16 +216,16 @@ func TestViewTable_GutterKeepsHeaderAndRowsAligned(t *testing.T) {
 	}
 
 	// The badge carries the group size, and only for members.
-	if !strings.Contains(rows[0], "👯2") {
-		t.Errorf("duplicate row is missing the 👯2 badge:\n  %q", rows[0])
+	if !strings.Contains(rows[0], "DUP2") {
+		t.Errorf("duplicate row is missing the DUP2 badge:\n  %q", rows[0])
 	}
 	for _, r := range rows {
-		if strings.Contains(r, "Gelma") && strings.Contains(r, "👯") {
-			t.Errorf("Gelma is not a duplicate and must not carry the badge:\n  %q", r)
+		if strings.Contains(r, "Gelma") && strings.Contains(r, "DUP") {
+			t.Errorf("Gelma is not a duplicate and must not carry the DUP badge:\n  %q", r)
 		}
 	}
-	if !strings.Contains(out, "👯 duplicate work") {
-		t.Error("legend is missing the 👯 entry")
+	if !strings.Contains(out, "DUP duplicate work") {
+		t.Error("legend is missing the DUP entry")
 	}
 }
 

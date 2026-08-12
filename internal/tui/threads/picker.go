@@ -32,23 +32,41 @@ type PickerModel struct {
 
 	// now is captured at construction so "updated 2d ago" rendering is
 	// deterministic in tests.
-	now time.Time
+	now   time.Time
+	theme theme.Context
 }
 
 // NewPicker constructs a PickerModel for the given list of PRs. Caller is
 // responsible for fetching the list before invocation; this constructor does
 // no I/O.
 func NewPicker(prs []gh.PullRequest) PickerModel {
-	return PickerModel{
-		prs:            prs,
-		cursorStyle:    lipgloss.NewStyle().Foreground(theme.Dark.Accent),
-		highlightStyle: lipgloss.NewStyle().Bold(true).Foreground(theme.Dark.Accent),
-		headerStyle:    lipgloss.NewStyle().Bold(true),
-		footerStyle:    lipgloss.NewStyle().Faint(true),
-		authorStyle:    lipgloss.NewStyle().Foreground(theme.Dark.Info),
-		timeStyle:      lipgloss.NewStyle().Faint(true),
-		now:            time.Now(),
+	return PickerModel{}.WithTheme(theme.DefaultContext()).withPRs(prs)
+}
+
+func (m PickerModel) withPRs(prs []gh.PullRequest) PickerModel {
+	m.prs = prs
+	m.now = time.Now()
+	return m
+}
+
+// WithTheme returns a copy whose picker styles are derived from the immutable
+// startup context.
+func (m PickerModel) WithTheme(ctx theme.Context) PickerModel {
+	m.theme = ctx
+	m.cursorStyle = lipgloss.NewStyle().Foreground(ctx.Palette.Accent)
+	m.highlightStyle = lipgloss.NewStyle().Bold(true).Foreground(ctx.Palette.Accent)
+	m.headerStyle = lipgloss.NewStyle().Bold(true).Foreground(ctx.Palette.TextStrong)
+	m.footerStyle = lipgloss.NewStyle().Faint(true).Foreground(ctx.Palette.TextFaint)
+	m.authorStyle = lipgloss.NewStyle().Foreground(ctx.Palette.Info)
+	m.timeStyle = lipgloss.NewStyle().Faint(true).Foreground(ctx.Palette.TextMuted)
+	return m
+}
+
+func (m PickerModel) themeContext() theme.Context {
+	if m.theme.Palette == (theme.Palette{}) {
+		return theme.DefaultContext()
 	}
+	return m.theme
 }
 
 // Init satisfies tea.Model; no startup I/O is required.
@@ -96,15 +114,14 @@ func (m PickerModel) View() string {
 		return b.String()
 	}
 
+	ctx := m.themeContext()
 	var b strings.Builder
-	b.WriteString(m.headerStyle.Render(fmt.Sprintf("Open PRs (%d) — select one:", len(m.prs))))
+	b.WriteString(m.headerStyle.Render(fmt.Sprintf("Open PRs (%d) %s select one:", len(m.prs), ctx.Glyph(theme.EmDash))))
 	b.WriteString("\n\n")
-
-	for i, p := range m.prs {
-		row := fmt.Sprintf("PR #%d: %s (@%s, updated %s)",
-			p.Number, p.Title, p.Author, humanizeDuration(m.now.Sub(p.UpdatedAt)))
+	for i, pr := range m.prs {
+		row := fmt.Sprintf("PR #%d: %s (@%s, updated %s)", pr.Number, pr.Title, pr.Author, humanizeDuration(m.now.Sub(pr.UpdatedAt)))
 		if i == m.cursor {
-			b.WriteString(m.cursorStyle.Render("> "))
+			b.WriteString(m.cursorStyle.Render(ctx.Glyph(theme.Selected) + " "))
 			b.WriteString(m.highlightStyle.Render(row))
 		} else {
 			b.WriteString("  ")
@@ -112,9 +129,8 @@ func (m PickerModel) View() string {
 		}
 		b.WriteString("\n")
 	}
-
 	b.WriteString("\n")
-	b.WriteString(m.footerStyle.Render("↑/↓ navigate, Enter select, q/Esc cancel"))
+	b.WriteString(m.footerStyle.Render(ctx.Glyph(theme.ArrowUp) + "/" + ctx.Glyph(theme.ArrowDown) + " navigate, Enter select, q/Esc cancel"))
 	b.WriteString("\n")
 	return b.String()
 }

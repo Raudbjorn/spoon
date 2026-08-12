@@ -27,6 +27,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/svnbjrn/spoon/internal/embed"
+	"github.com/svnbjrn/spoon/internal/tui/theme"
 )
 
 // relevanceSortCol is the sort column the ranking installs. It is deliberately
@@ -231,7 +232,7 @@ func (m Model) rankFooter() string {
 	if m.rankApplied == "" {
 		return ""
 	}
-	return fmt.Sprintf("Ranked by %q (%s, %d fork(s) scored) — R to edit, empty R to clear",
+	return fmt.Sprintf("Ranked by %q (%s, %d fork(s) scored) - R to edit, empty R to clear",
 		m.rankApplied, m.rankMethod, len(m.rankScores))
 }
 
@@ -242,12 +243,12 @@ func (m Model) viewRankPrompt() string {
 	var b strings.Builder
 	b.WriteString("\n")
 	b.WriteString(fmt.Sprintf("  Rank %d fork(s) by intent\n\n", m.visibleCount()))
-	b.WriteString("  Intent: " + renderWithCursor(m.rankQuery, m.rankCursor) + "\n\n")
+	b.WriteString("  Intent: " + renderWithCursor(m.rankQuery, m.rankCursor, m.themeContext()) + "\n\n")
 	scorer := "lexical (set VOYAGE_AI_API_KEY for the cross-encoder)"
 	if m.queryScorer != nil {
 		scorer = m.queryScorer.Method()
 	}
-	b.WriteString("  " + helpStyle.Render("scorer: "+scorer) + "\n")
-	b.WriteString("  " + helpStyle.Render("←/→ move  Home/End  Enter rank  Esc cancel  Ctrl+U clear  (empty clears the ranking)") + "\n")
+	b.WriteString("  " + m.styles().help.Render("scorer: "+scorer) + "\n")
+	b.WriteString("  " + m.styles().help.Render(m.themeContext().Glyph(theme.ArrowLeft)+"/"+m.themeContext().Glyph(theme.ArrowRight)+" move  Home/End  Enter rank  Esc cancel  Ctrl+U clear  (empty clears the ranking)") + "\n")
 	return b.String()
 }

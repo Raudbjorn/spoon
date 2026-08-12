@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/svnbjrn/spoon/internal/topics"
+	"github.com/svnbjrn/spoon/internal/tui/theme"
 )
 
 // topicResolvedMsg carries the topic selection (or its failure) back into
@@ -72,22 +73,23 @@ func (m *Model) handleTopicPickerKey(key string) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) viewTopicPicker() string {
+	ctx, styles := m.themeContext(), m.styles()
 	var b strings.Builder
 	b.WriteString("\n")
-	b.WriteString(titleStyle.Render(fmt.Sprintf("  Topic: %s — pick a repository to prospect", m.topicName)))
+	b.WriteString(styles.title.Render(fmt.Sprintf("  Topic: %s %s pick a repository to prospect", m.topicName, ctx.Glyph(theme.EmDash))))
 	b.WriteString("\n\n")
-	for i, s := range m.topicSelections {
+	for i, selection := range m.topicSelections {
 		cursor := "  "
-		line := fmt.Sprintf("%-40s  score %5.1f  ★ %-7d  forks %-6d %s",
-			s.FullName, s.Score, s.Stars, s.ForkCount, truncateDesc(s.Description, 50))
+		line := fmt.Sprintf("%-40s  score %5.1f  %s %-7d  forks %-6d %s",
+			selection.FullName, selection.Score, ctx.Glyph(theme.Star), selection.Stars, selection.ForkCount, truncateDesc(selection.Description, 50))
 		if i == m.topicCursor {
-			cursor = "▸ "
+			cursor = ctx.Glyph(theme.Selected) + " "
 			line = lipgloss.NewStyle().Bold(true).Render(line)
 		}
 		b.WriteString("  " + cursor + line + "\n")
 	}
 	b.WriteString("\n  ")
-	b.WriteString(helpStyle.Render("↑/↓ navigate · Enter prospect forks · Esc back"))
+	b.WriteString(styles.help.Render(ctx.Glyph(theme.ArrowUp) + "/" + ctx.Glyph(theme.ArrowDown) + " navigate " + ctx.Glyph(theme.Separator) + " Enter prospect forks " + ctx.Glyph(theme.Separator) + " Esc back"))
 	b.WriteString("\n")
 	return b.String()
 }
@@ -98,5 +100,5 @@ func truncateDesc(s string, n int) string {
 	if len(r) <= n {
 		return s
 	}
-	return string(r[:n-1]) + "…"
+	return string(r[:n-1]) + "..."
 }

@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	gh "github.com/svnbjrn/spoon/internal/github"
+	"github.com/svnbjrn/spoon/internal/tui/theme"
 )
 
 func samplePRs() []gh.PullRequest {
@@ -150,13 +151,13 @@ func TestPicker_View_HighlightsCursor(t *testing.T) {
 	if len(prLines) < 3 {
 		t.Fatalf("expected 3 PR lines, got %d", len(prLines))
 	}
-	// Strip ANSI / styling chars for prefix detection. The lipgloss-rendered
-	// line still begins with the textual "> " content we emit.
-	if !strings.Contains(prLines[1], "> ") {
-		t.Errorf("cursor line should contain '> ': %q", prLines[1])
+	// Strip ANSI / styling chars for prefix detection.
+	marker := theme.DefaultContext().Glyph(theme.Selected) + " "
+	if !strings.Contains(prLines[1], marker) {
+		t.Errorf("cursor line should contain %q: %q", marker, prLines[1])
 	}
-	if strings.Contains(prLines[0], "> ") {
-		t.Errorf("non-cursor line should not contain '> ': %q", prLines[0])
+	if strings.Contains(prLines[0], marker) {
+		t.Errorf("non-cursor line should not contain %q: %q", marker, prLines[0])
 	}
 	// And the two rendered lines must differ (styling-wise) so the user sees
 	// a visual difference.

@@ -6,71 +6,65 @@ import (
 
 	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/threadsops"
+	"github.com/svnbjrn/spoon/internal/tui/theme"
 )
 
 func renderModel(m Model) string {
+	ctx := m.themeContext()
 	if m.showHelp {
-		return renderHelp()
+		return renderHelp(ctx)
 	}
 	if m.err != nil {
 		return fmt.Sprintf("error: %v\n\npress q to quit", m.err)
 	}
 	if !m.loaded {
-		return "loading threads…"
+		return "loading threads..."
 	}
 	if len(m.threads) == 0 {
 		return "no unresolved threads on this PR\n\npress q to quit"
 	}
 	var b strings.Builder
-	b.WriteString(renderTUIStatus(m.prStatus, m.number))
+	b.WriteString(renderTUIStatus(m.prStatus, m.number, ctx))
 	b.WriteString("\n")
-	for i, t := range m.threads {
+	for i, thread := range m.threads {
 		marker := "  "
 		if i == m.cursor {
-			marker = "> "
+			marker = ctx.Glyph(theme.Selected) + " "
 		}
 		reviewer := "unknown"
-		if len(t.Comments) > 0 {
-			reviewer = fmt.Sprintf("%s (%s)", t.Comments[0].Author, t.Comments[0].AuthorType)
+		if len(thread.Comments) > 0 {
+			reviewer = fmt.Sprintf("%s (%s)", thread.Comments[0].Author, thread.Comments[0].AuthorType)
 		}
 		outdated := ""
-		if t.IsOutdated {
+		if thread.IsOutdated {
 			outdated = " (outdated)"
 		}
-		fmt.Fprintf(&b, "%s%-16s  %s:%d%s\n", marker, reviewer, t.Path, t.Line, outdated)
+		fmt.Fprintf(&b, "%s%-16s  %s:%d%s\n", marker, reviewer, thread.Path, thread.Line, outdated)
 	}
-	hasSuggestion := false
 	if m.cursor < len(m.threads) {
-		t := m.threads[m.cursor]
+		thread := m.threads[m.cursor]
 		b.WriteString("\n")
-		fmt.Fprintf(&b, "%s\n", threadStateLabel(t))
-		if len(t.Comments) > 0 {
-			if m.Verbose && t.Comments[0].CreatedAt != "" {
-				fmt.Fprintf(&b, "  📅 Created: %s\n", t.Comments[0].CreatedAt)
+		fmt.Fprintf(&b, "%s\n", threadStateLabel(thread, ctx))
+		if len(thread.Comments) > 0 {
+			if m.Verbose && thread.Comments[0].CreatedAt != "" {
+				fmt.Fprintf(&b, "  Created: %s\n", thread.Comments[0].CreatedAt)
 			}
-			b.WriteString(renderCommentBody(t.Comments[0].Body))
+			b.WriteString(renderCommentBody(thread.Comments[0].Body))
 			b.WriteString("\n")
-			// Scan every comment in the thread for a suggestion block — not just
-			// the first one — so the hint matches what `apply-suggestion` sees.
-			for _, c := range t.Comments {
-				if len(threadsops.ParseSuggestions(c.ID, c.Body)) > 0 {
-					hasSuggestion = true
+			for _, comment := range thread.Comments {
+				if len(threadsops.ParseSuggestions(comment.ID, comment.Body)) > 0 {
+					fmt.Fprintf(&b, "\nSuggestion available (a to apply)\n")
 					break
 				}
 			}
-			if hasSuggestion {
-				fmt.Fprintf(&b, "\n💡 Suggestion available (a to apply)\n")
-			}
 		}
-		// Code context block (populated only when --show-code N is set).
-		if cc, ok := m.codeContexts[t.ID]; ok && cc != nil {
+		if codeContext, ok := m.codeContexts[thread.ID]; ok && codeContext != nil {
 			b.WriteString("\n")
-			b.WriteString(renderCodeContext(t, *cc))
+			b.WriteString(renderCodeContext(thread, *codeContext, ctx))
 			b.WriteString("\n")
 		}
 	}
-	footer := "\n[r/Enter] reply  [R] resolve  [a] apply-suggestion  [c] counter-propose  [Ctrl+A] resolve-all  [A] unresolve-all  [o] open  [?] help  [q] quit\n"
-	b.WriteString(footer)
+	b.WriteString("\n[r/Enter] reply  [R] resolve  [a] apply-suggestion  [c] counter-propose  [Ctrl+A] resolve-all  [A] unresolve-all  [o] open  [?] help  [q] quit\n")
 	if m.status != "" {
 		fmt.Fprintf(&b, "\n%s\n", m.status)
 	}
@@ -78,7 +72,7 @@ func renderModel(m Model) string {
 		fmt.Fprintf(&b, "\n[%s] press y to confirm, any other key to cancel\n", m.confirm)
 	}
 	if m.composing {
-		fmt.Fprintf(&b, "\n--- compose (%s) — Ctrl+S to send, Esc to cancel ---\n%s_\n", m.composeFor, string(m.composeBuf))
+		fmt.Fprintf(&b, "\n--- compose (%s) %s Ctrl+S to send, Esc to cancel ---\n%s_\n", m.composeFor, ctx.Glyph(theme.EmDash), string(m.composeBuf))
 	}
 	return b.String()
 }
@@ -86,12 +80,12 @@ func renderModel(m Model) string {
 // renderTUIStatus formats the PR status header for the TUI panel.
 // The TUI always uses dash markers; signal coloring is via lipgloss styles
 // applied by the caller if needed (currently plain text).
-func renderTUIStatus(s gh.PullRequestStatus, number int) string {
+func renderTUIStatus(s gh.PullRequestStatus, number int, ctx theme.Context) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "PR #%d — %s\n", number, s.Title)
-	fmt.Fprintf(&b, "  Mergeable: %s\n", statusOrDash(s.MergeStateStatus))
-	fmt.Fprintf(&b, "  Reviews:   %s\n", statusOrDash(s.ReviewDecision))
-	fmt.Fprintf(&b, "  Checks:    %s\n", statusOrDash(s.ChecksState))
+	fmt.Fprintf(&b, "PR #%d %s %s\n", number, ctx.Glyph(theme.EmDash), s.Title)
+	fmt.Fprintf(&b, "  Mergeable: %s\n", statusOrDash(s.MergeStateStatus, ctx))
+	fmt.Fprintf(&b, "  Reviews:   %s\n", statusOrDash(s.ReviewDecision, ctx))
+	fmt.Fprintf(&b, "  Checks:    %s\n", statusOrDash(s.ChecksState, ctx))
 	if s.OutdatedThreads > 0 {
 		fmt.Fprintf(&b, "  Threads:   %d unresolved, %d outdated\n", s.UnresolvedThreads, s.OutdatedThreads)
 	} else {
@@ -115,16 +109,14 @@ func renderCommentBody(body string) string {
 	for _, line := range lines {
 		trimmed := strings.TrimLeft(line, " \t")
 		if !inBlock {
-			if strings.HasPrefix(strings.ToLower(trimmed), "```suggestion") ||
-				strings.HasPrefix(strings.ToLower(trimmed), "~~~suggestion") {
+			if strings.HasPrefix(strings.ToLower(trimmed), "```suggestion") || strings.HasPrefix(strings.ToLower(trimmed), "~~~suggestion") {
 				inBlock = true
-				out = append(out, "💡 Suggestion:")
+				out = append(out, "Suggestion:")
 				continue
 			}
 			out = append(out, line)
 			continue
 		}
-		// inBlock: detect close fence
 		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
 			inBlock = false
 			out = append(out, "    (end suggestion)")
@@ -135,11 +127,11 @@ func renderCommentBody(body string) string {
 	return strings.Join(out, "\n")
 }
 
-func statusOrDash(v string) string {
-	if v == "" {
-		return "—"
+func statusOrDash(value string, ctx theme.Context) string {
+	if value == "" {
+		return ctx.Glyph(theme.EmDash)
 	}
-	return v
+	return value
 }
 
 // threadStateLabel renders the resolve/outdated state pair as a single line,
@@ -149,14 +141,14 @@ func statusOrDash(v string) string {
 //	Unresolved + outdated -> "⚠️ Unresolved (outdated — code changed)"
 //	Resolved + active     -> "✓ Resolved (active)"
 //	Resolved + outdated   -> "✓ Resolved (outdated — code changed)"
-func threadStateLabel(t gh.ReviewThread) string {
-	glyph, label := "⚠️", "Unresolved"
-	if t.IsResolved {
-		glyph, label = "✓", "Resolved"
+func threadStateLabel(thread gh.ReviewThread, ctx theme.Context) string {
+	glyph, label := ctx.Glyph(theme.Warning), "Unresolved"
+	if thread.IsResolved {
+		glyph, label = ctx.Glyph(theme.Check), "Resolved"
 	}
 	suffix := "active"
-	if t.IsOutdated {
-		suffix = "outdated — code changed"
+	if thread.IsOutdated {
+		suffix = "outdated " + ctx.Glyph(theme.EmDash) + " code changed"
 	}
 	return fmt.Sprintf("%s %s (%s)", glyph, label, suffix)
 }
@@ -164,7 +156,7 @@ func threadStateLabel(t gh.ReviewThread) string {
 // renderCodeContext formats a CodeContext into a plain-text framed block for
 // the TUI detail pane. The arrow marker points to the thread's anchored line
 // range. Outdated threads get a small warning suffix.
-func renderCodeContext(t gh.ReviewThread, cc threadsops.CodeContext) string {
+func renderCodeContext(thread gh.ReviewThread, cc threadsops.CodeContext, ctx theme.Context) string {
 	var b strings.Builder
 	refShort := cc.Ref
 	if len(refShort) > 7 {
@@ -174,33 +166,34 @@ func renderCodeContext(t gh.ReviewThread, cc threadsops.CodeContext) string {
 	if cc.Outdated {
 		outdatedTag = " (outdated)"
 	}
-	fmt.Fprintf(&b, "┌── code at %s:%d-%d [ref %s]%s ──\n", cc.Path, cc.StartLine, cc.EndLine, refShort, outdatedTag)
-	hlStart, hlEnd := t.Line, t.Line
-	if t.StartLine != nil && *t.StartLine > 0 {
-		hlStart = *t.StartLine
+	h := ctx.Glyph(theme.BoxHorizontal)
+	v := ctx.Glyph(theme.BoxVertical)
+	fmt.Fprintf(&b, "%s%s code at %s:%d-%d [ref %s]%s %s%s\n", ctx.Glyph(theme.BoxTopLeft), h+h, cc.Path, cc.StartLine, cc.EndLine, refShort, outdatedTag, h+h, "")
+	hlStart, hlEnd := thread.Line, thread.Line
+	if thread.StartLine != nil && *thread.StartLine > 0 {
+		hlStart = *thread.StartLine
 	}
 	if hlEnd < hlStart {
 		hlEnd = hlStart
 	}
-	for i, ln := range cc.Lines {
-		n := cc.StartLine + i
+	for i, line := range cc.Lines {
 		marker := " "
-		if n >= hlStart && n <= hlEnd {
-			marker = "←"
+		if n := cc.StartLine + i; n >= hlStart && n <= hlEnd {
+			marker = ctx.Glyph(theme.ArrowLeft)
 		}
-		fmt.Fprintf(&b, "│ %4d │ %s %s\n", n, marker, ln)
+		fmt.Fprintf(&b, "%s %4d %s %s %s\n", v, cc.StartLine+i, v, marker, line)
 	}
-	b.WriteString("└─────")
+	b.WriteString(ctx.Glyph(theme.BoxBottomLeft) + strings.Repeat(h, 5))
 	if cc.Outdated {
-		b.WriteString("\n  (heads up: this thread is marked outdated — snippet shows current code at these lines)")
+		b.WriteString("\n  (heads up: this thread is marked outdated " + ctx.Glyph(theme.EmDash) + " snippet shows current code at these lines)")
 	}
 	return b.String()
 }
 
-func renderHelp() string {
-	return `spoon threads — keybindings
+func renderHelp(ctx theme.Context) string {
+	return "spoon threads " + ctx.Glyph(theme.EmDash) + ` keybindings
 
-  ↑/↓, j/k     Navigate threads
+  ` + ctx.Glyph(theme.ArrowUp) + `/` + ctx.Glyph(theme.ArrowDown) + `, j/k     Navigate threads
   Enter, r     Reply (opens textarea)
   R            Resolve current thread
   a            Apply suggestion on current thread (no-op if thread has none)

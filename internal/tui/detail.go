@@ -25,7 +25,7 @@ func (m Model) viewDetail() string {
 		return "\n  No fork selected.\n"
 	}
 	body := scrollLines(m.detailBody(), m.detailOffset, m.detailViewHeight())
-	return body + "\n\n  " + helpStyle.Render("[o] Open  [c] Compare  [y] Yank  [PgUp/PgDn] Scroll  [b/Esc] Back")
+	return body + "\n\n  " + m.styles().help.Render("[o] Open  [c] Compare  [y] Yank  [PgUp/PgDn] Scroll  [b/Esc] Back")
 }
 
 // detailViewHeight is how many body lines fit on screen. Zero (no
@@ -43,6 +43,7 @@ func (m Model) detailBody() string {
 		return ""
 	}
 	sf := m.forks[m.cursor]
+	ctx, styles := m.themeContext(), m.styles()
 	var b strings.Builder
 
 	boxWidth := 55
@@ -52,223 +53,185 @@ func (m Model) detailBody() string {
 			boxWidth = 70
 		}
 	}
-	hr := strings.Repeat("─", boxWidth-2)
+	h := ctx.Glyph(theme.BoxHorizontal)
+	v := ctx.Glyph(theme.BoxVertical)
+	hr := strings.Repeat(h, boxWidth-2)
+	writeLine := func(content string) {
+		b.WriteString(fitBoxLine(v+" "+content, boxWidth, v) + "\n")
+	}
+	divider := func() {
+		b.WriteString(ctx.Glyph(theme.BoxTeeRight) + hr + ctx.Glyph(theme.BoxTeeLeft) + "\n")
+	}
 
 	b.WriteString("\n")
-	b.WriteString("╭" + hr + "╮\n")
-	b.WriteString(fitBoxLine("│ "+lipgloss.NewStyle().Bold(true).Render("Fork: "+sf.Fork.ID), boxWidth) + "\n")
+	b.WriteString(ctx.Glyph(theme.BoxTopLeft) + hr + ctx.Glyph(theme.BoxTopRight) + "\n")
+	writeLine(lipgloss.NewStyle().Bold(true).Render("Fork: " + sf.Fork.ID))
 
-	// Heat bar
-	scoreColor := HeatColor(sf.Heat.Score)
-	scoreStr := lipgloss.NewStyle().Foreground(scoreColor).Bold(true).Render(fmt.Sprintf("%.0f/100", sf.Heat.Score))
-	b.WriteString(fitBoxLine(fmt.Sprintf("│ Heat: %s %s", RenderHeatBar(sf.Heat.Score), scoreStr), boxWidth) + "\n")
+	scoreStr := lipgloss.NewStyle().Foreground(m.heatColor(sf.Heat.Score)).Bold(true).Render(fmt.Sprintf("%.0f/100", sf.Heat.Score))
+	writeLine(fmt.Sprintf("Heat: %s %s", m.renderHeatBar(sf.Heat.Score), scoreStr))
+	divider()
 
-	b.WriteString("├" + hr + "┤\n")
+	// The former width-two fire pictograph becomes a text label in both glyph
+	// profiles, so string composition can never leave an unrecoverable cell.
+	writeLine(styles.warn.Render("Why it is hot:"))
 
-	// Why it's hot
-	b.WriteString(fitBoxLine("│ 🔥 Why it's hot:", boxWidth) + "\n")
-
-	// Component breakdown (v2)
 	for _, c := range sf.Heat.Components {
 		if c.Points < 0.5 {
 			continue
 		}
-		// Keep the arrow neutral when Max is 0 (undefined ratio); only an
-		// actual denominator earns an up/down direction. Otherwise a 0/0
-		// component would render "↓" and read as "declining".
-		arrow := "→"
+		arrow := ctx.Glyph(theme.ArrowRight)
 		if c.Max > 0 {
 			pct := c.Points / c.Max
 			if pct > 0.75 {
-				arrow = "↑"
+				arrow = ctx.Glyph(theme.ArrowUp)
 			} else if pct < 0.25 {
-				arrow = "↓"
+				arrow = ctx.Glyph(theme.ArrowDown)
 			}
 		}
-		desc := componentDescription(c.Name, c.Raw, c.Points, c.Max)
-		line := fmt.Sprintf("│  %s %s", arrow, desc)
-		b.WriteString(fitBoxLine(line, boxWidth) + "\n")
+		writeLine(fmt.Sprintf(" %s %s", arrow, componentDescription(ctx, c.Name, c.Raw, c.Points, c.Max)))
 	}
 
-	// Penalties
-	if len(sf.Heat.Penalties) > 0 {
-		for _, p := range sf.Heat.Penalties {
-			desc := penaltyDescription(p)
-			b.WriteString(fitBoxLine("│  ↓ "+desc, boxWidth) + "\n")
-		}
+	for _, penalty := range sf.Heat.Penalties {
+		writeLine(" " + ctx.Glyph(theme.ArrowDown) + " " + penaltyDescription(ctx, penalty))
 	}
 
-	// Lone wolf section (v2)
 	lwV2 := sf.Heat.LoneWolfV2
 	if lwV2 != nil && lwV2.Detected {
-		b.WriteString("├" + hr + "┤\n")
-
+		divider()
 		archLabel := lwV2.Label
 		if lwV2.Archetype.String() != "" {
 			archLabel = lwV2.Archetype.String()
 		}
-		wolfStyle := lipgloss.NewStyle().Foreground(theme.Dark.AccentRust).Bold(true)
-		b.WriteString(fitBoxLine("│ "+wolfStyle.Render("🐺 The "+archLabel), boxWidth) + "\n")
-		b.WriteString(fitBoxLine(fmt.Sprintf("│  Solo dev, active over %.0f days", lwV2.CommitSpanDays), boxWidth) + "\n")
-		b.WriteString(fitBoxLine(fmt.Sprintf("│  %d commits · MNA %d", lwV2.MeaningfulCommits, lwV2.MNA), boxWidth) + "\n")
+		writeLine(lipgloss.NewStyle().Foreground(ctx.Palette.AccentRust).Bold(true).Render("Lone wolf: " + archLabel))
+		writeLine(fmt.Sprintf(" Solo dev, active over %.0f days", lwV2.CommitSpanDays))
+		writeLine(fmt.Sprintf(" %d commits %s MNA %d", lwV2.MeaningfulCommits, ctx.Glyph(theme.Separator), lwV2.MNA))
 	}
 
-	// Branch info
 	if sf.T2 != nil && sf.T2.IsBranchWork && sf.T2.ActiveBranch != sf.Fork.DefaultBranch {
-		b.WriteString("├" + hr + "┤\n")
-		b.WriteString(fitBoxLine("│ ⚠  Work is on branch: "+sf.T2.ActiveBranch, boxWidth) + "\n")
-		b.WriteString(fitBoxLine("│    [y] Yank clone & checkout command", boxWidth) + "\n")
+		divider()
+		writeLine(styles.warn.Render(ctx.Glyph(theme.Warning) + " Work is on branch: " + sf.T2.ActiveBranch))
+		writeLine("   [y] Yank clone & checkout command")
 	}
 
-	// Cluster info (only present after a successful cluster pipeline run).
 	if sf.Heat.ClusterID != "" {
-		b.WriteString("├" + hr + "┤\n")
+		divider()
 		label := sf.Heat.ClusterLabel
 		if label == "" {
 			label = sf.Heat.ClusterID
 		}
-		// "noise" gets a minimal block — no label noise, no peers.
 		isNoise := sf.Heat.ClusterID == "noise"
-
-		line := fmt.Sprintf("│ Cluster: %s", label)
+		clusterLine := fmt.Sprintf("Cluster: %s", label)
 		if !isNoise && sf.Heat.ClusterMemberCount > 0 {
-			line += fmt.Sprintf(" (%d members)", sf.Heat.ClusterMemberCount)
+			clusterLine += fmt.Sprintf(" (%d members)", sf.Heat.ClusterMemberCount)
 		}
-		b.WriteString(fitBoxLine(line, boxWidth) + "\n")
-		// R5: cluster isolation context — the "isolation" line surfaces
-		// how far this fork is from the rest of its cluster. The novelty
-		// score encodes distance from centroid: ~1.0 for noise points
-		// (including the 0.5 demotion for empty noise forks from R3) and
-		// lower for tight cluster members. The member count gives scale
-		// context; noise points deliberately omit it because
-		// ClusterMemberCount is 0 for them — a hard-coded "1 member"
-		// would assert a value we don't track. Only emitted when
-		// ClusterID != "" (clustering ran).
-		var iso string
+		writeLine(clusterLine)
 		if isNoise {
-			iso = fmt.Sprintf("│  isolation: %.2f/1.0 (cluster noise)", sf.Heat.NoveltyScore)
+			writeLine(fmt.Sprintf(" isolation: %.2f/1.0 (cluster noise)", sf.Heat.NoveltyScore))
 		} else {
-			iso = fmt.Sprintf("│  isolation: %.2f/1.0 (cluster %s, %d members)",
-				sf.Heat.NoveltyScore, sf.Heat.ClusterID, sf.Heat.ClusterMemberCount)
+			writeLine(fmt.Sprintf(" isolation: %.2f/1.0 (cluster %s, %d members)", sf.Heat.NoveltyScore, sf.Heat.ClusterID, sf.Heat.ClusterMemberCount))
 		}
-		b.WriteString(fitBoxLine(iso, boxWidth) + "\n")
 		if sf.Heat.NoveltyScore > 0 {
-			nl := fmt.Sprintf("│  Novelty: %.2f", sf.Heat.NoveltyScore)
-			b.WriteString(fitBoxLine(nl, boxWidth) + "\n")
+			writeLine(fmt.Sprintf(" Novelty: %.2f", sf.Heat.NoveltyScore))
 		}
 		if sf.Heat.ChangeImpact > 0 {
-			ci := fmt.Sprintf("│  ChangeImpact: %.2f", sf.Heat.ChangeImpact)
-			b.WriteString(fitBoxLine(ci, boxWidth) + "\n")
+			writeLine(fmt.Sprintf(" ChangeImpact: %.2f", sf.Heat.ChangeImpact))
 		}
-
 		if !isNoise {
 			peers := m.collectClusterPeers(sf.Heat.ClusterID, sf.Fork.ID)
 			if len(peers) > 0 {
+				writeLine(fmt.Sprintf(" Cluster peers (%d):", len(peers)))
 				const maxShown = 5
-				header := fmt.Sprintf("│  Cluster peers (%d):", len(peers))
-				b.WriteString(fitBoxLine(header, boxWidth) + "\n")
 				shown := peers
 				extra := 0
 				if len(shown) > maxShown {
 					extra = len(shown) - maxShown
 					shown = shown[:maxShown]
 				}
-				for _, sib := range shown {
-					row := "│    " + sib
-					b.WriteString(fitBoxLine(row, boxWidth) + "\n")
+				for _, sibling := range shown {
+					writeLine("   " + sibling)
 				}
 				if extra > 0 {
-					more := fmt.Sprintf("│    ... and %d more", extra)
-					b.WriteString(fitBoxLine(more, boxWidth) + "\n")
+					writeLine(fmt.Sprintf("   ... and %d more", extra))
 				}
 			}
 		}
 	}
 
-	// Metadata
-	b.WriteString("├" + hr + "┤\n")
-	b.WriteString(fitBoxLine(fmt.Sprintf("│ ★ %d stars   ⑂ %d forks   Pushed %s",
-		sf.Fork.Stars, sf.Fork.SubForkCount, relativeTimeSince(sf.Fork.PushedAt)), boxWidth) + "\n")
-
+	divider()
+	writeLine(fmt.Sprintf("%s %d stars   %s %d forks   Pushed %s", ctx.Glyph(theme.Star), sf.Fork.Stars, ctx.Glyph(theme.Fork), sf.Fork.SubForkCount, relativeTimeSince(sf.Fork.PushedAt)))
 	if sf.T2 != nil {
-		t2 := sf.T2
 		totalAdds, totalDels := 0, 0
-		for _, d := range t2.Diffs {
-			totalAdds += d.Additions
-			totalDels += d.Deletions
+		for _, diff := range sf.T2.Diffs {
+			totalAdds += diff.Additions
+			totalDels += diff.Deletions
 		}
-		b.WriteString(fitBoxLine(fmt.Sprintf("│ Ahead: %d (+%d/-%d)  Behind: %d  Files: %d",
-			t2.AheadCount, totalAdds, totalDels, t2.BehindCount, len(t2.Diffs)), boxWidth) + "\n")
-		b.WriteString(fitBoxLine(fmt.Sprintf("│ Authors: %d", len(forge.UniqueAuthors(t2.Commits))), boxWidth) + "\n")
+		writeLine(fmt.Sprintf("Ahead: %d (+%d/-%d)  Behind: %d  Files: %d", sf.T2.AheadCount, totalAdds, totalDels, sf.T2.BehindCount, len(sf.T2.Diffs)))
+		writeLine(fmt.Sprintf("Authors: %d", len(forge.UniqueAuthors(sf.T2.Commits))))
 	}
 
-	// Bottom badges
-	var bottomBadges []string
+	var badges []string
 	if sf.Fork.OpenPRCount > 0 {
-		bottomBadges = append(bottomBadges, "📬 Has open PR to upstream")
+		badges = append(badges, "Has open PR to upstream")
 	}
 	if sf.Fork.ReleaseCount > 0 {
-		bottomBadges = append(bottomBadges, fmt.Sprintf("🏷️  %d release(s)", sf.Fork.ReleaseCount))
+		badges = append(badges, fmt.Sprintf("%d release(s)", sf.Fork.ReleaseCount))
 	}
 	if sf.Fork.SubForkCount > 0 {
-		bottomBadges = append(bottomBadges, "⛓ Fork of fork")
+		badges = append(badges, "Fork of fork")
 	}
-	if len(bottomBadges) > 0 {
-		b.WriteString(fitBoxLine("│", boxWidth) + "\n")
-		for _, badge := range bottomBadges {
-			b.WriteString(fitBoxLine("│ "+badge, boxWidth) + "\n")
+	if len(badges) > 0 {
+		writeLine("")
+		for _, badge := range badges {
+			writeLine(badge)
 		}
 	}
 
 	if sf.Fork.Description != "" {
-		b.WriteString(fitBoxLine("│", boxWidth) + "\n")
-		// Truncate by display cells, then quote: %q on an already-truncated
-		// string keeps the closing quote inside the box.
+		writeLine("")
 		desc := sf.Fork.Description
 		if lipgloss.Width(desc) > boxWidth-6 {
 			desc = ansi.Truncate(desc, boxWidth-9, "") + "..."
 		}
-		b.WriteString(fitBoxLine(fmt.Sprintf("│ %q", desc), boxWidth) + "\n")
+		writeLine(fmt.Sprintf("%q", desc))
 	}
 
-	b.WriteString("╰" + hr + "╯")
-
+	b.WriteString(ctx.Glyph(theme.BoxBottomLeft) + hr + ctx.Glyph(theme.BoxBottomRight))
 	return b.String()
 }
 
-func componentDescription(name string, raw, points, max float64) string {
+func componentDescription(ctx theme.Context, name string, raw, points, max float64) string {
 	switch name {
 	case "recency":
-		return fmt.Sprintf("Recency (%.0f days ago) — %.1f/%.0f pts", raw, points, max)
+		return fmt.Sprintf("Recency (%.0f days ago) %s %.1f/%.0f pts", raw, ctx.Glyph(theme.EmDash), points, max)
 	case "stars":
-		return fmt.Sprintf("Stars (%s) — %.1f/%.0f pts", forge.FormatStars(int(raw)), points, max)
+		return fmt.Sprintf("Stars (%s) %s %.1f/%.0f pts", forge.FormatStars(int(raw)), ctx.Glyph(theme.EmDash), points, max)
 	case "sub_forks":
-		return fmt.Sprintf("Sub-forks (%.0f) — %.1f/%.0f pts", raw, points, max)
+		return fmt.Sprintf("Sub-forks (%.0f) %s %.1f/%.0f pts", raw, ctx.Glyph(theme.EmDash), points, max)
 	case "releases":
-		return fmt.Sprintf("Releases (%.0f) — %.1f/%.0f pts", raw, points, max)
+		return fmt.Sprintf("Releases (%.0f) %s %.1f/%.0f pts", raw, ctx.Glyph(theme.EmDash), points, max)
 	case "mna":
-		return fmt.Sprintf("Meaningful code (%.0f MNA) — %.1f/%.0f pts", raw, points, max)
+		return fmt.Sprintf("Meaningful code (%.0f MNA) %s %.1f/%.0f pts", raw, ctx.Glyph(theme.EmDash), points, max)
 	case "sync_ratio":
-		return fmt.Sprintf("Sync with upstream (%.0f%%) — %.1f/%.0f pts", raw*100, points, max)
+		return fmt.Sprintf("Sync with upstream (%.0f%%) %s %.1f/%.0f pts", raw*100, ctx.Glyph(theme.EmDash), points, max)
 	case "feature_ratio":
-		return fmt.Sprintf("Feature commits (%.0f%%) — %.1f/%.0f pts", raw*100, points, max)
+		return fmt.Sprintf("Feature commits (%.0f%%) %s %.1f/%.0f pts", raw*100, ctx.Glyph(theme.EmDash), points, max)
 	case "lone_wolf":
-		return fmt.Sprintf("Lone wolf (strength %.0f%%) — %.1f/%.0f pts", raw*100, points, max)
+		return fmt.Sprintf("Lone wolf (strength %.0f%%) %s %.1f/%.0f pts", raw*100, ctx.Glyph(theme.EmDash), points, max)
 	case "span":
-		return fmt.Sprintf("Commit span (%.0f days) — %.1f/%.0f pts", raw, points, max)
+		return fmt.Sprintf("Commit span (%.0f days) %s %.1f/%.0f pts", raw, ctx.Glyph(theme.EmDash), points, max)
 	default:
-		return fmt.Sprintf("%s — %.1f/%.0f pts", name, points, max)
+		return fmt.Sprintf("%s %s %.1f/%.0f pts", name, ctx.Glyph(theme.EmDash), points, max)
 	}
 }
 
-func penaltyDescription(name string) string {
+func penaltyDescription(ctx theme.Context, name string) string {
 	switch name {
 	case "no_ahead":
-		return "No commits ahead — score zeroed"
+		return "No commits ahead " + ctx.Glyph(theme.EmDash) + " score zeroed"
 	case "archived":
-		return "Archived — score capped at 30"
+		return "Archived " + ctx.Glyph(theme.EmDash) + " score capped at 30"
 	case "low_recency":
-		return "Low recency — score reduced 30%"
+		return "Low recency " + ctx.Glyph(theme.EmDash) + " score reduced 30%"
 	default:
 		return name + " penalty applied"
 	}
@@ -312,33 +275,14 @@ func (m Model) collectClusterPeers(clusterID, selfID string) []string {
 	return out
 }
 
-// fitBoxLine pads or truncates a line so it fits inside the detail box
-// of width boxWidth, and appends the closing "│". The input string is
-// expected to start with the opening "│ ".
-//
-// Width is computed in runes via utf8.RuneCountInString, and truncation
-// happens on rune boundaries, so multi-byte box-drawing characters
-// (e.g. "│") and other non-ASCII runes are handled correctly. Note that
-// "rune count" is not the same as terminal display width — CJK and wide
-// emoji will under-count, but the detail view does not contain such
-// content, so rune count is sufficient here.
-func fitBoxLine(line string, boxWidth int) string {
-	// boxWidth is the total width of the box including borders, so the
-	// content area between the two "│" characters is boxWidth-2 wide.
-	// The closing "│" is appended at column boxWidth-1 (0-indexed) so
-	// the line as-is must occupy boxWidth-1 columns (runes) before the
-	// trailing "│" is added.
+// fitBoxLine pads or truncates a line so it fits inside the detail box and
+// appends the caller's profile-resolved closing border.
+func fitBoxLine(line string, boxWidth int, closing string) string {
 	target := boxWidth - 1
-	// Terminal cells, not runes or bytes: 🔥 and ★ are one rune but two cells,
-	// and a lipgloss-styled string carries ANSI sequences that occupy no cells
-	// at all. Measuring with len() or utf8.RuneCountInString put the closing
-	// border in the wrong column for any line containing either.
 	width := lipgloss.Width(line)
 	if width > target {
-		// ansi.Truncate is width-aware and will not cut a rune in half or
-		// strand an unterminated escape sequence.
 		line = ansi.Truncate(line, target, "")
 		width = lipgloss.Width(line)
 	}
-	return line + pad(target-width, " ") + "│"
+	return line + pad(target-width, " ") + closing
 }

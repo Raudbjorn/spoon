@@ -9,33 +9,13 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// ColorProfile is declared here so Context can be threaded before profile
-// parsing and quantization land in the next phase.
-type ColorProfile int
-
-const (
-	TrueColor ColorProfile = iota
-	Ansi256
-	Ansi16
-	Ansi8
-	Mono
-	NoColor
-)
-
-// GlyphProfile is declared here so Context can be threaded before glyph
-// resolution lands in the next phase.
-type GlyphProfile int
-
-const (
-	Unicode GlyphProfile = iota
-	Ascii
-)
-
 // Context is the selected immutable terminal rendering context.
 type Context struct {
 	Palette      Palette
 	ColorProfile ColorProfile
 	GlyphProfile GlyphProfile
+
+	gutter [6]lipgloss.Color
 }
 
 // PaletteByName returns one of Spoon's built-in resolved palettes.
@@ -80,4 +60,11 @@ func GutterColors(palette Palette) [6]lipgloss.Color {
 	default:
 		return DarkGutterColors
 	}
+}
+
+func (c Context) GutterColors() [6]lipgloss.Color {
+	if c.gutter != ([6]lipgloss.Color{}) {
+		return c.gutter
+	}
+	return GutterColors(Dark)
 }
