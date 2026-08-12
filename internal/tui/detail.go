@@ -38,6 +38,9 @@ func (m Model) detailViewHeight() int {
 }
 
 func (m Model) detailBody() string {
+	if m.cursor < 0 || m.cursor >= len(m.forks) {
+		return ""
+	}
 	sf := m.forks[m.cursor]
 	var b strings.Builder
 

@@ -1217,6 +1217,12 @@ func (m *Model) startEnrichment() tea.Cmd {
 		return nil
 	}
 
+	// Force the ceiling atomic into existence before any compareCmd closure
+	// captures m.tierCeiling below: a nil pointer captured here would never
+	// observe a later `t` press, since setMaxTier would go on to allocate a
+	// fresh atomic that the already-built closures never see.
+	m.setMaxTier(m.maxTier())
+
 	ctx, cancel := context.WithCancel(context.Background())
 	m.enrichCtx = ctx
 	m.enrichCancel = cancel
