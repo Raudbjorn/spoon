@@ -54,6 +54,15 @@ type tier2ResultMsg struct {
 	// rate-limit reserve floor was reached. Distinct from err: the fork is
 	// kept, just marked un-enriched rather than failed.
 	budgetSkipped bool
+	// tierSkipped is true when the compare was not attempted because the
+	// user's enrichment ceiling sat below T2. Distinct from budgetSkipped in
+	// what undoes it: raising the ceiling re-enriches these immediately,
+	// whereas a budget skip waits on the rate window. Both must produce a
+	// message rather than a nil command -- processPendingUpdates only starts
+	// the cluster pipeline once enrichDone reaches enrichTotal, so a skip
+	// that reports nothing would freeze the progress counter and block
+	// clustering forever.
+	tierSkipped bool
 	// fromCache marks a compare served from the store. It must not be
 	// persisted back: cached T2s carry no patch text (the store's read path
 	// skips it), and re-persisting would overwrite full rows with patch-less

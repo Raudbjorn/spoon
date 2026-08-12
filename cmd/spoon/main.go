@@ -49,6 +49,7 @@ func main() {
 	// turns it off. Embedding runs in-process — no external services involved.
 	noCluster := false
 	var heatWeights map[string]float64
+	maxTier := 3
 	clusterTop := 50
 	clusterEpsilon := 0.0 // 0.55 (lexical) unless set explicitly
 	clusterMinSize := 3
@@ -104,6 +105,18 @@ func main() {
 				os.Exit(1)
 			}
 			heatWeights = w
+		case "--tier":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "Error: --tier requires a value")
+				os.Exit(1)
+			}
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n < 1 || n > 3 {
+				fmt.Fprintln(os.Stderr, "Error: --tier must be 1, 2, or 3")
+				os.Exit(1)
+			}
+			maxTier = n
 		case "--no-cluster":
 			noCluster = true
 		case "--cluster-top":
@@ -199,7 +212,7 @@ func main() {
 	}
 	defer db.Close()
 
-	m := tui.NewModelWithCluster(provider, auth, repoArg, refresh, tuiClusterOpts).WithHeatWeights(heatWeights).WithStore(db)
+	m := tui.NewModelWithCluster(provider, auth, repoArg, refresh, tuiClusterOpts).WithHeatWeights(heatWeights).WithMaxTier(maxTier).WithStore(db)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 
 	if _, err := p.Run(); err != nil {
@@ -316,6 +329,9 @@ Flags:
   --forge-host HOSTNAME    Self-hosted GitLab/GHES hostname
   --refresh, --no-cache    Bypass cache (re-fetch all data)
   --heat-weights path      Path to JSON weight override file
+  --tier N                 Max enrichment tier 1-3 (default 3). 1 fetches no
+                           compares at all; 2 skips lone-wolf scoring. Cycled
+                           at runtime with the t key.
   --no-cluster             Disable the embedding + clustering pass
   --cluster-top N          Max forks fed to the embedder (default 50)
   --cluster-epsilon F      Cosine distance cutoff (default 0.55)
