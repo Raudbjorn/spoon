@@ -785,6 +785,18 @@ func TestSplitRepoArg(t *testing.T) {
 	}
 }
 
+func TestSplitRepoArgDoesNotAllocate(t *testing.T) {
+	allocs := testing.AllocsPerRun(100, func() {
+		owner, repo := splitRepoArg("group/subgroup/repo")
+		if owner != "group/subgroup" || repo != "repo" {
+			t.Fatalf("splitRepoArg returned (%q, %q)", owner, repo)
+		}
+	})
+	if allocs != 0 {
+		t.Fatalf("splitRepoArg allocated %v times per call", allocs)
+	}
+}
+
 // TestSplitRepoArgAgreesWithForgeParse pins the invariant the bug violated:
 // splitRepoArg and forge.ParseRepoURL must derive the same owner and repo, because
 // one of them resolves the CLI argument while the other wrote the owner/name that

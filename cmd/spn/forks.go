@@ -1042,23 +1042,14 @@ func storeFiles(files []forge.FileDiff) []store.FileRecord {
 // Callers all treat an empty owner or repo as bad input, so one sentinel covers
 // leading, trailing and doubled slashes without each caller re-checking.
 func splitRepoArg(s string) (owner, repo string) {
+	if strings.HasPrefix(s, "/") || strings.HasSuffix(s, "/") || strings.Contains(s, "//") {
+		return "", ""
+	}
 	cut := strings.LastIndexByte(s, '/')
 	if cut < 0 {
 		return "", ""
 	}
-	owner, repo = s[:cut], s[cut+1:]
-	if owner == "" || repo == "" {
-		return "", ""
-	}
-	// An empty interior segment ("owner//repo") would otherwise yield a
-	// non-empty but unmatchable owner like "owner/", which every caller accepts
-	// and no stored row equals.
-	for _, segment := range strings.Split(owner, "/") {
-		if segment == "" {
-			return "", ""
-		}
-	}
-	return owner, repo
+	return s[:cut], s[cut+1:]
 }
 
 func forkToJSON(r forksops.Result) map[string]any {
