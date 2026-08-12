@@ -50,7 +50,8 @@ layer for users who have no personal config.
   both models' vectors are stored side by side, so enabling or disabling Voyage
   never invalidates the local index. It adds a voyage-code-3 semantic index
   (` + "`spn search --voyage`" + `) and cross-encoder reranking for
-  ` + "`spn forks list --query`" + `, ` + "`spn search`" + `, and the TUI's ` + "`/`" + ` fork ranking.
+  ` + "`spn forks list --query`" + `, ` + "`spn search`" + `, and the TUI's ` + "`R`" + ` fork
+  ranking (` + "`/`" + ` stays a local substring filter and never calls out).
   Fields: apiKeyFile (path to a 0600 file holding the key — the key itself is
   never stored here), embedModel, rerankModel, outputDimension (256/512/1024/2048;
   1024 default), baseUrl, disabled.

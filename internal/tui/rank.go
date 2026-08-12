@@ -30,8 +30,10 @@ import (
 )
 
 // relevanceSortCol is the sort column the ranking installs. It is deliberately
-// absent from cycleSortColumn's list, so pressing `s` leaves relevance ordering
-// rather than cycling back into it.
+// absent from cycleSortColumn's list: pressing `s` therefore falls through to
+// "heat", which exits relevance ordering rather than cycling back into it. That
+// is the intended escape — `s` means "sort by a column", and relevance is not one
+// the user can cycle to.
 const relevanceSortCol = "relevance"
 
 // rankResultMsg carries a completed ranking back to the Update loop. seq
@@ -204,8 +206,12 @@ func (m *Model) handleRankResult(msg rankResultMsg) (tea.Model, tea.Cmd) {
 // relevanceScore returns a fork's score under the active ranking. Forks with no
 // score (no compare data when the query ran, or enriched afterwards) sort last
 // rather than tying with a genuine zero.
+//
+// Bounds are checked here rather than assumed: the only caller today is forkLess,
+// which sort drives with valid indices, but a comparator is an easy thing to reuse
+// from a path that has no such guarantee.
 func (m *Model) relevanceScore(i int) float64 {
-	if m.rankScores == nil {
+	if m.rankScores == nil || i < 0 || i >= len(m.forks) {
 		return -1
 	}
 	score, ok := m.rankScores[m.forks[i].Fork.ID]
@@ -229,17 +235,19 @@ func (m Model) rankFooter() string {
 		m.rankApplied, m.rankMethod, len(m.rankScores))
 }
 
-// viewRank renders the query prompt.
+// viewRankPrompt renders the intent prompt. The hints must match handleRankKey:
+// Enter applies, an empty query clears, and Esc cancels the edit without
+// disturbing an active ranking.
 func (m Model) viewRankPrompt() string {
 	var b strings.Builder
 	b.WriteString("\n")
-	b.WriteString("  Rank forks by intent\n\n")
-	b.WriteString("  Query: " + renderWithCursor(m.rankQuery, m.rankCursor) + "\n\n")
-	scorer := "lexical (no Voyage key configured)"
+	b.WriteString(fmt.Sprintf("  Rank %d fork(s) by intent\n\n", m.visibleCount()))
+	b.WriteString("  Intent: " + renderWithCursor(m.rankQuery, m.rankCursor) + "\n\n")
+	scorer := "lexical (set VOYAGE_AI_API_KEY for the cross-encoder)"
 	if m.queryScorer != nil {
 		scorer = m.queryScorer.Method()
 	}
 	b.WriteString("  " + helpStyle.Render("scorer: "+scorer) + "\n")
-	b.WriteString("  " + helpStyle.Render("←/→ move  Home/End  Enter rank  Esc clear  Ctrl+U clear line") + "\n")
+	b.WriteString("  " + helpStyle.Render("←/→ move  Home/End  Enter rank  Esc cancel  Ctrl+U clear  (empty clears the ranking)") + "\n")
 	return b.String()
 }

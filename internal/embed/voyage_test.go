@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -438,5 +439,51 @@ func TestVoyageBatchBoundsRespectsBothCaps(t *testing.T) {
 				t.Errorf("batches cover %d of %d items", covered, len(tc.costs))
 			}
 		})
+	}
+}
+
+// TestVoyageValidateRejectsDegenerateVectors pins the checks a reviewer read as a
+// divide-by-zero bug. They run on the raw API response, before normalization, so
+// a zero vector is rejected outright rather than depending on L2NormalizeAll
+// leaving zero vectors alone (it does, but that is another file's guarantee).
+func TestVoyageValidateRejectsDegenerateVectors(t *testing.T) {
+	const dim = 4
+	embedder := &VoyageEmbedder{}
+	embedder.client.cfg.OutputDimension = dim
+
+	cases := []struct {
+		name string
+		row  []float32
+		want string
+	}{
+		{name: "zero norm", row: []float32{0, 0, 0, 0}, want: "has zero norm"},
+		{name: "wrong width", row: []float32{1, 0}, want: "dimension 2, want 4"},
+		{name: "NaN", row: []float32{float32(math.NaN()), 1, 0, 0}, want: "non-finite"},
+		{name: "positive infinity", row: []float32{float32(math.Inf(1)), 1, 0, 0}, want: "non-finite"},
+		{name: "negative infinity", row: []float32{float32(math.Inf(-1)), 1, 0, 0}, want: "non-finite"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			vectors, err := embedder.validate([][]float32{tc.row})
+			if err == nil {
+				t.Fatalf("validate accepted %v, returning %v", tc.row, vectors)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error = %q, want it to contain %q", err, tc.want)
+			}
+		})
+	}
+
+	// A usable vector still normalizes to unit length.
+	vectors, err := embedder.validate([][]float32{{3, 4, 0, 0}})
+	if err != nil {
+		t.Fatalf("validate rejected a usable vector: %v", err)
+	}
+	var norm float64
+	for _, v := range vectors[0] {
+		norm += float64(v) * float64(v)
+	}
+	if diff := norm - 1; diff > 1e-6 || diff < -1e-6 {
+		t.Errorf("squared norm = %v, want 1 (vector was not normalized)", norm)
 	}
 }

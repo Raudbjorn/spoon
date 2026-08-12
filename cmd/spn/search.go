@@ -236,7 +236,7 @@ func runSearchWith(args []string, stdout, stderr io.Writer) int {
 }
 
 const (
-	searchUsage = "Usage: spn search \"query\" [--repo owner/repo] [--top N] [--voyage] [--no-rerank] [--rerank-overfetch N]"
+	searchUsage = "Usage: spn search \"query\" [--repo owner/repo] [--top N] [--voyage] [--rerank|--no-rerank] [--rerank-overfetch N]"
 
 	voyageKeyRemediation = "Set " + embed.VoyageAPIKeyEnv + " (or embedder.voyage.apiKeyFile in the spoon config), or drop the flag to use the local fastembed index."
 )

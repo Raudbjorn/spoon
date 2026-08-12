@@ -13,8 +13,9 @@ deliberately and on different terms.
   implementation, so `--query` was lexical-only in production. It is now
   implemented by `embed.VoyageReranker` (`internal/embed/voyagerank.go`) and wired
   at `cmd/spn/forks.go` (`--query`), `cmd/spn/search.go` (`spn search`), and
-  `internal/tui/filter.go` (the TUI `/` ranking, which also builds the fork filter
-  `help.go` had advertised but never had).
+  `internal/tui/rank.go` (the TUI `R` ranking). `/` is not that key: #105 landed it
+  as a substring filter on `owner/name`, and the two compose — `/` narrows, `R`
+  orders the survivors.
 - **An external embedder exists again**, but as a *sibling* rather than a
   replacement — which is what `355dcd8`'s rationale was actually about. Those
   backends made the entire semantic index depend on a reachable service; Voyage

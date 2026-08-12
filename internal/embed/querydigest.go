@@ -15,9 +15,10 @@ const QueryDigestMaxChars = 2000
 // subjects first (the strongest intent signal), then touched paths.
 //
 // It lives here, beside BuildFeatures, because more than one caller needs it —
-// forksops scores `--query` with it and the TUI's fork filter scores against the
-// same text. Two digest builders would let the CLI and the TUI rank the same
-// fork differently for the same query.
+// forksops scores `--query` with it and the TUI's `R` intent ranking scores
+// against the same text. (The TUI's `/` is a substring filter over owner/name and
+// does not come through here.) Two digest builders would let the CLI and the TUI
+// rank the same fork differently for the same query.
 func QueryDigest(t2 *forge.T2Data) string {
 	if t2 == nil {
 		return ""

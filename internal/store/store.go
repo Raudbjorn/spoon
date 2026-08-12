@@ -1267,34 +1267,37 @@ func (s *Store) VoyageCacheGetMany(ctx context.Context, keys []string) (map[stri
 	cutoff := ts(time.Now().UTC().Add(-VoyageCacheTTL))
 	for start := 0; start < len(keys); start += voyageCacheKeyChunk {
 		end := min(start+voyageCacheKeyChunk, len(keys))
-		chunk := keys[start:end]
-		args := make([]any, 0, len(chunk)+1)
-		for _, key := range chunk {
-			args = append(args, key)
-		}
-		args = append(args, cutoff)
-		q := `SELECT cache_key,value FROM voyage_cache WHERE cache_key IN (?` +
-			strings.Repeat(",?", len(chunk)-1) + `) AND created_at >= ?`
-		rows, err := s.db.QueryContext(ctx, q, args...)
-		if err != nil {
-			return nil, err
-		}
-		for rows.Next() {
-			var key string
-			var value []byte
-			if err := rows.Scan(&key, &value); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			out[key] = value
-		}
-		err = rows.Err()
-		rows.Close()
-		if err != nil {
+		if err := s.voyageCacheChunkInto(ctx, keys[start:end], cutoff, out); err != nil {
 			return nil, err
 		}
 	}
 	return out, nil
+}
+
+// voyageCacheChunkInto reads one chunk into out, for the same reason
+// documentBodyChunkInto exists: one defer beats closing by hand on every path.
+func (s *Store) voyageCacheChunkInto(ctx context.Context, chunk []string, cutoff string, out map[string][]byte) error {
+	args := make([]any, 0, len(chunk)+1)
+	for _, key := range chunk {
+		args = append(args, key)
+	}
+	args = append(args, cutoff)
+	q := `SELECT cache_key,value FROM voyage_cache WHERE cache_key IN (?` +
+		strings.Repeat(",?", len(chunk)-1) + `) AND created_at >= ?`
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key string
+		var value []byte
+		if err := rows.Scan(&key, &value); err != nil {
+			return err
+		}
+		out[key] = value
+	}
+	return rows.Err()
 }
 
 // voyageCacheProbeKey is the fixed key VoyageCacheWritable writes. It is a real
@@ -1366,34 +1369,36 @@ func (s *Store) DocumentBodies(ctx context.Context, ids []string) (map[string]st
 	out := make(map[string]string, len(ids))
 	for start := 0; start < len(ids); start += documentBodyChunk {
 		end := min(start+documentBodyChunk, len(ids))
-		chunk := ids[start:end]
-		args := make([]any, len(chunk))
-		for i, id := range chunk {
-			args[i] = id
-		}
-		q := `SELECT document_id,body FROM documents WHERE document_id IN (?` +
-			strings.Repeat(",?", len(chunk)-1) + `)`
-		rows, err := s.db.QueryContext(ctx, q, args...)
-		if err != nil {
-			return nil, err
-		}
-		// Not deferred: this loops, and deferring inside a loop would hold every
-		// chunk's rows open until the function returns.
-		for rows.Next() {
-			var id, body string
-			if err := rows.Scan(&id, &body); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			out[id] = body
-		}
-		err = rows.Err()
-		rows.Close()
-		if err != nil {
+		if err := s.documentBodyChunkInto(ctx, ids[start:end], out); err != nil {
 			return nil, err
 		}
 	}
 	return out, nil
+}
+
+// documentBodyChunkInto reads one chunk into out. Split from the loop so the rows
+// live in a scope a single defer can close: closing by hand on each of the three
+// exit paths works today but rots the moment a fourth is added.
+func (s *Store) documentBodyChunkInto(ctx context.Context, chunk []string, out map[string]string) error {
+	args := make([]any, len(chunk))
+	for i, id := range chunk {
+		args[i] = id
+	}
+	q := `SELECT document_id,body FROM documents WHERE document_id IN (?` +
+		strings.Repeat(",?", len(chunk)-1) + `)`
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, body string
+		if err := rows.Scan(&id, &body); err != nil {
+			return err
+		}
+		out[id] = body
+	}
+	return rows.Err()
 }
 
 func ValidateVector(values []float32, dim int) error {
