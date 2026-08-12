@@ -50,9 +50,24 @@ func (f *fakeForge) Contributors(_ context.Context, _ forge.T1Data) (forge.T3Dat
 }
 func (f *fakeForge) Headroom() float64 { return 1.0 }
 
+// isolateSpoonRun points every path a command writes at a temp tree and clears
+// the Voyage environment. Tests that run a command end to end must call it.
+//
+// SPOON_NO_CONFIG is not isolation on its own, which is what these tests relied
+// on: it suppresses reading config.json, but the durable store's location comes
+// from XDG_CONFIG_HOME (store.DefaultPath), so runForksWith opened
+// store.OpenDefault against the developer's real ~/.config/spoon/spoon.db and
+// persisted its fixture forks into it. The Voyage variables are cleared for the
+// same reason — with a key exported, an unisolated run is free to send fixture
+// documents to a paid API.
+func isolateSpoonRun(t *testing.T) {
+	t.Helper()
+	t.Setenv("SPOON_NO_CONFIG", "1")
+	isolateSpoonHome(t)
+}
+
 func TestSpnForksList_emitsNDJSON(t *testing.T) {
-	t.Setenv("SPOON_NO_CONFIG", "1") // isolate from the host's spoon config
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	isolateSpoonRun(t)
 	prev := providerFactory
 	defer func() { providerFactory = prev }()
 	providerFactory = func(_ context.Context, _, _, _ string) (forge.Forge, string, *agentio.Error) {
@@ -155,8 +170,7 @@ func makeClusterForks(now time.Time, parentPushed time.Time) *fakeForge {
 }
 
 func TestSpnForksList_clusterFieldsPopulated(t *testing.T) {
-	t.Setenv("SPOON_NO_CONFIG", "1") // isolate from the host's spoon config
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	isolateSpoonRun(t)
 	prev := providerFactory
 	defer func() { providerFactory = prev }()
 
@@ -208,8 +222,7 @@ func TestSpnForksList_clusterFieldsPopulated(t *testing.T) {
 }
 
 func TestSpnForksList_noCluster_omitsClusterFields(t *testing.T) {
-	t.Setenv("SPOON_NO_CONFIG", "1") // isolate from the host's spoon config
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	isolateSpoonRun(t)
 	prev := providerFactory
 	defer func() { providerFactory = prev }()
 
@@ -697,8 +710,7 @@ func TestSpnForksList_priorsFlag_rejectsMissingFile(t *testing.T) {
 }
 
 func TestSpnForksList_defaultOutputHasNoPriorFields(t *testing.T) {
-	t.Setenv("SPOON_NO_CONFIG", "1")
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	isolateSpoonRun(t)
 	prev := providerFactory
 	defer func() { providerFactory = prev }()
 	providerFactory = func(_ context.Context, _, _, _ string) (forge.Forge, string, *agentio.Error) {
