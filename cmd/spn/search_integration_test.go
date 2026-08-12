@@ -19,9 +19,7 @@ func TestSearchRanksSemanticMatchFirst(t *testing.T) {
 	if os.Getenv("ONNX_PATH") == "" {
 		t.Skip("ONNX_PATH not set")
 	}
-	root := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
-	t.Setenv("XDG_DATA_HOME", filepath.Join(root, "data"))
+	root := isolateSpoonHome(t)
 	cache := filepath.Join(root, "models")
 	cfgPath, err := config.DefaultPath()
 	if err != nil {
