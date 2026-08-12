@@ -16,6 +16,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -565,6 +566,7 @@ var migrations = []struct {
 }{
 	{version: 1, stmts: schemaV1},
 	{version: 2, stmts: schemaV2},
+	{version: 3, stmts: schemaV3},
 }
 
 // createdTable and addedColumn match the exact shapes every step in the
@@ -1234,6 +1236,166 @@ func (s *Store) SearchRows(ctx context.Context, model, owner, name string) ([]Se
 	return out, rows.Err()
 }
 
+// documentBodyChunk bounds how many document IDs go into one IN (...) clause,
+// staying well under SQLite's bound-parameter ceiling.
+const documentBodyChunk = 400
+
+// VoyageCacheTTL bounds how long a cached paid-provider response is trusted.
+// The response for a given (model, input) pair is stable, but a model served
+// under an unchanged name can be updated upstream, so entries expire rather than
+// living forever. Retention is store policy: callers derive keys, the store
+// decides how long a key remains valid.
+const VoyageCacheTTL = 30 * 24 * time.Hour
+
+// voyageCacheKeyChunk bounds keys per IN (...) lookup.
+const voyageCacheKeyChunk = 400
+
+// pruneVoyageCacheOnce keeps expiry cleanup to one sweep per process. Pruning on
+// every write would pay a delete scan per batch for a table that grows slowly.
+var pruneVoyageCacheOnce sync.Once
+
+// VoyageCacheGetMany returns the cached value for each key that is present and
+// unexpired. Absent and expired keys are simply missing from the result, so a
+// caller treats both as a cache miss and pays for the request.
+func (s *Store) VoyageCacheGetMany(ctx context.Context, keys []string) (map[string][]byte, error) {
+	out := make(map[string][]byte, len(keys))
+	// A nil store is "no cache", not a panic: it reaches here only through the
+	// ResponseCache interface, where a typed-nil is easy to pass by accident.
+	if s == nil || s.db == nil || len(keys) == 0 {
+		return out, nil
+	}
+	cutoff := ts(time.Now().UTC().Add(-VoyageCacheTTL))
+	for start := 0; start < len(keys); start += voyageCacheKeyChunk {
+		end := min(start+voyageCacheKeyChunk, len(keys))
+		chunk := keys[start:end]
+		args := make([]any, 0, len(chunk)+1)
+		for _, key := range chunk {
+			args = append(args, key)
+		}
+		args = append(args, cutoff)
+		q := `SELECT cache_key,value FROM voyage_cache WHERE cache_key IN (?` +
+			strings.Repeat(",?", len(chunk)-1) + `) AND created_at >= ?`
+		rows, err := s.db.QueryContext(ctx, q, args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var key string
+			var value []byte
+			if err := rows.Scan(&key, &value); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out[key] = value
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// voyageCacheProbeKey is the fixed key VoyageCacheWritable writes. It is a real
+// cache row (never read as a response, since no derived key can equal it) so the
+// probe exercises exactly the statement the cache uses rather than a proxy for it.
+const voyageCacheProbeKey = "probe:writable"
+
+// VoyageCacheWritable verifies that durable writes succeed, by performing one.
+// A read-only database, an exhausted disk or a missing schema all surface here
+// rather than as a paid request whose result cannot be kept.
+func (s *Store) VoyageCacheWritable(ctx context.Context) error {
+	if s == nil || s.db == nil {
+		return errors.New("no store is open")
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO voyage_cache(cache_key,kind,model,value,created_at) VALUES(?,?,?,?,?)
+		 ON CONFLICT(cache_key) DO UPDATE SET created_at=excluded.created_at`,
+		voyageCacheProbeKey, "probe", "", []byte{}, ts(time.Now().UTC()))
+	if err != nil {
+		return fmt.Errorf("cache is not writable at %s: %w", s.path, err)
+	}
+	return nil
+}
+
+// VoyageCachePutMany stores values under their keys, refreshing created_at for
+// keys already present so a still-used entry does not expire underneath an
+// active workload. kind and model are recorded for diagnosis and so a future
+// model-scoped invalidation does not need to re-derive keys.
+func (s *Store) VoyageCachePutMany(ctx context.Context, kind, model string, values map[string][]byte) error {
+	if s == nil || s.db == nil || len(values) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	now := ts(time.Now().UTC())
+	for key, value := range values {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO voyage_cache(cache_key,kind,model,value,created_at) VALUES(?,?,?,?,?)
+			 ON CONFLICT(cache_key) DO UPDATE SET value=excluded.value,created_at=excluded.created_at`,
+			key, kind, model, value, now); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	pruneVoyageCacheOnce.Do(func() {
+		// Best effort: an unpruned cache is a disk-space concern, never a
+		// correctness one, since reads already filter on the TTL.
+		_, _ = s.db.ExecContext(ctx, `DELETE FROM voyage_cache WHERE created_at < ?`,
+			ts(time.Now().UTC().Add(-VoyageCacheTTL)))
+	})
+	return nil
+}
+
+// DocumentBodies returns the stored body for each requested document ID, keyed
+// by ID. IDs with no row are simply absent from the map — a caller reranking
+// search hits must tolerate a document that was deleted between the vector scan
+// and this read.
+//
+// This is deliberately a bounded lookup for a candidate set rather than a body
+// column on SearchRow: search ranks every vector in the index, so carrying
+// bodies through that scan would load the entire corpus into memory on every
+// query, including the queries that never rerank.
+func (s *Store) DocumentBodies(ctx context.Context, ids []string) (map[string]string, error) {
+	out := make(map[string]string, len(ids))
+	for start := 0; start < len(ids); start += documentBodyChunk {
+		end := min(start+documentBodyChunk, len(ids))
+		chunk := ids[start:end]
+		args := make([]any, len(chunk))
+		for i, id := range chunk {
+			args[i] = id
+		}
+		q := `SELECT document_id,body FROM documents WHERE document_id IN (?` +
+			strings.Repeat(",?", len(chunk)-1) + `)`
+		rows, err := s.db.QueryContext(ctx, q, args...)
+		if err != nil {
+			return nil, err
+		}
+		// Not deferred: this loops, and deferring inside a loop would hold every
+		// chunk's rows open until the function returns.
+		for rows.Next() {
+			var id, body string
+			if err := rows.Scan(&id, &body); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out[id] = body
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
 func ValidateVector(values []float32, dim int) error {
 	if len(values) != dim {
 		return fmt.Errorf("vector dimension %d, want %d", len(values), dim)
@@ -1274,6 +1436,16 @@ var schemaV1 = []string{
 // full per-fork listing data ride along as JSON (parent_json/t1_json), and the
 // compare scalars land in t2_json + head_sha/t2_fetched_at. forks_synced_at
 // timestamps a completed fork enumeration for list-level freshness.
+// schemaV3 adds the paid-provider response cache. Voyage embedding and rerank
+// calls cost money per token, and the same (model, input) pair always yields the
+// same answer, so a request that has been paid for once is never worth paying
+// for again. Entries are keyed by a content hash of everything that affects the
+// response — see internal/embed/voyagecache.go for the key derivation.
+var schemaV3 = []string{
+	`CREATE TABLE IF NOT EXISTS voyage_cache (cache_key TEXT PRIMARY KEY, kind TEXT NOT NULL, model TEXT NOT NULL, value BLOB NOT NULL, created_at TEXT NOT NULL)`,
+	`CREATE INDEX IF NOT EXISTS voyage_cache_created_idx ON voyage_cache(created_at)`,
+}
+
 var schemaV2 = []string{
 	`ALTER TABLE repos ADD COLUMN parent_json TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE repos ADD COLUMN forks_synced_at TEXT NOT NULL DEFAULT ''`,

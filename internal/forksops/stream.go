@@ -62,8 +62,8 @@ type Options struct {
 	Query string
 
 	// QueryScorer performs the relevance scoring for Query. Nil → the
-	// built-in lexical scorer. The CLI passes the OpenVINO cross-encoder
-	// here when one is configured.
+	// built-in lexical scorer. The CLI passes the Voyage cross-encoder here
+	// when an API key is configured.
 	QueryScorer embed.QueryScorer
 
 	// Priors, when non-nil, scores every collected fork against a curated
@@ -204,7 +204,7 @@ type Result struct {
 	RankConfidence float64
 
 	// QueryScore is the fork's relevance to Options.Query in [0,1];
-	// QueryMethod records how it was computed ("openvino" cross-encoder or
+	// QueryMethod records how it was computed ("voyage" cross-encoder or
 	// "lexical" cosine fallback). Both zero when no query was given.
 	QueryScore  float64
 	QueryMethod string
@@ -1059,15 +1059,17 @@ func buildLoneWolfInput(f forge.T1Data, now time.Time, t2 *forge.T2Data) heat.Lo
 // batched scorer call. Forks without T2 data score 0 (nothing to judge).
 func scoreQuery(ctx context.Context, opts Options, collected []Result, logger io.Writer) {
 	scorer := opts.QueryScorer
-	method := "openvino"
 	if scorer == nil {
 		scorer = embed.LexicalQueryScorer{}
-		method = "lexical"
 	}
+	// The label comes from the scorer, never from a constant here: a hardcoded
+	// "openvino" outlived the implementation it named and mislabeled every
+	// injected scorer until this was fixed.
+	method := scorer.Method()
 	idx := make([]int, 0, len(collected))
 	docs := make([]string, 0, len(collected))
 	for i := range collected {
-		d := queryDigest(collected[i].T2)
+		d := embed.QueryDigest(collected[i].T2)
 		if d == "" {
 			continue
 		}
@@ -1092,33 +1094,6 @@ func scoreQuery(ctx context.Context, opts Options, collected []Result, logger io
 	}
 }
 
-// queryDigestMaxChars bounds the digest handed to the scorer; cross-encoder
-// rows are capped at the model context anyway, the leading chunk carries
-// the signal.
-const queryDigestMaxChars = 2000
-
-// queryDigest renders a fork's change digest for query scoring: commit
-// subjects first (the strongest intent signal), then touched paths.
-func queryDigest(t2 *forge.T2Data) string {
-	if t2 == nil {
-		return ""
-	}
-	f := embed.BuildFeatures(*t2, "", 0)
-	var b strings.Builder
-	b.WriteString(f.Commits)
-	if f.Paths != "" {
-		if b.Len() > 0 {
-			b.WriteString("\n")
-		}
-		b.WriteString(f.Paths)
-	}
-	d := b.String()
-	if runes := []rune(d); len(runes) > queryDigestMaxChars {
-		d = string(runes[:queryDigestMaxChars])
-	}
-	return d
-}
-
 // scorePriors computes Result.PriorScore/PriorReasons for every collected
 // fork against opts.Priors. Pure and deterministic — it reuses the query
 // digest (lowercased) and the fork's T2 diff paths, and issues no provider
@@ -1126,7 +1101,7 @@ func queryDigest(t2 *forge.T2Data) string {
 func scorePriors(opts Options, collected []Result) {
 	for i := range collected {
 		r := &collected[i]
-		digest := strings.ToLower(queryDigest(r.T2))
+		digest := strings.ToLower(embed.QueryDigest(r.T2))
 		var paths []string
 		if r.T2 != nil {
 			paths = make([]string, 0, len(r.T2.Diffs))

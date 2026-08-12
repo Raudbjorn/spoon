@@ -13,9 +13,11 @@ next run. Set SPOON_NO_CONFIG=1 to ignore the file entirely.
 - ` + "`config.json`" + ` — settings (documented below). Precedence everywhere:
   command-line flags > environment variables > this file > built-in defaults.
 - ` + "`spoon.db`" + ` — the global store: every repo/fork/compare spoon has seen,
-  shared by all commands. Compares are content-addressed: an entry serves
-  until its fork is pushed again, then the refresh overwrites it. Safe to
-  delete (spoon refetches); grows with the repos you scan.
+  shared by all commands, plus the semantic index and the cached Voyage
+  responses. Compares are content-addressed: an entry serves until its fork is
+  pushed again, then the refresh overwrites it. Safe to delete (spoon refetches),
+  though deleting it discards paid Voyage results and the next run re-buys them;
+  grows with the repos you scan.
 - ` + "`README.md`" + ` — this file. Rewritten by ` + "`spoon setup`" + `.
 
 Locations: per-user under $XDG_CONFIG_HOME/spoon (default ~/.config/spoon).
@@ -43,6 +45,19 @@ layer for users who have no personal config.
   built-in lexical embedder and needs nothing.
 - ` + "`embedder.model`" + `, ` + "`embedder.cacheDir`" + `, ` + "`embedder.maxLength`" + `,
   ` + "`embedder.batchSize`" + ` — fastembed tuning; defaults are fine.
+- ` + "`embedder.voyage`" + ` — OPTIONAL Voyage AI, the one part of spoon that calls
+  an external service. It runs **in addition to** fastembed, not instead of it:
+  both models' vectors are stored side by side, so enabling or disabling Voyage
+  never invalidates the local index. It adds a voyage-code-3 semantic index
+  (` + "`spn search --voyage`" + `) and cross-encoder reranking for
+  ` + "`spn forks list --query`" + `, ` + "`spn search`" + `, and the TUI's ` + "`/`" + ` fork ranking.
+  Fields: apiKeyFile (path to a 0600 file holding the key — the key itself is
+  never stored here), embedModel, rerankModel, outputDimension (256/512/1024/2048;
+  1024 default), baseUrl, disabled.
+  Voyage is billed per token, so responses are cached in spoon.db and re-runs
+  re-request nothing unchanged. It stays OFF unless both a key resolves and the
+  store is writable — with nowhere durable to keep results, every run would pay
+  again for answers it had to throw away.
 
 ## Environment variables
 
@@ -50,6 +65,14 @@ layer for users who have no personal config.
 |---|---|
 | SPOON_NO_CONFIG=1 | Ignore config.json entirely |
 | SPOON_NO_EMBED=1 | Skip embedding/semantic indexing on spn forks list |
+| VOYAGE_AI_API_KEY | Enable Voyage AI embeddings + reranking (see embedder.voyage) |
+| VOYAGE_API_KEY | Accepted as a fallback (what Voyage's own SDKs read) |
+| SPOON_NO_VOYAGE=1 | Skip Voyage even when a key is set; fastembed still runs |
+| SPOON_VOYAGE_NO_CACHE=1 | Bypass the cached Voyage responses (re-pays for them) |
+| SPOON_VOYAGE_DIM | Override embedder.voyage.outputDimension |
+| SPOON_VOYAGE_EMBED_MODEL | Override embedder.voyage.embedModel |
+| SPOON_VOYAGE_RERANK_MODEL | Override embedder.voyage.rerankModel |
+| SPOON_VOYAGE_BASE_URL | Override the Voyage API root (gateways, testing) |
 | SPOON_NO_RESERVE=1 | Drain the full API rate budget (no reserve floor) |
 | SPOON_DEBUG=1 | Verbose pipeline/rate-limit debugging |
 | SPOON_GITHUB_RPM | Override github.requestsPerMinute |

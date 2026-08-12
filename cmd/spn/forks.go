@@ -126,8 +126,12 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 		MomentumSnapshots: true,
 	}
 	// fastembed runs by default (persistence + semantic index); --no-embed
-	// opts out. There is no backend selection — fastembed is the only embedder.
+	// opts out. There is no backend selection — fastembed is the only local
+	// embedder. Voyage, when a key is configured, indexes alongside it;
+	// --no-voyage (or SPOON_NO_VOYAGE=1) skips the network provider while
+	// leaving fastembed on.
 	noEmbed := os.Getenv("SPOON_NO_EMBED") == "1"
+	noVoyage := false
 	query := ""
 	topicRepos := 0
 	topicLanesRaw := ""
@@ -329,6 +333,8 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 			query = args[i]
 		case "--no-embed":
 			noEmbed = true
+		case "--no-voyage":
+			noVoyage = true
 		case "--full-mdg":
 			opts.Cluster.CentralityBackend = "mdg"
 		case "--no-mdg":
@@ -439,7 +445,12 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 	// onnxruntime/fastembed cannot initialize, the run degrades with a warning
 	// (clustering falls back to the built-in lexical embedder) rather than
 	// aborting — a missing native runtime must never kill fork listing.
-	var searchEmbedder embed.SearchEmbedder
+	// searchEmbedders holds every active semantic embedder. Each one indexes
+	// independently: the store keys embeddings by (document_id, model), so a
+	// second provider adds a partition rather than replacing the first.
+	// semanticModelID is only a "is any embedder active" sentinel — the document
+	// body it gates is model-independent by design (see semantic.BuildDocument).
+	var searchEmbedders []embed.SearchEmbedder
 	var semanticModelID string
 	fastembedActive := false
 	if embedderHookForTest == nil && !noEmbed {
@@ -454,7 +465,7 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 			defer closeEmbedder()
 			fastembedActive = true
 			if searchable, ok := instance.(embed.SearchEmbedder); ok {
-				searchEmbedder = searchable
+				searchEmbedders = append(searchEmbedders, searchable)
 				semanticModelID = searchable.ModelID()
 			}
 			opts.Cluster.Embedder = instance
@@ -484,7 +495,9 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 		remaining.Store(int64(budget))
 		opts.CommitFileRunBudget = remaining
 	}
-	// Query relevance uses the built-in lexical scorer (opts.QueryScorer nil).
+	// Query relevance uses the Voyage cross-encoder when a key is configured and
+	// the built-in lexical scorer otherwise (opts.QueryScorer nil). Resolved only
+	// when a query was actually given, so an unused key costs nothing.
 	opts.Query = query
 
 	ctx := context.WithValue(context.Background(), githubRPMContextKey{}, githubRPM)
@@ -526,6 +539,36 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 			"Check disk space and permissions on ~/.config/spoon; the store is required for every run.").Emit(stderr)
 	}
 	defer db.Close()
+
+	// Voyage is resolved here, after the store, because the store is also its
+	// paid-response cache: an embedder built without it would re-pay for
+	// documents this machine has already embedded. Voyage indexes in addition to
+	// fastembed, never instead of it. Clustering deliberately stays on the local
+	// embedder — it needs only within-run comparability, and routing four
+	// modality blobs per fork through a paid API would multiply the spend for no
+	// ranking gain.
+	if embedderHookForTest == nil && !noEmbed {
+		if voyage := resolveVoyageEmbedder(context.Background(), noVoyage, db, stderr); voyage != nil {
+			searchEmbedders = append(searchEmbedders, voyage)
+			if semanticModelID == "" {
+				semanticModelID = voyage.ModelID()
+			}
+		}
+	}
+	// Query relevance uses the Voyage cross-encoder when a key is configured and
+	// the built-in lexical scorer otherwise (opts.QueryScorer nil). Resolved only
+	// when a query was given, so an unused key costs nothing.
+	if query != "" && !noVoyage {
+		if cfg, active, err := resolveVoyageConfig(context.Background(), noVoyage, db); err != nil {
+			emitVoyageWarning(stderr, "is configured but unusable; scoring --query lexically", err)
+		} else if active {
+			if reranker, rerr := embed.NewVoyageReranker(cfg); rerr != nil {
+				emitVoyageWarning(stderr, "reranker could not be created; scoring --query lexically", rerr)
+			} else {
+				opts.QueryScorer = reranker
+			}
+		}
+	}
 
 	if topicName, isTopic := strings.CutPrefix(repo, "topic:"); isTopic {
 		if csvMode {
@@ -584,9 +627,7 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 				return code
 			}
 		}
-		if searchEmbedder != nil {
-			emitSemanticIndexWarning(ctx, db, searchEmbedder, stderr)
-		}
+		emitSemanticIndexWarning(ctx, db, searchEmbedders, stderr)
 		return 0
 	}
 
@@ -636,7 +677,7 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 		code := emitForksCSV(ctx, db, auth, owner, name, semanticModelID, stdout, stderr, ch)
 		if code == 0 {
 			// CSV scans persist documents too; index them like the NDJSON path.
-			emitSemanticIndexWarning(ctx, db, searchEmbedder, stderr)
+			emitSemanticIndexWarning(ctx, db, searchEmbedders, stderr)
 		}
 		return code
 	}
@@ -683,9 +724,7 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 			"remediation": "Re-run after the rate window resets to backfill (cached compares resume), or set SPOON_NO_RESERVE=1 to drain the full budget.",
 		}})
 	}
-	if searchEmbedder != nil {
-		emitSemanticIndexWarning(ctx, db, searchEmbedder, stderr)
-	}
+	emitSemanticIndexWarning(ctx, db, searchEmbedders, stderr)
 	return 0
 }
 
@@ -812,16 +851,134 @@ func emitDuplicateIdentityWarning(stderr io.Writer, client *gh.Client) {
 	}})
 }
 
-func emitSemanticIndexWarning(ctx context.Context, db *store.Store, model embed.SearchEmbedder, stderr io.Writer) {
-	if db == nil || model == nil {
+// emitSemanticIndexWarning indexes pending documents once per active embedder.
+// Each embedder's pending set is computed independently from its own model ID,
+// so a provider added later backfills on its own schedule and one provider's
+// failure never blocks the other's index.
+func emitSemanticIndexWarning(ctx context.Context, db *store.Store, models []embed.SearchEmbedder, stderr io.Writer) {
+	if db == nil {
 		return
 	}
-	if _, err := semantic.IndexPending(ctx, db, model); err != nil {
-		_ = json.NewEncoder(stderr).Encode(map[string]any{"warning": map[string]any{
-			"code": "semantic_index_failed", "message": err.Error(),
-			"remediation": "The relational snapshot was saved; rerun the same command after fixing FastEmbed to retry missing embeddings.",
-		}})
+	for _, model := range models {
+		if model == nil {
+			continue
+		}
+		voyage, isVoyage := model.(*embed.VoyageEmbedder)
+		if isVoyage {
+			emitVoyageIndexingNotice(ctx, db, model, stderr)
+		}
+		if _, err := semantic.IndexPending(ctx, db, model); err != nil {
+			if isVoyage {
+				emitVoyageWarning(stderr, "indexing failed; the fastembed index and the relational snapshot are unaffected", err)
+				continue
+			}
+			_ = json.NewEncoder(stderr).Encode(map[string]any{"warning": map[string]any{
+				"code": "semantic_index_failed", "message": err.Error(),
+				"remediation": "The relational snapshot was saved; rerun the same command after fixing FastEmbed to retry missing embeddings.",
+			}})
+			continue
+		}
+		if isVoyage {
+			emitVoyageTokensNotice(stderr, voyage)
+		}
 	}
+}
+
+// emitVoyageIndexingNotice reports how many documents this run will send to
+// Voyage before it sends them. Emitted even when the count is zero: Voyage
+// indexing is automatic and billed, so "this re-run cost nothing" has to be
+// observable rather than indistinguishable from "Voyage never ran".
+func emitVoyageIndexingNotice(ctx context.Context, db *store.Store, model embed.SearchEmbedder, stderr io.Writer) {
+	pending, err := db.PendingDocuments(ctx, model.ModelID())
+	if err != nil {
+		// Not worth a warning of its own — IndexPending is about to surface the
+		// same failure with a better message.
+		return
+	}
+	_ = json.NewEncoder(stderr).Encode(map[string]any{"warning": map[string]any{
+		"code":    "voyage_indexing",
+		"message": fmt.Sprintf("embedding %d document(s) with %s", len(pending), model.ModelID()),
+		"details": map[string]any{"documents": len(pending), "model": model.ModelID()},
+	}})
+}
+
+// emitVoyageTokensNotice reports what Voyage actually billed and what the cache
+// saved, so the spend and the savings both land in the output stream rather than
+// only on the invoice.
+func emitVoyageTokensNotice(stderr io.Writer, voyage *embed.VoyageEmbedder) {
+	tokens := voyage.TokensUsed()
+	hits, misses, deduped := voyage.CacheStats()
+	if tokens == 0 && hits == 0 && deduped == 0 {
+		return
+	}
+	_ = json.NewEncoder(stderr).Encode(map[string]any{"warning": map[string]any{
+		"code": "voyage_tokens",
+		"message": fmt.Sprintf("%s billed %d token(s) for %d document(s); %d served from cache, %d deduplicated",
+			voyage.ModelID(), tokens, misses, hits, deduped),
+		"details": map[string]any{
+			"totalTokens": tokens, "model": voyage.ModelID(),
+			"billed": misses, "cacheHits": hits, "deduplicated": deduped,
+		},
+	}})
+}
+
+// emitVoyageWarning reports a Voyage failure as a degrade, never a fatal error.
+// Voyage indexing is a side effect of listing forks, and this repo's contract is
+// that an optional model backend going missing must not fail a run. The one
+// place a Voyage failure is fatal is `spn search --voyage`, where the user named
+// Voyage on that invocation and silently serving other results would be worse.
+func emitVoyageWarning(stderr io.Writer, message string, err error) {
+	_ = json.NewEncoder(stderr).Encode(map[string]any{"warning": map[string]any{
+		"code":        "voyage_unavailable",
+		"message":     "voyage " + message + ": " + err.Error(),
+		"remediation": voyageRemediation(err),
+	}})
+}
+
+// voyageRemediation picks advice matching why Voyage failed; only a bad key is
+// something the user can act on immediately.
+func voyageRemediation(err error) string {
+	switch {
+	case embed.IsVoyageAuthError(err):
+		return "Check the key in " + embed.VoyageAPIKeyEnv + " (or embedder.voyage.apiKeyFile), or set " + embed.VoyageDisableEnv + "=1 to skip Voyage."
+	case embed.IsVoyageRateLimited(err):
+		return "Voyage rate-limited this run; retry later or reduce run size. Set " + embed.VoyageDisableEnv + "=1 to skip Voyage."
+	default:
+		return "Retry when api.voyageai.com is reachable, or set " + embed.VoyageDisableEnv + "=1 to skip Voyage."
+	}
+}
+
+// resolveVoyageEmbedder returns an active Voyage embedder, or nil when Voyage is
+// not configured (the ordinary zero-configuration case, silent) or cannot be
+// used (warned, then skipped).
+func resolveVoyageEmbedder(ctx context.Context, disable bool, cache embed.ResponseCache, stderr io.Writer) *embed.VoyageEmbedder {
+	cfg, active, err := resolveVoyageConfig(ctx, disable, cache)
+	if err != nil {
+		emitVoyageWarning(stderr, "is configured but unusable", err)
+		return nil
+	}
+	if !active {
+		return nil
+	}
+	embedder, err := embed.NewVoyageEmbedder(cfg)
+	if err != nil {
+		emitVoyageWarning(stderr, "embedder could not be created", err)
+		return nil
+	}
+	return embedder
+}
+
+// resolveVoyageConfig layers Voyage settings from the environment over the
+// config file, mirroring resolveFastEmbedConfig. A config file that fails to
+// load is treated as absent here: a broken config must not be the reason an
+// optional provider silently changes behavior, and every command already
+// surfaces config load failures on its own.
+func resolveVoyageConfig(ctx context.Context, disable bool, cache embed.ResponseCache) (embed.VoyageConfig, bool, error) {
+	var fileCfg config.VoyageConfig
+	if cfg, err := config.LoadDefault(); err == nil && cfg != nil {
+		fileCfg = cfg.Embedder.Voyage
+	}
+	return embed.ResolveVoyageConfig(ctx, fileCfg, disable, cache)
 }
 
 // persistSnapshotBestEffort stores a fork snapshot without ever failing the

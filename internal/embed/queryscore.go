@@ -2,19 +2,32 @@ package embed
 
 import "context"
 
+// LexicalQueryMethod is the queryMethod label for lexically scored results.
+const LexicalQueryMethod = "lexical"
+
 // QueryScorer scores documents against a free-text query, returning one
-// relevance score in [0,1] per document. Implemented by the OpenVINO
-// cross-encoder Reranker and by LexicalQueryScorer (the no-model fallback).
+// relevance score in [0,1] per document, in input order. Implemented by
+// VoyageReranker (a cross-encoder, network-backed) and by LexicalQueryScorer
+// (the zero-setup, in-process fallback).
+//
+// Method names the implementation for the queryMethod output field. It is part
+// of the interface so the label always comes from the scorer that produced the
+// scores; a hardcoded label at the call site outlived the implementation it
+// named once already.
 type QueryScorer interface {
 	Rerank(ctx context.Context, query string, docs []string) ([]float64, error)
+	Method() string
 }
 
 // LexicalQueryScorer scores query relevance with the built-in lexical
 // embedder: query and documents are embedded in one corpus-consistent batch
 // and scored by cosine similarity (clamped to [0,1]). Useful as a zero-setup
-// fallback when the OpenVINO reranker is not configured — strongest when the
-// query shares vocabulary with commit messages and file paths.
+// fallback when no reranker is configured — strongest when the query shares
+// vocabulary with commit messages and file paths.
 type LexicalQueryScorer struct{}
+
+// Method implements QueryScorer.
+func (LexicalQueryScorer) Method() string { return LexicalQueryMethod }
 
 // Rerank implements QueryScorer.
 func (LexicalQueryScorer) Rerank(ctx context.Context, query string, docs []string) ([]float64, error) {

@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -35,9 +36,9 @@ type Config struct {
 }
 
 // EmbedderConfig configures the in-process fastembed embedder that powers
-// persistence and semantic search. fastembed is the only backend; an empty
-// Backend means fastembed. It runs inside the spoon process — no external
-// services.
+// persistence and semantic search, plus the optional Voyage AI provider layered
+// on top of it. fastembed is the only backend and always runs in-process;
+// Voyage is a sibling, not an alternative — see Voyage.
 type EmbedderConfig struct {
 	// Backend is "fastembed" (the default) or empty, which means fastembed.
 	Backend string `json:"backend,omitempty"`
@@ -47,6 +48,37 @@ type EmbedderConfig struct {
 	CacheDir  string `json:"cacheDir,omitempty"`
 	MaxLength int    `json:"maxLength,omitempty"`
 	BatchSize int    `json:"batchSize,omitempty"`
+	// Voyage configures the optional Voyage AI embeddings + reranking provider.
+	// It is deliberately not a Backend value: Voyage runs *in addition to*
+	// fastembed (the store keys vectors by (document, model), so both models'
+	// vectors coexist), and a Backend enum would model replacement instead.
+	Voyage VoyageConfig `json:"voyage,omitempty"`
+}
+
+// VoyageConfig configures Voyage AI. Voyage is active only when an API key
+// resolves — from $VOYAGE_AI_API_KEY, $VOYAGE_API_KEY, or APIKeyFile — and
+// Disabled is false.
+//
+// The key itself is never stored here, only a path to a file holding it:
+// credentials stay in the environment or in permission-checked files (see
+// bootstrap.go). APIKeyFile is subject to the same 0600 enforcement as
+// github.proxy.apiKeyFile.
+type VoyageConfig struct {
+	// APIKeyFile is a path to a 0600 file containing only the API key.
+	APIKeyFile string `json:"apiKeyFile,omitempty"`
+	// EmbedModel defaults to voyage-code-3; RerankModel to rerank-2.5.
+	EmbedModel  string `json:"embedModel,omitempty"`
+	RerankModel string `json:"rerankModel,omitempty"`
+	// OutputDimension is 256, 512, 1024 (the default) or 2048. It is part of a
+	// stored vector's model identity, so changing it re-partitions the index:
+	// existing Voyage rows stay under the old identity and every document
+	// becomes pending under the new one.
+	OutputDimension int `json:"outputDimension,omitempty"`
+	// BaseURL overrides the API root (gateways, tests). Empty → Voyage's own.
+	BaseURL string `json:"baseUrl,omitempty"`
+	// Disabled turns Voyage off even when a key is present, without unsetting
+	// the environment variable.
+	Disabled bool `json:"disabled,omitempty"`
 }
 
 // GitHubConfig configures authenticated identities, process pacing, and
@@ -123,6 +155,9 @@ func Load(path string) (*Config, error) {
 	if err := validateCredentialFile(c.GitHub.Proxy.StaticFile, "github.proxy.staticFile"); err != nil {
 		return nil, fmt.Errorf("invalid config %s: %w", path, err)
 	}
+	if err := validateCredentialFile(c.Embedder.Voyage.APIKeyFile, "embedder.voyage.apiKeyFile"); err != nil {
+		return nil, fmt.Errorf("invalid config %s: %w", path, err)
+	}
 	return &c, nil
 }
 
@@ -149,6 +184,9 @@ func Save(path string, c *Config) error {
 		return err
 	}
 	if err := validateCredentialFile(c.GitHub.Proxy.StaticFile, "github.proxy.staticFile"); err != nil {
+		return err
+	}
+	if err := validateCredentialFile(c.Embedder.Voyage.APIKeyFile, "embedder.voyage.apiKeyFile"); err != nil {
 		return err
 	}
 	if c.Version == 0 {
@@ -188,6 +226,8 @@ func configContainsCredentials(path string) bool {
 	if err != nil {
 		return false
 	}
+	// Every credential-bearing field must appear here, or the permission gate in
+	// Load silently does not apply to it.
 	var raw struct {
 		GitHub struct {
 			Tokens []string `json:"tokens"`
@@ -195,11 +235,18 @@ func configContainsCredentials(path string) bool {
 				APIKeyFile string `json:"apiKeyFile"`
 			} `json:"proxy"`
 		} `json:"github"`
+		Embedder struct {
+			Voyage struct {
+				APIKeyFile string `json:"apiKeyFile"`
+			} `json:"voyage"`
+		} `json:"embedder"`
 	}
 	if json.Unmarshal(data, &raw) != nil {
 		return false
 	}
-	return len(raw.GitHub.Tokens) > 0 || raw.GitHub.Proxy.APIKeyFile != ""
+	return len(raw.GitHub.Tokens) > 0 ||
+		raw.GitHub.Proxy.APIKeyFile != "" ||
+		raw.Embedder.Voyage.APIKeyFile != ""
 }
 
 func validateCredentialFile(path, field string) error {
@@ -223,6 +270,28 @@ func validateCredentialFile(path, field string) error {
 		return fmt.Errorf("%s %q contains credentials and is readable by group/other; run chmod 600 %s", field, path, path)
 	}
 	return nil
+}
+
+// ReadCredentialFile returns the trimmed contents of a credential file named by
+// a config field, after applying the same permission checks Load enforces. An
+// empty path yields an empty secret and no error ("not configured"); a path that
+// does not exist is likewise not an error, so a stale config entry degrades to
+// "no credential" rather than failing every command.
+func ReadCredentialFile(path, field string) (string, error) {
+	if path == "" {
+		return "", nil
+	}
+	if err := validateCredentialFile(path, field); err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("%s %q: %w", field, path, err)
+	}
+	return strings.TrimSpace(string(data)), nil
 }
 
 // LoadDefault loads the config from DefaultPath as an optional defaults layer,
@@ -276,6 +345,9 @@ func (c *Config) normalizeLegacy() {
 var (
 	validProviders = map[string]bool{"": true, "github": true, "gitlab": true}
 	validBackends  = map[string]bool{"": true, "fastembed": true}
+	// Mirrors the output widths voyage-code-3 accepts. Kept here rather than
+	// imported from internal/embed so the config package stays dependency-free.
+	validVoyageDimensions = map[int]bool{256: true, 512: true, 1024: true, 2048: true}
 )
 
 // Validate checks enum fields. Empty values are allowed (mean "unset").
@@ -292,6 +364,15 @@ func (c *Config) Validate() error {
 	if c.GitHub.Proxy.CacheTTL != "" {
 		if _, err := time.ParseDuration(c.GitHub.Proxy.CacheTTL); err != nil {
 			return fmt.Errorf("github.proxy.cacheTtl: %w", err)
+		}
+	}
+	if d := c.Embedder.Voyage.OutputDimension; d != 0 && !validVoyageDimensions[d] {
+		return fmt.Errorf("embedder.voyage.outputDimension %d must be 256, 512, 1024 or 2048 (or unset)", d)
+	}
+	if raw := c.Embedder.Voyage.BaseURL; raw != "" {
+		parsed, err := url.Parse(raw)
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+			return fmt.Errorf("embedder.voyage.baseUrl %q must be an absolute http(s) URL", raw)
 		}
 	}
 	return nil

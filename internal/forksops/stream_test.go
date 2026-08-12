@@ -342,6 +342,8 @@ func (s *stubEmbedder) Dim() int {
 
 type fakeQueryScorer struct{}
 
+func (fakeQueryScorer) Method() string { return "fake" }
+
 func (fakeQueryScorer) Rerank(_ context.Context, _ string, docs []string) ([]float64, error) {
 	scores := make([]float64, len(docs))
 	for i, doc := range docs {

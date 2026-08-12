@@ -100,7 +100,7 @@ Nouns and verbs:
         setup'). If it is unavailable the run degrades with a warning rather
         than failing. Pass --no-embed (or SPOON_NO_EMBED=1) to skip embedding.
         Clustering runs in-process and needs nothing installed.
-        FastEmbed requires ONNX_PATH and is the only backend used for durable
+        FastEmbed requires ONNX_PATH and is the only local backend for durable
         semantic indexing and 'spn search'. --commit-files implies --files and
         --commits and defaults to a 100-commit run budget. --web-diff is an
         unstable SPOON_GH_COOKIE-gated HTML fallback, not a supported API.
@@ -111,11 +111,17 @@ Nouns and verbs:
         --topic-lanes LIST opts into comma-separated topic candidate lanes
         (default,stars,updated,forks); --topic-lane-budget N caps each lane.
         --query "intent" scores every enriched fork against a free-text
-        intent (cross-encoder reranker when configured, lexical fallback
-        otherwise), sorts by relevance, and adds queryScore/queryMethod to
-        each record. With fastembed active each fork also gets a
-        zero-shot 'category' facet, and a configured labeler polishes
-        cluster labels with an in-process LLM.
+        intent (the Voyage cross-encoder when VOYAGE_AI_API_KEY is set,
+        lexical fallback otherwise), sorts by relevance, and adds
+        queryScore/queryMethod to each record. With fastembed active each
+        fork also gets a zero-shot 'category' facet. Cluster labels are
+        always heuristic and deterministic.
+        VOYAGE_AI_API_KEY additionally indexes each document with
+        voyage-code-3 alongside fastembed (both are kept, neither replaces
+        the other) for 'spn search --voyage'. Voyage is billed per token, so
+        responses are cached in the store and re-runs re-request nothing
+        unchanged; it is skipped entirely when the store is not writable, or
+        with --no-voyage / SPOON_NO_VOYAGE=1.
         --priors PATH scores each fork against a JSON interest spec
         (paths/keywords/languages/owners allow+deny); adds
         priorScore/priorReasons and, when neither --query nor --shortlist
@@ -132,10 +138,20 @@ Nouns and verbs:
         --owner-cache-ttl DUR overrides the owner-profile on-disk
         cache TTL (default 24h). Use 0 to force a fresh fetch every
         run, or a short value (e.g. 1h) for more aggressive refresh.
-  search "query" [--repo owner/repo] [--top N]
+  search "query" [--repo owner/repo] [--top N] [--voyage]
+                 [--no-rerank] [--rerank-overfetch N]
         Ranks indexed forks against the query using the fastembed semantic
         index built by 'forks list'. NDJSON on stdout is the default; there is
         no --json flag.
+        --voyage ranks against the voyage-code-3 index instead (requires
+        VOYAGE_AI_API_KEY; needs no ONNX Runtime). With a Voyage key, results
+        are additionally reranked by a cross-encoder over the candidate
+        documents, adding rerankScore/rerankModel while 'score' stays the
+        retrieval cosine. Reranking works against either index, since it scores
+        (query, document) pairs rather than vectors. --no-rerank skips it;
+        --rerank-overfetch N widens the candidate pool (N x --top, default 5).
+        A reranker outage degrades to cosine order with a warning; --voyage or
+        --rerank without a key is an error, not a silent fallback.
   repo centrality <owner/repo> [--forge github] [--forge-host H]
 
 Output:

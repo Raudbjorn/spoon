@@ -13,6 +13,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/cli/go-gh/v2/pkg/browser"
 
+	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/forge"
 	"github.com/svnbjrn/spoon/internal/forksops"
 	"github.com/svnbjrn/spoon/internal/heat"
@@ -33,6 +34,7 @@ const (
 	// Appended rather than inserted: the enum is positional, and renumbering
 	// the existing values would make every diff below this line noise.
 	viewFilter
+	viewRank
 )
 
 // ScoredFork holds a fork with its computed heat score.
@@ -193,6 +195,22 @@ type Model struct {
 	// Cluster view toggle (T11): when true, the table is rendered with a
 	// header row per cluster. Toggled via the "g" key.
 	groupByCluster bool
+
+	// Intent ranking ("R"), distinct from the `/` filter above and composing with
+	// it: `/` narrows by owner/name, `R` orders the survivors by relevance.
+	// rankQuery is the prompt buffer and rankCursor its rune offset; rankApplied
+	// is the query the table is currently ranked by ("" = no ranking). rankScores
+	// maps fork ID to relevance and rankMethod names the scorer that produced it.
+	// rankSeq stamps each request so a slow result landing after a newer query is
+	// discarded. queryScorer is nil for the built-in lexical scorer. See rank.go.
+	rankQuery   string
+	rankCursor  int
+	rankApplied string
+	rankMethod  string
+	rankScores  map[string]float64
+	rankSeq     int
+	rankPending bool
+	queryScorer embed.QueryScorer
 }
 
 // --- Constructor ---
@@ -333,6 +351,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case clusterResultMsg:
 		return m.handleClusterResult(msg)
+
+	case rankResultMsg:
+		return m.handleRankResult(msg)
 
 	case clipboardMsg:
 		if msg.success {
@@ -688,6 +709,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleTopicPickerKey(key)
 	case viewFilter:
 		return m.handleFilterKey(key, typed)
+	case viewRank:
+		return m.handleRankKey(key, typed)
 	case viewHelp:
 		switch key {
 		case "?", "esc", "q":
@@ -768,6 +791,8 @@ func (m *Model) handleTableKey(key string) (tea.Model, tea.Cmd) {
 		m.filterInput = m.filter
 		m.filterCursor = len([]rune(m.filterInput))
 		m.view = viewFilter
+	case "R":
+		m.promptRank()
 	case "esc":
 		if m.filter != "" {
 			m.applyFilter("")
@@ -1520,6 +1545,8 @@ func (m Model) View() string {
 		return m.viewTopicPicker()
 	case viewFilter:
 		return m.viewFilterPrompt()
+	case viewRank:
+		return m.viewRankPrompt()
 	case viewHelp:
 		return m.viewHelp()
 	}

@@ -37,6 +37,7 @@ func helpBody() string {
   Enter         View fork details
   n             Search new repository
   /             Filter forks by owner/name
+  R             Rank filtered forks by intent (relevance, not a filter)
   Esc           Clear the active filter
   s             Cycle sort column (heat/stars/ahead/branches/forks/pushed)
   S             Reverse sort order
