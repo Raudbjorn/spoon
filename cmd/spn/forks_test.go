@@ -505,9 +505,7 @@ func TestForkToJSON_EmitsMomentum(t *testing.T) {
 }
 
 func TestSpnForksList_csv_emitsHeaderAndRows(t *testing.T) {
-	t.Setenv("SPOON_NO_CONFIG", "1")         // isolate from the host's spoon config
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // don't read the real embedder config
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	isolateSpoonRun(t)
 	prev := providerFactory
 	defer func() { providerFactory = prev }()
 	providerFactory = func(_ context.Context, _, _, _ string) (forge.Forge, string, *agentio.Error) {
@@ -535,9 +533,7 @@ func TestSpnForksList_csv_emitsHeaderAndRows(t *testing.T) {
 }
 
 func TestSpnForksList_csv_noNDJSONLeak(t *testing.T) {
-	t.Setenv("SPOON_NO_CONFIG", "1") // isolate from the host's spoon config
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	isolateSpoonRun(t)
 	prev := providerFactory
 	defer func() { providerFactory = prev }()
 	providerFactory = func(_ context.Context, _, _, _ string) (forge.Forge, string, *agentio.Error) {
