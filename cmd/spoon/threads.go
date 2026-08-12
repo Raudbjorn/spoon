@@ -418,6 +418,8 @@ func runThreads(args []string) int {
 
 	ctx := context.Background()
 
+	tuiContexts := newThreadsTUIContextCache()
+
 	// Interactive picker: no PR ref given, --interactive was set, repo
 	// context detected. Fetch open PRs, run the picker, and treat the
 	// chosen PR as if the user had typed it on the command line.
@@ -435,12 +437,11 @@ func runThreads(args []string) int {
 			fmt.Println("No open PRs in this repo")
 			return 0
 		}
-		tuiContext, contextErr := resolveOptionalThreadsTUIContext()
+		tuiContext, contextErr := tuiContexts.Context()
 		if contextErr != nil {
 			fmt.Fprintln(os.Stderr, "Error:", contextErr)
 			return 1
 		}
-		theme.PinColorProfile(tuiContext)
 		picker := threadstui.NewPicker(prs).WithTheme(tuiContext)
 		final, runErr := tea.NewProgram(picker, tea.WithAltScreen()).Run()
 		if runErr != nil {
@@ -715,12 +716,11 @@ func runThreads(args []string) int {
 		return 0
 
 	case modeTUI:
-		tuiContext, contextErr := resolveOptionalThreadsTUIContext()
+		tuiContext, contextErr := tuiContexts.Context()
 		if contextErr != nil {
 			fmt.Fprintln(os.Stderr, "Error:", contextErr)
 			return 1
 		}
-		theme.PinColorProfile(tuiContext)
 		return runThreadsTUI(ctx, client, owner, repo, number, flags.filter, flags.showCodeLines, flags.verbose, tuiContext)
 
 	default:
@@ -821,6 +821,36 @@ func resolveOptionalThreadsTUIContext() (theme.Context, error) {
 		return resolveTUIContext(nil)
 	}
 	return resolveTUIContext(cfg)
+}
+
+type threadsTUIContextCache struct {
+	resolve func() (theme.Context, error)
+	pin     func(theme.Context)
+
+	attempted bool
+	context   theme.Context
+	err       error
+}
+
+func newThreadsTUIContextCache() *threadsTUIContextCache {
+	return &threadsTUIContextCache{
+		resolve: resolveOptionalThreadsTUIContext,
+		pin:     theme.PinColorProfile,
+	}
+}
+
+// Context resolves and pins once, so an interactive picker and the selected
+// thread TUI share exactly one terminal context.
+func (c *threadsTUIContextCache) Context() (theme.Context, error) {
+	if c.attempted {
+		return c.context, c.err
+	}
+	c.attempted = true
+	c.context, c.err = c.resolve()
+	if c.err == nil {
+		c.pin(c.context)
+	}
+	return c.context, c.err
 }
 
 // emitStatus writes the PR status header to w (unless suppressed). glyphs
