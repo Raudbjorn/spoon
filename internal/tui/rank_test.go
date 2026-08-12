@@ -330,3 +330,37 @@ func TestFilterAndRankAreIndependentState(t *testing.T) {
 		t.Error("clearing the filter also cleared the ranking")
 	}
 }
+
+// TestRankPromptRendersCurrentBehavior guards against the prompt's hints drifting
+// from handleRankKey. They already did once: the footer advertised "Esc clear"
+// after Esc had become cancel-the-edit, and nothing caught it.
+func TestRankPromptRendersCurrentBehavior(t *testing.T) {
+	m := newRankModel(stubScorer{marker: "wayland", method: "voyage"},
+		forkWithCommits("a-wayland", 1, "add wayland support"),
+		forkWithCommits("b-other", 2, "bump deps"),
+	)
+	m.applyFilter("wayland")
+	m.promptRank()
+	out := m.viewRankPrompt()
+
+	// The count must be the filtered count, since that is what R will rank.
+	if !strings.Contains(out, "Rank 1 fork(s)") {
+		t.Errorf("prompt = %q, want it to report the 1 visible fork", out)
+	}
+	if !strings.Contains(out, "voyage") {
+		t.Errorf("prompt = %q, want it to name the active scorer", out)
+	}
+	if !strings.Contains(out, "Esc cancel") {
+		t.Errorf("prompt = %q, want Esc described as cancel (it does not clear)", out)
+	}
+	if !strings.Contains(out, "empty clears") {
+		t.Errorf("prompt = %q, want the empty-clears hint", out)
+	}
+
+	// With no scorer configured the prompt must say so rather than claim a model.
+	plain := newRankModel(nil, forkWithCommits("a", 1, "work"))
+	plain.promptRank()
+	if got := plain.viewRankPrompt(); !strings.Contains(got, "lexical") {
+		t.Errorf("prompt = %q, want the lexical fallback named", got)
+	}
+}

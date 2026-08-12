@@ -305,11 +305,17 @@ func voyageBatchBounds(n, maxCount, maxCost int, cost func(i int) int) [][2]int 
 	return append(bounds, [2]int{start, n})
 }
 
-// validate mirrors validateFastEmbed: reject wrong widths and non-finite
-// values, L2-normalize, then reject zero-norm vectors. Voyage returns
-// unit-length vectors already, so normalization is defensive — Cosine does not
-// assume unit length either, but the stored blobs should be consistent with
-// fastembed's.
+// validate rejects wrong widths, non-finite values and zero-norm vectors, then
+// L2-normalizes. Voyage returns unit-length vectors already, so normalization is
+// defensive — Cosine does not assume unit length either, but the stored blobs
+// should be consistent with fastembed's.
+//
+// Every check runs on the raw API response, before normalization. That ordering
+// is deliberate: it makes each error describe what Voyage actually returned
+// rather than a derived value, and it keeps the zero-norm check independent of
+// whether L2NormalizeAll happens to leave zero vectors alone (it does — see
+// l2Normalize — but relying on that reads as a divide-by-zero bug, and did to
+// two reviewers).
 func (e *VoyageEmbedder) validate(raw [][]float32) ([]Vector, error) {
 	dim := e.Dim()
 	vectors := make([]Vector, len(raw))
@@ -317,22 +323,19 @@ func (e *VoyageEmbedder) validate(raw [][]float32) ([]Vector, error) {
 		if len(row) != dim {
 			return nil, fmt.Errorf("voyage vector %d has dimension %d, want %d", i, len(row), dim)
 		}
+		var norm float64
 		for _, value := range row {
-			if math.IsNaN(float64(value)) || math.IsInf(float64(value), 0) {
+			v := float64(value)
+			if math.IsNaN(v) || math.IsInf(v, 0) {
 				return nil, fmt.Errorf("voyage vector %d contains non-finite value", i)
 			}
-		}
-		vectors[i] = Vector(row)
-	}
-	L2NormalizeAll(vectors)
-	for i, vector := range vectors {
-		var norm float64
-		for _, value := range vector {
-			norm += float64(value) * float64(value)
+			norm += v * v
 		}
 		if norm == 0 {
 			return nil, fmt.Errorf("voyage vector %d has zero norm", i)
 		}
+		vectors[i] = Vector(row)
 	}
+	L2NormalizeAll(vectors)
 	return vectors, nil
 }
