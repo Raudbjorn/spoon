@@ -50,6 +50,8 @@ func TestGoldenForcedProfileNonVacuity(t *testing.T) {
 func goldenInputView() string {
 	return Model{
 		view:        viewInput,
+		width:       120,
+		height:      30,
 		input:       "svnbjrn/spoon",
 		inputCursor: len([]rune("svnbjrn/spoon")),
 		inputErr:    "fixture validation error",
