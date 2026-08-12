@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/svnbjrn/spoon/internal/tui/theme"
 )
 
 func (m Model) viewTable() string {
@@ -244,7 +246,7 @@ func renderBadges(sf ScoredFork) string {
 
 	// Lone wolf badge (v2)
 	if sf.Heat.LoneWolfV2 != nil && sf.Heat.LoneWolfV2.Detected {
-		badges = append(badges, lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Render("🐺"))
+		badges = append(badges, lipgloss.NewStyle().Foreground(theme.Dark.AccentRust).Render("🐺"))
 	}
 
 	// Open PR badge

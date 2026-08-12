@@ -1,27 +1,24 @@
 package tui
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"github.com/charmbracelet/lipgloss"
 
-// Heat color gradient: dim gray -> blue -> cyan -> yellow -> red
+	"github.com/svnbjrn/spoon/internal/tui/theme"
+)
+
+// Heat color gradient: text-faint -> info -> accent -> warning -> error.
 var heatColors = []lipgloss.Color{
-	lipgloss.Color("240"), // 0-19:  dim gray
-	lipgloss.Color("33"),  // 20-39: blue
-	lipgloss.Color("37"),  // 40-59: cyan
-	lipgloss.Color("220"), // 60-79: yellow
-	lipgloss.Color("196"), // 80-100: red
+	theme.Dark.TextFaint, // 0-19: dim
+	theme.Dark.Info,      // 20-39: informational
+	theme.Dark.Accent,    // 40-59: accent
+	theme.Dark.Warning,   // 60-79: warning
+	theme.Dark.Error,     // 80-100: error
 }
 
 // gutterColors tint the duplicate-group gutter. Deliberately distinct from
 // heatColors so a group line is never mistaken for part of the heat bar, and
 // cycled by group so two groups that end up adjacent stay separable.
-var gutterColors = []lipgloss.Color{
-	lipgloss.Color("170"), // orchid
-	lipgloss.Color("214"), // orange
-	lipgloss.Color("79"),  // aquamarine
-	lipgloss.Color("205"), // pink
-	lipgloss.Color("112"), // green
-	lipgloss.Color("111"), // periwinkle
-}
+var gutterColors = theme.GutterColors(theme.Dark)
 
 // gutterStyleFor returns the colour for the ordinal-th duplicate group in the
 // rendered list.
@@ -88,37 +85,38 @@ func RenderHeatBar(score float64) string {
 var (
 	titleStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("205"))
+			Foreground(theme.Dark.Accent)
 
 	subtitleStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("244"))
+			Foreground(theme.Dark.TextMuted)
 
 	warnStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("214")).
+			Foreground(theme.Dark.Warning).
 			Bold(true)
 
 	errorStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("196")).
+			Foreground(theme.Dark.Error).
 			Bold(true)
 
 	statusBarStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("252")).
-			Background(lipgloss.Color("236")).
+			Foreground(theme.Dark.Text).
+			Background(theme.Dark.Surface2).
 			Padding(0, 1)
 
 	helpStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("241"))
+			Foreground(theme.Dark.TextFaint)
 
 	selectedStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("255")).
-			Background(lipgloss.Color("236"))
+			Foreground(theme.Dark.TextStrong).
+			Background(theme.Dark.Surface3)
 
 	headerStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("252")).
+			Foreground(theme.Dark.TextStrong).
 			Padding(0, 1)
 
 	cellStyle = lipgloss.NewStyle().
+			Foreground(theme.Dark.Text).
 			Padding(0, 1)
 )

@@ -1,0 +1,66 @@
+//go:generate go run gen.go
+
+// Package theme owns Spoon's terminal palette contracts.
+package theme
+
+import (
+	"fmt"
+
+	"github.com/charmbracelet/lipgloss"
+)
+
+// ColorProfile is declared here so Context can be threaded before profile
+// parsing and quantization land in the next phase.
+type ColorProfile int
+
+const (
+	TrueColor ColorProfile = iota
+	Ansi256
+	Ansi16
+	Ansi8
+	Mono
+	NoColor
+)
+
+// GlyphProfile is declared here so Context can be threaded before glyph
+// resolution lands in the next phase.
+type GlyphProfile int
+
+const (
+	Unicode GlyphProfile = iota
+	Ascii
+)
+
+// Context is the selected immutable terminal rendering context.
+type Context struct {
+	Palette      Palette
+	ColorProfile ColorProfile
+	GlyphProfile GlyphProfile
+}
+
+// PaletteByName returns one of Spoon's built-in resolved palettes.
+func PaletteByName(name string) (Palette, error) {
+	switch name {
+	case "dark":
+		return Dark, nil
+	case "light":
+		return Light, nil
+	case "amber":
+		return Amber, nil
+	default:
+		return Palette{}, fmt.Errorf("unknown TUI palette %q (want dark, light, or amber)", name)
+	}
+}
+
+// GutterColors is the theme-local categorical duplicate-group ramp. Its
+// colors cycle by ordinal so adjacent groups remain distinguishable.
+func GutterColors(palette Palette) [6]lipgloss.Color {
+	return [6]lipgloss.Color{
+		palette.Accent2,
+		palette.Warning,
+		palette.Accent,
+		palette.AccentRust,
+		palette.Success,
+		palette.Info,
+	}
+}

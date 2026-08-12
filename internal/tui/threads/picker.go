@@ -7,7 +7,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
 	gh "github.com/svnbjrn/spoon/internal/github"
+	"github.com/svnbjrn/spoon/internal/tui/theme"
 )
 
 // PickerModel is the Bubble Tea model for choosing a PR from an open-PR list.
@@ -39,11 +41,11 @@ type PickerModel struct {
 func NewPicker(prs []gh.PullRequest) PickerModel {
 	return PickerModel{
 		prs:            prs,
-		cursorStyle:    lipgloss.NewStyle().Foreground(lipgloss.Color("205")),
-		highlightStyle: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205")),
+		cursorStyle:    lipgloss.NewStyle().Foreground(theme.Dark.Accent),
+		highlightStyle: lipgloss.NewStyle().Bold(true).Foreground(theme.Dark.Accent),
 		headerStyle:    lipgloss.NewStyle().Bold(true),
 		footerStyle:    lipgloss.NewStyle().Faint(true),
-		authorStyle:    lipgloss.NewStyle().Foreground(lipgloss.Color("39")),
+		authorStyle:    lipgloss.NewStyle().Foreground(theme.Dark.Info),
 		timeStyle:      lipgloss.NewStyle().Faint(true),
 		now:            time.Now(),
 	}

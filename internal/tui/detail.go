@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/svnbjrn/spoon/internal/forge"
+	"github.com/svnbjrn/spoon/internal/tui/theme"
 )
 
 // detailFooterLines is how many lines viewDetail reserves for the pinned
@@ -106,7 +107,7 @@ func (m Model) detailBody() string {
 		if lwV2.Archetype.String() != "" {
 			archLabel = lwV2.Archetype.String()
 		}
-		wolfStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Bold(true)
+		wolfStyle := lipgloss.NewStyle().Foreground(theme.Dark.AccentRust).Bold(true)
 		b.WriteString(fitBoxLine("│ "+wolfStyle.Render("🐺 The "+archLabel), boxWidth) + "\n")
 		b.WriteString(fitBoxLine(fmt.Sprintf("│  Solo dev, active over %.0f days", lwV2.CommitSpanDays), boxWidth) + "\n")
 		b.WriteString(fitBoxLine(fmt.Sprintf("│  %d commits · MNA %d", lwV2.MeaningfulCommits, lwV2.MNA), boxWidth) + "\n")
