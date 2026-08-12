@@ -105,7 +105,7 @@ func (m Model) WithTheme(ctx theme.Context) Model {
 }
 
 func (m Model) themeContext() theme.Context {
-	if m.theme.Palette == (theme.Palette{}) {
+	if !m.theme.IsResolved() {
 		return theme.DefaultContext()
 	}
 	return m.theme

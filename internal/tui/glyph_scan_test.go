@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -27,7 +28,15 @@ func TestProductionGlyphsAreCentralized(t *testing.T) {
 		}
 		ast.Inspect(file, func(node ast.Node) bool {
 			literal, ok := node.(*ast.BasicLit)
-			if !ok || (literal.Kind != token.STRING && literal.Kind != token.CHAR) || !containsNonASCII(literal.Value) {
+			if !ok || (literal.Kind != token.STRING && literal.Kind != token.CHAR) {
+				return true
+			}
+			value, err := strconv.Unquote(literal.Value)
+			if err != nil {
+				offenders = append(offenders, path+":invalid-literal:"+literal.Value)
+				return true
+			}
+			if !containsNonASCII(value) {
 				return true
 			}
 			offenders = append(offenders, path+":"+literal.Value)
@@ -45,7 +54,7 @@ func TestProductionGlyphsAreCentralized(t *testing.T) {
 
 func containsNonASCII(value string) bool {
 	for _, r := range value {
-		if r > utf8.RuneSelf {
+		if r >= utf8.RuneSelf {
 			return true
 		}
 	}

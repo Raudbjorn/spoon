@@ -17,7 +17,7 @@ type styleSet struct {
 }
 
 func (m Model) themeContext() theme.Context {
-	if m.theme.Palette == (theme.Palette{}) {
+	if !m.theme.IsResolved() {
 		return theme.DefaultContext()
 	}
 	return m.theme

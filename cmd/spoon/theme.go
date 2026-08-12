@@ -6,8 +6,12 @@ import (
 )
 
 func resolveTUIContext(cfg *config.Config) (theme.Context, error) {
+	return resolveTUIContextWithNoColor(cfg, false)
+}
+
+func resolveTUIContextWithNoColor(cfg *config.Config, noColor bool) (theme.Context, error) {
 	if cfg == nil {
-		return theme.ResolveStartupContext("", "", "")
+		return theme.ResolveStartupContextWithNoColor("", "", "", noColor)
 	}
-	return theme.ResolveStartupContext(cfg.UI.Theme, cfg.UI.Color, cfg.UI.Glyphs)
+	return theme.ResolveStartupContextWithNoColor(cfg.UI.Theme, cfg.UI.Color, cfg.UI.Glyphs, noColor)
 }

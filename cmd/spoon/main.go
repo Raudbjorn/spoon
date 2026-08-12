@@ -176,11 +176,7 @@ func main() {
 		}
 	}
 
-	if noColor {
-		os.Setenv("NO_COLOR", "1")
-	}
-
-	tuiContext, err := resolveTUIContext(cfg)
+	tuiContext, err := resolveTUIContextWithNoColor(cfg, noColor)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)

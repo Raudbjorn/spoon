@@ -391,18 +391,6 @@ func runThreads(args []string) int {
 		return 2
 	}
 
-	cfg, cfgErr := config.LoadDefault()
-	if cfgErr != nil {
-		fmt.Fprintln(os.Stderr, "Error: invalid config:", cfgErr)
-		return 1
-	}
-	tuiContext, err := resolveTUIContext(cfg)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "Error:", err)
-		return 1
-	}
-	theme.PinColorProfile(tuiContext)
-
 	fallbackOwner, fallbackRepo := detectRepoContext()
 
 	// --interactive with a PR ref already supplied is a user error in
@@ -447,6 +435,12 @@ func runThreads(args []string) int {
 			fmt.Println("No open PRs in this repo")
 			return 0
 		}
+		tuiContext, contextErr := resolveOptionalThreadsTUIContext()
+		if contextErr != nil {
+			fmt.Fprintln(os.Stderr, "Error:", contextErr)
+			return 1
+		}
+		theme.PinColorProfile(tuiContext)
 		picker := threadstui.NewPicker(prs).WithTheme(tuiContext)
 		final, runErr := tea.NewProgram(picker, tea.WithAltScreen()).Run()
 		if runErr != nil {
@@ -721,6 +715,12 @@ func runThreads(args []string) int {
 		return 0
 
 	case modeTUI:
+		tuiContext, contextErr := resolveOptionalThreadsTUIContext()
+		if contextErr != nil {
+			fmt.Fprintln(os.Stderr, "Error:", contextErr)
+			return 1
+		}
+		theme.PinColorProfile(tuiContext)
 		return runThreadsTUI(ctx, client, owner, repo, number, flags.filter, flags.showCodeLines, flags.verbose, tuiContext)
 
 	default:
@@ -809,6 +809,18 @@ func runThreadsTUI(ctx context.Context, client *gh.Client, owner, repo string, n
 		return 1
 	}
 	return 0
+}
+
+// resolveOptionalThreadsTUIContext keeps non-interactive thread operations
+// independent from appearance config. Invalid/missing config follows Spoon's
+// startup fallback policy; invalid explicit TUI variables still fail clearly.
+func resolveOptionalThreadsTUIContext() (theme.Context, error) {
+	cfg, err := config.LoadDefault()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "warning: ignoring config:", err)
+		return resolveTUIContext(nil)
+	}
+	return resolveTUIContext(cfg)
 }
 
 // emitStatus writes the PR status header to w (unless suppressed). glyphs

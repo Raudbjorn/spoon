@@ -61,6 +61,15 @@ const (
 	EmDash         Glyph = "em-dash"
 )
 
+var allGlyphs = []Glyph{
+	HeatEmpty, HeatDim, HeatMedium, HeatFull, Cursor,
+	BoxTopLeft, BoxTopRight, BoxBottomLeft, BoxBottomRight,
+	BoxHorizontal, BoxVertical, BoxTeeRight, BoxTeeLeft,
+	ArrowRight, ArrowLeft, ArrowUp, ArrowDown,
+	Warning, Cross, Check, SortUp, SortDown, Selected,
+	Star, Fork, Gutter, Separator, EmDash,
+}
+
 type glyphPair struct {
 	Unicode string
 	ASCII   string

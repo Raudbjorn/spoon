@@ -118,6 +118,7 @@ func ResolveConfiguredContext(envTheme, configTheme, envColor, noColor, configCo
 		ColorProfile: profile,
 		GlyphProfile: glyphProfile,
 		gutter:       resolveGutterColors(GutterColors(palette), profile),
+		initialized:  true,
 	}, nil
 }
 
@@ -132,6 +133,18 @@ func ResolveStartupContext(configTheme, configColor, configGlyphs string) (Conte
 		os.Getenv("SPOON_TUI_GLYPHS"),
 		configGlyphs,
 	)
+}
+
+// ResolveStartupContextWithNoColor resolves startup choices while honoring the
+// main TUI's --no-color flag as an explicit command-line override.
+func ResolveStartupContextWithNoColor(configTheme, configColor, configGlyphs string, noColor bool) (Context, error) {
+	if noColor {
+		return ResolveConfiguredContext(
+			os.Getenv("SPOON_TUI_THEME"), configTheme, "no-color", "",
+			configColor, os.Getenv("SPOON_TUI_GLYPHS"), configGlyphs,
+		)
+	}
+	return ResolveStartupContext(configTheme, configColor, configGlyphs)
 }
 
 // DefaultContext is deterministic for bare models in tests and for internal

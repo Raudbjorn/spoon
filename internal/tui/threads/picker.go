@@ -63,7 +63,7 @@ func (m PickerModel) WithTheme(ctx theme.Context) PickerModel {
 }
 
 func (m PickerModel) themeContext() theme.Context {
-	if m.theme.Palette == (theme.Palette{}) {
+	if !m.theme.IsResolved() {
 		return theme.DefaultContext()
 	}
 	return m.theme

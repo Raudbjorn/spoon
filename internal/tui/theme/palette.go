@@ -15,7 +15,8 @@ type Context struct {
 	ColorProfile ColorProfile
 	GlyphProfile GlyphProfile
 
-	gutter [6]lipgloss.Color
+	gutter      [6]lipgloss.Color
+	initialized bool
 }
 
 // PaletteByName returns one of Spoon's built-in resolved palettes.
@@ -63,8 +64,12 @@ func GutterColors(palette Palette) [6]lipgloss.Color {
 }
 
 func (c Context) GutterColors() [6]lipgloss.Color {
-	if c.gutter != ([6]lipgloss.Color{}) {
+	if c.initialized {
 		return c.gutter
 	}
 	return GutterColors(Dark)
 }
+
+// IsResolved reports whether the context was resolved at startup. It must not
+// be inferred from Palette: mono and no-color intentionally clear every role.
+func (c Context) IsResolved() bool { return c.initialized }

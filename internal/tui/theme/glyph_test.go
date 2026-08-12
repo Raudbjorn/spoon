@@ -28,11 +28,18 @@ func TestParseGlyphProfile(t *testing.T) {
 	}
 }
 
-func TestGlyphTableHasEqualWidthOneRuneASCIIAlternatives(t *testing.T) {
-	if len(glyphTable) == 0 {
-		t.Fatal("glyph table is empty")
+func TestGlyphInventoryHasEqualWidthOneRuneASCIIAlternatives(t *testing.T) {
+	if len(allGlyphs) == 0 {
+		t.Fatal("glyph inventory is empty")
 	}
-	for name, glyph := range glyphTable {
+	if len(glyphTable) != len(allGlyphs) {
+		t.Fatalf("glyph table has %d mappings, inventory has %d", len(glyphTable), len(allGlyphs))
+	}
+	for _, name := range allGlyphs {
+		glyph, ok := glyphTable[name]
+		if !ok {
+			t.Fatalf("glyph inventory entry %q has no mapping", name)
+		}
 		if glyph.Unicode == "" || glyph.ASCII == "" {
 			t.Fatalf("%s has an empty glyph", name)
 		}
@@ -45,6 +52,18 @@ func TestGlyphTableHasEqualWidthOneRuneASCIIAlternatives(t *testing.T) {
 		}
 		if got, want := lipgloss.Width(glyph.ASCII), lipgloss.Width(glyph.Unicode); got != want {
 			t.Fatalf("%s width = %d, want %d (%q -> %q)", name, got, want, glyph.Unicode, glyph.ASCII)
+		}
+	}
+	for name := range glyphTable {
+		found := false
+		for _, expected := range allGlyphs {
+			if name == expected {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("glyph table mapping %q is absent from authoritative inventory", name)
 		}
 	}
 }
