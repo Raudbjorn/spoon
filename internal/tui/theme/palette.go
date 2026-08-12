@@ -52,15 +52,32 @@ func PaletteByName(name string) (Palette, error) {
 	}
 }
 
-// GutterColors is the theme-local categorical duplicate-group ramp. Its
+// The gutter has no upstream semantic role: it identifies duplicate groups,
+// so each theme defines six distinct categorical hues separate from heat.
+var (
+	DarkGutterColors = [6]lipgloss.Color{
+		"#c586c0", "#d19a66", "#56b6c2",
+		"#c678dd", "#98c379", "#61afef",
+	}
+	LightGutterColors = [6]lipgloss.Color{
+		"#8b3fa0", "#b35b00", "#007f8b",
+		"#b23a6f", "#3f7c33", "#2e63b6",
+	}
+	AmberGutterColors = [6]lipgloss.Color{
+		"#b36bff", "#ff8f3d", "#25b5a6",
+		"#f06292", "#8bc34a", "#4da3ff",
+	}
+)
+
+// GutterColors returns the theme-local categorical duplicate-group ramp. Its
 // colors cycle by ordinal so adjacent groups remain distinguishable.
 func GutterColors(palette Palette) [6]lipgloss.Color {
-	return [6]lipgloss.Color{
-		palette.Accent2,
-		palette.Warning,
-		palette.Accent,
-		palette.AccentRust,
-		palette.Success,
-		palette.Info,
+	switch palette {
+	case Light:
+		return LightGutterColors
+	case Amber:
+		return AmberGutterColors
+	default:
+		return DarkGutterColors
 	}
 }

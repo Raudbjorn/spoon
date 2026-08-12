@@ -18,7 +18,8 @@ import (
 
 type tokenFile struct {
 	Tokens map[string]struct {
-		CSS string `json:"css"`
+		Type string `json:"type"`
+		CSS  string `json:"css"`
 	} `json:"tokens"`
 }
 
@@ -60,16 +61,26 @@ var roles = []role{
 
 var validHex = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
 
+var expectedRoles = func() map[string]struct{} {
+	result := make(map[string]struct{}, len(roles))
+	for _, role := range roles {
+		result[role.Name] = struct{}{}
+	}
+	return result
+}()
+
 func main() {
 	check := flag.Bool("check", false, "fail when palette_gen.go is not current")
+	tokensDir := flag.String("tokens-dir", "tokens", "directory containing vendored token JSON")
+	outputPath := flag.String("output", "palette_gen.go", "generated palette output path")
 	flag.Parse()
 
-	output, err := generate()
+	output, err := generate(*tokensDir)
 	if err != nil {
 		fail(err)
 	}
 	if *check {
-		current, err := os.ReadFile("palette_gen.go")
+		current, err := os.ReadFile(*outputPath)
 		if err != nil {
 			fail(err)
 		}
@@ -78,12 +89,12 @@ func main() {
 		}
 		return
 	}
-	if err := os.WriteFile("palette_gen.go", output, 0o644); err != nil {
+	if err := os.WriteFile(*outputPath, output, 0o644); err != nil {
 		fail(err)
 	}
 }
 
-func generate() ([]byte, error) {
+func generate(tokensDir string) ([]byte, error) {
 	themes := []themeSpec{
 		{Name: "dark", Var: "Dark"},
 		{Name: "light", Var: "Light"},
@@ -91,7 +102,7 @@ func generate() ([]byte, error) {
 	}
 	palettes := make(map[string]map[string]string, len(themes))
 	for _, theme := range themes {
-		palette, err := readPalette(theme.Name)
+		palette, err := readPalette(tokensDir, theme.Name)
 		if err != nil {
 			return nil, err
 		}
@@ -119,8 +130,8 @@ func generate() ([]byte, error) {
 	return format.Source([]byte(source.String()))
 }
 
-func readPalette(theme string) (map[string]string, error) {
-	path := filepath.Join("tokens", theme+".tokens.json")
+func readPalette(tokensDir, theme string) (map[string]string, error) {
+	path := filepath.Join(tokensDir, theme+".tokens.json")
 	contents, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", theme, err)
@@ -128,6 +139,14 @@ func readPalette(theme string) (map[string]string, error) {
 	var file tokenFile
 	if err := json.Unmarshal(contents, &file); err != nil {
 		return nil, fmt.Errorf("%s: invalid JSON: %w", theme, err)
+	}
+	for name, token := range file.Tokens {
+		if token.Type != "color" {
+			continue
+		}
+		if _, expected := expectedRoles[name]; !expected {
+			return nil, fmt.Errorf("%s: unexpected color role %s", theme, name)
+		}
 	}
 	palette := make(map[string]string, len(roles))
 	for _, role := range roles {

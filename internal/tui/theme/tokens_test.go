@@ -3,6 +3,9 @@ package theme
 import (
 	"crypto/sha256"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 var paletteFields = []string{
@@ -25,6 +30,18 @@ var paletteFields = []string{
 var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 var hexColor = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
+
+var heatRoleValues = map[string]map[string]struct{}{
+	"dark": {
+		string(Dark.TextFaint): {}, string(Dark.Info): {}, string(Dark.Accent): {}, string(Dark.Warning): {}, string(Dark.Error): {},
+	},
+	"light": {
+		string(Light.TextFaint): {}, string(Light.Info): {}, string(Light.Accent): {}, string(Light.Warning): {}, string(Light.Error): {},
+	},
+	"amber": {
+		string(Amber.TextFaint): {}, string(Amber.Info): {}, string(Amber.Accent): {}, string(Amber.Warning): {}, string(Amber.Error): {},
+	},
+}
 
 func TestVendoredTokenProvenance(t *testing.T) {
 	tokensDir := filepath.Join("tokens")
@@ -61,6 +78,31 @@ func TestGeneratedPaletteIsCurrent(t *testing.T) {
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("generated palette is stale: %v\n%s", err, output)
+	}
+}
+
+func TestGeneratorRejectsUnexpectedColorRole(t *testing.T) {
+	tokensDir := t.TempDir()
+	for _, name := range []string{"dark", "light", "amber"} {
+		contents, err := os.ReadFile(filepath.Join("tokens", name+".tokens.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if name == "dark" {
+			contents = []byte(strings.Replace(string(contents), "\"tokens\": {", "\"tokens\": {\n    \"unexpected\": {\"type\": \"color\", \"css\": \"#123456\"},", 1))
+		}
+		if err := os.WriteFile(filepath.Join(tokensDir, name+".tokens.json"), contents, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	command := exec.Command("go", "run", "gen.go", "-tokens-dir", tokensDir, "-output", filepath.Join(t.TempDir(), "palette_gen.go"))
+	command.Dir = "."
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatal("generator accepted an unexpected color role")
+	}
+	if !strings.Contains(string(output), "dark: unexpected color role unexpected") {
+		t.Fatalf("generator error = %q, want named theme and unexpected role", output)
 	}
 }
 
@@ -119,15 +161,40 @@ func TestContextCarriesPaletteAndProfiles(t *testing.T) {
 	}
 }
 
+func TestGutterRampsAreDistinctAndSeparateFromHeat(t *testing.T) {
+	for name, ramp := range map[string][6]lipgloss.Color{
+		"dark":  DarkGutterColors,
+		"light": LightGutterColors,
+		"amber": AmberGutterColors,
+	} {
+		seen := make(map[string]struct{}, len(ramp))
+		for _, color := range ramp {
+			value := string(color)
+			if _, exists := seen[value]; exists {
+				t.Errorf("%s gutter ramp repeats %q", name, value)
+			}
+			seen[value] = struct{}{}
+			if _, isHeat := heatRoleValues[name][value]; isHeat {
+				t.Errorf("%s gutter ramp reuses heat role color %q", name, value)
+			}
+		}
+	}
+}
+
+
 func TestNoProductionLipglossColorOutsideTheme(t *testing.T) {
-	root := filepath.Clean(filepath.Join(".."))
+	repoRoot := filepath.Clean(filepath.Join("..", "..", ".."))
+	approved := map[string]struct{}{
+		filepath.Join(repoRoot, "internal", "tui", "theme", "palette_gen.go"): {},
+	}
 	var offenders []string
-	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+	err := filepath.WalkDir(repoRoot, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
 		if entry.IsDir() {
-			if filepath.Base(path) == "theme" {
+			switch entry.Name() {
+			case ".git", "vendor":
 				return filepath.SkipDir
 			}
 			return nil
@@ -135,20 +202,67 @@ func TestNoProductionLipglossColorOutsideTheme(t *testing.T) {
 		if filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-		contents, err := os.ReadFile(path)
+		if _, ok := approved[path]; ok {
+			return nil
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
 		if err != nil {
 			return err
 		}
-		if strings.Contains(string(contents), "lipgloss.Color(") {
-			offenders = append(offenders, path)
+		lipglossNames := make(map[string]struct{})
+		dotImportedLipgloss := false
+		for _, spec := range file.Imports {
+			if strings.Trim(spec.Path.Value, "\"") != "github.com/charmbracelet/lipgloss" {
+				continue
+			}
+			name := "lipgloss"
+			if spec.Name != nil {
+				name = spec.Name.Name
+			}
+			if name == "." {
+				dotImportedLipgloss = true
+			} else if name != "_" {
+				lipglossNames[name] = struct{}{}
+			}
 		}
+		ast.Inspect(file, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			switch function := call.Fun.(type) {
+			case *ast.SelectorExpr:
+				if function.Sel.Name != "Color" {
+					return true
+				}
+				ident, ok := function.X.(*ast.Ident)
+				if !ok {
+					return true
+				}
+				if _, ok := lipglossNames[ident.Name]; !ok {
+					return true
+				}
+			case *ast.Ident:
+				if !dotImportedLipgloss || function.Name != "Color" {
+					return true
+				}
+			default:
+				return true
+			}
+			relative, err := filepath.Rel(repoRoot, path)
+			if err != nil {
+				relative = path
+			}
+			offenders = append(offenders, relative)
+			return true
+		})
 		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(offenders) != 0 {
-		t.Fatalf("direct lipgloss.Color calls outside theme: %s", strings.Join(offenders, ", "))
+		t.Fatalf("direct lipgloss.Color calls outside approved generated theme output: %s", strings.Join(offenders, ", "))
 	}
 }
 
