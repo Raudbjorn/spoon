@@ -224,6 +224,8 @@ func (m Model) viewTable() string {
 		b.WriteString(" " + subtitleStyle.Render(m.clipMsg) + "\n")
 	} else if m.errMsg != "" && time.Since(m.errMsgTime) < 5*time.Second {
 		b.WriteString(" " + subtitleStyle.Render(m.errMsg) + "\n")
+	} else if rs := m.rankFooter(); rs != "" {
+		b.WriteString(" " + subtitleStyle.Render(rs) + "\n")
 	} else if cs := m.clusterFooter(); cs != "" {
 		b.WriteString(" " + subtitleStyle.Render(cs) + "\n")
 	} else {
@@ -232,7 +234,7 @@ func (m Model) viewTable() string {
 	if legend := m.badgeLegend(); legend != "" {
 		b.WriteString(helpStyle.Render(" "+legend) + "\n")
 	}
-	b.WriteString(helpStyle.Render(" ↑↓ navigate  PgUp/PgDn page  Enter detail  Space mark  / filter  e/E export  o open  y yank  s sort  g cluster  t tier  ? help  q quit"))
+	b.WriteString(helpStyle.Render(" ↑↓ navigate  PgUp/PgDn page  Enter detail  Space mark  / filter  R rank  e/E export  o open  y yank  s sort  g cluster  t tier  ? help  q quit"))
 
 	return b.String()
 }
@@ -455,6 +457,9 @@ func (m *Model) forkLess() func(i, j int) bool {
 		case "pushed":
 			a, b := m.forks[i].Fork.PushedAt, m.forks[j].Fork.PushedAt
 			less, equal = a.Before(b), a.Equal(b)
+		case relevanceSortCol:
+			a, b := m.relevanceScore(i), m.relevanceScore(j)
+			less, equal = a < b, a == b
 		default:
 			a, b := m.forks[i].Heat.Score, m.forks[j].Heat.Score
 			less, equal = a < b, a == b

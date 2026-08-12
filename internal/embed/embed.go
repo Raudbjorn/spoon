@@ -1,8 +1,14 @@
 // Package embed provides the Embedder abstraction, the built-in in-process
 // lexical embedder, per-fork feature builders, and a multi-modal combiner.
 // It is the foundation for embedding-driven fork clustering and novelty
-// scoring. No external services are involved: embedding runs entirely
-// in-process (see LocalEmbedder).
+// scoring.
+//
+// Every default path runs in-process: LocalEmbedder needs nothing installed and
+// FastEmbedEmbedder runs a fixed BGE model over ONNX Runtime. The one exception
+// is the optional Voyage AI provider (voyage.go, voyageembed.go, voyagerank.go),
+// which calls an external service when an API key is configured. It is additive:
+// Voyage indexes alongside fastembed rather than replacing it, and clustering
+// never uses it.
 package embed
 
 import "context"

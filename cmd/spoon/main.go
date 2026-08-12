@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/svnbjrn/spoon/internal/config"
+	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/forge"
 	"github.com/svnbjrn/spoon/internal/gitea"
 	gh "github.com/svnbjrn/spoon/internal/github"
@@ -212,13 +213,39 @@ func main() {
 	}
 	defer db.Close()
 
-	m := tui.NewModelWithCluster(provider, auth, repoArg, refresh, tuiClusterOpts).WithHeatWeights(heatWeights).WithMaxTier(maxTier).WithStore(db)
+	m := tui.NewModelWithCluster(provider, auth, repoArg, refresh, tuiClusterOpts).
+		WithHeatWeights(heatWeights).WithMaxTier(maxTier).WithStore(db).
+		WithQueryScorer(tuiQueryScorer(db))
 	p := tea.NewProgram(m, tea.WithAltScreen())
 
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// tuiQueryScorer returns the scorer the `R` intent ranking uses: the Voyage
+// cross-encoder when a key is configured, nil (the built-in lexical scorer)
+// otherwise. The store is passed as Voyage's paid-response cache, so re-ranking
+// the same intent costs nothing the second time.
+//
+// A misconfigured or unusable Voyage setup returns nil rather than failing: the
+// TUI must start with no key, no network and no config, and a ranking that falls
+// back to lexical still labels itself as lexical in the footer.
+func tuiQueryScorer(db *store.Store) embed.QueryScorer {
+	var fileCfg config.VoyageConfig
+	if cfg, err := config.LoadDefault(); err == nil && cfg != nil {
+		fileCfg = cfg.Embedder.Voyage
+	}
+	voyageCfg, active, err := embed.ResolveVoyageConfig(context.Background(), fileCfg, false, db)
+	if err != nil || !active {
+		return nil
+	}
+	reranker, err := embed.NewVoyageReranker(voyageCfg)
+	if err != nil {
+		return nil
+	}
+	return reranker
 }
 
 // backendFor maps the --full-mdg flag to the cluster.PipelineOptions

@@ -4,6 +4,35 @@ Chronological log of features removed or displaced from the codebase, most
 recent last. Re-baselined at HEAD `426049c` (`fix/export-compare-url-and-created-at`),
 2026-08-08.
 
+## 2026-08-12 — Voyage AI added; the `QueryScorer` seam is filled again
+
+Not a removal. Recorded here because it reverses part of the two removals below,
+deliberately and on different terms.
+
+- **Reranking exists again.** `embed.QueryScorer` had survived `19dd9f5` with no
+  implementation, so `--query` was lexical-only in production. It is now
+  implemented by `embed.VoyageReranker` (`internal/embed/voyagerank.go`) and wired
+  at `cmd/spn/forks.go` (`--query`), `cmd/spn/search.go` (`spn search`), and
+  `internal/tui/filter.go` (the TUI `/` ranking, which also builds the fork filter
+  `help.go` had advertised but never had).
+- **An external embedder exists again**, but as a *sibling* rather than a
+  replacement — which is what `355dcd8`'s rationale was actually about. Those
+  backends made the entire semantic index depend on a reachable service; Voyage
+  indexes alongside fastembed under its own `(document_id, model)` partition, so
+  the local index and the zero-configuration path are untouched. Clustering never
+  uses it. `embedder.backend` is unchanged and still rejects anything but
+  `fastembed`; Voyage lives in a new `embedder.voyage` block.
+- **Stale text from `19dd9f5` fixed in the same change** (the four items listed in
+  the "Stale text left behind" section below): the hardcoded `"openvino"`
+  `queryMethod` at `stream.go` now comes from `QueryScorer.Method()`, and the help
+  text and package comment name Voyage.
+
+New surfaces: `voyage_cache` table (schema v3, a content-hash cache so a paid
+response is never bought twice), `VOYAGE_AI_API_KEY` / `VOYAGE_API_KEY` /
+`SPOON_NO_VOYAGE` / `SPOON_VOYAGE_*`, `--no-voyage`, and
+`--voyage` / `--rerank` / `--no-rerank` / `--rerank-overfetch` on `spn search`.
+Contract: [../embedders.md](../embedders.md).
+
 ## 2026-08-08 — OpenVINO reranker and labeler removed entirely (`19dd9f5`)
 
 Commit `19dd9f5` — "refactor: remove OpenVINO reranker and labeler entirely".
@@ -39,7 +68,8 @@ limits). Verified absent from non-test sources at HEAD.
 
 ### Stale text left behind by the removal
 
-Flagged here rather than hidden:
+Flagged here rather than hidden. **All four were fixed on 2026-08-12** when
+Voyage filled the seam — see the entry at the top of this log.
 
 - `cmd/spn/main.go:114` — help still says *"cross-encoder reranker when
   configured, lexical fallback otherwise"*.

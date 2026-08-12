@@ -18,10 +18,33 @@ import (
 	"github.com/svnbjrn/spoon/internal/store"
 )
 
+// defaultRerankOverfetch multiplies --top to size the candidate set handed to
+// the reranker: a cross-encoder can only promote what retrieval surfaced, so it
+// needs more candidates than the caller asked to see. Reranking the whole index
+// instead would be a cost blowout — SearchRows returns every stored vector.
+const defaultRerankOverfetch = 5
+
 type searchResult struct {
-	ForkID, Repo, Fork, URL, Model, IndexedAt string
-	Score                                     float64
+	DocumentID, ForkID, Repo, Fork, URL, Model, IndexedAt string
+	Score                                                 float64
+
+	// RerankScore is the cross-encoder's relevance in [0,1] and RerankModel
+	// names the model that produced it. Both zero when no reranking ran; Score
+	// always stays the retrieval cosine so both signals remain visible.
+	RerankScore float64
+	RerankModel string
 }
+
+// rerankTristate distinguishes "user said nothing" from an explicit choice, so
+// the default (on whenever Voyage is active) can be applied without silently
+// overriding --no-rerank.
+type rerankTristate int
+
+const (
+	rerankUnset rerankTristate = iota
+	rerankForceOn
+	rerankForceOff
+)
 
 func runSearch(args []string) int { return runSearchWith(args, os.Stdout, os.Stderr) }
 
@@ -29,6 +52,9 @@ func runSearchWith(args []string, stdout, stderr io.Writer) int {
 	query := ""
 	repoOwner, repoName := "", ""
 	top := 20
+	useVoyage := false
+	rerankChoice := rerankUnset
+	overfetch := defaultRerankOverfetch
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--repo":
@@ -56,10 +82,26 @@ func runSearchWith(args []string, stdout, stderr io.Writer) int {
 				return agentio.NewError(agentio.CodeBadInput, "--top must be a positive integer", "Pass --top N with N > 0.").Emit(stderr)
 			}
 			top = value
+		case "--voyage":
+			useVoyage = true
+		case "--rerank":
+			rerankChoice = rerankForceOn
+		case "--no-rerank":
+			rerankChoice = rerankForceOff
+		case "--rerank-overfetch":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--rerank-overfetch requires a value", "Pass --rerank-overfetch N with N >= 1.").Emit(stderr)
+			}
+			i++
+			value, err := strconv.Atoi(args[i])
+			if err != nil || value < 1 {
+				return agentio.NewError(agentio.CodeBadInput, "--rerank-overfetch must be an integer >= 1", "Pass --rerank-overfetch N with N >= 1.").Emit(stderr)
+			}
+			overfetch = value
 		case "--":
 			// POSIX flag/positional separator: everything after is positional.
 			if i+1 >= len(args) {
-				return agentio.NewError(agentio.CodeBadInput, "missing query after --", "Usage: spn search \"query\" [--repo owner/repo] [--top N]").Emit(stderr)
+				return agentio.NewError(agentio.CodeBadInput, "missing query after --", searchUsage).Emit(stderr)
 			}
 			if i+2 < len(args) {
 				return agentio.NewError(agentio.CodeBadInput, "search accepts exactly one query argument", "Quote multi-word queries.").Emit(stderr)
@@ -68,7 +110,7 @@ func runSearchWith(args []string, stdout, stderr io.Writer) int {
 			i = len(args)
 		default:
 			if strings.HasPrefix(args[i], "-") {
-				return agentio.NewError(agentio.CodeBadInput, "unknown search flag: "+args[i], "Usage: spn search \"query\" [--repo owner/repo] [--top N]").Emit(stderr)
+				return agentio.NewError(agentio.CodeBadInput, "unknown search flag: "+args[i], searchUsage).Emit(stderr)
 			}
 			if query != "" {
 				return agentio.NewError(agentio.CodeBadInput, "search accepts exactly one query argument", "Quote multi-word queries.").Emit(stderr)
@@ -77,15 +119,35 @@ func runSearchWith(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	if query == "" {
-		return agentio.NewError(agentio.CodeBadInput, "search query must not be empty", "Usage: spn search \"query\" [--repo owner/repo] [--top N]").Emit(stderr)
+		return agentio.NewError(agentio.CodeBadInput, "search query must not be empty", searchUsage).Emit(stderr)
 	}
 
-	// fastembed is the only embedder; an absent or empty config is valid and
-	// resolves to the fixed default model. A config that fails to load (bad
-	// permissions/JSON) is surfaced.
+	// An absent or empty config is valid and resolves to defaults. A config that
+	// fails to load (bad permissions/JSON) is surfaced.
 	cfg, err := config.LoadDefault()
 	if err != nil {
 		return agentio.NewError(agentio.CodeBadInput, "embedder_unavailable: "+err.Error(), "Secure and repair the spoon config, then retry.").Emit(stderr)
+	}
+	var embCfg config.EmbedderConfig
+	if cfg != nil {
+		embCfg = cfg.Embedder
+	}
+
+	// A flag naming Voyage is a promise we cannot keep without a key, and the key
+	// check needs nothing else — so reject it before any store or model work.
+	// Failing beats silently ranking against a different model's index.
+	voyageRequested := useVoyage || rerankChoice == rerankForceOn
+	keyed, keyErr := embed.VoyageKeyConfigured(embCfg.Voyage, false)
+	if keyErr != nil && voyageRequested {
+		return agentio.NewError(agentio.CodeBadInput, "voyage_unavailable: "+keyErr.Error(), voyageRemediation(keyErr)).Emit(stderr)
+	}
+	if !keyed && voyageRequested {
+		flag := "--voyage"
+		if !useVoyage {
+			flag = "--rerank"
+		}
+		return agentio.NewError(agentio.CodeBadInput,
+			"voyage_unavailable: "+flag+" requires a Voyage API key", voyageKeyRemediation).Emit(stderr)
 	}
 
 	// An absent store is a successful empty result — checked before loading the
@@ -96,36 +158,47 @@ func runSearchWith(args []string, stdout, stderr io.Writer) int {
 		return agentio.NewError(agentio.CodeInternal, pathErr.Error(), agentio.RemediationInternal()).Emit(stderr)
 	}
 	if _, statErr := os.Stat(path); errors.Is(statErr, os.ErrNotExist) {
-		emitSemanticEmpty(stderr)
+		emitSemanticEmpty(stderr, useVoyage)
 		return 0
 	}
 
-	var embCfg config.EmbedderConfig
-	if cfg != nil {
-		embCfg = cfg.Embedder
-	}
-	model, err := embed.NewFastEmbedEmbedder(embed.FastEmbedConfig{
-		Model: embCfg.Model, CacheDir: embCfg.CacheDir,
-		MaxLength: embCfg.MaxLength, BatchSize: embCfg.BatchSize,
-	})
-	if err != nil {
-		// User-fixable (the remediation says so: set ONNX_PATH), so bad_input
-		// (exit 2), not internal (exit 1) which reads as a tool bug to an agent.
-		return agentio.NewError(agentio.CodeBadInput, "embedder_unavailable: "+err.Error(), "Set ONNX_PATH to libonnxruntime.so and verify the FastEmbed cache.").Emit(stderr)
-	}
-	defer model.Close()
-
+	// The store opens before the Voyage resolve and before the embedder: it is
+	// both the paid-response cache and where the vectors live, and Voyage is only
+	// enabled when it can actually be written (see embed.ResolveVoyageConfig).
 	db, err := store.OpenDefault()
 	if err != nil {
 		return agentio.NewError(agentio.CodeInternal, "store_unavailable: "+err.Error(), agentio.RemediationInternal()).Emit(stderr)
 	}
 	defer db.Close()
 
-	queryVector, err := model.EmbedQuery(context.Background(), query)
+	ctx := context.Background()
+	voyageCfg, voyageActive, voyageErr := embed.ResolveVoyageConfig(ctx, embCfg.Voyage, false, db)
+	if voyageErr != nil {
+		if voyageRequested {
+			return agentio.NewError(agentio.CodeBadInput, "voyage_unavailable: "+voyageErr.Error(), voyageRemediation(voyageErr)).Emit(stderr)
+		}
+		// Voyage was not asked for by name here, so degrade rather than fail.
+		emitVoyageWarning(stderr, "is configured but unusable; ranking without it", voyageErr)
+	}
+	// Reranking is orthogonal to which index retrieved the candidates: a
+	// cross-encoder scores (query, body) pairs and never touches the stored
+	// vectors, so the fastembed index reranks just as well.
+	rerankEnabled := voyageActive && rerankChoice != rerankForceOff
+
+	model, closeModel, aerr := searchEmbedderFor(useVoyage, embCfg, voyageCfg)
+	if aerr != nil {
+		return aerr.Emit(stderr)
+	}
+	defer closeModel()
+
+	queryVector, err := model.EmbedQuery(ctx, query)
 	if err != nil {
+		if useVoyage {
+			return agentio.NewError(agentio.CodeBadInput, "voyage_unavailable: "+err.Error(), voyageRemediation(err)).Emit(stderr)
+		}
 		return agentio.NewError(agentio.CodeInternal, "embedder_unavailable: "+err.Error(), "Verify ONNX Runtime and the FastEmbed model cache.").Emit(stderr)
 	}
-	rows, err := db.SearchRows(context.Background(), model.ModelID(), repoOwner, repoName)
+	rows, err := db.SearchRows(ctx, model.ModelID(), repoOwner, repoName)
 	if err != nil {
 		return agentio.NewError(agentio.CodeInternal, err.Error(), agentio.RemediationInternal()).Emit(stderr)
 	}
@@ -135,28 +208,133 @@ func runSearchWith(args []string, stdout, stderr io.Writer) int {
 		// command and strand every intact row — degrade and count instead.
 		emitRowsSkipped(stderr, skipped)
 	}
+	sortByCosine(results)
+	if rerankEnabled && len(results) > 0 {
+		results = rerankResults(ctx, db, voyageCfg, query, results, top, overfetch, stderr)
+	}
+	if len(results) > top {
+		results = results[:top]
+	}
+	if len(results) == 0 {
+		emitSemanticEmpty(stderr, useVoyage)
+		return 0
+	}
+	for _, result := range results {
+		record := map[string]any{
+			"forkId": result.ForkID, "repo": result.Repo, "fork": result.Fork,
+			"url": result.URL, "score": result.Score, "model": result.Model, "indexedAt": result.IndexedAt,
+		}
+		if result.RerankModel != "" {
+			record["rerankScore"] = result.RerankScore
+			record["rerankModel"] = result.RerankModel
+		}
+		if err := agentio.WriteNDJSON(stdout, record); err != nil {
+			return agentio.NewError(agentio.CodeInternal, err.Error(), agentio.RemediationInternal()).Emit(stderr)
+		}
+	}
+	return 0
+}
+
+const (
+	searchUsage = "Usage: spn search \"query\" [--repo owner/repo] [--top N] [--voyage] [--no-rerank] [--rerank-overfetch N]"
+
+	voyageKeyRemediation = "Set " + embed.VoyageAPIKeyEnv + " (or embedder.voyage.apiKeyFile in the spoon config), or drop the flag to use the local fastembed index."
+)
+
+// searchEmbedderFor picks the index to search. fastembed is the default; only
+// --voyage selects the Voyage index, so the paid provider is never queried
+// implicitly. With --voyage, fastembed is not initialized at all — which is what
+// lets `spn search --voyage` work on a host with no ONNX Runtime installed.
+func searchEmbedderFor(useVoyage bool, embCfg config.EmbedderConfig, voyageCfg embed.VoyageConfig) (embed.SearchEmbedder, func(), *agentio.Error) {
+	if useVoyage {
+		embedder, err := embed.NewVoyageEmbedder(voyageCfg)
+		if err != nil {
+			return nil, nil, agentio.NewError(agentio.CodeBadInput, "voyage_unavailable: "+err.Error(), voyageRemediation(err))
+		}
+		return embedder, func() { _ = embedder.Close() }, nil
+	}
+	embedder, err := embed.NewFastEmbedEmbedder(embed.FastEmbedConfig{
+		Model: embCfg.Model, CacheDir: embCfg.CacheDir,
+		MaxLength: embCfg.MaxLength, BatchSize: embCfg.BatchSize,
+	})
+	if err != nil {
+		// User-fixable (the remediation says so: set ONNX_PATH), so bad_input
+		// (exit 2), not internal (exit 1) which reads as a tool bug to an agent.
+		return nil, nil, agentio.NewError(agentio.CodeBadInput, "embedder_unavailable: "+err.Error(),
+			"Set ONNX_PATH to libonnxruntime.so and verify the FastEmbed cache.")
+	}
+	return embedder, func() { _ = embedder.Close() }, nil
+}
+
+// sortByCosine orders results by retrieval score, breaking ties on fork ID so
+// output is deterministic across runs.
+func sortByCosine(results []searchResult) {
 	sort.Slice(results, func(i, j int) bool {
 		if results[i].Score == results[j].Score {
 			return results[i].ForkID < results[j].ForkID
 		}
 		return results[i].Score > results[j].Score
 	})
-	if len(results) > top {
-		results = results[:top]
+}
+
+// rerankResults re-orders the top candidates with the Voyage cross-encoder. Any
+// failure returns the cosine-ordered input unchanged and warns: losing the
+// second-stage refinement is a degradation, losing the search is not acceptable.
+func rerankResults(ctx context.Context, db *store.Store, cfg embed.VoyageConfig, query string, results []searchResult, top, overfetch int, stderr io.Writer) []searchResult {
+	reranker, err := embed.NewVoyageReranker(cfg)
+	if err != nil {
+		emitRerankUnavailable(stderr, err.Error(), nil)
+		return results
 	}
-	if len(results) == 0 {
-		emitSemanticEmpty(stderr)
-		return 0
+	candidates := results[:min(top*overfetch, len(results))]
+	ids := make([]string, len(candidates))
+	for i, candidate := range candidates {
+		ids[i] = candidate.DocumentID
 	}
-	for _, result := range results {
-		if err := agentio.WriteNDJSON(stdout, map[string]any{
-			"forkId": result.ForkID, "repo": result.Repo, "fork": result.Fork,
-			"url": result.URL, "score": result.Score, "model": result.Model, "indexedAt": result.IndexedAt,
-		}); err != nil {
-			return agentio.NewError(agentio.CodeInternal, err.Error(), agentio.RemediationInternal()).Emit(stderr)
+	bodies, err := db.DocumentBodies(ctx, ids)
+	if err != nil {
+		emitRerankUnavailable(stderr, "reading document bodies failed: "+err.Error(), nil)
+		return results
+	}
+	docs := make([]string, len(candidates))
+	missing := 0
+	for i, candidate := range candidates {
+		body := bodies[candidate.DocumentID]
+		if strings.TrimSpace(body) == "" {
+			missing++
+			continue
 		}
+		docs[i] = body
 	}
-	return 0
+	if missing > 0 {
+		// Reranking only some candidates would interleave two incomparable
+		// score scales, which orders results worse than not reranking at all.
+		emitRerankUnavailable(stderr, fmt.Sprintf("%d candidate document(s) had no stored body", missing),
+			map[string]any{"missingBodies": missing})
+		return results
+	}
+	scores, err := reranker.Rerank(ctx, query, docs)
+	if err != nil {
+		emitRerankUnavailable(stderr, err.Error(), nil)
+		return results
+	}
+	if len(scores) != len(docs) {
+		emitRerankUnavailable(stderr, fmt.Sprintf("reranker returned %d scores, want %d", len(scores), len(docs)), nil)
+		return results
+	}
+	reranked := make([]searchResult, len(candidates))
+	copy(reranked, candidates)
+	for i := range reranked {
+		reranked[i].RerankScore = scores[i]
+		reranked[i].RerankModel = reranker.ModelID()
+	}
+	sort.Slice(reranked, func(i, j int) bool {
+		if reranked[i].RerankScore == reranked[j].RerankScore {
+			return reranked[i].ForkID < reranked[j].ForkID
+		}
+		return reranked[i].RerankScore > reranked[j].RerankScore
+	})
+	return reranked
 }
 
 // rankSearchRows scores every readable row against the query vector, skipping
@@ -177,7 +355,8 @@ func rankSearchRows(queryVector []float32, rows []store.SearchRow) (results []se
 			continue
 		}
 		results = append(results, searchResult{
-			ForkID: row.ForkKey, Repo: row.Repo, Fork: row.Fork, URL: row.URL,
+			DocumentID: row.DocumentID,
+			ForkID:     row.ForkKey, Repo: row.Repo, Fork: row.Fork, URL: row.URL,
 			Score: score, Model: row.Model, IndexedAt: row.IndexedAt.UTC().Format("2006-01-02T15:04:05.999999999Z07:00"),
 		})
 	}
@@ -193,9 +372,28 @@ func emitRowsSkipped(stderr io.Writer, skipped int) {
 	}})
 }
 
-func emitSemanticEmpty(stderr io.Writer) {
+func emitRerankUnavailable(stderr io.Writer, message string, details map[string]any) {
+	warning := map[string]any{
+		"code":        "rerank_unavailable",
+		"message":     "voyage reranking skipped: " + message,
+		"remediation": "Results are ordered by vector similarity. Retry, or pass --no-rerank to skip reranking.",
+	}
+	if details != nil {
+		warning["details"] = details
+	}
+	_ = json.NewEncoder(stderr).Encode(map[string]any{"warning": warning})
+}
+
+// emitSemanticEmpty reports an empty result set. The remediation names the index
+// that was actually searched — telling a --voyage user to install fastembed
+// would send them after the wrong prerequisite.
+func emitSemanticEmpty(stderr io.Writer, useVoyage bool) {
+	remediation := "Run 'spn forks list <repo>' first (with fastembed available) to build the index."
+	if useVoyage {
+		remediation = "Run 'spn forks list <repo>' first with " + embed.VoyageAPIKeyEnv + " set to build the Voyage index."
+	}
 	_ = json.NewEncoder(stderr).Encode(map[string]any{"warning": map[string]any{
 		"code": "semantic_index_empty", "message": "no matching semantic embeddings are indexed",
-		"remediation": "Run 'spn forks list <repo>' first (with fastembed available) to build the index.",
+		"remediation": remediation,
 	}})
 }

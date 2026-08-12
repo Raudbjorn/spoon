@@ -1,6 +1,6 @@
 ---
 name: using-spn-forks
-description: Use when discovering or scoring forks of a repository, comparing fork novelty, clustering forks with the Ollama embedder, managing the embedding model (probe / pull / list), or fetching directory centrality data for a repo. Applies when the `spn` CLI is on PATH (`command -v spn`). Output is NDJSON streaming by default; pass `--csv` for batched tabular output.
+description: Use when discovering or scoring forks of a repository, comparing fork novelty, clustering forks by novelty, ranking forks against a free-text intent, or fetching directory centrality data for a repo. Applies when the `spn` CLI is on PATH (`command -v spn`). Output is NDJSON streaming by default; pass `--csv` for batched tabular output.
 ---
 
 # Using `spn` for Fork Discovery and Clustering
@@ -11,7 +11,7 @@ description: Use when discovering or scoring forks of a repository, comparing fo
 
 - Discovering interesting forks of an upstream repo
 - Bulk-scoring forks for triage
-- Clustering forks by novelty (requires a reachable Ollama embedder)
+- Clustering forks by novelty (runs in-process; no service required)
 - Per-directory centrality for a repo (which directories drive activity)
 
 Do NOT use for: PR review work (see the `using-spn` skill for that) or non-fork repository analysis.
@@ -52,9 +52,13 @@ GitHub rate-limit hits produce a `rate_limited` envelope with `retry_after_secon
 
 Detection works on REST API paths. GitHub's GraphQL endpoint (used by the forks-list GraphQL fast path) returns rate-limit hits as the generic `upstream_error` code instead.
 
-## Query-driven fork search (no embedder required)
+## Query-driven fork search
 
-`spn forks list <repo> --query "intent"` scores each fork's change digest against the query and outputs sorted by relevance. Each NDJSON record gains a `queryScore` (0..1) and a `queryMethod` field. When the OpenVINO reranker is configured, `queryMethod` is `"openvino"`; otherwise it falls back to lexical cosine scoring. No external embedder service is required for any path.
+`spn forks list <repo> --query "intent"` scores each fork's change digest against the query and outputs sorted by relevance. Each NDJSON record gains a `queryScore` (0..1) and a `queryMethod` field.
+
+`queryMethod` tells you which scorer ran, and the two are not interchangeable in quality: `"voyage"` is a cross-encoder (only when `VOYAGE_AI_API_KEY` is set), `"lexical"` is the built-in deterministic cosine fallback. The lexical path needs no key, no service and no native runtime, so this flag always works.
+
+`spn search "<query>"` is a different operation: vector retrieval over the persistent index built by `forks list`, rather than scoring an already-enumerated set. With a Voyage key it also reranks its candidates, adding `rerankScore`/`rerankModel` while `score` stays the retrieval cosine; `--voyage` ranks against the Voyage index instead of the fastembed one. `--voyage` or `--rerank` without a key exits 2 rather than silently answering from the other index.
 
 ## Common Mistakes
 

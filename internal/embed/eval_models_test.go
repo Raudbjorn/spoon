@@ -5,8 +5,20 @@ package embed
 //
 // Gated manual test:
 //
-//	SPOON_EVAL_EMBEDDERS="builtin,..." \
+//	SPOON_EVAL_EMBEDDERS="builtin,voyage" VOYAGE_AI_API_KEY=... \
 //	  go test -run TestEvalEmbedders_Manual -v ./internal/embed/
+//
+// Legs that cannot be constructed on this host (e.g. no Voyage key) are reported
+// as skipped rather than silently dropped: a comparison that omits a leg without
+// saying so reads as a comparison that included it.
+//
+// There is deliberately no "fastembed" leg. Constructing one here was observed to
+// panic inside fastembed-go's own EncodeBatch goroutines (a nil encoding reaching
+// TruncateEncodings) — a goroutine this package cannot recover from, so the
+// harness aborts the whole test binary instead of reporting a skipped leg. The
+// trigger was not isolated; it may well work on a fully provisioned host, but a
+// leg that can kill the binary is not worth the coin flip. Compare against the
+// FastEmbed baseline through `spn search` output instead.
 //
 // Embedder metric: AUC of pair cosine vs the same-intent label (probability
 // a random same-intent pair outranks a random different-intent pair). 0.5 =
@@ -21,6 +33,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/svnbjrn/spoon/internal/config"
 )
 
 type evalFeature struct {
@@ -87,11 +101,11 @@ func TestEvalEmbedders_Manual(t *testing.T) {
 
 	for _, entry := range strings.Split(spec, ",") {
 		entry = strings.TrimSpace(entry)
-		if entry != "builtin" {
-			t.Logf("%s: skipped (openvino embedder removed)", entry)
+		name, embedder, closeFn, skip := buildEvalEmbedder(t, entry)
+		if skip != "" {
+			t.Logf("%s: skipped (%s)", entry, skip)
 			continue
 		}
-		name, embedder, closeFn := buildEvalEmbedder(t, entry)
 
 		start := time.Now()
 		vecs, err := MultiModalEmbed(context.Background(), embedder, features)
@@ -123,16 +137,47 @@ func TestEvalEmbedders_Manual(t *testing.T) {
 	}
 }
 
-// buildEvalEmbedder returns the builtin lexical embedder. The OpenVINO model
-// embedder was removed; only "builtin" is evaluable (non-builtin entries are
-// skipped by the caller).
-func buildEvalEmbedder(t *testing.T, entry string) (string, Embedder, func()) {
+// buildEvalEmbedder constructs one evaluation leg. A non-empty skip reason means
+// the leg cannot run on this host — the caller logs it and moves on, so a partial
+// comparison is visibly partial.
+func buildEvalEmbedder(t *testing.T, entry string) (name string, embedder Embedder, closeFn func(), skip string) {
 	t.Helper()
-	if entry == "builtin" {
-		return "builtin-lexical", LocalEmbedder{}, func() {}
+	switch entry {
+	case "builtin", "lexical":
+		return "builtin-lexical", LocalEmbedder{}, func() {}, ""
+	case BackendFastEmbed:
+		// See the file comment: an in-process fastembed leg was observed aborting
+		// the test binary from a library goroutine, so it is refused, not attempted.
+		return "", nil, nil, "fastembed is not evaluable in-process (see the file comment)"
+	case "voyage":
+		cfg, active, err := ResolveVoyageConfig(context.Background(), config.VoyageConfig{}, false, evalNoopCache{})
+		if err != nil {
+			return "", nil, nil, "voyage unavailable: " + err.Error()
+		}
+		if !active {
+			return "", nil, nil, "voyage not configured (set " + VoyageAPIKeyEnv + ")"
+		}
+		model, err := NewVoyageEmbedder(cfg)
+		if err != nil {
+			return "", nil, nil, "voyage unavailable: " + err.Error()
+		}
+		return model.ModelID(), model, func() { _ = model.Close() }, ""
+	default:
+		return "", nil, nil, "unknown embedder " + entry
 	}
-	t.Fatalf("openvino embedder removed; only 'builtin' is evaluable (got %q)", entry)
-	return "", nil, nil
+}
+
+// evalNoopCache satisfies the durable-storage precondition without touching the
+// user's real store: the evaluation deliberately measures fresh model output, and
+// caching across legs would make a re-run report timings it did not incur.
+type evalNoopCache struct{}
+
+func (evalNoopCache) VoyageCacheWritable(context.Context) error { return nil }
+func (evalNoopCache) VoyageCacheGetMany(context.Context, []string) (map[string][]byte, error) {
+	return nil, nil
+}
+func (evalNoopCache) VoyageCachePutMany(context.Context, string, string, map[string][]byte) error {
+	return nil
 }
 
 // computeAUC is the Mann-Whitney estimate: P(same > diff) + 0.5*P(equal).

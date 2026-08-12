@@ -1,5 +1,12 @@
 # Current state at HEAD `426049c`
 
+> **Superseded in part (2026-08-12).** Voyage AI added an optional external
+> embedder and reranker alongside fastembed; see the top entry in
+> [removal-log.md](removal-log.md) and [../embedders.md](../embedders.md).
+> Everything below still describes the default, no-API-key configuration, and the
+> claims about `QueryScorer` being unimplemented and `queryMethod` defaulting to
+> `"openvino"` no longer hold.
+
 **Authoritative snapshot** of the embedding/scoring/labeling surface after the
 `19dd9f5` removal (2026-08-08) and the store/config relocation series. Every
 claim below was verified at HEAD; see the sibling docs for contracts of the

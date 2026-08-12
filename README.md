@@ -35,6 +35,12 @@ Windows). `CGO_ENABLED=1` is the Go default; do not unset it.
 
 Unauthenticated requests work but hit much lower rate limits.
 
+Optionally, set `VOYAGE_AI_API_KEY` to add [Voyage AI](https://docs.voyageai.com)
+code embeddings and reranking on top of the local models — see
+[Embedding, clustering & semantic search](#embedding-clustering--semantic-search).
+It is the only external service spoon talks to, it is off by default, and
+enabling it never changes what the local path does.
+
 ## Configuration
 
 spoon is **zero-configuration**: the first run detects what the host offers
@@ -272,11 +278,10 @@ its normal fork evaluation over each.
 
 ## Embedding, clustering & semantic search
 
-spoon uses a single embedder — **fastembed** — the fixed
-`fast-bge-small-en-v1.5` BGE model (384 dimensions, max length 512) run
-in-process via native Go and ONNX Runtime. It powers persistence, the semantic
-index (`spn search`), and — when available — clustering plus the zero-shot
-`category` facet.
+spoon's local embedder is **fastembed** — the fixed `fast-bge-small-en-v1.5` BGE
+model (384 dimensions, max length 512) run in-process via native Go and ONNX
+Runtime. It powers persistence, the semantic index (`spn search`), and — when
+available — clustering plus the zero-shot `category` facet.
 
 FastEmbed runs by **default** on every `spn forks list` (it is opt-out, not
 opt-in):
@@ -284,7 +289,7 @@ opt-in):
 - It needs ONNX Runtime. Set `ONNX_PATH=/path/to/libonnxruntime.so` and run
   `spoon setup` once — it downloads the model (cached under
   `$XDG_CACHE_HOME/spoon/models/fastembed`) and persists the config. The exact
-  semantic identity is `fastembed:fast-bge-small-en-v1.5:maxlen=512`.
+  semantic identity is `fastembed:fast-bge-small-en-v1.5:maxlen=512:prompts=bge`.
 - If ONNX Runtime is unavailable, the run **degrades gracefully**: it emits an
   `embed_unavailable` warning and continues without semantic indexing —
   listing, scoring, and clustering are unaffected.
@@ -300,13 +305,52 @@ directory prefix + the most discriminative commit/path tokens). Tune with
 `--cluster-epsilon` / `--cluster-min-size`, cap the embedded set with
 `--cluster-top`, or disable with `--no-cluster`.
 
-`--query` relevance is scored by the built-in lexical scorer over each fork's
-change digest — no extra runtime or model involved.
+`--query` relevance is scored over each fork's change digest — by the built-in
+lexical scorer with no extra runtime, or by the Voyage cross-encoder when a key
+is configured. In the TUI, `R` ranks the fork table the same way; it composes
+with `/`, which filters by a substring of `owner/name`.
 
 Each completed list run embeds only new or changed documents in batches of 32.
 `spn search "<query>" --top 20` queries every indexed fork (or one upstream with
 `--repo owner/repo`) and emits deterministic score-descending NDJSON. An empty
 index is a successful empty result with a `semantic_index_empty` warning.
+
+### Voyage AI (optional)
+
+Setting `VOYAGE_AI_API_KEY` (or `VOYAGE_API_KEY`, or `embedder.voyage.apiKeyFile`
+pointing at a 0600 file) adds Voyage's `voyage-code-3` embeddings and
+`rerank-2.5` cross-encoder. It is **additive**: Voyage indexes each document
+*alongside* fastembed rather than instead of it, so enabling or disabling it
+never invalidates the local index, and clustering stays entirely local.
+
+```sh
+export VOYAGE_AI_API_KEY=...
+spn forks list owner/repo               # indexes with fastembed AND voyage-code-3
+spn search "oauth refresh" --voyage     # ranks against the Voyage index
+spn search "oauth refresh"              # fastembed candidates, still reranked
+spn search "oauth refresh" --no-rerank  # retrieval only
+```
+
+- `spn search` defaults to the fastembed index; `--voyage` selects the Voyage one
+  and needs no ONNX Runtime. Every record carries `model`, so which index
+  answered is visible.
+- Reranking adds `rerankScore`/`rerankModel` while `score` stays the retrieval
+  cosine. It works against either index, because a cross-encoder scores
+  (query, document) pairs rather than vectors.
+- Voyage is billed per token, so **nothing is paid for twice**: documents are
+  embedded only when new or changed, and every request item is content-hash
+  cached in `spoon.db`. Each run reports tokens billed, items served from cache
+  and items deduplicated on stderr.
+- Voyage stays **off** unless a key resolves *and* the store is writable — with
+  nowhere durable to keep results, each run would re-buy answers it had to throw
+  away.
+- A Voyage failure is fatal only where you named Voyage on that invocation:
+  `spn forks list` warns and continues on fastembed; `spn search --voyage`
+  without a usable key exits 2 rather than quietly answering from a different
+  model's index. `--no-voyage` / `SPOON_NO_VOYAGE=1` skips it entirely.
+
+Full detail, including cost control and the degradation rules, is in
+[docs/embedders.md](docs/embedders.md).
 
 ## Project layout
 
