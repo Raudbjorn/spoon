@@ -254,6 +254,15 @@ func TestNoColorFlagOverridesEveryExplicitEnvironmentProfile(t *testing.T) {
 	}
 }
 
+var referenceANSI16 = [16][3]uint8{
+	{0, 0, 0}, {128, 0, 0}, {0, 128, 0}, {128, 128, 0},
+	{0, 0, 128}, {128, 0, 128}, {0, 128, 128}, {192, 192, 192},
+	{128, 128, 128}, {255, 0, 0}, {0, 255, 0}, {255, 255, 0},
+	{0, 0, 255}, {255, 0, 255}, {0, 255, 255}, {255, 255, 255},
+}
+
+var referenceXtermLevels = [6]uint8{0, 95, 135, 175, 215, 255}
+
 func referenceQuantize(value string, profile ColorProfile) string {
 	if profile == TrueColor {
 		return value
@@ -285,7 +294,7 @@ func referenceQuantize(value string, profile ColorProfile) string {
 	}
 	best, bestDistance := 0, uint32(^uint32(0))
 	for index := 0; index < count; index++ {
-		if distance := referenceDistance(rgb, ansi16RGB[index]); distance < bestDistance {
+		if distance := referenceDistance(rgb, referenceANSI16[index]); distance < bestDistance {
 			best, bestDistance = index, distance
 		}
 	}
@@ -312,11 +321,11 @@ func referenceRGB(value string) ([3]uint8, bool) {
 
 func referenceIndexed(index int) [3]uint8 {
 	if index < 16 {
-		return ansi16RGB[index]
+		return referenceANSI16[index]
 	}
 	if index <= 231 {
 		offset := index - 16
-		return [3]uint8{xtermLevels[offset/36], xtermLevels[(offset%36)/6], xtermLevels[offset%6]}
+		return [3]uint8{referenceXtermLevels[offset/36], referenceXtermLevels[(offset%36)/6], referenceXtermLevels[offset%6]}
 	}
 	gray := uint8(8 + 10*(index-232))
 	return [3]uint8{gray, gray, gray}
