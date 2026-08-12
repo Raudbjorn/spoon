@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/svnbjrn/spoon/internal/tui/theme"
+	"github.com/svnbjrn/spoon/internal/tui/ui"
 )
 
 func (m Model) viewTable() string {
@@ -363,7 +364,7 @@ func (m Model) renderStatusBar() string {
 	if marked > 0 {
 		parts = append(parts, fmt.Sprintf("%d marked", marked))
 	}
-	return styles.statusBar.Width(m.width).Render(strings.Join(parts, " "+ctx.Glyph(theme.BoxVertical)+" "))
+	return styles.statusBar.Width(ui.ContentWidth(m.width)).Render(strings.Join(parts, " "+ctx.Glyph(theme.BoxVertical)+" "))
 }
 
 func (m *Model) cycleSortColumn() {

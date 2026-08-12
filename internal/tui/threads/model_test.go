@@ -135,6 +135,7 @@ func TestHelpKeyToggles(t *testing.T) {
 
 func TestViewIncludesStatusHeader(t *testing.T) {
 	m := New(nil, "owner", "repo", 42, false)
+	m.width, m.height = 120, 30
 	m.prStatus = gh.PullRequestStatus{
 		Title:            "Test",
 		MergeStateStatus: "CLEAN",
@@ -154,6 +155,7 @@ func TestViewIncludesStatusHeader(t *testing.T) {
 
 func TestViewSurfacesOutdated(t *testing.T) {
 	m := New(nil, "owner", "repo", 1, false)
+	m.width, m.height = 120, 30
 	m.prStatus = gh.PullRequestStatus{
 		Title:             "Test",
 		UnresolvedThreads: 2,
@@ -183,6 +185,7 @@ func TestViewSurfacesOutdated(t *testing.T) {
 
 func TestViewRendersCodeContextBlock(t *testing.T) {
 	m := New(nil, "owner", "repo", 1, false)
+	m.width, m.height = 120, 30
 	m.threads = []gh.ReviewThread{
 		{ID: "PRRT_1", Path: "foo.go", Line: 5, IsResolved: false, IsOutdated: false,
 			Comments: []gh.ThreadComment{{Author: "alice", AuthorType: "User", Body: "fix this"}}},
@@ -216,6 +219,7 @@ func TestViewRendersCodeContextBlock(t *testing.T) {
 
 func TestViewRendersOutdatedCodeContext(t *testing.T) {
 	m := New(nil, "owner", "repo", 1, false)
+	m.width, m.height = 120, 30
 	m.threads = []gh.ReviewThread{
 		{ID: "PRRT_1", Path: "foo.go", Line: 5, IsOutdated: true,
 			Comments: []gh.ThreadComment{{Author: "alice", AuthorType: "User", Body: "fix this"}}},
@@ -236,6 +240,7 @@ func TestViewRendersOutdatedCodeContext(t *testing.T) {
 
 func TestViewSurfacesActiveThread(t *testing.T) {
 	m := New(nil, "owner", "repo", 1, false)
+	m.width, m.height = 120, 30
 	m.threads = []gh.ReviewThread{
 		{ID: "a", Path: "foo.go", Line: 1, IsResolved: false, IsOutdated: false,
 			Comments: []gh.ThreadComment{{Author: "alice", AuthorType: "User", Body: "x"}}},

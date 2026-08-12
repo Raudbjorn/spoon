@@ -12,6 +12,7 @@ import (
 	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/threadsops"
 	"github.com/svnbjrn/spoon/internal/tui/theme"
+	"github.com/svnbjrn/spoon/internal/tui/ui"
 )
 
 // Model is the bubbletea model for the threads view.
@@ -521,6 +522,9 @@ func (m Model) openCmd() tea.Cmd {
 }
 
 func (m Model) View() string {
+	if ui.TooSmall(m.width, m.height) {
+		return ui.FallbackMessageFor(m.themeContext(), m.width, m.height)
+	}
 	return renderModel(m)
 }
 

@@ -20,6 +20,7 @@ import (
 	"github.com/svnbjrn/spoon/internal/store"
 	"github.com/svnbjrn/spoon/internal/topics"
 	"github.com/svnbjrn/spoon/internal/tui/theme"
+	"github.com/svnbjrn/spoon/internal/tui/ui"
 )
 
 // View state
@@ -1541,6 +1542,9 @@ func (m *Model) openCompare() tea.Cmd {
 // --- View ---
 
 func (m Model) View() string {
+	if ui.TooSmall(m.width, m.height) {
+		return ui.FallbackMessageFor(m.themeContext(), m.width, m.height)
+	}
 	if m.quitting {
 		return ""
 	}
