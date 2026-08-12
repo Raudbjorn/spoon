@@ -1210,7 +1210,9 @@ func (m *Model) startEnrichment() tea.Cmd {
 	if m.maxTier() < 2 {
 		for i := range m.forks {
 			m.forks[i].Enriching = false
-			m.forks[i].TierSkipped = true
+			// Only forks without cached T2 (applyCachedCompares runs first) are
+			// actually skipped by the ceiling; the rest already have their compare.
+			m.forks[i].TierSkipped = m.forks[i].T2 == nil
 		}
 		m.enriching = false
 		m.enrichDone, m.enrichTotal = 0, 0
