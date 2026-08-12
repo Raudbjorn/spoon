@@ -17,13 +17,15 @@ import (
 // blockEmbedderCache points XDG_CACHE_HOME at a regular file so the fastembed
 // cache directory cannot be created — forcing NewFastEmbedEmbedder to fail fast
 // (no network download) and exercising the embed-unavailable degradation path
-// deterministically.
+// deterministically. It also isolates the persisted store under a temporary
+// XDG_CONFIG_HOME.
 func blockEmbedderCache(t *testing.T) {
 	t.Helper()
 	blocker := filepath.Join(t.TempDir(), "not-a-dir")
 	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_CACHE_HOME", blocker)
 	t.Setenv("SPOON_NO_CONFIG", "1")
 }
