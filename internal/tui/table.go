@@ -313,22 +313,25 @@ func (m Model) badgeLegend() string {
 }
 
 func (m Model) renderStatusBar() string {
-	parts := []string{"spoon"}
+	ctx, styles := m.themeContext(), m.styles()
+	separator := " " + ctx.Glyph(theme.BoxVertical) + " "
+	var variable []string
+	tail := make([]string, 0, 6)
 
 	if m.parent != nil {
-		parts = append(parts, m.parent.FullName)
+		variable = append(variable, m.parent.FullName)
 		if m.filter != "" {
 			// Both numbers, so a filter can never quietly shrink the fork
 			// count into looking like the repo has fewer forks than it does.
-			parts = append(parts, fmt.Sprintf("%d/%d forks", m.visibleCount(), len(m.forks)))
-			parts = append(parts, fmt.Sprintf("filter: %q", m.filter))
+			tail = append(tail, fmt.Sprintf("%d/%d forks", m.visibleCount(), len(m.forks)))
+			variable = append(variable, fmt.Sprintf("filter: %q", m.filter))
 		} else {
-			parts = append(parts, fmt.Sprintf("%d forks", len(m.forks)))
+			tail = append(tail, fmt.Sprintf("%d forks", len(m.forks)))
 		}
 	}
 
 	if m.enriching {
-		parts = append(parts, fmt.Sprintf("T2: %d/%d", m.enrichDone, m.enrichTotal))
+		tail = append(tail, fmt.Sprintf("T2: %d/%d", m.enrichDone, m.enrichTotal))
 	}
 
 	// Enrichment ceiling. Shown only when it is actually capping something --
@@ -345,16 +348,17 @@ func (m Model) renderStatusBar() string {
 		if skipped > 0 {
 			seg += fmt.Sprintf(" (%d skipped)", skipped)
 		}
-		parts = append(parts, seg)
+		tail = append(tail, seg)
 	}
-	ctx, styles := m.themeContext(), m.styles()
 	if m.auth.RateLimit > 0 {
 		headroom := m.provider.Headroom()
 		remaining := int(headroom * float64(m.auth.RateLimit))
-		parts = append(parts, fmt.Sprintf("API: %d/%d", remaining, m.auth.RateLimit))
+		tail = append(tail, fmt.Sprintf("API: %d/%d", remaining, m.auth.RateLimit))
 	}
 	if !m.auth.Authenticated() {
-		parts = append(parts, styles.warn.Render(ctx.Glyph(theme.Warning)+" Unauthenticated"))
+		// Keep the authentication warning in the fixed tail: long repository
+		// names and filters are informative, but this warning is actionable.
+		tail = append(tail, styles.warn.Render(ctx.Glyph(theme.Warning)+" Unauthenticated"))
 	}
 	marked := 0
 	for _, fork := range m.forks {
@@ -363,8 +367,9 @@ func (m Model) renderStatusBar() string {
 		}
 	}
 	if marked > 0 {
-		parts = append(parts, fmt.Sprintf("%d marked", marked))
+		tail = append(tail, fmt.Sprintf("%d marked", marked))
 	}
+
 	contentWidth := ui.ContentWidth(m.width)
 	if contentWidth <= 0 {
 		return ""
@@ -373,7 +378,16 @@ func (m Model) renderStatusBar() string {
 	if contentLimit < 0 {
 		contentLimit = 0
 	}
-	content := ansi.Truncate(strings.Join(parts, " "+ctx.Glyph(theme.BoxVertical)+" "), contentLimit, "")
+
+	mandatory := strings.Join(append([]string{"spoon"}, tail...), separator)
+	content := ansi.Truncate(mandatory, contentLimit, "")
+	if len(variable) > 0 {
+		available := contentLimit - lipgloss.Width(mandatory) - lipgloss.Width(separator)
+		if available > 0 {
+			elided := ansi.Truncate(strings.Join(variable, separator), available, ctx.Glyph(theme.EmDash))
+			content = strings.Join(append([]string{"spoon", elided}, tail...), separator)
+		}
+	}
 	return styles.statusBar.Width(contentWidth).Render(content)
 }
 

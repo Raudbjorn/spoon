@@ -88,6 +88,9 @@ func TestLongStatusStaysOnOneLineAndPagingRemainsAligned(t *testing.T) {
 	if got := lipgloss.Width(status); got != ui.MaxContentWidth {
 		t.Fatalf("long status width = %d, want cap %d", got, ui.MaxContentWidth)
 	}
+	if !strings.Contains(status, "Unauthenticated") {
+		t.Fatalf("long status lost the critical auth warning: %q", status)
+	}
 
 	_, _ = m.handleTableKey("pgdown")
 	if got, want := m.cursor, m.pageSize(); got != want {
@@ -134,6 +137,7 @@ func TestViewportCJKAndCombiningContentUseDistinctCellWidths(t *testing.T) {
 	const (
 		cjk       = "owner/库"
 		combining = "owner/e\u0301"
+		sentinel  = "| sentinel"
 	)
 	if got, want := lipgloss.Width(cjk), 8; got != want {
 		t.Fatalf("CJK display width = %d, want %d", got, want)
@@ -142,25 +146,28 @@ func TestViewportCJKAndCombiningContentUseDistinctCellWidths(t *testing.T) {
 		t.Fatalf("combining display width = %d, want %d", got, want)
 	}
 
-	input := cjk + " | " + combining
-	got := Model{view: viewInput, width: 80, height: 24, input: input}.View()
-	line := ""
-	for _, candidate := range strings.Split(got, "\n") {
-		if strings.Contains(candidate, input) {
-			line = candidate
-			break
+	cjkLine := viewportInputLine(t, cjk+" "+sentinel)
+	combiningLine := viewportInputLine(t, combining+"  "+sentinel)
+	cjkBefore, _, cjkFound := strings.Cut(cjkLine, sentinel)
+	combiningBefore, _, combiningFound := strings.Cut(combiningLine, sentinel)
+	if !cjkFound || !combiningFound {
+		t.Fatalf("separate input fixtures lost sentinel: CJK=%q combining=%q", cjkLine, combiningLine)
+	}
+	if got, want := lipgloss.Width(cjkBefore), lipgloss.Width(combiningBefore); got != want {
+		t.Fatalf("sentinel columns differ: CJK=%d combining=%d", got, want)
+	}
+}
+
+func viewportInputLine(t *testing.T, input string) string {
+	t.Helper()
+	view := Model{view: viewInput, width: 80, height: 24, input: input}.View()
+	for _, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, input) {
+			return line
 		}
 	}
-	if line == "" {
-		t.Fatalf("80x24 input view lost CJK/combining content: %q", got)
-	}
-	left, _, found := strings.Cut(line, " | ")
-	if !found {
-		t.Fatalf("rendered input lost delimiter: %q", line)
-	}
-	if got, want := lipgloss.Width(left), lipgloss.Width("  Repository: "+cjk); got != want {
-		t.Fatalf("delimiter starts at cell %d, want %d: %q", got, want, line)
-	}
+	t.Fatalf("80x24 input view lost %q: %q", input, view)
+	return ""
 }
 
 func trimViewportGolden(view string) string {

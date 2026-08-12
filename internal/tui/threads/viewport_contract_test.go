@@ -102,6 +102,7 @@ func TestThreadViewportPreservesCJKAndCombiningContent(t *testing.T) {
 	const (
 		cjk       = "owner/库"
 		combining = "owner/e\u0301"
+		sentinel  = ":7"
 	)
 	if got, want := lipgloss.Width(cjk), 8; got != want {
 		t.Fatalf("CJK display width = %d, want %d", got, want)
@@ -109,21 +110,39 @@ func TestThreadViewportPreservesCJKAndCombiningContent(t *testing.T) {
 	if got, want := lipgloss.Width(combining), 7; got != want {
 		t.Fatalf("combining display width = %d, want %d", got, want)
 	}
-	got := Model{
-		width:    80,
-		height:   24,
-		loaded:   true,
-		prStatus: gh.PullRequestStatus{Title: cjk},
+
+	cjkLine := viewportThreadLine(t, cjk+".go")
+	combiningLine := viewportThreadLine(t, combining+" .go")
+	cjkBefore, _, cjkFound := strings.Cut(cjkLine, sentinel)
+	combiningBefore, _, combiningFound := strings.Cut(combiningLine, sentinel)
+	if !cjkFound || !combiningFound {
+		t.Fatalf("separate thread fixtures lost sentinel: CJK=%q combining=%q", cjkLine, combiningLine)
+	}
+	if got, want := lipgloss.Width(cjkBefore), lipgloss.Width(combiningBefore); got != want {
+		t.Fatalf("thread sentinel columns differ: CJK=%d combining=%d", got, want)
+	}
+}
+
+func viewportThreadLine(t *testing.T, path string) string {
+	t.Helper()
+	view := Model{
+		width:  80,
+		height: 24,
+		loaded: true,
 		threads: []gh.ReviewThread{{
 			ID:       "thread-1",
-			Path:     combining + ".go",
+			Path:     path,
 			Line:     7,
-			Comments: []gh.ThreadComment{{Author: "reviewer", AuthorType: "User", Body: combining}},
+			Comments: []gh.ThreadComment{{Author: "reviewer", AuthorType: "User", Body: "body"}},
 		}},
 	}.View()
-	if !strings.Contains(got, cjk) || !strings.Contains(got, combining) {
-		t.Fatalf("80x24 thread view lost CJK or combining content: %q", got)
+	for _, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, path+":7") {
+			return line
+		}
 	}
+	t.Fatalf("80x24 thread view lost %q: %q", path, view)
+	return ""
 }
 
 func trimViewportGolden(view string) string {
