@@ -380,12 +380,14 @@ func (m Model) Init() tea.Cmd {
 // --- Update ---
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var settingsCmd tea.Cmd
 	if m.view == viewSettings {
 		if window, ok := msg.(tea.WindowSizeMsg); ok {
 			m.width, m.height = window.Width, window.Height
 		}
 		updated, cmd := m.settings.Update(msg)
 		m.settings = updated.(settings.Model)
+		settingsCmd = cmd
 		if _, closing := msg.(settings.CloseRequested); closing {
 			m.view = viewTable
 			if len(m.forks) == 0 {
@@ -393,7 +395,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		return m, cmd
+		switch msg.(type) {
+		case tea.KeyMsg, tea.WindowSizeMsg:
+			return m, settingsCmd
+		}
 	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -461,7 +466,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	return m, nil
+	return m, settingsCmd
 }
 
 func (m *Model) handleCachedLoad(msg cachedLoadMsg) (tea.Model, tea.Cmd) {
@@ -1691,6 +1696,7 @@ func (m Model) viewInput() string {
 		b.WriteString("  " + ui.TitledAlert(m.themeContext(), ui.AlertError, "Operation", m.errMsg, ui.ContentWidth(m.width)-2) + "\n")
 	}
 	if m.loading {
+		b.WriteString("  " + ui.Alert(m.themeContext(), ui.AlertInfo, m.loadMsg, ui.ContentWidth(m.width)-2) + "\n")
 	} else {
 		b.WriteString("\n  " + ui.KeyLegend(m.themeContext(), ui.ContentWidth(m.width)-2, keymap.MainInput) + "\n")
 	}

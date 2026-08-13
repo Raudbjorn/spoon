@@ -53,10 +53,12 @@ func render(m Model) string {
 	if m.editing {
 		b.WriteByte('\n')
 		value := m.input
+		cursor := m.cursor
 		if field, ok := m.selected(); ok && field.IsCredential() {
 			value = m.secret.RenderWithTheme(m.Theme)
+			cursor = len(value)
 		}
-		b.WriteString(ui.Input(m.Theme, ui.InputState{Value: value, Cursor: m.cursor, Focused: true, Enabled: true}, width))
+		b.WriteString(ui.Input(m.Theme, ui.InputState{Value: value, Cursor: cursor, Focused: true, Enabled: true}, width))
 	}
 	if m.confirming {
 		b.WriteByte('\n')

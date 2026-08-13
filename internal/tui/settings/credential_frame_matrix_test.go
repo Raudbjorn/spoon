@@ -92,3 +92,21 @@ func assertCredentialFrameSafe(t *testing.T, sentinel, state, frame string) {
 		t.Fatalf("%s frame leaked credential sentinel: %q", state, frame)
 	}
 }
+
+func TestCredentialEditorFrameDoesNotRevealSecretLength(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	render := func(value string) string {
+		cfg := &config.Config{}
+		config.CredentialDescriptors()[0].Set(cfg, value)
+		m := selectSettingsField(New(cfg, path, nil), "github.tokens")
+		m.width, m.height = 80, 24
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		return updated.(Model).View()
+	}
+
+	short := render("x")
+	long := render(strings.Repeat("x", 80))
+	if short != long {
+		t.Fatalf("credential editor frame varies with secret length:\nshort:\n%s\nlong:\n%s", short, long)
+	}
+}

@@ -112,7 +112,7 @@ func dispatchConfigured(args []string, stdout, stderr io.Writer, presentation pr
 		return runPRWithEffective(args[1:], stdout, stderr, effective)
 	case "forks":
 		if len(args) >= 2 && args[1] == "eval" {
-			return runEval(args[2:])
+			return runEvalWithEffective(args[2:], stdout, stderr, effective, env)
 		}
 		return runForksWithEffectiveDeps(args[1:], stdout, stderr, effective, env, deps)
 	case "search":

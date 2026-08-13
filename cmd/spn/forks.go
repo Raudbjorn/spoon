@@ -132,7 +132,9 @@ func doForksList(args []string, stdout, stderr io.Writer, effective config.Effec
 
 func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective config.EffectiveConfig, env map[string]string, deps commandDeps) int {
 	deps = deps.withDefaults()
-	var repo, forgeFlag, forgeHost, botList string
+	var repo, botList string
+	forgeFlag := strings.ToLower(effective.Forge.Provider.Value)
+	forgeHost := effective.Forge.Host.Value
 	details := detailOptions{}
 	var githubRPM float64
 	webDiffEnabled := false

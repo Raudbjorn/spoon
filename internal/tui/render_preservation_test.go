@@ -20,7 +20,12 @@ func TestMainRenderingPreservesInputAndEmptyStates(t *testing.T) {
 		}
 	}
 	m.loading = true
-	if rendered := m.View(); strings.Contains(rendered, "Enter search") {
+	m.loadMsg = "Loading fork network"
+	rendered := m.View()
+	if !strings.Contains(rendered, m.loadMsg) {
+		t.Fatalf("loading input lost its status message:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "Enter search") {
 		t.Fatalf("loading input must suppress the ready action:\n%s", rendered)
 	}
 
