@@ -349,37 +349,75 @@ func LoadDefault() (*Config, error) {
 	return layer.Config, layer.LoadError
 }
 
+// LayerState describes the selected configuration layer without overloading a
+// nil Config. Settings and command startup consume this same bootstrap result.
+type LayerState int
+
+const (
+	LayerLoaded LayerState = iota
+	LayerMissing
+	LayerDisabled
+	LayerInvalid
+)
+
 // LoadedLayer records the exact source selected by LoadDefaultWithLayer.
-// Disabled is distinct from a missing layer so UIs never infer persistence
-// state from a nil Config.
+// Reason is non-nil only for an invalid layer; a missing layer is a valid,
+// writable candidate path and must never be presented as SPOON_NO_CONFIG.
 type LoadedLayer struct {
 	Config    *Config
 	Path      string
-	System    bool
-	Disabled  bool
-	LoadError error
+	Layer     string
+	State     LayerState
+	Reason    error
+	System    bool  // compatibility for existing consumers
+	Disabled  bool  // compatibility; mirrors State == LayerDisabled
+	LoadError error // compatibility; mirrors Reason
 }
 
+func (l LoadedLayer) Missing() bool { return l.State == LayerMissing }
+func (l LoadedLayer) Invalid() bool { return l.State == LayerInvalid }
+
+func loadedLayer(path string, system bool, state LayerState, cfg *Config, reason error) LoadedLayer {
+	layer := "user"
+	if system {
+		layer = "system"
+	}
+	return LoadedLayer{
+		Config: cfg, Path: path, Layer: layer, State: state, Reason: reason,
+		System: system, Disabled: state == LayerDisabled, LoadError: reason,
+	}
+}
+
+var (
+	defaultPathForLoad = DefaultPath
+	systemPathForLoad  = SystemPath
+	loadForLayer       = Load
+)
+
 // LoadDefaultWithLayer is the central config-layer selector used by runtime
-// startup and the settings UI. It preserves LoadDefault's graceful semantics
-// while exposing the selected path and reason without reimplementing fallback.
+// startup and the settings UI. It preserves all layer semantics in one typed
+// result so callers cannot infer persistence state from a nil Config.
 func LoadDefaultWithLayer() LoadedLayer {
 	if os.Getenv("SPOON_NO_CONFIG") == "1" {
-		return LoadedLayer{Disabled: true}
+		return loadedLayer("", false, LayerDisabled, nil, nil)
 	}
-	path, err := DefaultPath()
+	path, err := defaultPathForLoad()
 	if err != nil {
-		return LoadedLayer{Path: SystemPath(), System: true, LoadError: err}
+		return loadedLayer(systemPathForLoad(), true, LayerInvalid, nil, err)
 	}
-	cfg, err := Load(path)
-	if errors.Is(err, os.ErrNotExist) && path != SystemPath() {
-		path = SystemPath()
-		cfg, err = Load(path)
+	cfg, err := loadForLayer(path)
+	if errors.Is(err, os.ErrNotExist) && path != systemPathForLoad() {
+		path = systemPathForLoad()
+		cfg, err = loadForLayer(path)
 	}
+	system := path == systemPathForLoad()
 	if errors.Is(err, os.ErrNotExist) {
-		return LoadedLayer{Path: path, System: path == SystemPath()}
+		return loadedLayer(path, system, LayerMissing, nil, nil)
 	}
-	return LoadedLayer{Config: cfg, Path: path, System: path == SystemPath(), LoadError: err}
+	if err != nil {
+		return loadedLayer(path, system, LayerInvalid, nil, err)
+	}
+	return loadedLayer(path, system, LayerLoaded, cfg, nil)
 }
 
 // Coalesce returns the first non-empty string, or "" if all are empty. Used to

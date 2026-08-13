@@ -7,8 +7,6 @@ import (
 	"strings"
 
 	"github.com/svnbjrn/spoon/internal/config"
-	"github.com/svnbjrn/spoon/internal/embed"
-	"github.com/svnbjrn/spoon/internal/store"
 	"github.com/svnbjrn/spoon/internal/tui/ui"
 )
 
@@ -51,7 +49,8 @@ func render(m Model) string {
 	}
 	if m.busy {
 		b.WriteByte('\n')
-		b.WriteString(ui.Alert(m.Theme, ui.AlertInfo, "Working: "+string(m.busyAction), width))
+		spinners := []string{"-", "\\", "|", "/"}
+		b.WriteString(ui.Alert(m.Theme, ui.AlertInfo, "Working "+spinners[m.spinner%len(spinners)]+": "+string(m.busyAction), width))
 	}
 	if m.editing {
 		b.WriteByte('\n')
@@ -108,25 +107,13 @@ func (m Model) sectionParts(width int) []ui.BoxPart {
 }
 
 func hostParts(m Model, width int) []ui.BoxPart {
-	home, homeErr := os.UserHomeDir()
-	if homeErr != nil {
-		home = "unresolvable: " + homeErr.Error()
-	}
-	storePath, storeErr := store.DefaultPath()
-	if storeErr != nil {
-		storePath = "unavailable: " + storeErr.Error()
-	}
-	cachePath, cacheErr := embed.DefaultFastEmbedCacheDir()
-	if cacheErr != nil {
-		cachePath = "unavailable: " + cacheErr.Error()
-	}
 	facts := []string{
 		"Config path: " + m.Path,
 		"Layer: " + map[bool]string{true: "system (affects every user)", false: "user"}[m.hasSystemPath()],
-		"System config: " + configPresence(),
-		"Store path: " + storePath,
-		"Embedder cache: " + cachePath,
-		"Home: " + home,
+		"System config: " + m.Host.SystemConfig,
+		"Store path: " + m.Host.StorePath,
+		"Embedder cache: " + m.Host.CachePath,
+		"Home: " + m.Host.Home,
 		"Config directory: " + filepath.Dir(m.Path),
 	}
 	out := make([]ui.BoxPart, 0, len(facts))

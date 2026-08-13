@@ -6,7 +6,7 @@ Layer: user  Path: /settings-golden/config.json
 +------------------------------------------------------------------------------+
 | > Backend: fastembed [DEFAULT]                                               |
 | fastembed or empty.                                                          |
-|   Model:  [DEFAULT]                                                          |
+|   Model: fast-bge-small-en-v1.5 [DEFAULT]                                    |
 |   Cache directory:  [DEFAULT]                                                |
 |   Maximum length:  [DEFAULT]                                                 |
 |   Batch size:  [DEFAULT]                                                     |

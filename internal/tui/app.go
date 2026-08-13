@@ -381,6 +381,11 @@ func (m Model) Init() tea.Cmd {
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.view == viewSettings {
+		if window, ok := msg.(tea.WindowSizeMsg); ok {
+			m.width, m.height = window.Width, window.Height
+		}
+		updated, cmd := m.settings.Update(msg)
+		m.settings = updated.(settings.Model)
 		if _, closing := msg.(settings.CloseRequested); closing {
 			m.view = viewTable
 			if len(m.forks) == 0 {
@@ -388,11 +393,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		if window, ok := msg.(tea.WindowSizeMsg); ok {
-			m.width, m.height = window.Width, window.Height
-		}
-		updated, cmd := m.settings.Update(msg)
-		m.settings = updated.(settings.Model)
 		return m, cmd
 	}
 	switch msg := msg.(type) {
@@ -782,13 +782,6 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	typed := typedText(msg)
 
 	if m.view == viewSettings {
-		if keymap.Dispatch(keymap.MainSettings, key) == keymap.Back {
-			m.view = viewTable
-			if len(m.forks) == 0 {
-				m.view = viewInput
-			}
-			return m, nil
-		}
 		updated, cmd := m.settings.Update(msg)
 		m.settings = updated.(settings.Model)
 		return m, cmd
@@ -924,6 +917,8 @@ func (m *Model) handleTableKey(key string) (tea.Model, tea.Cmd) {
 		return m, m.promptExportAll()
 	case keymap.OpenSettings:
 		m.view = viewSettings
+		updated, _ := m.settings.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+		m.settings = updated.(settings.Model)
 	}
 	return m, nil
 }

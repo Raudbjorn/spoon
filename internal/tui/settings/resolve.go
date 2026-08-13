@@ -34,7 +34,11 @@ func Resolve(field Field, cfg *config.Config, flags map[string]string) Resolved 
 	}
 	env := make(map[string]string, len(field.Environment))
 	for _, name := range field.Environment {
-		env[name] = os.Getenv(name)
+		value := os.Getenv(name)
+		if name == "NO_COLOR" && value != "" {
+			value = "no-color"
+		}
+		env[name] = value
 	}
 	flag := ""
 	if flags != nil {
@@ -60,10 +64,7 @@ func fieldPresent(field Field, cfg *config.Config) bool {
 		return cfg.GitHub.Proxy.WhitelistPublicIP != nil
 	}
 	value := field.Get(cfg)
-	if value == "false" || value == "0" {
-		return false
-	}
-	return strings.TrimSpace(value) != ""
+	return value != "false" && value != "0" && strings.TrimSpace(value) != ""
 }
 
 func FieldByMust(key string) Field {

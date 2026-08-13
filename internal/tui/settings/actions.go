@@ -3,12 +3,12 @@ package settings
 import (
 	"context"
 	"fmt"
-	"os"
-
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/svnbjrn/spoon/internal/config"
 	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/setupcheck"
+	"os"
+	"time"
 )
 
 // ActionID identifies an operation available from settings. The registry is
@@ -68,10 +68,17 @@ func (m *Model) startAction(id ActionID) tea.Cmd {
 	m.busy = true
 	m.busyAction = id
 	cfg, path, cache := m.Config, m.Path, m.Cache
-	return func() tea.Msg {
+	action := func() tea.Msg {
 		text, err := runAction(id, cfg, path, cache)
 		return actionMsg{id: id, text: text, err: err}
 	}
+	return tea.Batch(action, spinnerTick())
+}
+
+type spinnerMsg struct{}
+
+func spinnerTick() tea.Cmd {
+	return tea.Tick(100*time.Millisecond, func(time.Time) tea.Msg { return spinnerMsg{} })
 }
 
 // runAction keeps every settings operation local. In particular it does not
@@ -86,10 +93,10 @@ func runAction(id ActionID, cfg *config.Config, path string, cache embed.Respons
 		if err := cfg.Validate(); err != nil {
 			return "", err
 		}
-		if os.Getenv("GH_TOKEN") != "" || os.Getenv("GITHUB_TOKEN") != "" || len(cfg.GitHub.Tokens) > 0 {
-			return "Provider credentials configured (no HTTP request made)", nil
+		if os.Getenv("GH_TOKEN") != "" || os.Getenv("GITHUB_TOKEN") != "" || os.Getenv("GITLAB_TOKEN") != "" || len(cfg.GitHub.Tokens) > 0 {
+			return "Provider credentials configured from config, environment, or installed CLI (no HTTP request made)", nil
 		}
-		return "Provider credentials not configured", nil
+		return "Provider credentials not configured (no HTTP request made)", nil
 	case ActionStoreCheck:
 		if cache == nil {
 			return "Store/cache is unavailable", nil
@@ -99,11 +106,7 @@ func runAction(id ActionID, cfg *config.Config, path string, cache embed.Respons
 		if cfg == nil {
 			return "FastEmbed unavailable: configuration layer is disabled", nil
 		}
-		candidate, err := Clone(cfg)
-		if err != nil {
-			return "", err
-		}
-		if _, err := setupcheck.PrepareFastEmbed(candidate, candidate.Embedder.CacheDir); err != nil {
+		if err := setupcheck.ValidateFastEmbed(cfg.Embedder); err != nil {
 			return "", err
 		}
 		return "FastEmbed configuration is valid (no model download made)", nil

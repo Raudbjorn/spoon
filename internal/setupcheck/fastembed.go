@@ -2,6 +2,8 @@
 package setupcheck
 
 import (
+	"fmt"
+
 	"github.com/svnbjrn/spoon/internal/config"
 	"github.com/svnbjrn/spoon/internal/embed"
 )
@@ -29,4 +31,16 @@ func PrepareFastEmbed(cfg *config.Config, cacheDir string) (embed.FastEmbedConfi
 	cfg.Embedder.MaxLength = DefaultFastEmbedMaxLength
 	cfg.Embedder.BatchSize = DefaultFastEmbedBatchSize
 	return embed.FastEmbedConfig{Model: cfg.Embedder.Model, CacheDir: cfg.Embedder.CacheDir, MaxLength: cfg.Embedder.MaxLength, BatchSize: cfg.Embedder.BatchSize}, nil
+}
+
+// ValidateFastEmbed checks an existing configuration without replacing user
+// values or opening/downloading a model.
+func ValidateFastEmbed(cfg config.EmbedderConfig) error {
+	if cfg.Backend != "" && cfg.Backend != embed.BackendFastEmbed {
+		return fmt.Errorf("unsupported FastEmbed backend %q", cfg.Backend)
+	}
+	if cfg.MaxLength < 0 || cfg.BatchSize < 0 {
+		return fmt.Errorf("FastEmbed limits must not be negative")
+	}
+	return nil
 }

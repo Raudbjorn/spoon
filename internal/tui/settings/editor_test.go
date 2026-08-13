@@ -23,7 +23,7 @@ func TestSecretEditorConsumesKeysAndRefusesClipboard(t *testing.T) {
 	if !m.editing || !strings.Contains(m.secret.Value(), "q") {
 		t.Fatal("q escaped editor instead of being text")
 	}
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
 	m = updated.(Model)
 	if m.alert != ErrSecretClipboard.Error() {
 		t.Fatalf("clipboard refusal = %q", m.alert)

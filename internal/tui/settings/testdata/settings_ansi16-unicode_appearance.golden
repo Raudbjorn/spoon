@@ -6,8 +6,8 @@
 ├──────────────────────────────────────────────────────────────────────────────┤
 │ [1;37m> [7mT[0mheme: dark [DEFAULT][0m                                                      │
 │ [2;90mdark, light, or amber.[0m                                                       │
-│ [37m  Color profile:  [DEFAULT][0m                                                  │
-│ [37m  Glyph profile:  [DEFAULT][0m                                                  │
+│ [37m  Color profile: no-color [ENV][0m                                              │
+│ [37m  Glyph profile: unicode [DEFAULT][0m                                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 [2;90m[p] Probe provider credentials  [o] Check store  [f] Check FastEmbed  [v] Check[0m
 [37;40m[tab][0m section [37;40m[enter][0m edit [37;40m[esc][0m back

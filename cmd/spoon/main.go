@@ -177,6 +177,14 @@ func main() {
 		}
 	}
 
+	explicitForgeFlag, explicitForgeHost := forgeFlag, forgeHost
+	if forgeFlag == "" && cfg != nil {
+		forgeFlag = cfg.Forge.Provider
+	}
+	if forgeHost == "" && cfg != nil {
+		forgeHost = cfg.Forge.Host
+	}
+
 	tuiContext, err := resolveTUIContextWithNoColor(cfg, noColor)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -221,11 +229,14 @@ func main() {
 
 	layer := config.LoadDefaultWithLayer()
 	settingsFlags := map[string]string{}
-	if forgeFlag != "" {
-		settingsFlags["forge.provider"] = forgeFlag
+	if explicitForgeFlag != "" {
+		settingsFlags["forge.provider"] = explicitForgeFlag
 	}
-	if forgeHost != "" {
-		settingsFlags["forge.host"] = forgeHost
+	if explicitForgeHost != "" {
+		settingsFlags["forge.host"] = explicitForgeHost
+	}
+	if noColor {
+		settingsFlags["ui.color"] = "no-color"
 	}
 	settingsModel := settings.NewFromLayer(layer, db).WithFlags(settingsFlags)
 	m := tui.NewModelWithCluster(provider, auth, repoArg, refresh, tuiClusterOpts).

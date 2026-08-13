@@ -27,7 +27,9 @@ layer for users who have no personal config.
 
 ## config.json fields
 
-- ` + "`version`" + ` — schema version; leave as written.
+- ` + "`version`" + ` — schema version. Version 2 means the optional ` + "`ui`" + ` section
+  (theme, color, glyphs) is available; old files without it migrate losslessly
+  when saved by the in-TUI editor.
 - ` + "`forge.provider`" + ` — "github" or "gitlab". Empty = auto-detect from the
   repo URL/flags each run (the default; usually what you want).
 - ` + "`forge.host`" + ` — self-hosted GitLab/GHES hostname. Empty = the public host.

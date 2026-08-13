@@ -6,8 +6,8 @@ Layer: user  Path: /settings-golden/config.json
 +------------------------------------------------------------------------------+
 | > Theme: dark [DEFAULT]                                                      |
 | dark, light, or amber.                                                       |
-|   Color profile:  [DEFAULT]                                                  |
-|   Glyph profile:  [DEFAULT]                                                  |
+|   Color profile: no-color [ENV]                                              |
+|   Glyph profile: unicode [DEFAULT]                                           |
 +------------------------------------------------------------------------------+
 [p] Probe provider credentials  [o] Check store  [f] Check FastEmbed  [v] Check
 [tab] section [enter] edit [esc] back

@@ -7,9 +7,9 @@
 │ [37mConfig path: /settings-golden/config.json[0m                                    │
 │ [37mLayer: user[0m                                                                  │
 │ [37mSystem config: absent[0m                                                        │
-│ [37mStore path: /home/svnbjrn/.config/spoon/spoon.db[0m                             │
-│ [37mEmbedder cache: /home/svnbjrn/.cache/spoon/models/fastembed[0m                  │
-│ [37mHome: /home/svnbjrn[0m                                                          │
+│ [37mStore path: /settings-golden/store.db[0m                                        │
+│ [37mEmbedder cache: /settings-golden/cache[0m                                       │
+│ [37mHome: /settings-golden/home[0m                                                  │
 │ [37mConfig directory: /settings-golden[0m                                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 [2;90m[p] Probe provider credentials  [o] Check store  [f] Check FastEmbed  [v] Check[0m

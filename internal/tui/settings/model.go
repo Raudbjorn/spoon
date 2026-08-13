@@ -1,14 +1,14 @@
 package settings
 
 import (
-	"unicode/utf8"
-
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/svnbjrn/spoon/internal/config"
 	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/tui/edit"
 	"github.com/svnbjrn/spoon/internal/tui/keymap"
 	"github.com/svnbjrn/spoon/internal/tui/theme"
+	"strings"
+	"unicode/utf8"
 )
 
 type statusMsg struct {
@@ -20,11 +20,22 @@ type statusMsg struct {
 // restoring the previous view and forwards every event before acting on it.
 type CloseRequested struct{}
 
+// HostFacts is collected once when Settings opens. Rendering consumes this
+// immutable snapshot, so terminal frames and golden tests never probe /etc,
+// home, cache, or store paths.
+type HostFacts struct {
+	SystemConfig string
+	StorePath    string
+	CachePath    string
+	Home         string
+}
+
 type Model struct {
 	Config           *config.Config
 	Path             string
 	Flags            map[string]string
 	Cache            embed.ResponseCache
+	Host             HostFacts
 	Theme            theme.Context
 	focus            int
 	width, height    int
@@ -36,34 +47,48 @@ type Model struct {
 	secret           SecretInput
 	alert            string
 	busy             bool
+	spinner          int
 	busyAction       ActionID
 	confirming       bool
 	pendingCandidate *config.Config
 	pending          Field
+	systemLayer      bool
 	readOnly         string
 	noConfig         bool
 }
 
 var sections = []Section{ForgeSection, GitHubSection, ProxySection, EmbedderSection, VoyageSection, AppearanceSection, EnvironmentSection, HostSection}
 
-// NewFromLayer consumes the central loader result rather than inferring which
-// config path won from a nil config or filesystem heuristic.
+// NewFromLayer consumes the central bootstrap result. Missing is a normal
+// writable empty layer; only disabled and invalid layers are read-only.
 func NewFromLayer(layer config.LoadedLayer, cache embed.ResponseCache) Model {
-	m := New(layer.Config, layer.Path, cache)
-	if layer.Disabled {
+	var m Model
+	switch layer.State {
+	case config.LayerMissing:
+		m = New(&config.Config{}, layer.Path, cache)
+	case config.LayerDisabled:
+		m = New(nil, layer.Path, cache)
 		m.noConfig = true
 		m.readOnly = "configuration layer is disabled by SPOON_NO_CONFIG=1"
+	case config.LayerInvalid:
+		m = New(nil, layer.Path, cache)
+		m.noConfig = false
+		if layer.Reason != nil {
+			m.readOnly = "configuration layer is invalid or unreadable: " + layer.Reason.Error()
+		} else {
+			m.readOnly = "configuration layer is invalid or unreadable"
+		}
+	default:
+		m = New(layer.Config, layer.Path, cache)
 	}
-	if layer.LoadError != nil {
-		m.readOnly = "configuration layer is invalid or unreadable: " + layer.LoadError.Error()
-	}
+	m.systemLayer = layer.System
 	return m
 }
 
 // New creates a settings model. A nil config means SPOON_NO_CONFIG mode: all
 // facts remain inspectable but persistence and edits are deliberately absent.
 func New(cfg *config.Config, path string, cache embed.ResponseCache) Model {
-	m := Model{Config: cfg, Path: path, Cache: cache, Theme: theme.DefaultContext()}
+	m := Model{Config: cfg, Path: path, Cache: cache, Host: CollectHostFacts(), Theme: theme.DefaultContext()}
 	if cfg == nil {
 		m.noConfig = true
 		m.readOnly = "configuration layer is disabled by SPOON_NO_CONFIG=1"
@@ -133,9 +158,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.busy = false
 		m.busyAction = ""
 		if result.err != nil {
-			m.alert = result.err.Error()
+			if result.text != "" {
+				m.alert = result.text + ": " + result.err.Error()
+			} else {
+				m.alert = result.err.Error()
+			}
 		} else {
 			m.alert = result.text
+		}
+		return m, nil
+	}
+	if _, ok := msg.(spinnerMsg); ok {
+		if m.busy {
+			m.spinner = (m.spinner + 1) % 4
+			return m, spinnerTick()
 		}
 		return m, nil
 	}
@@ -228,7 +264,7 @@ func (m Model) updateEdit(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.clearEditor()
 		return m, nil
 	}
-	if field.Secret && key.String() == "y" {
+	if field.Credential && keymap.Dispatch(keymap.MainSettings, key.String()) == keymap.Yank {
 		m.alert = ErrSecretClipboard.Error()
 		return m, nil
 	}
@@ -239,7 +275,7 @@ func (m Model) updateEdit(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		candidate, err := Candidate(field, m.Config, value)
 		if err != nil {
-			m.alert = err.Error()
+			m.alert = field.Label + ": " + err.Error()
 			return m, nil
 		}
 		if RequiresConfirmationFor(field, m.Config, candidate) {
@@ -263,7 +299,11 @@ func (m Model) updateEdit(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if field.Secret {
 		value = m.secret.Value()
 	}
-	updated, cursor, handled := edit.Apply(value, m.cursor, action, edit.TypedText(key))
+	typed := edit.TypedText(key)
+	if field.Key == "github.tokens" && key.Type == tea.KeyRunes && !key.Alt {
+		typed = strings.ReplaceAll(strings.ReplaceAll(string(key.Runes), "\r\n", "\n"), "\r", "\n")
+	}
+	updated, cursor, handled := edit.Apply(value, m.cursor, action, typed)
 	if !handled {
 		return m, nil
 	}
@@ -332,9 +372,10 @@ func (m *Model) keepFocusVisible() {
 		m.scroll = m.focus - rows + 1
 	}
 }
+
 func (m Model) View() string { return render(m) }
 
-func (m Model) hasSystemPath() bool { return m.Path == config.SystemPath() }
+func (m Model) hasSystemPath() bool { return m.systemLayer || m.Path == config.SystemPath() }
 func (m Model) isSystemWrite() bool { return m.hasSystemPath() && m.canEdit() }
 func (m Model) modalText() string {
 	if m.pending.Consequence == Hostwide || m.isSystemWrite() {

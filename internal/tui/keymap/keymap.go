@@ -185,7 +185,7 @@ var Registry = []Binding{
 	{MainSettings, []string{"backspace"}, DeleteBackward, "Delete previous editor character", ""},
 	{MainSettings, []string{"delete"}, DeleteForward, "Delete next editor character", ""},
 	{MainSettings, []string{"ctrl+u"}, ClearInput, "Clear editor", ""},
-	{MainSettings, []string{"y"}, Yank, "Copy selected value (credentials refuse)", ""},
+	{MainSettings, []string{"ctrl+y"}, Yank, "Copy selected value (credentials refuse)", ""},
 	{ThreadList, []string{"up", "k"}, Up, "Move thread selection up", "Spoon adds vi navigation"},
 	{ThreadList, []string{"down", "j"}, Down, "Move thread selection down", "Spoon adds vi navigation"},
 	{ThreadList, []string{"q"}, Quit, "Quit", ""},

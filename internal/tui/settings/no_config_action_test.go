@@ -14,8 +14,8 @@ func TestNoConfigVoyageActionCompletesWithoutPanic(t *testing.T) {
 	if cmd == nil || !m.busy {
 		t.Fatal("Voyage action was not scheduled")
 	}
-	message := cmd()
-	updated, _ = m.Update(message)
+	text, err := runAction(ActionVoyageStatus, nil, "", nil)
+	updated, _ = m.Update(actionMsg{id: ActionVoyageStatus, text: text, err: err})
 	m = updated.(Model)
 	if m.busy || !strings.Contains(m.alert, "disabled") {
 		t.Fatalf("result not delivered: busy=%v alert=%q", m.busy, m.alert)

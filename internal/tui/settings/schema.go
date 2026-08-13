@@ -101,7 +101,7 @@ var Registry = []Field{
 	}},
 	stringField("github.proxy.cacheTtl", "Proxy cache TTL", ProxySection, "Go duration, such as 5m.", "", func(c *config.Config) string { return c.GitHub.Proxy.CacheTTL }, func(c *config.Config, v string) { c.GitHub.Proxy.CacheTTL = strings.TrimSpace(v) }),
 	stringField("embedder.backend", "Backend", EmbedderSection, "fastembed or empty.", "fastembed", func(c *config.Config) string { return c.Embedder.Backend }, func(c *config.Config, v string) { c.Embedder.Backend = strings.ToLower(strings.TrimSpace(v)) }),
-	{Key: "embedder.model", Label: "Model", Section: EmbedderSection, Help: "FastEmbed model name.", Editable: true, Environment: []string{"SPOON_FASTEMBED_MODEL"}, Get: func(c *config.Config) string { return c.Embedder.Model }, Set: func(c *config.Config, v string) error { c.Embedder.Model = strings.TrimSpace(v); return nil }},
+	{Key: "embedder.model", Label: "Model", Section: EmbedderSection, Help: "FastEmbed model name.", Editable: true, Default: "fast-bge-small-en-v1.5", Environment: []string{"SPOON_FASTEMBED_MODEL"}, Get: func(c *config.Config) string { return c.Embedder.Model }, Set: func(c *config.Config, v string) error { c.Embedder.Model = strings.TrimSpace(v); return nil }},
 	{Key: "embedder.cacheDir", Label: "Cache directory", Section: EmbedderSection, Help: "FastEmbed cache directory.", Editable: true, Environment: []string{"SPOON_FASTEMBED_CACHE"}, Get: func(c *config.Config) string { return c.Embedder.CacheDir }, Set: func(c *config.Config, v string) error { c.Embedder.CacheDir = strings.TrimSpace(v); return nil }},
 	{Key: "embedder.maxLength", Label: "Maximum length", Section: EmbedderSection, Help: "FastEmbed input limit.", Editable: true, Get: func(c *config.Config) string { return strconv.Itoa(c.Embedder.MaxLength) }, Set: func(c *config.Config, v string) error {
 		n, err := strconv.Atoi(strings.TrimSpace(v))
@@ -124,8 +124,14 @@ var Registry = []Field{
 		c.Embedder.Voyage.APIKeyFile = strings.TrimSpace(v)
 		return nil
 	}},
-	stringField("embedder.voyage.embedModel", "Embed model", VoyageSection, "Defaults to voyage-code-3.", "voyage-code-3", func(c *config.Config) string { return c.Embedder.Voyage.EmbedModel }, func(c *config.Config, v string) { c.Embedder.Voyage.EmbedModel = strings.TrimSpace(v) }),
-	stringField("embedder.voyage.rerankModel", "Rerank model", VoyageSection, "Defaults to rerank-2.5.", "rerank-2.5", func(c *config.Config) string { return c.Embedder.Voyage.RerankModel }, func(c *config.Config, v string) { c.Embedder.Voyage.RerankModel = strings.TrimSpace(v) }),
+	{Key: "embedder.voyage.embedModel", Label: "Embed model", Section: VoyageSection, Help: "Defaults to voyage-code-3.", Editable: true, Default: "voyage-code-3", Environment: []string{"SPOON_VOYAGE_EMBED_MODEL"}, Get: func(c *config.Config) string { return c.Embedder.Voyage.EmbedModel }, Set: func(c *config.Config, v string) error {
+		c.Embedder.Voyage.EmbedModel = strings.TrimSpace(v)
+		return nil
+	}},
+	{Key: "embedder.voyage.rerankModel", Label: "Rerank model", Section: VoyageSection, Help: "Defaults to rerank-2.5.", Editable: true, Default: "rerank-2.5", Environment: []string{"SPOON_VOYAGE_RERANK_MODEL"}, Get: func(c *config.Config) string { return c.Embedder.Voyage.RerankModel }, Set: func(c *config.Config, v string) error {
+		c.Embedder.Voyage.RerankModel = strings.TrimSpace(v)
+		return nil
+	}},
 	{Key: "embedder.voyage.outputDimension", Label: "Output dimension", Section: VoyageSection, Help: "Changing this re-partitions the index; pending documents must be re-embedded.", Editable: true, Consequence: Reindex, Default: "1024", Environment: []string{"SPOON_VOYAGE_DIM"}, Get: func(c *config.Config) string { return strconv.Itoa(c.Embedder.Voyage.OutputDimension) }, Set: func(c *config.Config, v string) error {
 		n, err := strconv.Atoi(strings.TrimSpace(v))
 		if err != nil {
@@ -134,10 +140,13 @@ var Registry = []Field{
 		c.Embedder.Voyage.OutputDimension = n
 		return nil
 	}},
-	stringField("embedder.voyage.baseUrl", "Base URL", VoyageSection, "Optional Voyage-compatible gateway URL.", "", func(c *config.Config) string { return c.Embedder.Voyage.BaseURL }, func(c *config.Config, v string) { c.Embedder.Voyage.BaseURL = strings.TrimSpace(v) }),
-	stringField("ui.theme", "Theme", AppearanceSection, "dark, light, or amber.", "dark", func(c *config.Config) string { return c.UI.Theme }, func(c *config.Config, v string) { c.UI.Theme = strings.ToLower(strings.TrimSpace(v)) }),
-	stringField("ui.color", "Color profile", AppearanceSection, "truecolor, ansi256, ansi16, ansi8, mono, or no-color.", "", func(c *config.Config) string { return c.UI.Color }, func(c *config.Config, v string) { c.UI.Color = strings.ToLower(strings.TrimSpace(v)) }),
-	stringField("ui.glyphs", "Glyph profile", AppearanceSection, "unicode or ascii.", "", func(c *config.Config) string { return c.UI.Glyphs }, func(c *config.Config, v string) { c.UI.Glyphs = strings.ToLower(strings.TrimSpace(v)) }),
+	{Key: "embedder.voyage.baseUrl", Label: "Base URL", Section: VoyageSection, Help: "Optional Voyage-compatible gateway URL.", Editable: true, Environment: []string{"SPOON_VOYAGE_BASE_URL"}, Get: func(c *config.Config) string { return c.Embedder.Voyage.BaseURL }, Set: func(c *config.Config, v string) error { c.Embedder.Voyage.BaseURL = strings.TrimSpace(v); return nil }},
+	{Key: "ui.theme", Label: "Theme", Section: AppearanceSection, Help: "dark, light, or amber.", Editable: true, Default: "dark", Environment: []string{"SPOON_TUI_THEME"}, Get: func(c *config.Config) string { return c.UI.Theme }, Set: func(c *config.Config, v string) error { c.UI.Theme = strings.ToLower(strings.TrimSpace(v)); return nil }},
+	{Key: "ui.color", Label: "Color profile", Section: AppearanceSection, Help: "truecolor, ansi256, ansi16, ansi8, mono, or no-color.", Editable: true, Default: "truecolor", Environment: []string{"SPOON_TUI_COLOR", "NO_COLOR"}, Get: func(c *config.Config) string { return c.UI.Color }, Set: func(c *config.Config, v string) error { c.UI.Color = strings.ToLower(strings.TrimSpace(v)); return nil }},
+	{Key: "ui.glyphs", Label: "Glyph profile", Section: AppearanceSection, Help: "unicode or ascii.", Editable: true, Default: "unicode", Environment: []string{"SPOON_TUI_GLYPHS"}, Get: func(c *config.Config) string { return c.UI.Glyphs }, Set: func(c *config.Config, v string) error {
+		c.UI.Glyphs = strings.ToLower(strings.TrimSpace(v))
+		return nil
+	}},
 }
 
 // DocumentedEnvironment is derived from configReadme, the source emitted next
