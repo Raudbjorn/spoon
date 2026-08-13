@@ -1,15 +1,12 @@
 package settings
 
 import (
-	"context"
-	"fmt"
-	"os"
-	"path/filepath"
-	"strings"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/svnbjrn/spoon/internal/config"
 	"github.com/svnbjrn/spoon/internal/embed"
+	"github.com/svnbjrn/spoon/internal/tui/edit"
 	"github.com/svnbjrn/spoon/internal/tui/keymap"
 	"github.com/svnbjrn/spoon/internal/tui/theme"
 )
@@ -32,10 +29,14 @@ type Model struct {
 	focus            int
 	width, height    int
 	section          int
+	scroll           int
 	editing          bool
 	input            string
+	cursor           int
 	secret           SecretInput
 	alert            string
+	busy             bool
+	busyAction       ActionID
 	confirming       bool
 	pendingCandidate *config.Config
 	pending          Field
@@ -79,23 +80,8 @@ func New(cfg *config.Config, path string, cache embed.ResponseCache) Model {
 }
 
 func writable(path string) error {
-	dir := filepath.Dir(path)
-	info, err := os.Stat(path)
-	if err == nil {
-		if info.Mode().Perm()&0o200 == 0 {
-			return fmt.Errorf("%s is read-only: owner write permission is absent", path)
-		}
-		return nil
-	}
-	if !os.IsNotExist(err) {
-		return fmt.Errorf("%s is read-only: %v", path, err)
-	}
-	parent, err := os.Stat(dir)
-	if err != nil {
-		return fmt.Errorf("%s is read-only: %v", path, err)
-	}
-	if parent.Mode().Perm()&0o200 == 0 {
-		return fmt.Errorf("%s is read-only: parent directory is not writable", path)
+	if err := config.ProbeAtomicPublication(path); err != nil {
+		return err
 	}
 	return nil
 }
@@ -125,6 +111,14 @@ func fieldIndex(key string) int {
 	}
 	return -1
 }
+
+// WithFlags preserves command-line overrides for the effective-value display.
+// The map contains only explicitly supplied flags; absent flags must not mask
+// environment or file values.
+func (m Model) WithFlags(flags map[string]string) Model {
+	m.Flags = flags
+	return m
+}
 func (m *Model) selected() (Field, bool) {
 	fields := m.fields()
 	if len(fields) == 0 || m.focus < 0 || m.focus >= len(fields) {
@@ -135,6 +129,16 @@ func (m *Model) selected() (Field, bool) {
 func (m Model) canEdit() bool { return !m.noConfig && m.readOnly == "" }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if result, ok := msg.(actionMsg); ok {
+		m.busy = false
+		m.busyAction = ""
+		if result.err != nil {
+			m.alert = result.err.Error()
+		} else {
+			m.alert = result.text
+		}
+		return m, nil
+	}
 	if status, ok := msg.(statusMsg); ok {
 		if status.err != nil {
 			m.alert = status.err.Error()
@@ -157,22 +161,43 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.editing {
 		return m.updateEdit(key)
 	}
+	if m.busy {
+		return m, nil
+	}
+	if action, ok := ActionForKey(key.String()); ok {
+		if !m.canEdit() && (action.ID == ActionSave || action.ID == ActionRewriteReadme) {
+			m.alert = m.readOnly
+			return m, nil
+		}
+		if action.ID == ActionSave && m.isSystemWrite() {
+			m.pending = Field{Consequence: Hostwide}
+			m.confirming = true
+			return m, nil
+		}
+		return m, m.startAction(action.ID)
+	}
 	switch keymap.Dispatch(keymap.MainSettings, key.String()) {
 	case keymap.Back:
 		return m, func() tea.Msg { return CloseRequested{} }
 	case keymap.CursorRight:
 		m.section = (m.section + 1) % len(sections)
-		m.focus = 0
+		m.focus, m.scroll = 0, 0
 	case keymap.CursorLeft:
 		m.section = (m.section + len(sections) - 1) % len(sections)
-		m.focus = 0
+		m.focus, m.scroll = 0, 0
 	case keymap.Down:
 		if fields := m.fields(); len(fields) > 0 {
 			m.focus = (m.focus + 1) % len(fields)
+			m.keepFocusVisible()
+		} else {
+			m.scroll = (m.scroll + 1) % m.sectionRowCount()
 		}
 	case keymap.Up:
 		if fields := m.fields(); len(fields) > 0 {
 			m.focus = (m.focus + len(fields) - 1) % len(fields)
+			m.keepFocusVisible()
+		} else {
+			m.scroll = (m.scroll + m.sectionRowCount() - 1) % m.sectionRowCount()
 		}
 	case keymap.Edit:
 		field, ok := m.selected()
@@ -185,51 +210,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.editing = true
 		m.input = field.Get(m.Config)
+		m.cursor = utf8.RuneCountInString(m.input)
 		if field.Secret {
 			m.secret.Set(m.input)
 			m.input = ""
 		}
-	case keymap.Submit:
-		if !m.canEdit() {
-			m.alert = m.readOnly
-			return m, nil
-		}
-		if m.isSystemWrite() {
-			m.pending = Field{Consequence: Hostwide}
-			m.confirming = true
-			return m, nil
-		}
-		if err := Save(m.Path, m.Config); err != nil {
-			m.alert = err.Error()
-		} else {
-			m.alert = "saved"
-		}
-	case keymap.Refresh:
-		return m, m.voyageStatus()
 	}
 	return m, nil
 }
-
 func (m Model) updateEdit(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	field, ok := m.selected()
 	if !ok {
-		m.editing = false
+		m.clearEditor()
 		return m, nil
 	}
-	switch key.String() {
-	case "esc":
-		m.editing = false
-		m.input = ""
-		m.secret.Clear()
+	if key.String() == "esc" {
+		m.clearEditor()
 		return m, nil
-	case "backspace":
-		if field.Secret {
-			m.secret.Backspace()
-		} else if len(m.input) > 0 {
-			m.input = m.input[:len(m.input)-1]
-		}
+	}
+	if field.Secret && key.String() == "y" {
+		m.alert = ErrSecretClipboard.Error()
 		return m, nil
-	case "enter":
+	}
+	if key.String() == "enter" {
 		value := m.input
 		if field.Secret {
 			value = m.secret.Value()
@@ -246,20 +249,38 @@ func (m Model) updateEdit(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		*m.Config = *candidate
-		m.editing = false
-		m.input = ""
-		m.secret.Clear()
+		m.clearEditor()
 		return m, nil
 	}
-	if key.Type == tea.KeyRunes && !key.Alt {
-		typed := string(key.Runes)
-		if field.Secret {
-			m.secret.Append(typed)
-		} else {
-			m.input += typed
-		}
+
+	action := keymap.Dispatch(keymap.MainSettings, key.String())
+	// q and e are ordinary text while an editor owns the event. The shared
+	// scope only interprets them as close/edit while idle.
+	if action == keymap.Back || action == keymap.Edit || action == keymap.Submit || action == keymap.Refresh {
+		action = keymap.None
+	}
+	value := m.input
+	if field.Secret {
+		value = m.secret.Value()
+	}
+	updated, cursor, handled := edit.Apply(value, m.cursor, action, edit.TypedText(key))
+	if !handled {
+		return m, nil
+	}
+	m.cursor = cursor
+	if field.Secret {
+		m.secret.Set(updated)
+	} else {
+		m.input = updated
 	}
 	return m, nil
+}
+
+func (m *Model) clearEditor() {
+	m.editing = false
+	m.input = ""
+	m.cursor = 0
+	m.secret.Clear()
 }
 
 func (m Model) updateConfirmation(key tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -268,24 +289,22 @@ func (m Model) updateConfirmation(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.confirming = false
 		m.pending = Field{}
 		m.pendingCandidate = nil
-		m.editing = false
-		m.input = ""
-		m.secret.Clear()
+		m.clearEditor()
 		return m, nil
 	case "enter", "y":
 		if m.pending.Consequence == Hostwide && !m.pending.Editable {
-			if err := Save(m.Path, m.Config); err != nil {
-				m.alert = err.Error()
-			} else {
-				m.alert = "saved"
-			}
-		} else if m.pendingCandidate != nil {
+			m.confirming = false
+			m.pending = Field{}
+			m.pendingCandidate = nil
+			m.clearEditor()
+			cmd := m.startAction(ActionSave)
+			return m, cmd
+		}
+		if m.pendingCandidate != nil {
 			*m.Config = *m.pendingCandidate
 			m.alert = "change applied; press s to save"
 		}
-		m.editing = false
-		m.input = ""
-		m.secret.Clear()
+		m.clearEditor()
 		m.confirming = false
 		m.pending = Field{}
 		m.pendingCandidate = nil
@@ -293,38 +312,28 @@ func (m Model) updateConfirmation(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) voyageStatus() tea.Cmd {
-	cfg := m.Config
-	cache := m.Cache
-	return func() tea.Msg {
-		if cfg == nil {
-			return statusMsg{text: "Voyage not configured: configuration layer is disabled"}
-		}
-		_, active, err := embed.ResolveVoyageConfig(context.Background(), cfg.Embedder.Voyage, false, cache)
-		if err != nil {
-			return statusMsg{text: "Voyage configured but unusable", err: err}
-		}
-		if active {
-			return statusMsg{text: "Voyage configured and active"}
-		}
-		return statusMsg{text: "Voyage not configured"}
+func (m Model) sectionRowCount() int {
+	switch sections[m.section] {
+	case EnvironmentSection:
+		return len(DocumentedEnvironment)
+	case HostSection:
+		return 7
+	default:
+		return len(m.fields())
 	}
 }
 
+func (m *Model) keepFocusVisible() {
+	rows := contentRows(m.height)
+	if m.focus < m.scroll {
+		m.scroll = m.focus
+	}
+	if m.focus >= m.scroll+rows {
+		m.scroll = m.focus - rows + 1
+	}
+}
 func (m Model) View() string { return render(m) }
 
-func (m Model) envRows() []string {
-	rows := make([]string, 0, len(DocumentedEnvironment))
-	for _, name := range DocumentedEnvironment {
-		value := EnvironmentValue(name)
-		suffix := ""
-		if name == "SPOON_VOYAGE_NO_CACHE" && value != "unset" {
-			suffix = " (cost-affecting: bypasses paid response cache)"
-		}
-		rows = append(rows, name+" = "+value+suffix)
-	}
-	return rows
-}
 func (m Model) hasSystemPath() bool { return m.Path == config.SystemPath() }
 func (m Model) isSystemWrite() bool { return m.hasSystemPath() && m.canEdit() }
 func (m Model) modalText() string {
@@ -333,10 +342,3 @@ func (m Model) modalText() string {
 	}
 	return ConsequenceMessage(m.pending)
 }
-func (m Model) secretValue(field Field) string {
-	if field.Secret && m.editing {
-		return m.secret.RenderWithTheme(m.Theme)
-	}
-	return ""
-}
-func trimValue(value string) string { return strings.TrimSpace(value) }

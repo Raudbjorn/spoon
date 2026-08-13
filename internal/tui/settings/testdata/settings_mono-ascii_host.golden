@@ -1,0 +1,16 @@
+Settings
+Forge - GitHub - Proxy - Embedder - Voyage - Appearance - Environment - [Host]
+Layer: user  Path: /settings-golden/config.json
++------------------------------------------------------------------------------+
+| Host                                                                         |
++------------------------------------------------------------------------------+
+| Config path: /settings-golden/config.json                                    |
+| Layer: user                                                                  |
+| System config: absent                                                        |
+| Store path: /home/svnbjrn/.config/spoon/spoon.db                             |
+| Embedder cache: /home/svnbjrn/.cache/spoon/models/fastembed                  |
+| Home: /home/svnbjrn                                                          |
+| Config directory: /settings-golden                                           |
++------------------------------------------------------------------------------+
+[p] Probe provider credentials  [o] Check store  [f] Check FastEmbed  [v] Check
+[tab] section [enter] edit [esc] back

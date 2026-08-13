@@ -220,7 +220,14 @@ func main() {
 	defer db.Close()
 
 	layer := config.LoadDefaultWithLayer()
-	settingsModel := settings.NewFromLayer(layer, db)
+	settingsFlags := map[string]string{}
+	if forgeFlag != "" {
+		settingsFlags["forge.provider"] = forgeFlag
+	}
+	if forgeHost != "" {
+		settingsFlags["forge.host"] = forgeHost
+	}
+	settingsModel := settings.NewFromLayer(layer, db).WithFlags(settingsFlags)
 	m := tui.NewModelWithCluster(provider, auth, repoArg, refresh, tuiClusterOpts).
 		WithHeatWeights(heatWeights).WithMaxTier(maxTier).WithStore(db).
 		WithQueryScorer(tuiQueryScorer(db)).WithTheme(tuiContext).WithSettings(settingsModel)

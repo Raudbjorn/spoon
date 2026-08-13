@@ -1,0 +1,12 @@
+[1;4;90;4mS[0m[1;4;90;4me[0m[1;4;90;4mt[0m[1;4;90;4mt[0m[1;4;90;4mi[0m[1;4;90;4mn[0m[1;4;90;4mg[0m[1;4;90;4ms[0m
+[2;90mForge[0m → [1;97m[GitHub][0m → [2;90mProxy[0m → [2;90mEmbedder[0m → [2;90mVoyage[0m → [2;90mAppearance[0m → [2;90mEnvironment[0m → [2;90mHost[0m
+[2;90mLayer: user  Path: /settings-golden/config.json[0m
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ [1;4;97;4mG[0m[1;4;97;4mi[0m[1;4;97;4mt[0m[1;4;97;4mH[0m[1;4;97;4mu[0m[1;4;97;4mb[0m                                                                       │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ [1;37m> [7mG[0mitHub tokens:  [FILE][0m                                                     │
+│ [2;90mOne token per line; values are always masked.[0m                                │
+│ [37m  Requests per minute: 300 [FILE][0m                                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+[2;90m[p] Probe provider credentials  [o] Check store  [f] Check FastEmbed  [v] Check[0m
+[37;40m[tab][0m section [37;40m[enter][0m edit [37;40m[esc][0m back

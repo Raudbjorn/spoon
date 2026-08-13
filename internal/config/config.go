@@ -232,6 +232,39 @@ func Save(path string, c *Config) error {
 	return nil
 }
 
+// ProbeAtomicPublication verifies that the current process can publish a
+// replacement in path's directory using the same create-and-rename primitive
+// as Save. It never opens, replaces, or changes the target config. File mode
+// bits are deliberately not used: replacing a read-only file is valid when
+// its directory is writable, while an owner-write bit says nothing about this
+// process's ability to create the temporary sibling.
+func ProbeAtomicPublication(path string) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".spoon-config-probe-*")
+	if err != nil {
+		return fmt.Errorf("cannot atomically publish %s: %w", path, err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close publication probe %s: %w", path, err)
+	}
+	published := tmpPath + ".published"
+	defer os.Remove(published)
+	if err := os.Rename(tmpPath, published); err != nil {
+		return fmt.Errorf("cannot atomically publish %s: %w", path, err)
+	}
+	return nil
+}
+
+// CredentialConfigKeys is the persisted credential-bearing schema inventory.
+// It drives the config-file 0600 gate and the settings registry parity test.
+var CredentialConfigKeys = []string{
+	"github.tokens",
+	"github.proxy.apiKeyFile",
+	"embedder.voyage.apiKeyFile",
+}
+
 func configContainsCredentials(path string) bool {
 	data, err := os.ReadFile(path)
 	if err != nil {

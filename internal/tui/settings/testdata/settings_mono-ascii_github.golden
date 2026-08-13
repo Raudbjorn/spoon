@@ -1,0 +1,12 @@
+Settings
+Forge - [GitHub] - Proxy - Embedder - Voyage - Appearance - Environment - Host
+Layer: user  Path: /settings-golden/config.json
++------------------------------------------------------------------------------+
+| GitHub                                                                       |
++------------------------------------------------------------------------------+
+| > GitHub tokens:  [FILE]                                                     |
+| One token per line; values are always masked.                                |
+|   Requests per minute: 300 [FILE]                                            |
++------------------------------------------------------------------------------+
+[p] Probe provider credentials  [o] Check store  [f] Check FastEmbed  [v] Check
+[tab] section [enter] edit [esc] back

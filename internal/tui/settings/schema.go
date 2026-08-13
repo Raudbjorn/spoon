@@ -37,6 +37,7 @@ type Field struct {
 	Key, Label, Help string
 	Section          Section
 	Secret           bool
+	Credential       bool
 	Editable         bool
 	Consequence      Consequence
 	Environment      []string
@@ -65,7 +66,7 @@ var Registry = []Field{
 	{Key: "version", Label: "Schema version", Section: HostSection, Help: "Written by Spoon; version 2 introduces UI preferences.", Get: func(c *config.Config) string { return strconv.Itoa(c.Version) }},
 	stringField("forge.provider", "Provider", ForgeSection, "github, gitlab, or empty to auto-detect", "", func(c *config.Config) string { return c.Forge.Provider }, func(c *config.Config, v string) { c.Forge.Provider = strings.ToLower(strings.TrimSpace(v)) }),
 	stringField("forge.host", "Host", ForgeSection, "Self-hosted GitHub or GitLab hostname.", "", func(c *config.Config) string { return c.Forge.Host }, func(c *config.Config, v string) { c.Forge.Host = strings.TrimSpace(v) }),
-	{Key: "github.tokens", Label: "GitHub tokens", Section: GitHubSection, Help: "One token per line; values are always masked.", Secret: true, Editable: true, Get: func(c *config.Config) string { return strings.Join(c.GitHub.Tokens, "\n") }, Set: func(c *config.Config, v string) error {
+	{Key: "github.tokens", Label: "GitHub tokens", Section: GitHubSection, Help: "One token per line; values are always masked.", Secret: true, Credential: true, Editable: true, Get: func(c *config.Config) string { return strings.Join(c.GitHub.Tokens, "\n") }, Set: func(c *config.Config, v string) error {
 		values := strings.Split(v, "\n")
 		c.GitHub.Tokens = nonEmpty(values)
 		return nil
@@ -79,7 +80,7 @@ var Registry = []Field{
 		return nil
 	}},
 	boolField("github.proxy.enabled", "Proxy enabled", ProxySection, "Enable ProxyScrape transport routing.", NoConsequence, func(c *config.Config) bool { return c.GitHub.Proxy.Enabled }, func(c *config.Config, v bool) { c.GitHub.Proxy.Enabled = v }),
-	stringField("github.proxy.apiKeyFile", "Proxy API key file", ProxySection, "0600 credential file path.", "", func(c *config.Config) string { return c.GitHub.Proxy.APIKeyFile }, func(c *config.Config, v string) { c.GitHub.Proxy.APIKeyFile = strings.TrimSpace(v) }),
+	{Key: "github.proxy.apiKeyFile", Label: "Proxy API key file", Section: ProxySection, Help: "0600 credential file path.", Credential: true, Editable: true, Get: func(c *config.Config) string { return c.GitHub.Proxy.APIKeyFile }, Set: func(c *config.Config, v string) error { c.GitHub.Proxy.APIKeyFile = strings.TrimSpace(v); return nil }},
 	stringField("github.proxy.staticFile", "Proxy static file", ProxySection, "0600 credential file path.", "", func(c *config.Config) string { return c.GitHub.Proxy.StaticFile }, func(c *config.Config, v string) { c.GitHub.Proxy.StaticFile = strings.TrimSpace(v) }),
 	{Key: "github.proxy.whitelistPublicIp", Label: "Whitelist public IP", Section: ProxySection, Help: "true, false, or empty to leave unset.", Editable: true, Get: func(c *config.Config) string {
 		if c.GitHub.Proxy.WhitelistPublicIP == nil {
@@ -119,7 +120,10 @@ var Registry = []Field{
 		return nil
 	}},
 	boolField("embedder.voyage.disabled", "Voyage disabled", VoyageSection, "Clearing this can enable an external per-token billed service.", Billing, func(c *config.Config) bool { return c.Embedder.Voyage.Disabled }, func(c *config.Config, v bool) { c.Embedder.Voyage.Disabled = v }),
-	stringField("embedder.voyage.apiKeyFile", "Voyage API key file", VoyageSection, "0600 credential file path; the key itself is not shown.", "", func(c *config.Config) string { return c.Embedder.Voyage.APIKeyFile }, func(c *config.Config, v string) { c.Embedder.Voyage.APIKeyFile = strings.TrimSpace(v) }),
+	{Key: "embedder.voyage.apiKeyFile", Label: "Voyage API key file", Section: VoyageSection, Help: "0600 credential file path; the key itself is not shown.", Credential: true, Editable: true, Consequence: Billing, Get: func(c *config.Config) string { return c.Embedder.Voyage.APIKeyFile }, Set: func(c *config.Config, v string) error {
+		c.Embedder.Voyage.APIKeyFile = strings.TrimSpace(v)
+		return nil
+	}},
 	stringField("embedder.voyage.embedModel", "Embed model", VoyageSection, "Defaults to voyage-code-3.", "voyage-code-3", func(c *config.Config) string { return c.Embedder.Voyage.EmbedModel }, func(c *config.Config, v string) { c.Embedder.Voyage.EmbedModel = strings.TrimSpace(v) }),
 	stringField("embedder.voyage.rerankModel", "Rerank model", VoyageSection, "Defaults to rerank-2.5.", "rerank-2.5", func(c *config.Config) string { return c.Embedder.Voyage.RerankModel }, func(c *config.Config, v string) { c.Embedder.Voyage.RerankModel = strings.TrimSpace(v) }),
 	{Key: "embedder.voyage.outputDimension", Label: "Output dimension", Section: VoyageSection, Help: "Changing this re-partitions the index; pending documents must be re-embedded.", Editable: true, Consequence: Reindex, Default: "1024", Environment: []string{"SPOON_VOYAGE_DIM"}, Get: func(c *config.Config) string { return strconv.Itoa(c.Embedder.Voyage.OutputDimension) }, Set: func(c *config.Config, v string) error {
@@ -136,11 +140,9 @@ var Registry = []Field{
 	stringField("ui.glyphs", "Glyph profile", AppearanceSection, "unicode or ascii.", "", func(c *config.Config) string { return c.UI.Glyphs }, func(c *config.Config, v string) { c.UI.Glyphs = strings.ToLower(strings.TrimSpace(v)) }),
 }
 
-// DocumentedEnvironment is the read-only environment inventory documented in
-// configReadme and surfaced by Environment.
-var DocumentedEnvironment = []string{
-	"SPOON_NO_CONFIG", "SPOON_NO_EMBED", "SPOON_NO_RESERVE", "SPOON_DEBUG", "SPOON_LOCAL_BRANCH_SCAN", "SPOON_GITHUB_RPM", "SPOON_GH_COOKIE", "SPOON_FASTEMBED_MODEL", "SPOON_FASTEMBED_CACHE", "SPOON_FASTEMBED_SHA256", "SPOON_PROXY_KEY_PATH", "SPOON_PROXY_STATIC_PATH", "TURSO_DATABASE_URL", "TURSO_AUTH_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "GITLAB_TOKEN", "ONNX_PATH", "NO_COLOR", "VOYAGE_AI_API_KEY", "VOYAGE_API_KEY", "SPOON_NO_VOYAGE", "SPOON_VOYAGE_NO_CACHE", "SPOON_VOYAGE_DIM", "SPOON_VOYAGE_EMBED_MODEL", "SPOON_VOYAGE_RERANK_MODEL", "SPOON_VOYAGE_BASE_URL", "SPOON_TUI_THEME", "SPOON_TUI_COLOR", "SPOON_TUI_GLYPHS",
-}
+// DocumentedEnvironment is derived from configReadme, the source emitted next
+// to every config layer, so Settings cannot silently omit a documented knob.
+var DocumentedEnvironment = config.DocumentedEnvironment()
 
 // Environment makes every documented variable visible while marking secret
 // values set/unset instead of exposing their contents.

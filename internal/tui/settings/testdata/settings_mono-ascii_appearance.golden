@@ -1,0 +1,13 @@
+Settings
+Forge - GitHub - Proxy - Embedder - Voyage - [Appearance] - Environment - Host
+Layer: user  Path: /settings-golden/config.json
++------------------------------------------------------------------------------+
+| Appearance                                                                   |
++------------------------------------------------------------------------------+
+| > Theme: dark [DEFAULT]                                                      |
+| dark, light, or amber.                                                       |
+|   Color profile:  [DEFAULT]                                                  |
+|   Glyph profile:  [DEFAULT]                                                  |
++------------------------------------------------------------------------------+
+[p] Probe provider credentials  [o] Check store  [f] Check FastEmbed  [v] Check
+[tab] section [enter] edit [esc] back

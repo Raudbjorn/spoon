@@ -1,0 +1,15 @@
+Settings
+Forge - GitHub - Proxy - [Embedder] - Voyage - Appearance - Environment - Host
+Layer: user  Path: /settings-golden/config.json
++------------------------------------------------------------------------------+
+| Embedder                                                                     |
++------------------------------------------------------------------------------+
+| > Backend: fastembed [DEFAULT]                                               |
+| fastembed or empty.                                                          |
+|   Model:  [DEFAULT]                                                          |
+|   Cache directory:  [DEFAULT]                                                |
+|   Maximum length:  [DEFAULT]                                                 |
+|   Batch size:  [DEFAULT]                                                     |
++------------------------------------------------------------------------------+
+[p] Probe provider credentials  [o] Check store  [f] Check FastEmbed  [v] Check
+[tab] section [enter] edit [esc] back

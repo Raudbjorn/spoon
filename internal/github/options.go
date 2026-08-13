@@ -18,10 +18,13 @@ func ResolveClientOptions(rpmOverride float64) (ClientOptions, error) {
 		return ClientOptions{}, err
 	}
 	opts := ClientOptions{RequestsPerMinute: defaultRPM}
+	var fileRPM string
+	filePresent := false
 	if cfg != nil {
 		opts.Tokens = append([]string(nil), cfg.GitHub.Tokens...)
 		if cfg.GitHub.RequestsPerMinute != 0 {
-			opts.RequestsPerMinute = cfg.GitHub.RequestsPerMinute
+			fileRPM = strconv.FormatFloat(cfg.GitHub.RequestsPerMinute, 'f', -1, 64)
+			filePresent = true
 		}
 		proxy := cfg.GitHub.Proxy
 		opts.Proxy.Enabled = proxy.Enabled
@@ -43,14 +46,14 @@ func ResolveClientOptions(rpmOverride float64) (ClientOptions, error) {
 			}
 		}
 	}
-	if raw := os.Getenv("SPOON_GITHUB_RPM"); raw != "" {
-		opts.RequestsPerMinute, err = strconv.ParseFloat(raw, 64)
-		if err != nil {
-			return ClientOptions{}, fmt.Errorf("SPOON_GITHUB_RPM: %w", err)
-		}
-	}
+	flagRPM := ""
 	if rpmOverride != 0 {
-		opts.RequestsPerMinute = rpmOverride
+		flagRPM = strconv.FormatFloat(rpmOverride, 'f', -1, 64)
+	}
+	resolved := config.ResolveString(fileRPM, filePresent, strconv.FormatFloat(defaultRPM, 'f', -1, 64), flagRPM, map[string]string{"SPOON_GITHUB_RPM": os.Getenv("SPOON_GITHUB_RPM")}, "SPOON_GITHUB_RPM")
+	opts.RequestsPerMinute, err = strconv.ParseFloat(resolved.Value, 64)
+	if err != nil {
+		return ClientOptions{}, fmt.Errorf("SPOON_GITHUB_RPM: %w", err)
 	}
 	if math.IsNaN(opts.RequestsPerMinute) || math.IsInf(opts.RequestsPerMinute, 0) || opts.RequestsPerMinute <= 0 || opts.RequestsPerMinute > 900 {
 		return ClientOptions{}, fmt.Errorf("github requests per minute must be a finite value in (0, 900]")

@@ -1,0 +1,12 @@
+Settings
+[Forge] - GitHub - Proxy - Embedder - Voyage - Appearance - Environment - Host
+Layer: user  Path: /settings-golden/config.json
++------------------------------------------------------------------------------+
+| Forge                                                                        |
++------------------------------------------------------------------------------+
+| > Provider: gitlab [FILE]                                                    |
+| github, gitlab, or empty to auto-detect                                      |
+|   Host: forge.example [FILE]                                                 |
++------------------------------------------------------------------------------+
+[p] Probe provider credentials  [o] Check store  [f] Check FastEmbed  [v] Check
+[tab] section [enter] edit [esc] back

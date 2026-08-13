@@ -1,0 +1,16 @@
+[1;4;90;4mS[0m[1;4;90;4me[0m[1;4;90;4mt[0m[1;4;90;4mt[0m[1;4;90;4mi[0m[1;4;90;4mn[0m[1;4;90;4mg[0m[1;4;90;4ms[0m
+[2;90mForge[0m → [2;90mGitHub[0m → [2;90mProxy[0m → [2;90mEmbedder[0m → [2;90mVoyage[0m → [2;90mAppearance[0m → [2;90mEnvironment[0m → [1;97m[Host][0m
+[2;90mLayer: user  Path: /settings-golden/config.json[0m
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ [1;4;97;4mH[0m[1;4;97;4mo[0m[1;4;97;4ms[0m[1;4;97;4mt[0m                                                                         │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ [37mConfig path: /settings-golden/config.json[0m                                    │
+│ [37mLayer: user[0m                                                                  │
+│ [37mSystem config: absent[0m                                                        │
+│ [37mStore path: /home/svnbjrn/.config/spoon/spoon.db[0m                             │
+│ [37mEmbedder cache: /home/svnbjrn/.cache/spoon/models/fastembed[0m                  │
+│ [37mHome: /home/svnbjrn[0m                                                          │
+│ [37mConfig directory: /settings-golden[0m                                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+[2;90m[p] Probe provider credentials  [o] Check store  [f] Check FastEmbed  [v] Check[0m
+[37;40m[tab][0m section [37;40m[enter][0m edit [37;40m[esc][0m back

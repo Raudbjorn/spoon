@@ -18,6 +18,7 @@ import (
 	"github.com/svnbjrn/spoon/internal/config"
 	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/forge"
+	"github.com/svnbjrn/spoon/internal/setupcheck"
 	"github.com/svnbjrn/spoon/internal/store"
 )
 
@@ -348,18 +349,13 @@ func colorize(text, ansiCode string, noColor bool) string {
 }
 
 func setupFastEmbed(cfg *config.Config, cacheDir string, noColor bool, out io.Writer) bool {
-	// Record fastembed as the embedder regardless of runtime availability, so
-	// the written config is correct and the feature activates as soon as
-	// onnxruntime is installed.
-	cfg.Embedder.Backend = embed.BackendFastEmbed
-	cfg.Embedder.Model = "fast-bge-small-en-v1.5"
-	cfg.Embedder.CacheDir = cacheDir
-	if cfg.Embedder.CacheDir == "" {
-		cfg.Embedder.CacheDir, _ = embed.DefaultFastEmbedCacheDir()
+	// Keep setup's durable defaults and the settings preflight on one shared
+	// configuration helper; only this command performs the optional model probe.
+	fastCfg, err := setupcheck.PrepareFastEmbed(cfg, cacheDir)
+	if err != nil {
+		printCheck(out, "FastEmbed", false, []string{err.Error()}, noColor)
+		return false
 	}
-	cfg.Embedder.MaxLength = 512
-	cfg.Embedder.BatchSize = 32
-	fastCfg := embed.FastEmbedConfig{Model: cfg.Embedder.Model, CacheDir: cfg.Embedder.CacheDir, MaxLength: 512, BatchSize: 32}
 	model, err := embed.NewFastEmbedEmbedder(fastCfg)
 	if err != nil {
 		// Advisory, not fatal: semantic search/persistence simply stays off

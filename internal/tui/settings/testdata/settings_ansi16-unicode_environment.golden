@@ -1,0 +1,21 @@
+[1;4;90;4mS[0m[1;4;90;4me[0m[1;4;90;4mt[0m[1;4;90;4mt[0m[1;4;90;4mi[0m[1;4;90;4mn[0m[1;4;90;4mg[0m[1;4;90;4ms[0m
+[2;90mForge[0m → [2;90mGitHub[0m → [2;90mProxy[0m → [2;90mEmbedder[0m → [2;90mVoyage[0m → [2;90mAppearance[0m → [1;97m[Environment][0m → [2;90mHost[0m
+[2;90mLayer: user  Path: /settings-golden/config.json[0m
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ [1;4;97;4mE[0m[1;4;97;4mn[0m[1;4;97;4mv[0m[1;4;97;4mi[0m[1;4;97;4mr[0m[1;4;97;4mo[0m[1;4;97;4mn[0m[1;4;97;4mm[0m[1;4;97;4me[0m[1;4;97;4mn[0m[1;4;97;4mt[0m                                                                  │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ [37mSPOON_NO_CONFIG = unset[0m                                                      │
+│ [37mSPOON_NO_EMBED = unset[0m                                                       │
+│ [37mSPOON_LOCAL_BRANCH_SCAN = unset[0m                                              │
+│ [37mVOYAGE_AI_API_KEY = unset[0m                                                    │
+│ [37mVOYAGE_API_KEY = unset[0m                                                       │
+│ [37mSPOON_NO_VOYAGE = unset[0m                                                      │
+│ [37mSPOON_VOYAGE_NO_CACHE = unset[0m                                                │
+│ [37mSPOON_VOYAGE_DIM = unset[0m                                                     │
+│ [37mSPOON_VOYAGE_EMBED_MODEL = unset[0m                                             │
+│ [37mSPOON_VOYAGE_RERANK_MODEL = unset[0m                                            │
+│ [37mSPOON_VOYAGE_BASE_URL = unset[0m                                                │
+│ [37mSPOON_NO_RESERVE = unset[0m                                                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+[2;90m[p] Probe provider credentials  [o] Check store  [f] Check FastEmbed  [v] Check[0m
+[37;40m[tab][0m section [37;40m[enter][0m edit [37;40m[esc][0m back

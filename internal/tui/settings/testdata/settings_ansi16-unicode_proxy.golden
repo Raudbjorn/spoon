@@ -1,0 +1,15 @@
+[1;4;90;4mS[0m[1;4;90;4me[0m[1;4;90;4mt[0m[1;4;90;4mt[0m[1;4;90;4mi[0m[1;4;90;4mn[0m[1;4;90;4mg[0m[1;4;90;4ms[0m
+[2;90mForge[0m → [2;90mGitHub[0m → [1;97m[Proxy][0m → [2;90mEmbedder[0m → [2;90mVoyage[0m → [2;90mAppearance[0m → [2;90mEnvironment[0m → [2;90mHost[0m
+[2;90mLayer: user  Path: /settings-golden/config.json[0m
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ [1;4;97;4mP[0m[1;4;97;4mr[0m[1;4;97;4mo[0m[1;4;97;4mx[0m[1;4;97;4my[0m                                                                        │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ [1;37m> [7mP[0mroxy enabled: false [DEFAULT][0m                                             │
+│ [2;90mEnable ProxyScrape transport routing.[0m                                        │
+│ [37m  Proxy API key file:  [DEFAULT][0m                                             │
+│ [37m  Proxy static file:  [DEFAULT][0m                                              │
+│ [37m  Whitelist public IP:  [DEFAULT][0m                                            │
+│ [37m  Proxy cache TTL:  [DEFAULT][0m                                                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+[2;90m[p] Probe provider credentials  [o] Check store  [f] Check FastEmbed  [v] Check[0m
+[37;40m[tab][0m section [37;40m[enter][0m edit [37;40m[esc][0m back

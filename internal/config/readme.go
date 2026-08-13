@@ -35,7 +35,7 @@ layer for users who have no personal config.
   OPTIONAL and normally unnecessary: spoon uses the gh CLI login or
   GH_TOKEN/GITHUB_TOKEN from the environment. If you do put tokens here,
   chmod 600 config.json (spoon refuses a group/other-readable token file).
-- ` + "`github.requestsPerMinute`" + ` — client-side pacing cap (default 500, max 900).
+- ` + "`github.requestsPerMinute`" + ` — client-side pacing cap (default 300, max 900).
 - ` + "`github.proxy`" + ` — optional ProxyScrape-backed transport: enabled,
   apiKeyFile/staticFile (paths to 0600 files; contents are never copied
   here), whitelistPublicIp, cacheTtl. Off by default.

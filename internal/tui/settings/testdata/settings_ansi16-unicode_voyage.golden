@@ -1,0 +1,16 @@
+[1;4;90;4mS[0m[1;4;90;4me[0m[1;4;90;4mt[0m[1;4;90;4mt[0m[1;4;90;4mi[0m[1;4;90;4mn[0m[1;4;90;4mg[0m[1;4;90;4ms[0m
+[2;90mForge[0m → [2;90mGitHub[0m → [2;90mProxy[0m → [2;90mEmbedder[0m → [1;97m[Voyage][0m → [2;90mAppearance[0m → [2;90mEnvironment[0m → [2;90mHost[0m
+[2;90mLayer: user  Path: /settings-golden/config.json[0m
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ [1;4;97;4mV[0m[1;4;97;4mo[0m[1;4;97;4my[0m[1;4;97;4ma[0m[1;4;97;4mg[0m[1;4;97;4me[0m                                                                       │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ [1;37m> [7mV[0moyage disabled: false [DEFAULT][0m                                           │
+│ [2;90mClearing this can enable an external per-token billed service.[0m               │
+│ [37m  Voyage API key file:  [DEFAULT][0m                                            │
+│ [37m  Embed model: voyage-code-3 [DEFAULT][0m                                       │
+│ [37m  Rerank model: rerank-2.5 [DEFAULT][0m                                         │
+│ [37m  Output dimension: 1024 [DEFAULT][0m                                           │
+│ [37m  Base URL:  [DEFAULT][0m                                                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+[2;90m[p] Probe provider credentials  [o] Check store  [f] Check FastEmbed  [v] Check[0m
+[37;40m[tab][0m section [37;40m[enter][0m edit [37;40m[esc][0m back

@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/svnbjrn/spoon/internal/config"
+	"github.com/svnbjrn/spoon/internal/tui/theme"
 )
 
 func TestModelMasksSecretsAndRequiresConfirmation(t *testing.T) {
@@ -63,8 +64,7 @@ func TestEverySectionRedactsConfiguredAndEnvironmentSecrets(t *testing.T) {
 }
 
 func TestSystemLayerSaveRequiresHostwideConfirmation(t *testing.T) {
-	m := New(&config.Config{}, config.SystemPath(), nil)
-	m.readOnly = "" // unit-test the confirmation branch without writing /etc.
+	m := Model{Config: &config.Config{}, Path: config.SystemPath(), Theme: theme.DefaultContext()}
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
 	m = updated.(Model)
 	if !m.confirming || !strings.Contains(m.View(), "every user") {
