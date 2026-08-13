@@ -27,6 +27,7 @@ func TestProviderStatusLines(t *testing.T) {
 		wantSubstr string
 	}{
 		{"github authed", forge.ProviderGitHub, forge.AuthInfo{Tier: forge.AuthCLI, RateLimit: 5000, RateUnit: "hour"}, nil, true, "gh CLI"},
+		{"github configured unverified", forge.ProviderGitHub, forge.AuthInfo{Configured: true, RateLimit: 60, RateUnit: "hour"}, nil, true, "configured but unverified"},
 		{"github unauthed", forge.ProviderGitHub, forge.AuthInfo{Tier: forge.AuthNone, RateLimit: 60, RateUnit: "hour"}, nil, false, "gh auth login"},
 		{"gitlab token", forge.ProviderGitLab, forge.AuthInfo{Tier: forge.AuthToken, Username: "alice", RateLimit: 2000, RateUnit: "minute"}, nil, true, "GITLAB_TOKEN"},
 		{"gitlab unauthed", forge.ProviderGitLab, forge.AuthInfo{Tier: forge.AuthNone, RateLimit: 500, RateUnit: "minute"}, nil, false, "glab auth login"},

@@ -18,13 +18,15 @@ func ResolveClientOptionsFromEffective(effective config.EffectiveConfig) (Client
 	for _, token := range strings.Fields(effective.GitHub.Tokens.Value) {
 		opts.Tokens = append(opts.Tokens, token)
 	}
-	var err error
-	opts.RequestsPerMinute, err = strconv.ParseFloat(effective.GitHub.RequestsPerMinute.Value, 64)
+	requestsPerMinute, err := strconv.ParseFloat(effective.GitHub.RequestsPerMinute.Value, 64)
 	if err != nil {
 		return ClientOptions{}, fmt.Errorf("github requests per minute: %w", err)
 	}
-	if math.IsNaN(opts.RequestsPerMinute) || math.IsInf(opts.RequestsPerMinute, 0) || opts.RequestsPerMinute <= 0 || opts.RequestsPerMinute > 900 {
-		return ClientOptions{}, fmt.Errorf("github requests per minute must be a finite value in (0, 900]")
+	if math.IsNaN(requestsPerMinute) || math.IsInf(requestsPerMinute, 0) || requestsPerMinute < 0 || requestsPerMinute > 900 {
+		return ClientOptions{}, fmt.Errorf("github requests per minute must be a finite value in [0, 900]")
+	}
+	if requestsPerMinute != 0 {
+		opts.RequestsPerMinute = requestsPerMinute
 	}
 	opts.Proxy.Enabled, err = strconv.ParseBool(effective.GitHub.Proxy.Enabled.Value)
 	if err != nil {
@@ -36,9 +38,12 @@ func ResolveClientOptionsFromEffective(effective config.EffectiveConfig) (Client
 	if err != nil {
 		return ClientOptions{}, fmt.Errorf("github.proxy.whitelistPublicIp: %w", err)
 	}
-	opts.Proxy.CacheTTL, err = time.ParseDuration(effective.GitHub.Proxy.CacheTTL.Value)
-	if err != nil {
-		return ClientOptions{}, fmt.Errorf("github.proxy.cacheTtl: %w", err)
+	opts.Proxy.CacheTTL = time.Hour
+	if effective.GitHub.Proxy.CacheTTL.Value != "" {
+		opts.Proxy.CacheTTL, err = time.ParseDuration(effective.GitHub.Proxy.CacheTTL.Value)
+		if err != nil {
+			return ClientOptions{}, fmt.Errorf("github.proxy.cacheTtl: %w", err)
+		}
 	}
 	return opts, nil
 }

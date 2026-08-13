@@ -248,6 +248,11 @@ func providerStatusLines(provider forge.Provider, auth forge.AuthInfo, err error
 		lines = append(lines, providerFixLines(provider)...)
 		return false, lines
 	}
+	if auth.Configured {
+		lines = append(lines, "Credentials configured but unverified (local no-network check)")
+		lines = append(lines, fmt.Sprintf("Public fallback rate limit: ~%d req/%s", auth.RateLimit, auth.RateUnit))
+		return true, lines
+	}
 	if auth.Authenticated() {
 		via := authSource(provider, auth.Tier)
 		who := ""

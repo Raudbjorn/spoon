@@ -25,3 +25,29 @@ func TestResolveClientOptionsFromEffectiveUsesResolvedLeaves(t *testing.T) {
 		t.Fatalf("options = %#v", opts)
 	}
 }
+
+func TestResolveClientOptionsFromEffectiveTreatsZeroRPMAsDefault(t *testing.T) {
+	file := &config.Config{GitHub: config.GitHubConfig{RequestsPerMinute: 0}}
+	config.RecordFieldValue(file, "github.requestsPerMinute", "present")
+
+	opts, err := ResolveClientOptionsFromEffective(config.ResolveEffectiveConfig(file, nil, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.RequestsPerMinute != defaultRPM {
+		t.Fatalf("RequestsPerMinute = %v, want default %v", opts.RequestsPerMinute, defaultRPM)
+	}
+}
+
+func TestResolveClientOptionsFromEffectiveTreatsEmptyProxyTTLAsDefault(t *testing.T) {
+	file := &config.Config{GitHub: config.GitHubConfig{Proxy: config.ProxyConfig{CacheTTL: ""}}}
+	config.RecordFieldValue(file, "github.proxy.cacheTtl", "present")
+
+	opts, err := ResolveClientOptionsFromEffective(config.ResolveEffectiveConfig(file, nil, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.Proxy.CacheTTL != time.Hour {
+		t.Fatalf("Proxy.CacheTTL = %v, want %v", opts.Proxy.CacheTTL, time.Hour)
+	}
+}

@@ -46,6 +46,7 @@ type AuthInfo struct {
 	Provider    Provider
 	Tier        AuthTier
 	Host        string // "github.com", "gitlab.com", or custom hostname.
+	Configured  bool   // Local credential material exists but has not been validated.
 	Username    string // empty if unauthenticated.
 	Concurrency int    // recommended worker pool size.
 	RateLimit   int    // max requests per RateUnit.

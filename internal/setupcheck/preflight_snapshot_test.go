@@ -29,6 +29,22 @@ func TestLocalProviderProbeUsesInjectedEnvironmentSnapshot(t *testing.T) {
 	}
 }
 
+func TestLocalProviderProbeTreatsPresentTokenAsUnverified(t *testing.T) {
+	auth, err := LocalProviderProbe(context.Background(), ProviderInput{
+		Provider:    forge.ProviderGitHub,
+		Environment: map[string]string{"GH_TOKEN": "unverified-token"},
+	}, DenyHTTPTransport{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if auth.Authenticated() {
+		t.Fatal("local no-network probe reported an unvalidated token as authenticated")
+	}
+	if !auth.Configured {
+		t.Fatal("local no-network probe did not report the token as configured")
+	}
+}
+
 func TestLocalProviderProbeReadsSnapshotCLIConfigWithoutProcess(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -79,8 +95,8 @@ func TestLocalProviderProbeReadsSnapshotCLIConfigWithoutProcess(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if auth.Tier != forge.AuthCLI {
-				t.Fatalf("snapshot CLI config tier=%v, want %v", auth.Tier, forge.AuthCLI)
+			if auth.Tier != forge.AuthNone || !auth.Configured {
+				t.Fatalf("snapshot CLI config state = tier %v, configured %v; want unverified configured credential", auth.Tier, auth.Configured)
 			}
 			if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
 				t.Fatalf("provider probe executed %s: stat error=%v", tt.command, err)

@@ -137,7 +137,7 @@ func runSearchWithEffectiveDeps(args []string, stdout, stderr io.Writer, effecti
 		return agentio.NewError(agentio.CodeBadInput, "search query must not be empty", searchUsage).Emit(stderr)
 	}
 
-	embCfg, err := effective.EmbedderConfig()
+	embCfg, err := effective.FastEmbedConfig()
 	if err != nil {
 		return agentio.NewError(agentio.CodeBadInput, "embedder_unavailable: "+err.Error(), "Correct the effective spoon configuration, then retry.").Emit(stderr)
 	}

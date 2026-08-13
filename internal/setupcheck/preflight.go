@@ -57,7 +57,7 @@ func CheckProvider(ctx context.Context, input ProviderInput, probe ProviderProbe
 	if err != nil {
 		return ProviderResult{Provider: input.Provider}, err
 	}
-	return ProviderResult{Provider: input.Provider, Auth: auth, Ready: input.ConfiguredToken || auth.Authenticated()}, nil
+	return ProviderResult{Provider: input.Provider, Auth: auth, Ready: input.ConfiguredToken || auth.Configured || auth.Authenticated()}, nil
 }
 
 // LocalProviderProbe checks only credentials from the startup environment
@@ -73,17 +73,17 @@ func LocalProviderProbe(ctx context.Context, input ProviderInput, transport http
 		}
 	}
 	auth := forge.AuthInfo{Provider: input.Provider, Host: host}
-	envToken, tokenRate, publicRate, unit := environmentValueForOS(input.Environment, "GH_TOKEN", runtime.GOOS) != "" ||
-		environmentValueForOS(input.Environment, "GITHUB_TOKEN", runtime.GOOS) != "", 5000, 60, "hour"
+	envToken, publicRate, unit := environmentValueForOS(input.Environment, "GH_TOKEN", runtime.GOOS) != "" ||
+		environmentValueForOS(input.Environment, "GITHUB_TOKEN", runtime.GOOS) != "", 60, "hour"
 	if input.Provider == forge.ProviderGitLab {
 		envToken = environmentValueForOS(input.Environment, "GITLAB_TOKEN", runtime.GOOS) != "" ||
 			environmentValueForOS(input.Environment, "GITLAB_PAT", runtime.GOOS) != "" ||
 			environmentValueForOS(input.Environment, "CI_JOB_TOKEN", runtime.GOOS) != ""
-		tokenRate, publicRate, unit = 2000, 500, "minute"
+		publicRate, unit = 500, "minute"
 	}
-	auth.RateUnit = unit
+	auth.RateUnit, auth.RateLimit = unit, publicRate
 	if input.ConfiguredToken || envToken {
-		auth.Tier, auth.RateLimit = forge.AuthToken, tokenRate
+		auth.Configured = true
 		return auth, nil
 	}
 	if transport == nil {
@@ -93,10 +93,9 @@ func LocalProviderProbe(ctx context.Context, input ProviderInput, transport http
 		return auth, err
 	}
 	if localProviderTokenConfigured(input.Provider, host, input.Environment) {
-		auth.Tier, auth.RateLimit = forge.AuthCLI, tokenRate
+		auth.Configured = true
 		return auth, nil
 	}
-	auth.Tier, auth.RateLimit = forge.AuthNone, publicRate
 	return auth, nil
 }
 

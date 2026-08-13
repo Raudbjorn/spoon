@@ -1418,7 +1418,7 @@ func emitClusterWarning(stderr io.Writer, skip *forksops.ClusterSkip) {
 }
 
 func resolveFastEmbedConfigEffective(effective config.EffectiveConfig, model, cacheDir string) embed.FastEmbedConfig {
-	resolved, err := effective.EmbedderConfig()
+	resolved, err := effective.FastEmbedConfig()
 	if err != nil {
 		return embed.FastEmbedConfig{}
 	}

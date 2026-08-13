@@ -206,13 +206,28 @@ func (e EffectiveConfig) Value(key string) ResolvedString {
 	}
 }
 
-// EmbedderConfig returns the effective typed configuration for constructors.
-func (e EffectiveConfig) EmbedderConfig() (EmbedderConfig, error) {
+// FastEmbedConfig returns only the local embedder configuration. Voyage fields
+// are deliberately not parsed here so malformed optional provider settings
+// cannot disable FastEmbed-only commands.
+func (e EffectiveConfig) FastEmbedConfig() (EmbedderConfig, error) {
 	maxLength, err := strconv.Atoi(e.FastEmbed.MaxLength.Value)
 	if err != nil {
 		return EmbedderConfig{}, err
 	}
 	batchSize, err := strconv.Atoi(e.FastEmbed.BatchSize.Value)
+	if err != nil {
+		return EmbedderConfig{}, err
+	}
+	return EmbedderConfig{
+		Backend: e.Backend.Value, Model: e.FastEmbed.Model.Value, CacheDir: e.FastEmbed.CacheDir.Value,
+		MaxLength: maxLength, BatchSize: batchSize,
+	}, nil
+}
+
+// EmbedderConfig returns the complete effective typed configuration for
+// constructors that require both FastEmbed and Voyage settings.
+func (e EffectiveConfig) EmbedderConfig() (EmbedderConfig, error) {
+	resolved, err := e.FastEmbedConfig()
 	if err != nil {
 		return EmbedderConfig{}, err
 	}
@@ -224,10 +239,11 @@ func (e EffectiveConfig) EmbedderConfig() (EmbedderConfig, error) {
 	if err != nil {
 		return EmbedderConfig{}, err
 	}
-	return EmbedderConfig{
-		Backend: e.Backend.Value, Model: e.FastEmbed.Model.Value, CacheDir: e.FastEmbed.CacheDir.Value, MaxLength: maxLength, BatchSize: batchSize,
-		Voyage: VoyageConfig{Disabled: disabled, APIKeyFile: e.Voyage.APIKeyFile.Value, EmbedModel: e.Voyage.EmbedModel.Value, RerankModel: e.Voyage.RerankModel.Value, OutputDimension: dimension, BaseURL: e.Voyage.BaseURL.Value},
-	}, nil
+	resolved.Voyage = VoyageConfig{
+		Disabled: disabled, APIKeyFile: e.Voyage.APIKeyFile.Value, EmbedModel: e.Voyage.EmbedModel.Value,
+		RerankModel: e.Voyage.RerankModel.Value, OutputDimension: dimension, BaseURL: e.Voyage.BaseURL.Value,
+	}
+	return resolved, nil
 }
 
 func copyEnv(env map[string]string) map[string]string {
