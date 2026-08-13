@@ -54,9 +54,24 @@ func (f *fakeForge) Contributors(_ context.Context, _ forge.T1Data) (forge.T3Dat
 }
 func (f *fakeForge) Headroom() float64 { return 1.0 }
 
+// isolateSpoonRun points every path a command writes at a temp tree and clears
+// the Voyage environment. Tests that run a command end to end must call it.
+//
+// SPOON_NO_CONFIG is not isolation on its own, which is what these tests relied
+// on: it suppresses reading config.json, but the durable store's location comes
+// from XDG_CONFIG_HOME (store.DefaultPath), so runForksWith opened
+// store.OpenDefault against the developer's real ~/.config/spoon/spoon.db and
+// persisted its fixture forks into it. The Voyage variables are cleared for the
+// same reason — with a key exported, an unisolated run is free to send fixture
+// documents to a paid API.
+func isolateSpoonRun(t *testing.T) {
+	t.Helper()
+	t.Setenv("SPOON_NO_CONFIG", "1")
+	isolateSpoonHome(t)
+}
+
 func TestSpnForksList_emitsNDJSON(t *testing.T) {
-	t.Setenv("SPOON_NO_CONFIG", "1") // isolate from the host's spoon config
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	isolateSpoonRun(t)
 	prev := providerFactory
 	defer func() { providerFactory = prev }()
 	providerFactory = func(_ context.Context, _, _, _ string) (forge.Forge, string, *agentio.Error) {
@@ -159,8 +174,7 @@ func makeClusterForks(now time.Time, parentPushed time.Time) *fakeForge {
 }
 
 func TestSpnForksList_clusterFieldsPopulated(t *testing.T) {
-	t.Setenv("SPOON_NO_CONFIG", "1") // isolate from the host's spoon config
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	isolateSpoonRun(t)
 	prev := providerFactory
 	defer func() { providerFactory = prev }()
 
@@ -212,8 +226,7 @@ func TestSpnForksList_clusterFieldsPopulated(t *testing.T) {
 }
 
 func TestSpnForksList_noCluster_omitsClusterFields(t *testing.T) {
-	t.Setenv("SPOON_NO_CONFIG", "1") // isolate from the host's spoon config
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	isolateSpoonRun(t)
 	prev := providerFactory
 	defer func() { providerFactory = prev }()
 
@@ -496,9 +509,7 @@ func TestForkToJSON_EmitsMomentum(t *testing.T) {
 }
 
 func TestSpnForksList_csv_emitsHeaderAndRows(t *testing.T) {
-	t.Setenv("SPOON_NO_CONFIG", "1")         // isolate from the host's spoon config
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // don't read the real embedder config
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	isolateSpoonRun(t)
 	prev := providerFactory
 	defer func() { providerFactory = prev }()
 	providerFactory = func(_ context.Context, _, _, _ string) (forge.Forge, string, *agentio.Error) {
@@ -526,9 +537,7 @@ func TestSpnForksList_csv_emitsHeaderAndRows(t *testing.T) {
 }
 
 func TestSpnForksList_csv_noNDJSONLeak(t *testing.T) {
-	t.Setenv("SPOON_NO_CONFIG", "1") // isolate from the host's spoon config
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	isolateSpoonRun(t)
 	prev := providerFactory
 	defer func() { providerFactory = prev }()
 	providerFactory = func(_ context.Context, _, _, _ string) (forge.Forge, string, *agentio.Error) {
@@ -701,8 +710,7 @@ func TestSpnForksList_priorsFlag_rejectsMissingFile(t *testing.T) {
 }
 
 func TestSpnForksList_defaultOutputHasNoPriorFields(t *testing.T) {
-	t.Setenv("SPOON_NO_CONFIG", "1")
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	isolateSpoonRun(t)
 	prev := providerFactory
 	defer func() { providerFactory = prev }()
 	providerFactory = func(_ context.Context, _, _, _ string) (forge.Forge, string, *agentio.Error) {
@@ -742,9 +750,13 @@ func TestSpnForksList_defaultOutputHasNoPriorFields(t *testing.T) {
 }
 
 // splitRepoArg splits the owner/repo key used by search, eval, repo and threads
-// commands. The parsing is pure and deterministic; callers must treat empty
-// owner or repo as malformed (and reject it) to avoid routing queries to the
-// wrong store rows (#87).
+// commands. The parsing is pure and deterministic, and every malformed shape
+// collapses to ("", ""), which callers reject as bad input — a partially-parsed
+// key would route queries to store rows that do not exist (#87).
+//
+// The cases that matter are the nested ones: the repo is the LAST segment, so a
+// GitLab subgroup path splits the same way forge.ParseRepoURL splits it. It did
+// not always — see TestSplitRepoArgAgreesWithForgeParse for the guard.
 func TestSplitRepoArg(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -753,17 +765,63 @@ func TestSplitRepoArg(t *testing.T) {
 		repo  string
 	}{
 		{"standard owner and repo", "owner/repo", "owner", "repo"},
-		{"multiple slashes", "a/b/c", "a", "b/c"}, // SplitN keeps the remainder as the repo name
-		{"leading slash", "/repo", "", "repo"},
-		{"trailing slash", "owner/", "owner", ""},
+		// The repo is the last segment; the owner keeps the rest. A GitLab
+		// subgroup repo is stored exactly this way, so splitting on the first
+		// slash instead made --repo match nothing.
+		{"gitlab nested group", "group/subgroup/repo", "group/subgroup", "repo"},
+		{"deeply nested group", "a/b/c/d", "a/b/c", "d"},
 		{"no slash", "noslash", "", ""},
 		{"empty string", "", "", ""},
+		// Every malformed shape yields the same sentinel, so callers need only
+		// one check rather than one per slash position.
+		{"leading slash", "/repo", "", ""},
+		{"trailing slash", "owner/", "", ""},
+		{"doubled interior slash", "owner//repo", "", ""},
+		{"only a slash", "/", "", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			owner, repo := splitRepoArg(tc.in)
 			if owner != tc.owner || repo != tc.repo {
 				t.Fatalf("splitRepoArg(%q) = (%q, %q), want (%q, %q)", tc.in, owner, repo, tc.owner, tc.repo)
+			}
+		})
+	}
+}
+
+func TestSplitRepoArgDoesNotAllocate(t *testing.T) {
+	allocs := testing.AllocsPerRun(100, func() {
+		owner, repo := splitRepoArg("group/subgroup/repo")
+		if owner != "group/subgroup" || repo != "repo" {
+			t.Fatalf("splitRepoArg returned (%q, %q)", owner, repo)
+		}
+	})
+	if allocs != 0 {
+		t.Fatalf("splitRepoArg allocated %v times per call", allocs)
+	}
+}
+
+// TestSplitRepoArgAgreesWithForgeParse pins the invariant the bug violated:
+// splitRepoArg and forge.ParseRepoURL must derive the same owner and repo, because
+// one of them resolves the CLI argument while the other wrote the owner/name that
+// is stored and queried. When they disagreed, a nested GitLab path produced a
+// filter that matched zero rows and reported an empty result rather than an error.
+func TestSplitRepoArgAgreesWithForgeParse(t *testing.T) {
+	for _, in := range []string{
+		"owner/repo",
+		"group/subgroup/repo",
+		"a/b/c/d",
+		"ggml-org/llama.cpp", // a dot in the repo name must stay shorthand, not a host
+	} {
+		t.Run(in, func(t *testing.T) {
+			gotOwner, gotRepo := splitRepoArg(in)
+			_, _, wantOwner, wantRepo, err := forge.ParseRepoURL(in, "gitlab.com", forge.ProviderGitLab)
+			if err != nil {
+				t.Fatalf("forge.ParseRepoURL(%q): %v", in, err)
+			}
+			if gotOwner != wantOwner || gotRepo != wantRepo {
+				t.Fatalf("splitRepoArg(%q) = (%q, %q), but forge.ParseRepoURL yields (%q, %q)",
+					in, gotOwner, gotRepo, wantOwner, wantRepo)
 			}
 		})
 	}

@@ -1062,12 +1062,31 @@ func storeFiles(files []forge.FileDiff) []store.FileRecord {
 	return out
 }
 
+// splitRepoArg splits an "owner/repo" argument the way repos are actually keyed:
+// the repo is the LAST path segment and the owner is everything before it, joined
+// by "/". That matches forge.ParseRepoURL (detect.go: `owner = strings.Join(
+// parts[:len(parts)-1], "/")`), which is what wrote the owner and name into the
+// store in the first place.
+//
+// Splitting on the first slash instead — as this did — disagreed with that on
+// every nested path, so a GitLab subgroup repo silently matched nothing:
+// "group/subgroup/repo" became owner "group", name "subgroup/repo", while the
+// stored row had owner "group/subgroup", name "repo". Nested GitLab groups are a
+// supported input (see forge.ParseRepoURL's doc comment), so rejecting multi-slash
+// arguments outright would drop a real capability rather than fix the mismatch.
+//
+// Any malformed shape — no slash, or an empty segment anywhere — returns ("", "").
+// Callers all treat an empty owner or repo as bad input, so one sentinel covers
+// leading, trailing and doubled slashes without each caller re-checking.
 func splitRepoArg(s string) (owner, repo string) {
-	parts := strings.SplitN(s, "/", 2)
-	if len(parts) != 2 {
+	if strings.HasPrefix(s, "/") || strings.HasSuffix(s, "/") || strings.Contains(s, "//") {
 		return "", ""
 	}
-	return parts[0], parts[1]
+	cut := strings.LastIndexByte(s, '/')
+	if cut < 0 {
+		return "", ""
+	}
+	return s[:cut], s[cut+1:]
 }
 
 func forkToJSON(r forksops.Result) map[string]any {

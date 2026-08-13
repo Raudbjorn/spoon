@@ -4,22 +4,28 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/svnbjrn/spoon/internal/agentio"
+	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/forge"
 )
 
 // blockEmbedderCache points XDG_CACHE_HOME at a regular file so the fastembed
 // cache directory cannot be created — forcing NewFastEmbedEmbedder to fail fast
 // (no network download) and exercising the embed-unavailable degradation path
-// deterministically.
+// deterministically. It also isolates all persistent and Voyage configuration
+// from the developer environment.
 func blockEmbedderCache(t *testing.T) {
 	t.Helper()
+	isolateSpoonHome(t)
 	blocker := filepath.Join(t.TempDir(), "not-a-dir")
 	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
@@ -40,6 +46,27 @@ func stubTwoForkProvider(t *testing.T) {
 				{ID: "o/b", Owner: "o", Name: "b", PushedAt: time.Now()},
 			},
 		}, "o/r", nil
+	}
+}
+
+func TestBlockEmbedderCachePreventsVoyageRequests(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		requests.Add(1)
+	}))
+	defer server.Close()
+
+	t.Setenv(embed.VoyageAPIKeyEnv, "test-key")
+	t.Setenv(embed.VoyageBaseURLEnv, server.URL)
+	blockEmbedderCache(t)
+	stubTwoForkProvider(t)
+
+	var stdout, stderr bytes.Buffer
+	if exit := runForksWith([]string{"list", "o/r", "--tier", "1", "--no-cluster"}, &stdout, &stderr); exit != 0 {
+		t.Fatalf("exit = %d, want 0; stderr:\n%s", exit, stderr.String())
+	}
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("blockEmbedderCache allowed %d Voyage request(s)", got)
 	}
 }
 
