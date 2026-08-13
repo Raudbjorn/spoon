@@ -2,11 +2,9 @@ package settings
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/svnbjrn/spoon/internal/config"
 	"github.com/svnbjrn/spoon/internal/tui/ui"
 )
 
@@ -45,7 +43,7 @@ func render(m Model) string {
 	b.WriteString(ui.Card(m.Theme, string(sections[m.section]), width, parts))
 	if m.alert != "" {
 		b.WriteByte('\n')
-		b.WriteString(ui.TitledAlert(m.Theme, ui.AlertInfo, "Settings", m.alert, width))
+		b.WriteString(ui.TitledWrappedAlert(m.Theme, ui.AlertInfo, "Settings", m.alert, width))
 	}
 	if m.busy {
 		b.WriteByte('\n')
@@ -167,19 +165,10 @@ func actionLegend() string {
 	return strings.Join(parts, "  ")
 }
 
-func configPresence() string {
-	if _, err := os.Stat(config.SystemPath()); err == nil {
-		return "present"
-	} else if os.IsNotExist(err) {
-		return "absent"
-	}
-	return "unreadable"
-}
-
 func (m Model) envRows() []string {
 	rows := make([]string, 0, len(DocumentedEnvironment))
 	for _, name := range DocumentedEnvironment {
-		value := EnvironmentValue(name)
+		value := EnvironmentValue(name, m.Environment)
 		suffix := ""
 		if name == "SPOON_VOYAGE_NO_CACHE" && value != "unset" {
 			suffix = " (cost-affecting: bypasses paid response cache)"

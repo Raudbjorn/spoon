@@ -11,14 +11,20 @@ import (
 	"time"
 
 	"github.com/svnbjrn/spoon/internal/agentio"
+	"github.com/svnbjrn/spoon/internal/config"
 	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/threadsops"
 )
 
-// apiFactory builds the threadsops.API used by every threads handler.
-// Overridable for tests.
-var apiFactory = func() (threadsops.API, *agentio.Error) {
-	client, status, err := gh.CheckAuthConfigured(0)
+// apiFactory is the legacy zero-argument test seam. Production routing calls
+// apiFactoryWithEffective with the Bootstrap-owned effective configuration.
+var apiFactory func() (threadsops.API, *agentio.Error)
+
+var apiFactoryWithEffective = func(effective config.EffectiveConfig) (threadsops.API, *agentio.Error) {
+	if apiFactory != nil {
+		return apiFactory()
+	}
+	client, status, err := gh.CheckAuthWithEffective(effective)
 	if err != nil {
 		return nil, agentio.NewError(agentio.CodeAuthRequired, "github auth: "+err.Error(), agentio.RemediationAuthRequired())
 	}
@@ -36,36 +42,45 @@ var listPRsFn = func(ctx context.Context, c *gh.Client, owner, repo string, limi
 	return c.ListOpenPRs(ctx, owner, repo, limit)
 }
 
-func runThreads(args []string) int { return runThreadsWith(args, os.Stdout, os.Stderr) }
+func runThreads(args []string) int {
+	boot := config.Bootstrap(os.Stderr)
+	return runThreadsWithEffective(args, os.Stdout, os.Stderr, config.ResolveEffectiveConfig(boot.Config, nil, config.EnvironmentSnapshot()))
+}
 
+// runThreadsWith is the package test seam. Production dispatch calls
+// runThreadsWithEffective with its startup-owned configuration.
 func runThreadsWith(args []string, stdout, stderr io.Writer) int {
+	return runThreadsWithEffective(args, stdout, stderr, config.ResolveEffectiveConfig(nil, nil, config.EnvironmentSnapshot()))
+}
+
+func runThreadsWithEffective(args []string, stdout, stderr io.Writer, effective config.EffectiveConfig) int {
 	if len(args) == 0 {
 		return agentio.NewError(agentio.CodeBadInput, "missing verb (list|next|reply|resolve|resolve-all|unresolve-all|apply-suggestion)", agentio.RemediationBadInput("threads", "")).Emit(stderr)
 	}
 	verb, rest := args[0], args[1:]
 	switch verb {
 	case "list":
-		return doThreadsList(rest, stdout, stderr)
+		return doThreadsList(rest, stdout, stderr, effective)
 	case "next":
-		return doThreadsNext(rest, stdout, stderr)
+		return doThreadsNext(rest, stdout, stderr, effective)
 	case "reply":
-		return doThreadsReply(rest, stdout, stderr)
+		return doThreadsReply(rest, stdout, stderr, effective)
 	case "resolve":
-		return doThreadsResolve(rest, stdout, stderr)
+		return doThreadsResolve(rest, stdout, stderr, effective)
 	case "resolve-all":
-		return doThreadsResolveAll(rest, stdout, stderr)
+		return doThreadsResolveAll(rest, stdout, stderr, effective)
 	case "unresolve-all":
-		return doThreadsUnresolveAll(rest, stdout, stderr)
+		return doThreadsUnresolveAll(rest, stdout, stderr, effective)
 	case "apply-suggestion":
-		return doThreadsApplySuggestion(rest, stdout, stderr)
+		return doThreadsApplySuggestion(rest, stdout, stderr, effective)
 	case "list-prs":
-		return doThreadsListPRs(rest, stdout, stderr)
+		return doThreadsListPRs(rest, stdout, stderr, effective)
 	default:
 		return agentio.NewError(agentio.CodeBadInput, "unknown verb: "+verb, agentio.RemediationBadInput("threads", "")).Emit(stderr)
 	}
 }
 
-func doThreadsList(args []string, stdout, stderr io.Writer) int {
+func doThreadsList(args []string, stdout, stderr io.Writer, effective config.EffectiveConfig) int {
 	var prRef string
 	var filterRaw string
 	allFlag := false
@@ -137,7 +152,7 @@ func doThreadsList(args []string, stdout, stderr io.Writer) int {
 	if !ok {
 		return ec
 	}
-	api, authErr := apiFactory()
+	api, authErr := apiFactoryWithEffective(effective)
 	if authErr != nil {
 		return authErr.Emit(stderr)
 	}
@@ -207,7 +222,7 @@ func remediationFilterBadInput() string {
 	return "Valid --filter values: " + threadsops.ValidFilterModesCSV() + ". Default is `unresolved`."
 }
 
-func doThreadsNext(args []string, stdout, stderr io.Writer) int {
+func doThreadsNext(args []string, stdout, stderr io.Writer, effective config.EffectiveConfig) int {
 	var prRef string
 	showCode := 0
 	verbose := false
@@ -248,7 +263,7 @@ func doThreadsNext(args []string, stdout, stderr io.Writer) int {
 	if !ok {
 		return ec
 	}
-	api, authErr := apiFactory()
+	api, authErr := apiFactoryWithEffective(effective)
 	if authErr != nil {
 		return authErr.Emit(stderr)
 	}
@@ -287,7 +302,7 @@ func resolvePRRef(prRef, noun, verb string, stderr io.Writer) (owner, repo strin
 	return o, r, n, 0, true
 }
 
-func doThreadsReply(args []string, stdout, stderr io.Writer) int {
+func doThreadsReply(args []string, stdout, stderr io.Writer, effective config.EffectiveConfig) int {
 	var prRef, threadID, body, bodyFile, suggest, suggestFile, intro string
 	suggestSet := false
 	suggestFileSet := false
@@ -378,7 +393,7 @@ func doThreadsReply(args []string, stdout, stderr io.Writer) int {
 	if !ok {
 		return ec
 	}
-	api, authErr := apiFactory()
+	api, authErr := apiFactoryWithEffective(effective)
 	if authErr != nil {
 		return authErr.Emit(stderr)
 	}
@@ -392,7 +407,7 @@ func doThreadsReply(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func doThreadsResolve(args []string, stdout, stderr io.Writer) int {
+func doThreadsResolve(args []string, stdout, stderr io.Writer, effective config.EffectiveConfig) int {
 	var prRef, threadID, body, bodyFile string
 	dryRun := false
 	showCode := 0
@@ -459,7 +474,7 @@ func doThreadsResolve(args []string, stdout, stderr io.Writer) int {
 	if !ok {
 		return ec
 	}
-	api, authErr := apiFactory()
+	api, authErr := apiFactoryWithEffective(effective)
 	if authErr != nil {
 		return authErr.Emit(stderr)
 	}
@@ -491,7 +506,7 @@ func doThreadsResolve(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func doThreadsResolveAll(args []string, stdout, stderr io.Writer) int {
+func doThreadsResolveAll(args []string, stdout, stderr io.Writer, effective config.EffectiveConfig) int {
 	var prRef string
 	outdatedOnly := false
 	dryRun := false
@@ -518,7 +533,7 @@ func doThreadsResolveAll(args []string, stdout, stderr io.Writer) int {
 	if !ok {
 		return ec
 	}
-	api, authErr := apiFactory()
+	api, authErr := apiFactoryWithEffective(effective)
 	if authErr != nil {
 		return authErr.Emit(stderr)
 	}
@@ -536,7 +551,7 @@ func doThreadsResolveAll(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func doThreadsUnresolveAll(args []string, stdout, stderr io.Writer) int {
+func doThreadsUnresolveAll(args []string, stdout, stderr io.Writer, effective config.EffectiveConfig) int {
 	var prRef string
 	dryRun := false
 	for i := 0; i < len(args); i++ {
@@ -560,7 +575,7 @@ func doThreadsUnresolveAll(args []string, stdout, stderr io.Writer) int {
 	if !ok {
 		return ec
 	}
-	api, authErr := apiFactory()
+	api, authErr := apiFactoryWithEffective(effective)
 	if authErr != nil {
 		return authErr.Emit(stderr)
 	}
@@ -588,7 +603,7 @@ func doThreadsUnresolveAll(args []string, stdout, stderr io.Writer) int {
 //     or the file doesn't exist on disk.
 //   - policy_violation: thread is outdated and --force not given.
 //   - internal: read/write failure.
-func doThreadsApplySuggestion(args []string, stdout, stderr io.Writer) int {
+func doThreadsApplySuggestion(args []string, stdout, stderr io.Writer, effective config.EffectiveConfig) int {
 	var prRef, threadID, repoRoot string
 	idx := 0
 	dryRun := false
@@ -635,7 +650,7 @@ func doThreadsApplySuggestion(args []string, stdout, stderr io.Writer) int {
 	if !ok {
 		return ec
 	}
-	api, authErr := apiFactory()
+	api, authErr := apiFactoryWithEffective(effective)
 	if authErr != nil {
 		return authErr.Emit(stderr)
 	}
@@ -763,7 +778,7 @@ func translateOpErr(op *threadsops.OpError, stderr io.Writer) int {
 	return e.Emit(stderr)
 }
 
-func doThreadsListPRs(args []string, stdout, stderr io.Writer) int {
+func doThreadsListPRs(args []string, stdout, stderr io.Writer, effective config.EffectiveConfig) int {
 	var repo string
 	limit := 0
 	state := "open"
@@ -806,7 +821,7 @@ func doThreadsListPRs(args []string, stdout, stderr io.Writer) int {
 	if owner == "" || name == "" {
 		return agentio.NewError(agentio.CodeBadInput, "invalid repo format: use owner/repo", agentio.RemediationBadInput("threads", "list-prs")).Emit(stderr)
 	}
-	api, authErr := apiFactory()
+	api, authErr := apiFactoryWithEffective(effective)
 	if authErr != nil {
 		return authErr.Emit(stderr)
 	}

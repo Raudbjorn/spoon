@@ -34,6 +34,7 @@ type Model struct {
 	Config           *config.Config
 	Path             string
 	Flags            map[string]string
+	Environment      map[string]string
 	Effective        *config.EffectiveConfig
 	Cache            embed.ResponseCache
 	Host             HostFacts
@@ -99,7 +100,14 @@ func NewFromLayer(layer config.LoadedLayer, cache embed.ResponseCache) Model {
 // New creates a settings model. A nil config means SPOON_NO_CONFIG mode: all
 // facts remain inspectable but persistence and edits are deliberately absent.
 func New(cfg *config.Config, path string, cache embed.ResponseCache) Model {
-	m := Model{Config: cfg, Path: path, Cache: cache, Host: CollectHostFacts(), Theme: theme.DefaultContext()}
+	m := Model{
+		Config:      cfg,
+		Path:        path,
+		Cache:       cache,
+		Environment: config.EnvironmentSnapshot(),
+		Host:        CollectHostFacts(),
+		Theme:       theme.DefaultContext(),
+	}
 	if cfg == nil {
 		m.noConfig = true
 		m.readOnly = "configuration layer is disabled by SPOON_NO_CONFIG=1"
@@ -166,7 +174,14 @@ func fieldIndex(key string) int {
 // The map contains only explicitly supplied flags; absent flags must not mask
 // environment or file values.
 func (m Model) WithFlags(flags map[string]string) Model {
-	m.Flags = flags
+	m.Flags = copySettingsMap(flags)
+	return m
+}
+
+// WithEnvironment records the process environment captured at command startup.
+// Settings never rereads it while rendering or running local preflights.
+func (m Model) WithEnvironment(env map[string]string) Model {
+	m.Environment = copySettingsMap(env)
 	return m
 }
 
@@ -177,11 +192,32 @@ func (m Model) WithEffective(effective config.EffectiveConfig) Model {
 	return m
 }
 
+func copySettingsMap(values map[string]string) map[string]string {
+	if values == nil {
+		return nil
+	}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		out[key] = value
+	}
+	return out
+}
+
+// refreshEffective recomputes Settings' editable candidate after an accepted
+// edit. Runtime constructors continue using the immutable startup value.
+func (m *Model) refreshEffective() {
+	if m.Config == nil {
+		return
+	}
+	effective := config.ResolveEffectiveConfig(m.Config, m.Flags, m.Environment)
+	m.Effective = &effective
+}
+
 func (m Model) resolve(field Field) Resolved {
 	if m.Effective != nil {
 		return ResolveFromEffective(field, *m.Effective)
 	}
-	return Resolve(field, m.Config, m.Flags)
+	return ResolveWithEnvironment(field, m.Config, m.Flags, m.Environment)
 }
 func (m *Model) selected() (Field, bool) {
 	fields := m.fields()
@@ -198,11 +234,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.busyAction = ""
 		if result.err != nil {
 			if result.text != "" {
-				errText := result.err.Error()
-				if result.id == ActionVoyageStatus {
-					errText = compactVoyageDiagnostic(errText)
-				}
-				m.setAlert(result.text + ": " + errText)
+				m.setAlert(result.text + ": " + result.err.Error())
 			} else {
 				m.setAlert(result.err.Error())
 			}
@@ -335,6 +367,7 @@ func (m Model) updateEdit(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		*m.Config = *candidate
+		m.refreshEffective()
 		m.clearEditor()
 		return m, nil
 	}
@@ -420,17 +453,6 @@ func (m *Model) setAlert(text string) {
 	m.alert = text
 }
 
-// compactVoyageDiagnostic retains the actionable local reason in the single
-// 80-column alert line; setAlert still redacts any credential path afterward.
-func compactVoyageDiagnostic(text string) string {
-	for _, reason := range []string{"readable by group/other", "store cannot be written", "output dimension "} {
-		if index := strings.Index(text, reason); index >= 0 {
-			return text[index:]
-		}
-	}
-	return text
-}
-
 func (m *Model) clearEditor() {
 	m.editing = false
 	m.input = ""
@@ -462,6 +484,7 @@ func (m Model) updateConfirmation(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.pendingCandidate != nil {
 			*m.Config = *m.pendingCandidate
+			m.refreshEffective()
 			m.setAlert("change applied; press s to save")
 		}
 		m.clearEditor()

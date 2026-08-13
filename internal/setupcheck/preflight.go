@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"os/exec"
 	"strings"
 
@@ -24,11 +23,11 @@ func (DenyHTTPTransport) RoundTrip(*http.Request) (*http.Response, error) {
 }
 
 // ProviderInput names the active forge and any credential stored in the loaded
-// configuration. Environment and CLI credentials are reported by ProviderProbe.
 type ProviderInput struct {
 	Provider        forge.Provider
 	Host            string
 	ConfiguredToken bool
+	Environment     map[string]string
 }
 
 // ProviderProbe observes local provider authentication. The supplied transport
@@ -71,10 +70,10 @@ func LocalProviderProbe(ctx context.Context, input ProviderInput, _ http.RoundTr
 	}
 	auth := forge.AuthInfo{Provider: input.Provider, Host: host}
 	command, args := "gh", []string{"auth", "status", "--hostname", host}
-	envToken, tokenRate, publicRate, unit := os.Getenv("GH_TOKEN") != "" || os.Getenv("GITHUB_TOKEN") != "", 5000, 60, "hour"
+	envToken, tokenRate, publicRate, unit := input.Environment["GH_TOKEN"] != "" || input.Environment["GITHUB_TOKEN"] != "", 5000, 60, "hour"
 	if input.Provider == forge.ProviderGitLab {
 		command, args = "glab", []string{"auth", "status", "--hostname", host}
-		envToken = os.Getenv("GITLAB_TOKEN") != "" || os.Getenv("GITLAB_PAT") != "" || os.Getenv("CI_JOB_TOKEN") != ""
+		envToken = input.Environment["GITLAB_TOKEN"] != "" || input.Environment["GITLAB_PAT"] != "" || input.Environment["CI_JOB_TOKEN"] != ""
 		tokenRate, publicRate, unit = 2000, 500, "minute"
 	}
 	auth.RateUnit = unit

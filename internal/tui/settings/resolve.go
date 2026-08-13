@@ -1,7 +1,6 @@
 package settings
 
 import (
-	"os"
 	"strings"
 
 	"github.com/svnbjrn/spoon/internal/config"
@@ -24,11 +23,13 @@ type Resolved struct {
 }
 
 // Resolve consumes a freshly captured process environment for direct Settings
-// tests and compatibility callers. Command startup passes ResolveFromEffective.
+// compatibility callers.
 func Resolve(field Field, cfg *config.Config, flags map[string]string) Resolved {
-	env := config.EnvironmentSnapshot()
-	resolved := config.ResolveEffectiveConfig(cfg, flags, env)
-	return ResolveFromEffective(field, resolved)
+	return ResolveWithEnvironment(field, cfg, flags, config.EnvironmentSnapshot())
+}
+
+func ResolveWithEnvironment(field Field, cfg *config.Config, flags, env map[string]string) Resolved {
+	return ResolveFromEffective(field, config.ResolveEffectiveConfig(cfg, flags, env))
 }
 
 // ResolveFromEffective projects the command-owned typed runtime result into a
@@ -75,8 +76,8 @@ func FieldByMust(key string) Field {
 	return field
 }
 
-func EnvironmentValue(name string) string {
-	value := os.Getenv(name)
+func EnvironmentValue(name string, env map[string]string) string {
+	value := env[name]
 	if Environment[name] {
 		if value == "" {
 			return "unset"

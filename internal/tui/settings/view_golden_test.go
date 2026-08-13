@@ -32,7 +32,7 @@ func TestGoldenSettingsSectionsAt80x24(t *testing.T) {
 				for _, descriptor := range config.CredentialDescriptors() {
 					descriptor.Set(cfg, "sentinel-secret")
 				}
-				m := Model{Config: cfg, Path: "/settings-golden/config.json", Host: HostFacts{SystemConfig: "absent", StorePath: "/settings-golden/store.db", CachePath: "/settings-golden/cache", Home: "/settings-golden/home"}, Theme: ctx}
+				m := Model{Config: cfg, Path: "/settings-golden/config.json", Environment: map[string]string{"NO_COLOR": "1"}, Host: HostFacts{SystemConfig: "absent", StorePath: "/settings-golden/store.db", CachePath: "/settings-golden/cache", Home: "/settings-golden/home"}, Theme: ctx}
 				m.width, m.height, m.section = 80, 24, section
 				got := m.View()
 				if strings.Contains(got, "sentinel-secret") {

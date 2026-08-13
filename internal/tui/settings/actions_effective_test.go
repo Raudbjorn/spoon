@@ -8,9 +8,14 @@ import (
 )
 
 func TestFastEmbedActionValidatesRuntimeEffectiveConfiguration(t *testing.T) {
-	t.Setenv("SPOON_FASTEMBED_MODEL", "unsupported")
-	_, err := runAction(ActionFastEmbedCheck, &config.Config{}, t.TempDir()+"/config.json", nil)
+	cfg := &config.Config{}
+	model := Model{
+		Config:      cfg,
+		Path:        t.TempDir() + "/config.json",
+		Environment: map[string]string{"SPOON_FASTEMBED_MODEL": "unsupported"},
+	}
+	_, err := runActionWithDeps(ActionFastEmbedCheck, &model, ActionDeps{})
 	if err == nil || !strings.Contains(err.Error(), "fixed") {
-		t.Fatalf("runtime override was not checked: %v", err)
+		t.Fatalf("startup snapshot override was not checked: %v", err)
 	}
 }

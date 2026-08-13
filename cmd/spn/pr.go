@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/svnbjrn/spoon/internal/agentio"
+	"github.com/svnbjrn/spoon/internal/config"
 	"github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/threadsops"
 )
@@ -41,22 +42,31 @@ var fetchPRStatus = func(ctx context.Context, api threadsops.API, owner, repo st
 	return status, nil
 }
 
-func runPR(args []string) int { return runPRWith(args, os.Stdout, os.Stderr) }
+func runPR(args []string) int {
+	boot := config.Bootstrap(os.Stderr)
+	return runPRWithEffective(args, os.Stdout, os.Stderr, config.ResolveEffectiveConfig(boot.Config, nil, config.EnvironmentSnapshot()))
+}
 
+// runPRWith is the package test seam. Production dispatch calls
+// runPRWithEffective with its startup-owned configuration.
 func runPRWith(args []string, stdout, stderr io.Writer) int {
+	return runPRWithEffective(args, stdout, stderr, config.ResolveEffectiveConfig(nil, nil, config.EnvironmentSnapshot()))
+}
+
+func runPRWithEffective(args []string, stdout, stderr io.Writer, effective config.EffectiveConfig) int {
 	if len(args) == 0 {
 		return agentio.NewError(agentio.CodeBadInput, "missing verb (status)", agentio.RemediationBadInput("pr", "")).Emit(stderr)
 	}
 	verb, rest := args[0], args[1:]
 	switch verb {
 	case "status":
-		return doPRStatus(rest, stdout, stderr)
+		return doPRStatus(rest, stdout, stderr, effective)
 	default:
 		return agentio.NewError(agentio.CodeBadInput, "unknown verb: "+verb, agentio.RemediationBadInput("pr", "")).Emit(stderr)
 	}
 }
 
-func doPRStatus(args []string, stdout, stderr io.Writer) int {
+func doPRStatus(args []string, stdout, stderr io.Writer, effective config.EffectiveConfig) int {
 	if len(args) != 1 {
 		return agentio.NewError(agentio.CodeBadInput, "usage: spn pr status <pr-ref>", agentio.RemediationBadInput("pr", "status")).Emit(stderr)
 	}
@@ -64,7 +74,7 @@ func doPRStatus(args []string, stdout, stderr io.Writer) int {
 	if !ok {
 		return ec
 	}
-	api, authErr := apiFactory()
+	api, authErr := apiFactoryWithEffective(effective)
 	if authErr != nil {
 		return authErr.Emit(stderr)
 	}

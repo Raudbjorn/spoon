@@ -104,6 +104,16 @@ func Kbd(ctx theme.Context, key string, width int) string {
 
 // Alert derives from phase-4-component-grammar.md:69-72.
 func Alert(ctx theme.Context, tone AlertTone, message string, width int) string {
+	return renderAlert(ctx, tone, message, width, false)
+}
+
+// WrappedAlert preserves complete diagnostics while keeping every terminal line
+// within width. Settings uses it for locally derived action errors.
+func WrappedAlert(ctx theme.Context, tone AlertTone, message string, width int) string {
+	return renderAlert(ctx, tone, message, width, true)
+}
+
+func renderAlert(ctx theme.Context, tone AlertTone, message string, width int, wrap bool) string {
 	color := ctx.Palette.Info
 	label := "info"
 	switch tone {
@@ -114,7 +124,13 @@ func Alert(ctx theme.Context, tone AlertTone, message string, width int) string 
 	case AlertError:
 		color, label = ctx.Palette.Error, "error"
 	}
-	return role(ctx, color).Bold(true).Render(truncate(label+": "+message, width))
+	rendered := label + ": " + message
+	if wrap && width > 0 && lipgloss.Width(rendered) > width {
+		rendered = ansi.Hardwrap(rendered, width, false)
+	} else {
+		rendered = truncate(rendered, width)
+	}
+	return role(ctx, color).Bold(true).Render(rendered)
 }
 
 // Input derives from phase-4-component-grammar.md:74-85. It delegates cursor

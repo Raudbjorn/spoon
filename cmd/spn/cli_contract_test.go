@@ -3,6 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"io"
+	"os"
 	"strings"
 	"testing"
 
@@ -48,6 +51,53 @@ func TestDispatchHelpAndVersion(t *testing.T) {
 		if stdout.Len() == 0 {
 			t.Fatalf("%s: expected stdout output", arg)
 		}
+	}
+}
+
+// Help, version, and invalid top-level nouns must not bootstrap configuration:
+// automation commonly invokes them before choosing a real command.
+func TestDispatchPreBootstrapPathsAreSideEffectFree(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+
+	for _, tc := range []struct {
+		name string
+		args []string
+		exit int
+	}{
+		{"help", []string{"--help"}, 0},
+		{"version", []string{"--version"}, 0},
+		{"unknown", []string{"frks", "list", "o/r"}, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if got := dispatch(tc.args, &stdout, &stderr); got != tc.exit {
+				t.Fatalf("exit = %d, want %d", got, tc.exit)
+			}
+			if tc.name == "unknown" {
+				decoder := json.NewDecoder(&stderr)
+				var envelope map[string]any
+				if err := decoder.Decode(&envelope); err != nil {
+					t.Fatalf("stderr must be one JSON envelope: %v\n%s", err, stderr.String())
+				}
+				if envelope["error"] == nil {
+					t.Fatalf("stderr lacks error envelope: %s", stderr.String())
+				}
+				var extra any
+				if err := decoder.Decode(&extra); err != io.EOF {
+					t.Fatalf("stderr must contain exactly one envelope, extra decode = %v", err)
+				}
+			} else if stderr.Len() != 0 {
+				t.Fatalf("stderr must be empty, got %q", stderr.String())
+			}
+			entries, err := os.ReadDir(xdg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 0 {
+				t.Fatalf("pre-bootstrap dispatch created files: %v", entries)
+			}
+		})
 	}
 }
 

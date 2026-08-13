@@ -26,12 +26,6 @@ func dispatch(args []string, stdout, stderr io.Writer) int {
 	if len(args) < 1 {
 		return agentio.NewError(agentio.CodeBadInput, "missing subcommand", usageRemediation).Emit(stderr)
 	}
-	boot := config.Bootstrap(stderr)
-	if boot.Warning != nil {
-		fmt.Fprintf(stderr, "warning: ignoring config: %v\n", boot.Warning)
-	}
-	env := config.EnvironmentSnapshot()
-	effective := config.ResolveEffectiveConfig(boot.Config, nil, env)
 	switch args[0] {
 	case "-h", "--help":
 		printHelp(stdout)
@@ -39,10 +33,27 @@ func dispatch(args []string, stdout, stderr io.Writer) int {
 	case "-v", "--version":
 		fmt.Fprintf(stdout, "spn %s\n", version)
 		return 0
+	case "threads", "pr", "forks", "search", "repo":
+		return dispatchConfigured(args, stdout, stderr)
+	default:
+		return agentio.NewError(agentio.CodeBadInput, fmt.Sprintf("unknown subcommand %q", args[0]), usageRemediation).Emit(stderr)
+	}
+}
+
+// dispatchConfigured resolves the one runtime configuration only after routing
+// confirms that the requested noun consumes configuration.
+func dispatchConfigured(args []string, stdout, stderr io.Writer) int {
+	boot := config.Bootstrap(stderr)
+	if boot.Warning != nil {
+		fmt.Fprintf(stderr, "warning: ignoring config: %v\n", boot.Warning)
+	}
+	env := config.EnvironmentSnapshot()
+	effective := config.ResolveEffectiveConfig(boot.Config, nil, env)
+	switch args[0] {
 	case "threads":
-		return runThreads(args[1:])
+		return runThreadsWithEffective(args[1:], stdout, stderr, effective)
 	case "pr":
-		return runPR(args[1:])
+		return runPRWithEffective(args[1:], stdout, stderr, effective)
 	case "forks":
 		if len(args) >= 2 && args[1] == "eval" {
 			return runEval(args[2:])
@@ -51,10 +62,9 @@ func dispatch(args []string, stdout, stderr io.Writer) int {
 	case "search":
 		return runSearchWithEffective(args[1:], stdout, stderr, effective, env)
 	case "repo":
-		return runRepo(args[1:])
-	default:
-		return agentio.NewError(agentio.CodeBadInput, fmt.Sprintf("unknown subcommand %q", args[0]), usageRemediation).Emit(stderr)
+		return runRepoWithEffective(args[1:], stdout, stderr, effective)
 	}
+	panic("configured dispatch called with unrecognized noun")
 }
 
 func printHelp(w io.Writer) {

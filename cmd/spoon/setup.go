@@ -44,8 +44,9 @@ type setupFlags struct {
 }
 
 func runSetupWith(ctx context.Context, args []string, stdin io.Reader, interactive bool, stdout, stderr io.Writer) int {
+	env := config.EnvironmentSnapshot()
 	f := setupFlags{
-		noColor: os.Getenv("NO_COLOR") != "",
+		noColor: env["NO_COLOR"] != "",
 	}
 
 	needsValue := func(i int) bool { return i+1 >= len(args) }
@@ -137,6 +138,7 @@ func runSetupWith(ctx context.Context, args []string, stdin io.Reader, interacti
 		Provider:        provider,
 		Host:            f.forgeHost,
 		ConfiguredToken: provider == forge.ProviderGitHub && loadedCfg != nil && len(loadedCfg.GitHub.Tokens) > 0,
+		Environment:     env,
 	}, setupProviderFn, setupcheck.DenyHTTPTransport{})
 	provOK, provLines := providerStatusLines(provider, providerCheck.Auth, provErr)
 	printCheck(stdout, fmt.Sprintf("Provider (%s)", provider), provOK, provLines, f.noColor)

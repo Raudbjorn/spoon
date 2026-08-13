@@ -235,7 +235,11 @@ func main() {
 	}
 	defer db.Close()
 
-	settingsModel := settings.NewFromLayer(boot.Layer, db).WithFlags(settingsFlags).WithEffective(effective).WithActionDeps(settingsActionDeps(env))
+	settingsModel := settings.NewFromLayer(boot.Layer, db).
+		WithFlags(settingsFlags).
+		WithEnvironment(env).
+		WithEffective(effective).
+		WithActionDeps(settingsActionDeps(env))
 	m := tui.NewModelWithCluster(provider, auth, repoArg, refresh, tuiClusterOpts).
 		WithHeatWeights(heatWeights).WithMaxTier(maxTier).WithStore(db).
 		WithQueryScorer(tuiQueryScorer(db, effective, env)).WithTheme(tuiContext).WithSettings(settingsModel)
@@ -247,15 +251,14 @@ func main() {
 	}
 }
 
-func settingsActionDeps(env map[string]string) settings.ActionDeps {
+func settingsActionDeps(_ map[string]string) settings.ActionDeps {
 	return settings.ActionDeps{
 		Provider: setupcheck.LocalProviderProbe,
 		StoreOpen: func() (setupcheck.Store, error) {
 			opened, err := store.OpenDefault()
 			return opened, err
 		},
-		Clipboard:   tui.CopyToClipboard,
-		Environment: env,
+		Clipboard: tui.CopyToClipboard,
 	}
 }
 

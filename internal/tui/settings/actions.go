@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -54,8 +53,11 @@ type ActionDeps struct {
 	Clipboard     func(string) error
 	Save          func(string, *config.Config) error
 	RewriteReadme func(string) error
+	// VoyageStatus receives a client pinned to this action's fail-closed
+	// transport. Status resolution remains local; a future HTTP addition cannot
+	// accidentally fall back to http.DefaultTransport.
+	VoyageStatus  func(context.Context, config.EffectiveConfig, embed.ResponseCache, map[string]string, *http.Client) (embed.VoyageConfig, bool, error)
 	HTTPTransport http.RoundTripper
-	Environment   map[string]string
 }
 
 func (d ActionDeps) normalized() ActionDeps {
@@ -68,8 +70,14 @@ func (d ActionDeps) normalized() ActionDeps {
 	if d.HTTPTransport == nil {
 		d.HTTPTransport = setupcheck.DenyHTTPTransport{}
 	}
-	if d.Environment == nil {
-		d.Environment = actionEnvironment()
+	if d.VoyageStatus == nil {
+		d.VoyageStatus = func(ctx context.Context, effective config.EffectiveConfig, cache embed.ResponseCache, environment map[string]string, client *http.Client) (embed.VoyageConfig, bool, error) {
+			cfg, active, err := embed.ResolveVoyageEffective(ctx, effective, false, cache, environment)
+			if cfg.HTTP != nil {
+				cfg.HTTP = client
+			}
+			return cfg, active, err
+		}
 	}
 	return d
 }
@@ -207,7 +215,9 @@ func actionProviderInput(m *Model) setupcheck.ProviderInput {
 		default:
 			configuredToken = false
 		}
-		return setupcheck.ProviderInput{Provider: provider, Host: m.Effective.Forge.Host.Value, ConfiguredToken: configuredToken}
+		return setupcheck.ProviderInput{
+			Provider: provider, Host: m.Effective.Forge.Host.Value, ConfiguredToken: configuredToken, Environment: m.Environment,
+		}
 	}
 	provider, host, configuredToken := setupcheck.ActiveProvider(m.Config)
 	if value := strings.ToLower(m.Flags["forge.provider"]); value != "" {
@@ -223,14 +233,24 @@ func actionProviderInput(m *Model) setupcheck.ProviderInput {
 	if value := m.Flags["forge.host"]; value != "" {
 		host = value
 	}
-	return setupcheck.ProviderInput{Provider: provider, Host: host, ConfiguredToken: configuredToken}
+	return setupcheck.ProviderInput{Provider: provider, Host: host, ConfiguredToken: configuredToken, Environment: m.Environment}
 }
 
 func voyageDiagnosticForModel(m *Model, deps ActionDeps) (string, error) {
-	if m.Effective == nil {
-		return voyageDiagnostic(m.Config, m.Cache)
+	if m.Config == nil {
+		return "Voyage not configured: configuration layer is disabled", nil
 	}
-	_, active, err := embed.ResolveVoyageEffective(context.Background(), *m.Effective, false, m.Cache, deps.Environment)
+	effective := config.ResolveEffectiveConfig(m.Config, m.Flags, m.Environment)
+	if m.Effective != nil {
+		effective = *m.Effective
+	}
+	_, active, err := deps.VoyageStatus(
+		context.Background(),
+		effective,
+		m.Cache,
+		m.Environment,
+		&http.Client{Transport: deps.HTTPTransport},
+	)
 	if err != nil {
 		return "Voyage configured but unusable", err
 	}
@@ -267,7 +287,7 @@ func effectiveEmbedder(m *Model) config.EmbedderConfig {
 		out.BatchSize, _ = strconv.Atoi(m.Effective.FastEmbed.BatchSize.Value)
 		return out
 	}
-	effective := config.ResolveEffectiveConfig(m.Config, m.Flags, actionEnvironment())
+	effective := config.ResolveEffectiveConfig(m.Config, m.Flags, m.Environment)
 	out := config.EmbedderConfig{}
 	out.Backend = effective.Value("embedder.backend").Value
 	out.Model = effective.Value("embedder.model").Value
@@ -275,14 +295,4 @@ func effectiveEmbedder(m *Model) config.EmbedderConfig {
 	out.MaxLength, _ = strconv.Atoi(effective.Value("embedder.maxLength").Value)
 	out.BatchSize, _ = strconv.Atoi(effective.Value("embedder.batchSize").Value)
 	return out
-}
-
-func actionEnvironment() map[string]string {
-	env := map[string]string{"XDG_CACHE_HOME": os.Getenv("XDG_CACHE_HOME")}
-	for _, setting := range config.Settings() {
-		for _, name := range setting.Environment {
-			env[name] = os.Getenv(name)
-		}
-	}
-	return env
 }

@@ -3,6 +3,7 @@ package settings
 import (
 	"os"
 
+	"github.com/svnbjrn/spoon/internal/config"
 	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/store"
 )
@@ -26,4 +27,13 @@ func CollectHostFacts() HostFacts {
 		facts.Home = home
 	}
 	return facts
+}
+
+func configPresence() string {
+	if _, err := os.Stat(config.SystemPath()); err == nil {
+		return "present"
+	} else if os.IsNotExist(err) {
+		return "absent"
+	}
+	return "unreadable"
 }

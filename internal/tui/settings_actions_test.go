@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/svnbjrn/spoon/internal/config"
+	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/forge"
 	"github.com/svnbjrn/spoon/internal/setupcheck"
 	"github.com/svnbjrn/spoon/internal/tui/settings"
@@ -47,6 +48,7 @@ func TestRootDeliversEverySettingsActionWithoutHTTP(t *testing.T) {
 	t.Setenv("SPOON_FASTEMBED_CACHE", "")
 	path := filepath.Join(t.TempDir(), "config.json")
 	var copied string
+	voyageCalls := 0
 	deps := settings.ActionDeps{
 		HTTPTransport: rootFailingRoundTripper{t},
 		Provider: func(_ context.Context, _ setupcheck.ProviderInput, transport http.RoundTripper) (forge.AuthInfo, error) {
@@ -54,6 +56,13 @@ func TestRootDeliversEverySettingsActionWithoutHTTP(t *testing.T) {
 				t.Fatal("provider did not receive fail-closed transport")
 			}
 			return forge.AuthInfo{Provider: forge.ProviderGitHub, Tier: forge.AuthCLI}, nil
+		},
+		VoyageStatus: func(_ context.Context, _ config.EffectiveConfig, _ embed.ResponseCache, _ map[string]string, client *http.Client) (embed.VoyageConfig, bool, error) {
+			voyageCalls++
+			if _, ok := client.Transport.(rootFailingRoundTripper); !ok {
+				t.Fatalf("Voyage status transport = %T, want root fail-closed transport", client.Transport)
+			}
+			return embed.VoyageConfig{HTTP: client}, false, nil
 		},
 		StoreOpen:     func() (setupcheck.Store, error) { return rootActionStore{}, nil },
 		Clipboard:     func(value string) error { copied = value; return nil },
@@ -108,5 +117,8 @@ func TestRootDeliversEverySettingsActionWithoutHTTP(t *testing.T) {
 	}
 	if copied != path {
 		t.Fatalf("clipboard = %q, want %q", copied, path)
+	}
+	if voyageCalls != 1 {
+		t.Fatalf("Voyage status calls = %d, want 1", voyageCalls)
 	}
 }
