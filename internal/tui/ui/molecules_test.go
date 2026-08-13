@@ -52,6 +52,42 @@ func TestFocusedButtonRemainsDistinctWithoutColor(t *testing.T) {
 	}
 }
 
+func TestStatCardAndSheetBoundPositiveNarrowWidths(t *testing.T) {
+	ctx := atomContext(t, "no-color", true)
+	for _, width := range []int{1, 2, 3} {
+		for name, got := range map[string]string{
+			"stat-card": StatCard(ctx, "界e\u0301long-label", "very-long-value", true, width),
+			"sheet":     Sheet(ctx, "界e\u0301long-title", "very-long-subtitle", width),
+		} {
+			if measured := lipgloss.Width(ansi.Strip(got)); measured > width {
+				t.Fatalf("%s width %d = %d, want <= %d: %q", name, width, measured, width, got)
+			}
+		}
+	}
+	if got := Sheet(ctx, "title", "subtitle", 0); got == "" {
+		t.Fatal("uninitialized width must preserve the sheet for legacy direct-model tests")
+	}
+}
+
+func TestNavBarGoldenRepresentationIsDiffSafeAndRawWidthExact(t *testing.T) {
+	ctx := atomContext(t, "no-color", true)
+	raw := NavBar(ctx, "owner/repo | 2 forks", 24)
+	if got := lipgloss.Width(raw); got != 24 {
+		t.Fatalf("raw NavBar width = %d, want 24: %q", got, raw)
+	}
+	if strings.HasSuffix(moleculeCases(ctx)["nav-bar"], " ") {
+		t.Fatal("NavBar golden representation has trailing whitespace")
+	}
+}
+
+func TestSheetUsesGlyphProfileForDash(t *testing.T) {
+	ctx := atomContext(t, "no-color", true)
+	got := Sheet(ctx, "spoon", ctx.Glyph(theme.EmDash)+" help", 24)
+	if strings.Contains(got, "—") || !strings.Contains(got, " - help") {
+		t.Fatalf("ASCII sheet does not use dash fallback: %q", got)
+	}
+}
+
 func TestOverlayConsumesEventsAndRestoresFocusOnce(t *testing.T) {
 	var overlay Overlay
 	overlay.Open(ModalOverlay, "table-row-3")
@@ -87,8 +123,8 @@ func moleculeCases(ctx theme.Context) map[string]string {
 		"table-header":         TableHeader(ctx, "HEAT  REPOSITORY", width),
 		"table-row-selected":   TableRow(ctx, "> 88  repo", true, width),
 		"table-row-unselected": TableRow(ctx, "  88  repo", false, width),
-		"nav-bar":              NavBar(ctx, "owner/repo | 2 forks", width),
-		"sheet":                Sheet(ctx, "spoon", "— help", width),
+		"nav-bar":              strings.TrimRight(NavBar(ctx, "owner/repo | 2 forks", width), " "),
+		"sheet":                Sheet(ctx, "spoon", ctx.Glyph(theme.EmDash)+" help", width),
 		"modal":                Modal(ctx, "Confirm", "Affects every user", width),
 	}
 }

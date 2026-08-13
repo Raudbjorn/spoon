@@ -225,18 +225,25 @@ type Model struct {
 	queryScorer embed.QueryScorer
 }
 
-// overlayFocus is the main model's active focus identity. The overlay leaves
-// background state untouched, but captures it explicitly so closing has one
-// deterministic restoration path when settings later adds focused controls.
+// overlayFocus is the main model's active focus identity. Fork views retain
+// their selected fork ID, not merely the transient list index, so an async
+// resort cannot make Esc restore focus to a different fork. Control is the
+// extensible settings-focus identity for future non-fork overlays.
 type overlayFocus struct {
-	view   viewState
-	cursor int
+	view    viewState
+	cursor  int
+	forkID  string
+	control string
 }
 
 func (m *Model) openOverlay(kind ui.OverlayKind, title string) {
-	m.overlayFocus = overlayFocus{view: m.view, cursor: m.cursor}
+	focus := overlayFocus{view: m.view, cursor: m.cursor}
+	if (m.view == viewTable || m.view == viewDetail) && m.cursor >= 0 && m.cursor < len(m.forks) {
+		focus.forkID = m.forks[m.cursor].Fork.ID
+	}
+	m.overlayFocus = focus
 	m.overlayTitle = title
-	m.overlay.Open(kind, fmt.Sprintf("%d:%d", m.view, m.cursor))
+	m.overlay.Open(kind, fmt.Sprintf("%d:%s", m.view, focus.forkID))
 }
 
 func (m *Model) restoreOverlayFocus(token string) {
@@ -244,7 +251,11 @@ func (m *Model) restoreOverlayFocus(token string) {
 		return
 	}
 	m.view = m.overlayFocus.view
-	m.cursor = m.overlayFocus.cursor
+	if m.overlayFocus.forkID != "" {
+		m.restoreCursorByID(m.overlayFocus.forkID)
+	} else {
+		m.cursor = m.overlayFocus.cursor
+	}
 	m.overlayTitle = ""
 }
 

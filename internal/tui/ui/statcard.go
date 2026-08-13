@@ -13,10 +13,13 @@ func StatCard(ctx theme.Context, label, value string, accent bool, width int) st
 	if accent {
 		variant = TextDefault
 	}
-	renderedValue := Text(ctx, variant, value, width)
-	available := width - 1
-	if available > 0 {
-		available -= lipgloss.Width(value)
+	if width <= 0 {
+		return Text(ctx, variant, value, width) + " " + Text(ctx, TextMuted, label, width)
 	}
-	return renderedValue + " " + Text(ctx, TextMuted, label, available)
+	renderedValue := Text(ctx, variant, value, width)
+	remaining := width - lipgloss.Width(renderedValue) - 1
+	if remaining <= 0 {
+		return renderedValue
+	}
+	return renderedValue + " " + Text(ctx, TextMuted, label, remaining)
 }
