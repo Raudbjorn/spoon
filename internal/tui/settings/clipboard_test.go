@@ -8,21 +8,25 @@ import (
 	"github.com/svnbjrn/spoon/internal/config"
 )
 
-func TestSettingsClipboardCopiesOrdinaryAndRefusesEveryCredential(t *testing.T) {
+func TestSettingsClipboardCopiesNonCredentialIdleAndEditor(t *testing.T) {
 	copied := ""
-	m := New(&config.Config{Forge: config.ForgeConfig{Provider: "github", Host: "forge.example"}, GitHub: config.GitHubConfig{Tokens: []string{"secret"}}}, t.TempDir()+"/config.json", nil).WithClipboard(func(value string) error { copied = value; return nil })
+	m := New(&config.Config{Forge: config.ForgeConfig{Provider: "github"}}, t.TempDir()+"/config.json", nil).WithClipboard(func(value string) error {
+		copied = value
+		return nil
+	})
 	m.width, m.height = 80, 24
-	m.section = 0
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
-	m = updated.(Model)
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+	m = next.(Model)
 	if copied != "github" || m.alert != "copied selected value" {
-		t.Fatalf("ordinary copy: %q / %q", copied, m.alert)
+		t.Fatalf("idle copy: %q / %q", copied, m.alert)
 	}
-	m.section, m.focus, copied = 1, 0, ""
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
-	m = updated.(Model)
-	if copied != "" || m.alert != ErrSecretClipboard.Error() {
-		t.Fatalf("credential copy: %q / %q", copied, m.alert)
+	copied = ""
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	m = next.(Model)
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+	m = next.(Model)
+	if copied != "github" || m.alert != "copied selected value" {
+		t.Fatalf("editor copy: %q / %q", copied, m.alert)
 	}
 }
 

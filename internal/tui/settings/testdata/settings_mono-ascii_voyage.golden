@@ -6,7 +6,7 @@ Layer: user  Path: /settings-golden/config.json
 +------------------------------------------------------------------------------+
 | > Voyage disabled: false [DEFAULT]                                           |
 | Clearing this can enable an external per-token billed service.               |
-|   Voyage API key file:  [DEFAULT]                                            |
+|   Voyage API key file: ************ [FILE]                                   |
 |   Embed model: voyage-code-3 [DEFAULT]                                       |
 |   Rerank model: rerank-2.5 [DEFAULT]                                         |
 |   Output dimension: 1024 [DEFAULT]                                           |

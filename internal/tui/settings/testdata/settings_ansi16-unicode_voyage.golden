@@ -6,7 +6,7 @@
 ├──────────────────────────────────────────────────────────────────────────────┤
 │ [1;37m> [7mV[0moyage disabled: false [DEFAULT][0m                                           │
 │ [2;90mClearing this can enable an external per-token billed service.[0m               │
-│ [37m  Voyage API key file:  [DEFAULT][0m                                            │
+│ [37m  Voyage API key file: ************ [FILE][0m                                   │
 │ [37m  Embed model: voyage-code-3 [DEFAULT][0m                                       │
 │ [37m  Rerank model: rerank-2.5 [DEFAULT][0m                                         │
 │ [37m  Output dimension: 1024 [DEFAULT][0m                                           │

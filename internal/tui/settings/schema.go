@@ -36,8 +36,6 @@ const (
 type Field struct {
 	Key, Label, Help string
 	Section          Section
-	Secret           bool
-	Credential       bool
 	Editable         bool
 	Consequence      Consequence
 	Environment      []string
@@ -45,6 +43,10 @@ type Field struct {
 	Set              func(*config.Config, string) error
 	Default          string
 }
+
+// IsCredential delegates credential classification to config's permission
+// registry; Settings does not maintain a second list.
+func (f Field) IsCredential() bool { return config.IsCredentialKey(f.Key) }
 
 func stringField(key, label string, section Section, help, def string, get func(*config.Config) string, set func(*config.Config, string)) Field {
 	return Field{Key: key, Label: label, Section: section, Help: help, Editable: true, Default: def, Get: get, Set: func(c *config.Config, value string) error { set(c, value); return nil }}
@@ -66,7 +68,7 @@ var Registry = []Field{
 	{Key: "version", Label: "Schema version", Section: HostSection, Help: "Written by Spoon; version 2 introduces UI preferences.", Default: strconv.Itoa(config.CurrentVersion), Get: func(c *config.Config) string { return strconv.Itoa(c.Version) }},
 	stringField("forge.provider", "Provider", ForgeSection, "github, gitlab, or empty to auto-detect", "", func(c *config.Config) string { return c.Forge.Provider }, func(c *config.Config, v string) { c.Forge.Provider = strings.ToLower(strings.TrimSpace(v)) }),
 	stringField("forge.host", "Host", ForgeSection, "Self-hosted GitHub or GitLab hostname.", "", func(c *config.Config) string { return c.Forge.Host }, func(c *config.Config, v string) { c.Forge.Host = strings.TrimSpace(v) }),
-	{Key: "github.tokens", Label: "GitHub tokens", Section: GitHubSection, Help: "One token per line; values are always masked.", Secret: true, Credential: true, Editable: true, Get: func(c *config.Config) string { return strings.Join(c.GitHub.Tokens, "\n") }, Set: func(c *config.Config, v string) error {
+	{Key: "github.tokens", Label: "GitHub tokens", Section: GitHubSection, Help: "One token per line; values are always masked.", Editable: true, Get: func(c *config.Config) string { return strings.Join(c.GitHub.Tokens, "\n") }, Set: func(c *config.Config, v string) error {
 		values := strings.Split(v, "\n")
 		c.GitHub.Tokens = nonEmpty(values)
 		return nil
@@ -80,8 +82,8 @@ var Registry = []Field{
 		return nil
 	}},
 	boolField("github.proxy.enabled", "Proxy enabled", ProxySection, "Enable ProxyScrape transport routing.", NoConsequence, func(c *config.Config) bool { return c.GitHub.Proxy.Enabled }, func(c *config.Config, v bool) { c.GitHub.Proxy.Enabled = v }),
-	{Key: "github.proxy.apiKeyFile", Label: "Proxy API key file", Section: ProxySection, Help: "0600 credential file path.", Credential: true, Editable: true, Get: func(c *config.Config) string { return c.GitHub.Proxy.APIKeyFile }, Set: func(c *config.Config, v string) error { c.GitHub.Proxy.APIKeyFile = strings.TrimSpace(v); return nil }},
-	{Key: "github.proxy.staticFile", Label: "Proxy static file", Section: ProxySection, Help: "0600 credential file path.", Credential: true, Editable: true, Get: func(c *config.Config) string { return c.GitHub.Proxy.StaticFile }, Set: func(c *config.Config, v string) error { c.GitHub.Proxy.StaticFile = strings.TrimSpace(v); return nil }},
+	{Key: "github.proxy.apiKeyFile", Label: "Proxy API key file", Section: ProxySection, Help: "0600 credential file path.", Editable: true, Get: func(c *config.Config) string { return c.GitHub.Proxy.APIKeyFile }, Set: func(c *config.Config, v string) error { c.GitHub.Proxy.APIKeyFile = strings.TrimSpace(v); return nil }},
+	{Key: "github.proxy.staticFile", Label: "Proxy static file", Section: ProxySection, Help: "0600 credential file path.", Editable: true, Get: func(c *config.Config) string { return c.GitHub.Proxy.StaticFile }, Set: func(c *config.Config, v string) error { c.GitHub.Proxy.StaticFile = strings.TrimSpace(v); return nil }},
 	{Key: "github.proxy.whitelistPublicIp", Label: "Whitelist public IP", Section: ProxySection, Help: "true, false, or empty to leave unset.", Editable: true, Get: func(c *config.Config) string {
 		if c.GitHub.Proxy.WhitelistPublicIP == nil {
 			return ""
@@ -120,7 +122,7 @@ var Registry = []Field{
 		return nil
 	}},
 	boolField("embedder.voyage.disabled", "Voyage disabled", VoyageSection, "Clearing this can enable an external per-token billed service.", Billing, func(c *config.Config) bool { return c.Embedder.Voyage.Disabled }, func(c *config.Config, v bool) { c.Embedder.Voyage.Disabled = v }),
-	{Key: "embedder.voyage.apiKeyFile", Label: "Voyage API key file", Section: VoyageSection, Help: "0600 credential file path; the key itself is not shown.", Credential: true, Editable: true, Consequence: Billing, Get: func(c *config.Config) string { return c.Embedder.Voyage.APIKeyFile }, Set: func(c *config.Config, v string) error {
+	{Key: "embedder.voyage.apiKeyFile", Label: "Voyage API key file", Section: VoyageSection, Help: "0600 credential file path; the key itself is not shown.", Editable: true, Consequence: Billing, Get: func(c *config.Config) string { return c.Embedder.Voyage.APIKeyFile }, Set: func(c *config.Config, v string) error {
 		c.Embedder.Voyage.APIKeyFile = strings.TrimSpace(v)
 		return nil
 	}},
@@ -147,6 +149,17 @@ var Registry = []Field{
 		c.UI.Glyphs = strings.ToLower(strings.TrimSpace(v))
 		return nil
 	}},
+}
+
+// Populate display metadata from the same typed descriptors used by runtime
+// resolution; Field owns only TUI editing/rendering behavior.
+func init() {
+	for i := range Registry {
+		if setting, ok := config.SettingByKey(Registry[i].Key); ok {
+			Registry[i].Default = setting.Default
+			Registry[i].Environment = append([]string(nil), setting.Environment...)
+		}
+	}
 }
 
 // DocumentedEnvironment is derived from configReadme, the source emitted next

@@ -6,10 +6,10 @@
 ├──────────────────────────────────────────────────────────────────────────────┤
 │ [1;37m> [7mP[0mroxy enabled: false [DEFAULT][0m                                             │
 │ [2;90mEnable ProxyScrape transport routing.[0m                                        │
-│ [37m  Proxy API key file:  [DEFAULT][0m                                             │
-│ [37m  Proxy static file:  [DEFAULT][0m                                              │
-│ [37m  Whitelist public IP:  [DEFAULT][0m                                            │
-│ [37m  Proxy cache TTL:  [DEFAULT][0m                                                │
+│ [37m  Proxy API key file: ************ [FILE][0m                                    │
+│ [37m  Proxy static file: ************ [FILE][0m                                     │
+│ [37m  Whitelist public IP: false [DEFAULT][0m                                       │
+│ [37m  Proxy cache TTL: 1h [DEFAULT][0m                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 [2;90m[p] Probe provider credentials  [o] Check store  [f] Check FastEmbed  [v] Check[0m
 [37;40m[tab][0m section [37;40m[enter][0m edit [37;40m[esc][0m back

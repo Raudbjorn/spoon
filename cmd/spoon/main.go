@@ -16,6 +16,7 @@ import (
 	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/gitlab"
 	"github.com/svnbjrn/spoon/internal/heat"
+	"github.com/svnbjrn/spoon/internal/setupcheck"
 	"github.com/svnbjrn/spoon/internal/store"
 	"github.com/svnbjrn/spoon/internal/tui"
 	"github.com/svnbjrn/spoon/internal/tui/settings"
@@ -36,7 +37,8 @@ func main() {
 
 	// Subcommand dispatch: "spoon threads <pr-ref> ..."
 	if len(os.Args) >= 2 && os.Args[1] == "threads" {
-		os.Exit(runThreads(os.Args[2:]))
+		effective := config.ResolveEffectiveConfig(cfg, nil, config.EnvironmentSnapshot())
+		os.Exit(runThreadsWithEffective(os.Args[2:], effective))
 	}
 
 	// Subcommand dispatch: "spoon setup ..."
@@ -178,15 +180,21 @@ func main() {
 		}
 	}
 
-	explicitForgeFlag, explicitForgeHost := forgeFlag, forgeHost
-	if forgeFlag == "" && cfg != nil {
-		forgeFlag = cfg.Forge.Provider
+	settingsFlags := map[string]string{}
+	if forgeFlag != "" {
+		settingsFlags["forge.provider"] = forgeFlag
 	}
-	if forgeHost == "" && cfg != nil {
-		forgeHost = cfg.Forge.Host
+	if forgeHost != "" {
+		settingsFlags["forge.host"] = forgeHost
 	}
+	if noColor {
+		settingsFlags["ui.color"] = "no-color"
+	}
+	env := config.EnvironmentSnapshot()
+	effective := config.ResolveEffectiveConfig(cfg, settingsFlags, env)
+	forgeFlag, forgeHost = effective.Forge.Provider.Value, effective.Forge.Host.Value
 
-	tuiContext, err := resolveTUIContextWithNoColor(cfg, noColor)
+	tuiContext, err := resolveTUIContextWithNoColor(effective, noColor)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -202,8 +210,7 @@ func main() {
 		clusterEpsilon = 0.55
 	}
 
-	// Detect provider from repo URL and flags
-	provider, auth, repoArg, err := createProvider(ctx, repo, forgeFlag, forgeHost)
+	provider, auth, repoArg, err := createProvider(ctx, repo, forgeFlag, forgeHost, effective)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -228,20 +235,10 @@ func main() {
 	}
 	defer db.Close()
 
-	settingsFlags := map[string]string{}
-	if explicitForgeFlag != "" {
-		settingsFlags["forge.provider"] = explicitForgeFlag
-	}
-	if explicitForgeHost != "" {
-		settingsFlags["forge.host"] = explicitForgeHost
-	}
-	if noColor {
-		settingsFlags["ui.color"] = "no-color"
-	}
-	settingsModel := settings.NewFromLayer(boot.Layer, db).WithFlags(settingsFlags)
+	settingsModel := settings.NewFromLayer(boot.Layer, db).WithFlags(settingsFlags).WithEffective(effective).WithActionDeps(settingsActionDeps(env))
 	m := tui.NewModelWithCluster(provider, auth, repoArg, refresh, tuiClusterOpts).
 		WithHeatWeights(heatWeights).WithMaxTier(maxTier).WithStore(db).
-		WithQueryScorer(tuiQueryScorer(db, cfg)).WithTheme(tuiContext).WithSettings(settingsModel)
+		WithQueryScorer(tuiQueryScorer(db, effective, env)).WithTheme(tuiContext).WithSettings(settingsModel)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 
 	if _, err := p.Run(); err != nil {
@@ -250,16 +247,22 @@ func main() {
 	}
 }
 
-// tuiQueryScorer returns the scorer the `R` intent ranking uses from the
-// startup-resolved configuration snapshot. Reusing Bootstrap's exact result
-// prevents a second load from silently selecting a different layer than the
-// runtime and settings editor.
-func tuiQueryScorer(db *store.Store, cfg *config.Config) embed.QueryScorer {
-	var fileCfg config.VoyageConfig
-	if cfg != nil {
-		fileCfg = cfg.Embedder.Voyage
+func settingsActionDeps(env map[string]string) settings.ActionDeps {
+	return settings.ActionDeps{
+		Provider: setupcheck.LocalProviderProbe,
+		StoreOpen: func() (setupcheck.Store, error) {
+			opened, err := store.OpenDefault()
+			return opened, err
+		},
+		Clipboard:   tui.CopyToClipboard,
+		Environment: env,
 	}
-	voyageCfg, active, err := embed.ResolveVoyageConfig(context.Background(), fileCfg, false, db)
+}
+
+// tuiQueryScorer returns the scorer the `R` intent ranking uses from the
+// startup-owned effective configuration result.
+func tuiQueryScorer(db *store.Store, effective config.EffectiveConfig, env map[string]string) embed.QueryScorer {
+	voyageCfg, active, err := embed.ResolveVoyageEffective(context.Background(), effective, false, db, env)
 	if err != nil || !active {
 		return nil
 	}
@@ -282,8 +285,7 @@ func backendFor(fullMDG bool) string {
 // createProvider detects the forge provider from the repo URL and flags,
 // creates the appropriate Forge implementation, and returns it with auth info.
 // repoArg is returned as the owner/repo string to pass to TUI (without host prefix).
-func createProvider(ctx context.Context, repo, forgeFlag, forgeHost string) (forge.Forge, forge.AuthInfo, string, error) {
-	// Determine provider
+func createProvider(ctx context.Context, repo, forgeFlag, forgeHost string, effective config.EffectiveConfig) (forge.Forge, forge.AuthInfo, string, error) {
 	var forceProvider forge.Provider
 	switch forgeFlag {
 	case "gitlab":
@@ -294,7 +296,6 @@ func createProvider(ctx context.Context, repo, forgeFlag, forgeHost string) (for
 		forceProvider = forge.ProviderGitea
 	}
 
-	// If no repo given, default to GitHub provider for interactive mode
 	if repo == "" {
 		if forceProvider == forge.ProviderGitea {
 			host := forgeHost
@@ -317,8 +318,7 @@ func createProvider(ctx context.Context, repo, forgeFlag, forgeHost string) (for
 			client := gitlab.NewClient(host, token)
 			return gitlab.NewProvider(client, auth), auth, "", nil
 		}
-		// Default: GitHub
-		client, status, err := gh.CheckAuthConfigured(0)
+		client, status, err := gh.CheckAuthWithEffective(effective)
 		if err != nil {
 			return nil, forge.AuthInfo{}, "", fmt.Errorf("GitHub auth: %w", err)
 		}
@@ -327,18 +327,13 @@ func createProvider(ctx context.Context, repo, forgeFlag, forgeHost string) (for
 		return provider, auth, "", nil
 	}
 
-	// Parse repo URL to detect provider
 	parsed, err := forge.Parse(forge.Config{
-		RepoURL:       repo,
-		ForceProvider: forceProvider,
-		ForgeHost:     forgeHost,
+		RepoURL: repo, ForceProvider: forceProvider, ForgeHost: forgeHost,
 	})
 	if err != nil {
 		return nil, forge.AuthInfo{}, "", err
 	}
-
 	repoArg := parsed.Owner + "/" + parsed.Repo
-
 	switch parsed.Provider {
 	case forge.ProviderGitLab:
 		auth, err := gitlab.DetectAuth(ctx, parsed.Host)
@@ -348,20 +343,17 @@ func createProvider(ctx context.Context, repo, forgeFlag, forgeHost string) (for
 		token := gitlab.TokenFromAuth(ctx, parsed.Host)
 		client := gitlab.NewClient(parsed.Host, token)
 		return gitlab.NewProvider(client, auth), auth, repoArg, nil
-
 	case forge.ProviderGitHub:
-		client, status, err := gh.CheckAuthConfigured(0)
+		client, status, err := gh.CheckAuthWithEffective(effective)
 		if err != nil {
 			return nil, forge.AuthInfo{}, "", fmt.Errorf("GitHub auth: %w", err)
 		}
 		provider := gh.NewGHProvider(client, status)
 		auth, _ := provider.Auth(ctx)
 		return provider, auth, repoArg, nil
-
 	case forge.ProviderGitea:
 		auth, client := gitea.DetectAuth(ctx, parsed.Host)
 		return gitea.NewProvider(client, auth, parsed.Host), auth, repoArg, nil
-
 	default:
 		return nil, forge.AuthInfo{}, "", forge.ErrUnsupportedProvider
 	}

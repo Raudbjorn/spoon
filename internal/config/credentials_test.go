@@ -1,24 +1,42 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 )
 
-func TestConfigContainsCredentialsForEveryCredentialField(t *testing.T) {
-	cases := []string{
-		`{"github":{"tokens":["token"]}}`,
-		`{"github":{"proxy":{"apiKeyFile":"/tmp/key"}}}`,
-		`{"embedder":{"voyage":{"apiKeyFile":"/tmp/key"}}}`,
-	}
-	for _, raw := range cases {
-		path := filepath.Join(t.TempDir(), "config.json")
-		if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if !configContainsCredentials(path) {
-			t.Fatalf("credential fixture not detected: %s", raw)
-		}
+func TestConfigContainsCredentialsForEveryCredentialDescriptor(t *testing.T) {
+	for _, descriptor := range CredentialDescriptors() {
+		t.Run(descriptor.Key, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			cfg := &Config{}
+			descriptor.Set(cfg, "sentinel-"+descriptor.Key)
+			data, err := json.Marshal(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if !configContainsCredentials(path) {
+				t.Fatalf("credential descriptor %q was not detected", descriptor.Key)
+			}
+			descriptor.Set(cfg, "")
+			if ContainsCredentials(cfg) {
+				t.Fatalf("credential descriptor %q remained after clear", descriptor.Key)
+			}
+			data, err = json.Marshal(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if configContainsCredentials(path) {
+				t.Fatalf("credential descriptor %q remained detected after clear", descriptor.Key)
+			}
+		})
 	}
 }

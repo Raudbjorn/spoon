@@ -3,13 +3,16 @@ package settings
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/svnbjrn/spoon/internal/config"
 	"github.com/svnbjrn/spoon/internal/embed"
+	"github.com/svnbjrn/spoon/internal/forge"
 	"github.com/svnbjrn/spoon/internal/setupcheck"
 )
 
@@ -38,8 +41,37 @@ var Actions = []Action{
 	{ActionFastEmbedCheck, "f", "Check FastEmbed", "Validates the local FastEmbed configuration without downloading a model."},
 	{ActionVoyageStatus, "v", "Check Voyage", "Resolves local Voyage credentials without HTTP or billed work."},
 	{ActionRewriteReadme, "r", "Rewrite README", "Regenerates configuration documentation beside the loaded layer."},
-	{ActionCopyConfigPath, "c", "Reveal config path", "Displays the loaded configuration path for terminal copy."},
+	{ActionCopyConfigPath, "c", "Copy config path", "Copies the loaded configuration path to the clipboard."},
 	{ActionSave, "s", "Save configuration", "Validates then atomically writes the loaded layer."},
+}
+
+// ActionDeps owns every external boundary used by settings actions. Provider
+// and store checks are intentionally required injections: settings must not
+// silently invent a network-capable fallback.
+type ActionDeps struct {
+	Provider      setupcheck.ProviderProbe
+	StoreOpen     setupcheck.StoreOpen
+	Clipboard     func(string) error
+	Save          func(string, *config.Config) error
+	RewriteReadme func(string) error
+	HTTPTransport http.RoundTripper
+	Environment   map[string]string
+}
+
+func (d ActionDeps) normalized() ActionDeps {
+	if d.Save == nil {
+		d.Save = Save
+	}
+	if d.RewriteReadme == nil {
+		d.RewriteReadme = config.WriteReadme
+	}
+	if d.HTTPTransport == nil {
+		d.HTTPTransport = setupcheck.DenyHTTPTransport{}
+	}
+	if d.Environment == nil {
+		d.Environment = actionEnvironment()
+	}
+	return d
 }
 
 func ActionByID(id ActionID) (Action, bool) {
@@ -69,9 +101,10 @@ type actionMsg struct {
 func (m *Model) startAction(id ActionID) tea.Cmd {
 	m.busy = true
 	m.busyAction = id
-	cfg, path, cache, flags := m.Config, m.Path, m.Cache, m.Flags
+	snapshot := *m
+	deps := m.deps.normalized()
 	action := func() tea.Msg {
-		text, err := runActionWithFlags(id, cfg, path, cache, flags)
+		text, err := runActionWithDeps(id, &snapshot, deps)
 		return actionMsg{id: id, text: text, err: err}
 	}
 	return tea.Batch(action, spinnerTick())
@@ -83,69 +116,128 @@ func spinnerTick() tea.Cmd {
 	return tea.Tick(100*time.Millisecond, func(time.Time) tea.Msg { return spinnerMsg{} })
 }
 
-// runAction keeps every settings operation local. In particular it does not
-// construct a Voyage client or call a provider endpoint; status is a safe
-// resolution diagnostic rather than a billable connectivity test.
+// runAction is retained for narrow action tests. Production dispatch goes
+// through Model.startAction, which snapshots the injected dependencies before
+// scheduling the command.
 func runAction(id ActionID, cfg *config.Config, path string, cache embed.ResponseCache) (string, error) {
-	return runActionWithFlags(id, cfg, path, cache, nil)
+	return runActionWithDeps(id, &Model{Config: cfg, Path: path, Cache: cache}, ActionDeps{}.normalized())
 }
 
 func runActionWithFlags(id ActionID, cfg *config.Config, path string, cache embed.ResponseCache, flags map[string]string) (string, error) {
+	return runActionWithDeps(id, &Model{Config: cfg, Path: path, Cache: cache, Flags: flags}, ActionDeps{}.normalized())
+}
+
+// runActionWithDeps keeps every settings operation local. In particular it
+// cannot construct a Voyage client, and provider probes receive a fail-closed
+// transport rather than a default HTTP client.
+func runActionWithDeps(id ActionID, m *Model, deps ActionDeps) (string, error) {
+	deps = deps.normalized()
 	switch id {
 	case ActionProviderProbe:
-		if cfg == nil {
+		if m.Config == nil {
 			return "Provider unavailable: configuration layer is disabled", nil
 		}
-		if err := cfg.Validate(); err != nil {
+		if err := m.Config.Validate(); err != nil {
 			return "", err
 		}
-		if os.Getenv("GH_TOKEN") != "" || os.Getenv("GITHUB_TOKEN") != "" || os.Getenv("GITLAB_TOKEN") != "" || len(cfg.GitHub.Tokens) > 0 {
-			return "Provider credentials configured from config or environment (no HTTP request made)", nil
+		result, err := setupcheck.CheckProvider(context.Background(), actionProviderInput(m), deps.Provider, deps.HTTPTransport)
+		if err != nil {
+			return "", err
 		}
-		return "Provider credentials not configured (no HTTP request made)", nil
+		if result.Ready {
+			return fmt.Sprintf("%s provider credentials configured (no HTTP request made)", result.Provider.String()), nil
+		}
+		return fmt.Sprintf("%s provider credentials not configured (no HTTP request made)", result.Provider.String()), nil
 	case ActionStoreCheck:
-		if cache == nil {
-			return "Store/cache is unavailable", nil
-		}
-		if err := cache.VoyageCacheWritable(context.Background()); err != nil {
-			return "", fmt.Errorf("store/cache is not writable: %w", err)
+		if err := setupcheck.CheckStore(context.Background(), deps.StoreOpen); err != nil {
+			return "", err
 		}
 		return "Store/cache is available and writable", nil
 	case ActionFastEmbedCheck:
-		if cfg == nil {
+		if m.Config == nil {
 			return "FastEmbed unavailable: configuration layer is disabled", nil
 		}
-		effective := effectiveEmbedder(cfg, flags)
-		if err := setupcheck.ValidateFastEmbed(effective); err != nil {
+		if _, err := setupcheck.CheckFastEmbed(effectiveEmbedder(m)); err != nil {
 			return "", err
 		}
 		return "FastEmbed configuration is valid (no model download made)", nil
 	case ActionVoyageStatus:
-		return voyageDiagnostic(cfg, cache)
+		return voyageDiagnosticForModel(m, deps)
 	case ActionRewriteReadme:
-		if path == "" {
+		if m.Path == "" {
 			return "", fmt.Errorf("configuration path is unavailable")
 		}
-		if err := config.WriteReadme(path); err != nil {
+		if err := deps.RewriteReadme(m.Path); err != nil {
 			return "", err
 		}
 		return "Configuration README rewritten", nil
 	case ActionCopyConfigPath:
-		if path == "" {
+		if m.Path == "" {
 			return "", fmt.Errorf("configuration path is unavailable")
 		}
-		return "Config path: " + path, nil
+		if deps.Clipboard == nil {
+			return "", fmt.Errorf("clipboard is unavailable")
+		}
+		if err := deps.Clipboard(m.Path); err != nil {
+			return "", err
+		}
+		return "Config path copied to clipboard", nil
 	case ActionSave:
-		if cfg == nil {
+		if m.Config == nil {
 			return "", fmt.Errorf("configuration layer is disabled")
 		}
-		if err := Save(path, cfg); err != nil {
+		if err := deps.Save(m.Path, m.Config); err != nil {
 			return "", err
 		}
 		return "saved", nil
 	default:
 		return "", fmt.Errorf("unknown settings action %q", id)
 	}
+}
+
+func actionProviderInput(m *Model) setupcheck.ProviderInput {
+	if m.Effective != nil {
+		provider := forge.ProviderGitHub
+		configuredToken := m.Effective.GitHub.Tokens.Value != ""
+		switch strings.ToLower(m.Effective.Forge.Provider.Value) {
+		case "gitlab":
+			provider = forge.ProviderGitLab
+			configuredToken = false
+		case "github", "":
+		default:
+			configuredToken = false
+		}
+		return setupcheck.ProviderInput{Provider: provider, Host: m.Effective.Forge.Host.Value, ConfiguredToken: configuredToken}
+	}
+	provider, host, configuredToken := setupcheck.ActiveProvider(m.Config)
+	if value := strings.ToLower(m.Flags["forge.provider"]); value != "" {
+		switch value {
+		case "github":
+			provider = forge.ProviderGitHub
+			configuredToken = len(m.Config.GitHub.Tokens) > 0
+		case "gitlab":
+			provider = forge.ProviderGitLab
+			configuredToken = false
+		}
+	}
+	if value := m.Flags["forge.host"]; value != "" {
+		host = value
+	}
+	return setupcheck.ProviderInput{Provider: provider, Host: host, ConfiguredToken: configuredToken}
+}
+
+func voyageDiagnosticForModel(m *Model, deps ActionDeps) (string, error) {
+	if m.Effective == nil {
+		return voyageDiagnostic(m.Config, m.Cache)
+	}
+	_, active, err := embed.ResolveVoyageEffective(context.Background(), *m.Effective, false, m.Cache, deps.Environment)
+	if err != nil {
+		return "Voyage configured but unusable", err
+	}
+	if active {
+		return "Voyage configured and active", nil
+	}
+	return "Voyage not configured", nil
 }
 
 func voyageDiagnostic(cfg *config.Config, cache embed.ResponseCache) (string, error) {
@@ -164,17 +256,24 @@ func voyageDiagnostic(cfg *config.Config, cache embed.ResponseCache) (string, er
 	return "Voyage not configured", nil
 }
 
-func effectiveEmbedder(cfg *config.Config, flags map[string]string) config.EmbedderConfig {
-	effective := config.ResolveEffectiveConfig(cfg, flags, actionEnvironment())
+func effectiveEmbedder(m *Model) config.EmbedderConfig {
+	if m.Effective != nil {
+		out := config.EmbedderConfig{
+			Backend:  m.Effective.Backend.Value,
+			Model:    m.Effective.FastEmbed.Model.Value,
+			CacheDir: m.Effective.FastEmbed.CacheDir.Value,
+		}
+		out.MaxLength, _ = strconv.Atoi(m.Effective.FastEmbed.MaxLength.Value)
+		out.BatchSize, _ = strconv.Atoi(m.Effective.FastEmbed.BatchSize.Value)
+		return out
+	}
+	effective := config.ResolveEffectiveConfig(m.Config, m.Flags, actionEnvironment())
 	out := config.EmbedderConfig{}
 	out.Backend = effective.Value("embedder.backend").Value
 	out.Model = effective.Value("embedder.model").Value
 	out.CacheDir = effective.Value("embedder.cacheDir").Value
 	out.MaxLength, _ = strconv.Atoi(effective.Value("embedder.maxLength").Value)
 	out.BatchSize, _ = strconv.Atoi(effective.Value("embedder.batchSize").Value)
-	if out.BatchSize < 0 {
-		out.BatchSize = 0
-	}
 	return out
 }
 

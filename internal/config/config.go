@@ -166,13 +166,7 @@ func Load(path string) (*Config, error) {
 	if err := c.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config %s: %w", path, err)
 	}
-	if err := validateCredentialFile(c.GitHub.Proxy.APIKeyFile, "github.proxy.apiKeyFile"); err != nil {
-		return nil, fmt.Errorf("invalid config %s: %w", path, err)
-	}
-	if err := validateCredentialFile(c.GitHub.Proxy.StaticFile, "github.proxy.staticFile"); err != nil {
-		return nil, fmt.Errorf("invalid config %s: %w", path, err)
-	}
-	if err := validateCredentialFile(c.Embedder.Voyage.APIKeyFile, "embedder.voyage.apiKeyFile"); err != nil {
+	if err := validateCredentials(&c); err != nil {
 		return nil, fmt.Errorf("invalid config %s: %w", path, err)
 	}
 	return &c, nil
@@ -197,13 +191,7 @@ func Save(path string, c *Config) error {
 	}
 	// Apply the same credential-file checks Load performs, so setup can never
 	// write a config that the next command refuses to load.
-	if err := validateCredentialFile(c.GitHub.Proxy.APIKeyFile, "github.proxy.apiKeyFile"); err != nil {
-		return err
-	}
-	if err := validateCredentialFile(c.GitHub.Proxy.StaticFile, "github.proxy.staticFile"); err != nil {
-		return err
-	}
-	if err := validateCredentialFile(c.Embedder.Voyage.APIKeyFile, "embedder.voyage.apiKeyFile"); err != nil {
+	if err := validateCredentials(c); err != nil {
 		return err
 	}
 	// Always stamp the current schema. Version is an output marker, never a
@@ -264,13 +252,83 @@ func ProbeAtomicPublication(path string) error {
 	return nil
 }
 
-// CredentialConfigKeys is the persisted credential-bearing schema inventory.
-// It drives the config-file 0600 gate and the settings registry parity test.
-var CredentialConfigKeys = []string{
-	"github.tokens",
-	"github.proxy.apiKeyFile",
-	"github.proxy.staticFile",
-	"embedder.voyage.apiKeyFile",
+// CredentialDescriptor declares one persisted field whose presence requires a
+// 0600 config file. Settings uses this same registry for masking and clipboard
+// refusal, so a new credential cannot be protected in one surface but exposed
+type CredentialDescriptor struct {
+	Key      string
+	Values   func(*Config) []string
+	Set      func(*Config, string)
+	Validate func(*Config) error
+}
+
+var credentialDescriptors = []CredentialDescriptor{
+	{
+		Key:    "github.tokens",
+		Values: func(c *Config) []string { return c.GitHub.Tokens },
+		Set:    func(c *Config, value string) { c.GitHub.Tokens = []string{value} },
+	},
+	{
+		Key:    "github.proxy.apiKeyFile",
+		Values: func(c *Config) []string { return []string{c.GitHub.Proxy.APIKeyFile} },
+		Set:    func(c *Config, value string) { c.GitHub.Proxy.APIKeyFile = value },
+		Validate: func(c *Config) error {
+			return validateCredentialFile(c.GitHub.Proxy.APIKeyFile, "github.proxy.apiKeyFile")
+		},
+	},
+	{
+		Key:    "github.proxy.staticFile",
+		Values: func(c *Config) []string { return []string{c.GitHub.Proxy.StaticFile} },
+		Set:    func(c *Config, value string) { c.GitHub.Proxy.StaticFile = value },
+		Validate: func(c *Config) error {
+			return validateCredentialFile(c.GitHub.Proxy.StaticFile, "github.proxy.staticFile")
+		},
+	},
+	{
+		Key:    "embedder.voyage.apiKeyFile",
+		Values: func(c *Config) []string { return []string{c.Embedder.Voyage.APIKeyFile} },
+		Set:    func(c *Config, value string) { c.Embedder.Voyage.APIKeyFile = value },
+		Validate: func(c *Config) error {
+			return validateCredentialFile(c.Embedder.Voyage.APIKeyFile, "embedder.voyage.apiKeyFile")
+		},
+	},
+}
+
+// CredentialDescriptors returns the one persisted credential inventory.
+func CredentialDescriptors() []CredentialDescriptor {
+	return append([]CredentialDescriptor(nil), credentialDescriptors...)
+}
+
+// IsCredentialKey reports whether a persisted field must never be rendered or
+// copied from Settings.
+func IsCredentialKey(key string) bool {
+	for _, descriptor := range credentialDescriptors {
+		if descriptor.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
+// CredentialValues returns the configured credential values for redaction.
+func CredentialValues(c *Config) []string {
+	if c == nil {
+		return nil
+	}
+	var values []string
+	for _, descriptor := range credentialDescriptors {
+		for _, value := range descriptor.Values(c) {
+			if value != "" {
+				values = append(values, value)
+			}
+		}
+	}
+	return values
+}
+
+// ContainsCredentials reports whether any registry credential is configured.
+func ContainsCredentials(c *Config) bool {
+	return len(CredentialValues(c)) != 0
 }
 
 func configContainsCredentials(path string) bool {
@@ -278,29 +336,23 @@ func configContainsCredentials(path string) bool {
 	if err != nil {
 		return false
 	}
-	// Every credential-bearing field must appear here, or the permission gate in
-	// Load silently does not apply to it.
-	var raw struct {
-		GitHub struct {
-			Tokens []string `json:"tokens"`
-			Proxy  struct {
-				APIKeyFile string `json:"apiKeyFile"`
-				StaticFile string `json:"staticFile"`
-			} `json:"proxy"`
-		} `json:"github"`
-		Embedder struct {
-			Voyage struct {
-				APIKeyFile string `json:"apiKeyFile"`
-			} `json:"voyage"`
-		} `json:"embedder"`
-	}
-	if json.Unmarshal(data, &raw) != nil {
+	var c Config
+	if json.Unmarshal(data, &c) != nil {
 		return false
 	}
-	return len(raw.GitHub.Tokens) > 0 ||
-		raw.GitHub.Proxy.APIKeyFile != "" ||
-		raw.GitHub.Proxy.StaticFile != "" ||
-		raw.Embedder.Voyage.APIKeyFile != ""
+	return ContainsCredentials(&c)
+}
+
+func validateCredentials(c *Config) error {
+	for _, descriptor := range credentialDescriptors {
+		if descriptor.Validate == nil {
+			continue
+		}
+		if err := descriptor.Validate(c); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func validateCredentialFile(path, field string) error {

@@ -28,7 +28,11 @@ func TestGoldenSettingsSectionsAt80x24(t *testing.T) {
 				t.Fatal(err)
 			}
 			for section := range sections {
-				m := Model{Config: &config.Config{Forge: config.ForgeConfig{Provider: "gitlab", Host: "forge.example"}, GitHub: config.GitHubConfig{Tokens: []string{"sentinel-secret"}, RequestsPerMinute: 300}}, Path: "/settings-golden/config.json", Host: HostFacts{SystemConfig: "absent", StorePath: "/settings-golden/store.db", CachePath: "/settings-golden/cache", Home: "/settings-golden/home"}, Theme: ctx}
+				cfg := &config.Config{Forge: config.ForgeConfig{Provider: "gitlab", Host: "forge.example"}, GitHub: config.GitHubConfig{RequestsPerMinute: 300}}
+				for _, descriptor := range config.CredentialDescriptors() {
+					descriptor.Set(cfg, "sentinel-secret")
+				}
+				m := Model{Config: cfg, Path: "/settings-golden/config.json", Host: HostFacts{SystemConfig: "absent", StorePath: "/settings-golden/store.db", CachePath: "/settings-golden/cache", Home: "/settings-golden/home"}, Theme: ctx}
 				m.width, m.height, m.section = 80, 24, section
 				got := m.View()
 				if strings.Contains(got, "sentinel-secret") {

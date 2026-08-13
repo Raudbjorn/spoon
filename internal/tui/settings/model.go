@@ -34,10 +34,12 @@ type Model struct {
 	Config           *config.Config
 	Path             string
 	Flags            map[string]string
+	Effective        *config.EffectiveConfig
 	Cache            embed.ResponseCache
 	Host             HostFacts
 	Theme            theme.Context
 	copyValue        func(string) error
+	deps             ActionDeps
 	focus            int
 	width, height    int
 	section          int
@@ -135,6 +137,13 @@ func (m Model) WithClipboard(copy func(string) error) Model {
 	return m
 }
 
+// WithActionDeps injects local action boundaries. Nil provider/store seams
+// fail closed rather than using ambient network or host state.
+func (m Model) WithActionDeps(deps ActionDeps) Model {
+	m.deps = deps.normalized()
+	return m
+}
+
 func (m Model) fields() []Field {
 	var out []Field
 	for _, f := range Registry {
@@ -160,6 +169,20 @@ func (m Model) WithFlags(flags map[string]string) Model {
 	m.Flags = flags
 	return m
 }
+
+// WithEffective supplies the command's already-resolved runtime truth. It is
+// optional only for focused Settings unit tests that exercise Resolve directly.
+func (m Model) WithEffective(effective config.EffectiveConfig) Model {
+	m.Effective = &effective
+	return m
+}
+
+func (m Model) resolve(field Field) Resolved {
+	if m.Effective != nil {
+		return ResolveFromEffective(field, *m.Effective)
+	}
+	return Resolve(field, m.Config, m.Flags)
+}
 func (m *Model) selected() (Field, bool) {
 	fields := m.fields()
 	if len(fields) == 0 || m.focus < 0 || m.focus >= len(fields) {
@@ -175,12 +198,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.busyAction = ""
 		if result.err != nil {
 			if result.text != "" {
-				m.alert = result.text + ": " + result.err.Error()
+				errText := result.err.Error()
+				if result.id == ActionVoyageStatus {
+					errText = compactVoyageDiagnostic(errText)
+				}
+				m.setAlert(result.text + ": " + errText)
 			} else {
-				m.alert = result.err.Error()
+				m.setAlert(result.err.Error())
 			}
 		} else {
-			m.alert = result.text
+			m.setAlert(result.text)
 		}
 		return m, nil
 	}
@@ -193,9 +220,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if status, ok := msg.(statusMsg); ok {
 		if status.err != nil {
-			m.alert = status.err.Error()
+			m.setAlert(status.err.Error())
 		} else {
-			m.alert = status.text
+			m.setAlert(status.text)
 		}
 		return m, nil
 	}
@@ -221,7 +248,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if action, ok := ActionForKey(key.String()); ok {
 		if !m.canEdit() && (action.ID == ActionSave || action.ID == ActionRewriteReadme) {
-			m.alert = m.readOnly
+			m.setAlert(m.readOnly)
 			return m, nil
 		}
 		if m.isSystemWrite() && (action.ID == ActionSave || action.ID == ActionRewriteReadme) {
@@ -261,13 +288,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if !m.canEdit() {
-			m.alert = m.readOnly
+			m.setAlert(m.readOnly)
 			return m, nil
 		}
 		m.editing = true
 		m.input = field.Get(m.Config)
 		m.cursor = utf8.RuneCountInString(m.input)
-		if field.Secret {
+		if field.IsCredential() {
 			m.secret.Set(m.input)
 			m.input = ""
 		}
@@ -285,20 +312,20 @@ func (m Model) updateEdit(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if keymap.Dispatch(keymap.MainSettings, key.String()) == keymap.Yank {
-		if field.Credential {
-			m.alert = ErrSecretClipboard.Error()
+		if field.IsCredential() {
+			m.setAlert(ErrSecretClipboard.Error())
 			return m, nil
 		}
 		return m.copyValueFor(valueForEdit(m, field))
 	}
 	if key.String() == "enter" {
 		value := m.input
-		if field.Secret {
+		if field.IsCredential() {
 			value = m.secret.Value()
 		}
 		candidate, err := Candidate(field, m.Config, value)
 		if err != nil {
-			m.alert = field.Label + ": " + err.Error()
+			m.setAlert(field.Label + ": " + err.Error())
 			return m, nil
 		}
 		if RequiresConfirmationFor(field, m.Config, candidate) {
@@ -330,7 +357,7 @@ func (m Model) updateEdit(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}, typed)
 	}
 	value := m.input
-	if field.Secret {
+	if field.IsCredential() {
 		value = m.secret.Value()
 	}
 	updated, cursor, handled := edit.Apply(value, m.cursor, action, typed)
@@ -338,7 +365,7 @@ func (m Model) updateEdit(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.cursor = cursor
-	if field.Secret {
+	if field.IsCredential() {
 		m.secret.Set(updated)
 	} else {
 		m.input = updated
@@ -347,7 +374,7 @@ func (m Model) updateEdit(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func valueForEdit(m Model, field Field) string {
-	if field.Secret {
+	if field.IsCredential() {
 		return m.secret.Value()
 	}
 	return m.input
@@ -358,11 +385,11 @@ func (m Model) copySelected() (tea.Model, tea.Cmd) {
 	if !ok {
 		return m, nil
 	}
-	if field.Credential {
-		m.alert = ErrSecretClipboard.Error()
+	if field.IsCredential() {
+		m.setAlert(ErrSecretClipboard.Error())
 		return m, nil
 	}
-	return m.copyValueFor(Resolve(field, m.Config, m.Flags).Value)
+	return m.copyValueFor(m.resolve(field).Value)
 }
 
 func (m Model) copyValueFor(value string) (tea.Model, tea.Cmd) {
@@ -371,11 +398,37 @@ func (m Model) copyValueFor(value string) (tea.Model, tea.Cmd) {
 		copy = copySettingValue
 	}
 	if err := copy(value); err != nil {
-		m.alert = "clipboard: " + err.Error()
+		m.setAlert("clipboard: " + err.Error())
 		return m, nil
 	}
-	m.alert = "copied selected value"
+	m.setAlert("copied selected value")
 	return m, nil
+}
+
+// setAlert removes any persisted or in-editor credential value before a string
+// reaches a render frame, confirmation, busy state, or golden.
+func (m *Model) setAlert(text string) {
+	values := config.CredentialValues(m.Config)
+	if field, ok := m.selected(); ok && field.IsCredential() {
+		values = append(values, valueForEdit(*m, field))
+	}
+	for _, value := range values {
+		if value != "" {
+			text = strings.ReplaceAll(text, value, credentialMask())
+		}
+	}
+	m.alert = text
+}
+
+// compactVoyageDiagnostic retains the actionable local reason in the single
+// 80-column alert line; setAlert still redacts any credential path afterward.
+func compactVoyageDiagnostic(text string) string {
+	for _, reason := range []string{"readable by group/other", "store cannot be written", "output dimension "} {
+		if index := strings.Index(text, reason); index >= 0 {
+			return text[index:]
+		}
+	}
+	return text
 }
 
 func (m *Model) clearEditor() {
@@ -409,7 +462,7 @@ func (m Model) updateConfirmation(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.pendingCandidate != nil {
 			*m.Config = *m.pendingCandidate
-			m.alert = "change applied; press s to save"
+			m.setAlert("change applied; press s to save")
 		}
 		m.clearEditor()
 		m.confirming = false

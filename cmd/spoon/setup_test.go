@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/svnbjrn/spoon/internal/config"
 	"github.com/svnbjrn/spoon/internal/forge"
+	"github.com/svnbjrn/spoon/internal/setupcheck"
 	"github.com/svnbjrn/spoon/internal/store"
 )
 
@@ -50,8 +52,8 @@ func stubProvider(t *testing.T, auth forge.AuthInfo, err error) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	prev := setupProviderFn
 	t.Cleanup(func() { setupProviderFn = prev })
-	setupProviderFn = func(_ context.Context, _, _, _ string) (forge.Forge, forge.AuthInfo, string, error) {
-		return nil, auth, "", err
+	setupProviderFn = func(_ context.Context, _ setupcheck.ProviderInput, _ http.RoundTripper) (forge.AuthInfo, error) {
+		return auth, err
 	}
 }
 

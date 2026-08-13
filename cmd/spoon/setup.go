@@ -22,11 +22,10 @@ import (
 	"github.com/svnbjrn/spoon/internal/store"
 )
 
-// Indirection points so tests can stub the network credential probe and the
-// store open.
+// Indirection points so tests can stub the local credential and store probes.
 var (
-	setupProviderFn = createProvider
-	setupStoreFn    = store.OpenDefault
+	setupProviderFn setupcheck.ProviderProbe = setupcheck.LocalProviderProbe
+	setupStoreFn                             = store.OpenDefault
 )
 
 func runSetup(args []string) int {
@@ -134,8 +133,12 @@ func runSetupWith(ctx context.Context, args []string, stdin io.Reader, interacti
 	if f.forgeFlag == "gitlab" || (f.forgeFlag == "" && f.forgeHost != "") {
 		provider = forge.ProviderGitLab
 	}
-	_, auth, _, provErr := setupProviderFn(ctx, "", f.forgeFlag, f.forgeHost)
-	provOK, provLines := providerStatusLines(provider, auth, provErr)
+	providerCheck, provErr := setupcheck.CheckProvider(ctx, setupcheck.ProviderInput{
+		Provider:        provider,
+		Host:            f.forgeHost,
+		ConfiguredToken: provider == forge.ProviderGitHub && loadedCfg != nil && len(loadedCfg.GitHub.Tokens) > 0,
+	}, setupProviderFn, setupcheck.DenyHTTPTransport{})
+	provOK, provLines := providerStatusLines(provider, providerCheck.Auth, provErr)
 	printCheck(stdout, fmt.Sprintf("Provider (%s)", provider), provOK, provLines, f.noColor)
 
 	// --- Global store ---------------------------------------------------------
@@ -171,21 +174,20 @@ func runSetupWith(ctx context.Context, args []string, stdin io.Reader, interacti
 	return 1
 }
 
-// setupStore reports the mandatory global store: its location and whether it
-// opens. An unusable store fails every spoon/spn run, so it fails setup too.
 func setupStore(noColor bool, out io.Writer) bool {
 	path, _ := store.DefaultPath()
-	s, err := setupStoreFn()
+	err := setupcheck.CheckStore(context.Background(), func() (setupcheck.Store, error) {
+		return setupStoreFn()
+	})
 	if err != nil {
 		printCheck(out, "Store", false, []string{
-			"Cannot open " + path + ": " + err.Error(),
+			"Cannot open or write " + path + ": " + err.Error(),
 			"Every run needs the store (it is the cache and the persistence layer).",
 			"Check disk space and directory permissions.",
 		}, noColor)
 		return false
 	}
-	defer s.Close()
-	lines := []string{"Open: " + path}
+	lines := []string{"Open and writable: " + path}
 	if info, statErr := os.Stat(path); statErr == nil {
 		lines = append(lines, fmt.Sprintf("Size: %.1f MB", float64(info.Size())/(1024*1024)))
 	}
@@ -353,6 +355,10 @@ func setupFastEmbed(cfg *config.Config, cacheDir string, noColor bool, out io.Wr
 	// configuration helper; only this command performs the optional model probe.
 	fastCfg, err := setupcheck.PrepareFastEmbed(cfg, cacheDir)
 	if err != nil {
+		printCheck(out, "FastEmbed", false, []string{err.Error()}, noColor)
+		return false
+	}
+	if _, err := setupcheck.CheckFastEmbed(cfg.Embedder); err != nil {
 		printCheck(out, "FastEmbed", false, []string{err.Error()}, noColor)
 		return false
 	}

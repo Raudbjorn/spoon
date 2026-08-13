@@ -29,12 +29,16 @@ func TestRegistryReflectsEveryPersistedConfigLeaf(t *testing.T) {
 
 func TestCredentialRegistryMatchesConfigPermissionGate(t *testing.T) {
 	want := map[string]bool{}
-	for _, key := range config.CredentialConfigKeys {
-		want[key] = true
+	for _, descriptor := range config.CredentialDescriptors() {
+		want[descriptor.Key] = true
+		field, ok := FieldByKey(descriptor.Key)
+		if !ok || !field.IsCredential() {
+			t.Fatalf("credential descriptor %q is not exposed as a credential field", descriptor.Key)
+		}
 	}
 	got := map[string]bool{}
 	for _, field := range Registry {
-		if field.Credential {
+		if field.IsCredential() {
 			got[field.Key] = true
 		}
 	}

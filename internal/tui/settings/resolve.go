@@ -23,30 +23,29 @@ type Resolved struct {
 	Inactive string
 }
 
-// Resolve consumes the central runtime-effective configuration result. The
-// Settings screen therefore reports exactly the defaults and override source
-// that command startup will use rather than maintaining a parallel table.
+// Resolve consumes a freshly captured process environment for direct Settings
+// tests and compatibility callers. Command startup passes ResolveFromEffective.
 func Resolve(field Field, cfg *config.Config, flags map[string]string) Resolved {
-	env := map[string]string{}
-	for _, setting := range config.Settings() {
-		for _, name := range setting.Environment {
-			env[name] = os.Getenv(name)
-		}
-	}
-	// These influence derived runtime values but are not themselves settings.
-	env["XDG_CACHE_HOME"] = os.Getenv("XDG_CACHE_HOME")
-	resolved := config.ResolveEffectiveConfig(cfg, flags, env).Value(field.Key)
+	env := config.EnvironmentSnapshot()
+	resolved := config.ResolveEffectiveConfig(cfg, flags, env)
+	return ResolveFromEffective(field, resolved)
+}
+
+// ResolveFromEffective projects the command-owned typed runtime result into a
+// Settings row without rereading config or environment.
+func ResolveFromEffective(field Field, effective config.EffectiveConfig) Resolved {
+	resolved := effective.Value(field.Key)
 	if resolved.Source == "" {
-		fileValue, filePresent := "", false
-		if cfg != nil {
-			fileValue, filePresent = field.Get(cfg), fieldPresent(field, cfg)
+		setting, ok := config.SettingByKey(field.Key)
+		if !ok {
+			panic("settings field has no effective descriptor: " + field.Key)
 		}
-		resolved = config.ResolveString(fileValue, filePresent, field.Default, flags[field.Key], env, field.Environment...)
+		resolved = config.ResolvedString{Value: setting.Default, Source: config.SourceDefault}
 	}
 	row := Resolved{Value: resolved.Value, Source: resolved.Source}
 	if resolved.Environment != "" {
 		value := resolved.Value
-		if field.Secret || Environment[resolved.Environment] {
+		if field.IsCredential() || Environment[resolved.Environment] {
 			value = "set"
 		}
 		row.Detail = resolved.Environment + "=" + value

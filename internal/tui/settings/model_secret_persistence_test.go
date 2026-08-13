@@ -55,4 +55,7 @@ func TestMaskedModelTokenSaveAndClearAre0600(t *testing.T) {
 	if len(loaded.GitHub.Tokens) != 0 {
 		t.Fatalf("cleared token serialized: %#v", loaded.GitHub.Tokens)
 	}
+	if config.ContainsCredentials(loaded) {
+		t.Fatal("cleared config still contains credentials")
+	}
 }

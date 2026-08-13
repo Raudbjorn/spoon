@@ -55,7 +55,7 @@ func render(m Model) string {
 	if m.editing {
 		b.WriteByte('\n')
 		value := m.input
-		if field, ok := m.selected(); ok && field.Secret {
+		if field, ok := m.selected(); ok && field.IsCredential() {
 			value = m.secret.RenderWithTheme(m.Theme)
 		}
 		b.WriteString(ui.Input(m.Theme, ui.InputState{Value: value, Cursor: m.cursor, Focused: true, Enabled: true}, width))
@@ -85,9 +85,9 @@ func (m Model) sectionParts(width int) []ui.BoxPart {
 		fields := m.fields()
 		out := make([]ui.BoxPart, 0, len(fields)*2)
 		for i, field := range fields {
-			row := Resolve(field, m.Config, m.Flags)
+			row := m.resolve(field)
 			value := row.Value
-			if field.Secret && value != "" {
+			if field.IsCredential() && value != "" {
 				value = credentialMask()
 			}
 			out = append(out, ui.BoxPart{Text: ui.Input(m.Theme, ui.InputState{Value: field.Label + ": " + value + " [" + string(row.Source) + "]", Focused: i == m.focus, Enabled: field.Editable && m.canEdit()}, width)})
@@ -108,7 +108,7 @@ func (m Model) sectionParts(width int) []ui.BoxPart {
 
 func hostParts(m Model, width int) []ui.BoxPart {
 	facts := []string{
-		"Schema version: " + Resolve(FieldByMust("version"), m.Config, m.Flags).Value,
+		"Schema version: " + m.resolve(FieldByMust("version")).Value,
 		"Config path: " + m.Path,
 		"Layer: " + map[bool]string{true: "system (affects every user)", false: "user"}[m.hasSystemPath()],
 		"System config: " + m.Host.SystemConfig,

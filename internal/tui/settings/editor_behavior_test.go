@@ -21,15 +21,15 @@ func TestTokenEditorAcceptsPasteNewlinesAndLiteralY(t *testing.T) {
 	}
 }
 
-func TestOnlyDirectTokenValueIsMasked(t *testing.T) {
+func TestCredentialPathIsMasked(t *testing.T) {
 	m := New(&config.Config{GitHub: config.GitHubConfig{Proxy: config.ProxyConfig{APIKeyFile: "/private/proxy-key"}}}, t.TempDir()+"/config.json", nil)
 	m.section = 2
 	got := m.View()
-	if !strings.Contains(got, "/private/proxy-key") {
-		t.Fatalf("credential path was masked: %q", got)
+	if strings.Contains(got, "/private/proxy-key") {
+		t.Fatalf("credential path leaked: %q", got)
 	}
-	if strings.Contains(got, credentialMask()) {
-		t.Fatalf("non-secret credential path used secret mask: %q", got)
+	if !strings.Contains(got, credentialMask()) {
+		t.Fatalf("credential path did not use fixed mask: %q", got)
 	}
 }
 
