@@ -1,7 +1,6 @@
 package settings
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -14,15 +13,7 @@ func Clone(cfg *config.Config) (*config.Config, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("configuration layer is disabled")
 	}
-	data, err := json.Marshal(cfg)
-	if err != nil {
-		return nil, err
-	}
-	var candidate config.Config
-	if err := json.Unmarshal(data, &candidate); err != nil {
-		return nil, err
-	}
-	return &candidate, nil
+	return config.Clone(cfg)
 }
 
 // Candidate applies one field to an isolated copy and validates it. Callers

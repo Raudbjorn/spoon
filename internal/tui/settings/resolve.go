@@ -60,6 +60,9 @@ func Resolve(field Field, cfg *config.Config, flags map[string]string) Resolved 
 }
 
 func fieldPresent(field Field, cfg *config.Config) bool {
+	if config.FieldPresent(cfg, field.Key) {
+		return true
+	}
 	if field.Key == "github.proxy.whitelistPublicIp" {
 		return cfg.GitHub.Proxy.WhitelistPublicIP != nil
 	}

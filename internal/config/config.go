@@ -35,6 +35,11 @@ type Config struct {
 	GitHub   GitHubConfig   `json:"github,omitempty"`
 	Embedder EmbedderConfig `json:"embedder,omitempty"`
 	UI       UIConfig       `json:"ui,omitempty"`
+
+	// present is load/save metadata, deliberately outside the persisted schema.
+	// It distinguishes explicit false/zero file values from absent values while
+	// effective settings are resolved.
+	present map[string]bool
 }
 
 // UIConfig stores terminal appearance preferences. Environment variables remain
@@ -156,6 +161,7 @@ func Load(path string) (*Config, error) {
 	if err := json.Unmarshal(data, &c); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
+	c.present = leafPresence(data)
 	c.normalizeLegacy()
 	if err := c.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config %s: %w", path, err)
@@ -229,6 +235,7 @@ func Save(path string, c *Config) error {
 	if err := os.Rename(tmp, path); err != nil {
 		return fmt.Errorf("rename %s -> %s: %w", tmp, path, err)
 	}
+	c.present = leafPresence(data)
 	return nil
 }
 
@@ -262,6 +269,7 @@ func ProbeAtomicPublication(path string) error {
 var CredentialConfigKeys = []string{
 	"github.tokens",
 	"github.proxy.apiKeyFile",
+	"github.proxy.staticFile",
 	"embedder.voyage.apiKeyFile",
 }
 
@@ -277,6 +285,7 @@ func configContainsCredentials(path string) bool {
 			Tokens []string `json:"tokens"`
 			Proxy  struct {
 				APIKeyFile string `json:"apiKeyFile"`
+				StaticFile string `json:"staticFile"`
 			} `json:"proxy"`
 		} `json:"github"`
 		Embedder struct {
@@ -290,6 +299,7 @@ func configContainsCredentials(path string) bool {
 	}
 	return len(raw.GitHub.Tokens) > 0 ||
 		raw.GitHub.Proxy.APIKeyFile != "" ||
+		raw.GitHub.Proxy.StaticFile != "" ||
 		raw.Embedder.Voyage.APIKeyFile != ""
 }
 

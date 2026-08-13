@@ -34,8 +34,11 @@ func TestRawV1AndV2RoundTripAreLossless(t *testing.T) {
 	}
 	want := *v1
 	want.Version = CurrentVersion
-	if !reflect.DeepEqual(*v2, want) {
-		t.Fatalf("v1 migration changed fields\nwant %#v\ngot %#v", want, *v2)
+	got := *v2
+	got.present = nil
+	want.present = nil
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("v1 migration changed fields\nwant %#v\ngot %#v", want, got)
 	}
 	if err := Save(path, v2); err != nil {
 		t.Fatal(err)
@@ -44,7 +47,11 @@ func TestRawV1AndV2RoundTripAreLossless(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(*again, *v2) {
+	got = *again
+	got.present = nil
+	want = *v2
+	want.present = nil
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("v2 round trip changed fields")
 	}
 }

@@ -81,7 +81,7 @@ var Registry = []Field{
 	}},
 	boolField("github.proxy.enabled", "Proxy enabled", ProxySection, "Enable ProxyScrape transport routing.", NoConsequence, func(c *config.Config) bool { return c.GitHub.Proxy.Enabled }, func(c *config.Config, v bool) { c.GitHub.Proxy.Enabled = v }),
 	{Key: "github.proxy.apiKeyFile", Label: "Proxy API key file", Section: ProxySection, Help: "0600 credential file path.", Credential: true, Editable: true, Get: func(c *config.Config) string { return c.GitHub.Proxy.APIKeyFile }, Set: func(c *config.Config, v string) error { c.GitHub.Proxy.APIKeyFile = strings.TrimSpace(v); return nil }},
-	stringField("github.proxy.staticFile", "Proxy static file", ProxySection, "0600 credential file path.", "", func(c *config.Config) string { return c.GitHub.Proxy.StaticFile }, func(c *config.Config, v string) { c.GitHub.Proxy.StaticFile = strings.TrimSpace(v) }),
+	{Key: "github.proxy.staticFile", Label: "Proxy static file", Section: ProxySection, Help: "0600 credential file path.", Credential: true, Editable: true, Get: func(c *config.Config) string { return c.GitHub.Proxy.StaticFile }, Set: func(c *config.Config, v string) error { c.GitHub.Proxy.StaticFile = strings.TrimSpace(v); return nil }},
 	{Key: "github.proxy.whitelistPublicIp", Label: "Whitelist public IP", Section: ProxySection, Help: "true, false, or empty to leave unset.", Editable: true, Get: func(c *config.Config) string {
 		if c.GitHub.Proxy.WhitelistPublicIP == nil {
 			return ""

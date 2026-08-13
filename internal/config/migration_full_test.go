@@ -27,8 +27,11 @@ func TestV1ToV2SavePreservesEveryExistingLeaf(t *testing.T) {
 	}
 	want := before
 	want.Version = CurrentVersion
-	if !reflect.DeepEqual(*after, want) {
-		t.Fatalf("migration lost fields\nwant %#v\ngot  %#v", want, *after)
+	want.present = nil
+	got := *after
+	got.present = nil
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("migration lost fields\nwant %#v\ngot  %#v", want, got)
 	}
 	if after.UI != (UIConfig{}) {
 		t.Fatalf("v1 save invented UI values: %#v", after.UI)
