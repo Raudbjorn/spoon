@@ -14,6 +14,7 @@ import (
 
 	"github.com/svnbjrn/spoon/internal/topics"
 	"github.com/svnbjrn/spoon/internal/tui/theme"
+	"github.com/svnbjrn/spoon/internal/tui/ui"
 )
 
 // topicResolvedMsg carries the topic selection (or its failure) back into
@@ -76,7 +77,7 @@ func (m Model) viewTopicPicker() string {
 	ctx, styles := m.themeContext(), m.styles()
 	var b strings.Builder
 	b.WriteString("\n")
-	b.WriteString(styles.title.Render(fmt.Sprintf("  Topic: %s %s pick a repository to prospect", m.topicName, ctx.Glyph(theme.EmDash))))
+	b.WriteString(ui.Heading(ctx, 1, "  Topic: "+m.topicName+" "+ctx.Glyph(theme.EmDash)+" pick a repository to prospect", ui.ContentWidth(m.width)))
 	b.WriteString("\n\n")
 	for i, selection := range m.topicSelections {
 		cursor := "  "

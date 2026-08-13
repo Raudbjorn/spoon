@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/svnbjrn/spoon/internal/tui/theme"
+	"github.com/svnbjrn/spoon/internal/tui/ui"
 )
 
 // Row filtering for the fork table.
@@ -98,7 +99,9 @@ func (m Model) viewFilterPrompt() string {
 	var b strings.Builder
 	b.WriteString("\n")
 	b.WriteString(fmt.Sprintf("  Filter %d forks by owner/name\n\n", len(m.forks)))
-	b.WriteString("  Match: " + renderWithCursor(m.filterInput, m.filterCursor, m.themeContext()) + "\n\n")
+	b.WriteString("  Match: " + ui.Input(m.themeContext(), ui.InputState{
+		Value: m.filterInput, Cursor: m.filterCursor, Focused: true, Enabled: true,
+	}, ui.ContentWidth(m.width)-11) + "\n\n")
 	b.WriteString("  " + m.styles().help.Render(m.themeContext().Glyph(theme.ArrowLeft)+"/"+m.themeContext().Glyph(theme.ArrowRight)+" move  Home/End  Enter apply  Esc cancel  Ctrl+U clear  (empty clears the filter)") + "\n")
 	return b.String()
 }

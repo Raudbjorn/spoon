@@ -2,14 +2,13 @@ package tui
 
 import (
 	"fmt"
-	"sort"
-	"strings"
-
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"sort"
 
 	"github.com/svnbjrn/spoon/internal/forge"
 	"github.com/svnbjrn/spoon/internal/tui/theme"
+	"github.com/svnbjrn/spoon/internal/tui/ui"
 )
 
 // detailFooterLines is how many lines viewDetail reserves for the pinned
@@ -44,7 +43,7 @@ func (m Model) detailBody() string {
 	}
 	sf := m.forks[m.cursor]
 	ctx, styles := m.themeContext(), m.styles()
-	var b strings.Builder
+	var parts []ui.BoxPart
 
 	boxWidth := 55
 	if m.width > 10 {
@@ -53,18 +52,13 @@ func (m Model) detailBody() string {
 			boxWidth = 70
 		}
 	}
-	h := ctx.Glyph(theme.BoxHorizontal)
-	v := ctx.Glyph(theme.BoxVertical)
-	hr := strings.Repeat(h, boxWidth-2)
 	writeLine := func(content string) {
-		b.WriteString(fitBoxLine(v+" "+content, boxWidth, v) + "\n")
+		parts = append(parts, ui.BoxPart{Text: content})
 	}
 	divider := func() {
-		b.WriteString(ctx.Glyph(theme.BoxTeeRight) + hr + ctx.Glyph(theme.BoxTeeLeft) + "\n")
+		parts = append(parts, ui.BoxPart{Divider: true})
 	}
 
-	b.WriteString("\n")
-	b.WriteString(ctx.Glyph(theme.BoxTopLeft) + hr + ctx.Glyph(theme.BoxTopRight) + "\n")
 	writeLine(lipgloss.NewStyle().Bold(true).Render("Fork: " + sf.Fork.ID))
 
 	scoreStr := lipgloss.NewStyle().Foreground(m.heatColor(sf.Heat.Score)).Bold(true).Render(fmt.Sprintf("%.0f/100", sf.Heat.Score))
@@ -195,8 +189,7 @@ func (m Model) detailBody() string {
 		writeLine(fmt.Sprintf("%q", desc))
 	}
 
-	b.WriteString(ctx.Glyph(theme.BoxBottomLeft) + hr + ctx.Glyph(theme.BoxBottomRight))
-	return b.String()
+	return "\n" + ui.Box(ctx, boxWidth, parts)
 }
 
 func componentDescription(ctx theme.Context, name string, raw, points, max float64) string {
@@ -237,13 +230,6 @@ func penaltyDescription(ctx theme.Context, name string) string {
 	}
 }
 
-func pad(n int, ch string) string {
-	if n <= 0 {
-		return ""
-	}
-	return strings.Repeat(ch, n)
-}
-
 // collectClusterPeers returns the fork IDs of other members of the given
 // cluster, sorted by Heat.Score descending. The caller's own fork (by
 // ID) is excluded.
@@ -273,16 +259,4 @@ func (m Model) collectClusterPeers(clusterID, selfID string) []string {
 		out = append(out, s.id)
 	}
 	return out
-}
-
-// fitBoxLine pads or truncates a line so it fits inside the detail box and
-// appends the caller's profile-resolved closing border.
-func fitBoxLine(line string, boxWidth int, closing string) string {
-	target := boxWidth - 1
-	width := lipgloss.Width(line)
-	if width > target {
-		line = ansi.Truncate(line, target, "")
-		width = lipgloss.Width(line)
-	}
-	return line + pad(target-width, " ") + closing
 }

@@ -1,7 +1,7 @@
 
 [1;90m  spoon[0m[90m — find useful forks[0m
 
-  Repository: svnbjrn/spoon█
+  Repository: [1;37m> svnbjrn/spoon█[0m
   [1;91mfixture validation error[0m
 
   [90mEnter a GitHub or GitLab repository (e.g., golang/go)[0m

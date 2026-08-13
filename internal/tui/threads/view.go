@@ -7,6 +7,7 @@ import (
 	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/threadsops"
 	"github.com/svnbjrn/spoon/internal/tui/theme"
+	"github.com/svnbjrn/spoon/internal/tui/ui"
 )
 
 func renderModel(m Model) string {
@@ -15,7 +16,7 @@ func renderModel(m Model) string {
 		return renderHelp(ctx)
 	}
 	if m.err != nil {
-		return fmt.Sprintf("error: %v\n\npress q to quit", m.err)
+		return ui.Alert(ctx, ui.AlertError, m.err.Error(), m.width) + "\n\npress q to quit"
 	}
 	if !m.loaded {
 		return "loading threads..."

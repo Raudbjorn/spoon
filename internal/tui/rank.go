@@ -28,6 +28,7 @@ import (
 
 	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/tui/theme"
+	"github.com/svnbjrn/spoon/internal/tui/ui"
 )
 
 // relevanceSortCol is the sort column the ranking installs. It is deliberately
@@ -243,7 +244,9 @@ func (m Model) viewRankPrompt() string {
 	var b strings.Builder
 	b.WriteString("\n")
 	b.WriteString(fmt.Sprintf("  Rank %d fork(s) by intent\n\n", m.visibleCount()))
-	b.WriteString("  Intent: " + renderWithCursor(m.rankQuery, m.rankCursor, m.themeContext()) + "\n\n")
+	b.WriteString("  Intent: " + ui.Input(m.themeContext(), ui.InputState{
+		Value: m.rankQuery, Cursor: m.rankCursor, Focused: true, Enabled: true,
+	}, ui.ContentWidth(m.width)-12) + "\n\n")
 	scorer := "lexical (set VOYAGE_AI_API_KEY for the cross-encoder)"
 	if m.queryScorer != nil {
 		scorer = m.queryScorer.Method()

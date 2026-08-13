@@ -18,7 +18,7 @@ import (
 func (m Model) viewTable() string {
 	ctx, styles := m.themeContext(), m.styles()
 	if m.parent == nil || len(m.forks) == 0 {
-		return "\n  No forks found.\n"
+		return "\n  " + ui.Text(ctx, ui.TextMuted, "No forks found.", ui.ContentWidth(m.width)-2) + "\n"
 	}
 
 	// Absolute indices of the rows the active filter admits. Everything below

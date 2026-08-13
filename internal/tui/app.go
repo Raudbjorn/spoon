@@ -1587,7 +1587,9 @@ func (m Model) viewInput() string {
 		}
 	}
 
-	b.WriteString("  Repository: " + renderWithCursor(m.input, m.inputCursor, m.themeContext()) + "\n")
+	b.WriteString("  Repository: " + ui.Input(m.themeContext(), ui.InputState{
+		Value: m.input, Cursor: m.inputCursor, Focused: true, Enabled: true,
+	}, ui.ContentWidth(m.width)-14) + "\n")
 	if m.inputErr != "" {
 		b.WriteString("  " + s.error.Render(m.inputErr) + "\n")
 	}

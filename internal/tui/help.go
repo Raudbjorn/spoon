@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/svnbjrn/spoon/internal/tui/theme"
+	"github.com/svnbjrn/spoon/internal/tui/ui"
 )
 
 // helpFooterLines is how many lines viewHelp reserves for the title above and
@@ -13,7 +14,7 @@ const helpFooterLines = 3
 func (m Model) viewHelp() string {
 	ctx, styles := m.themeContext(), m.styles()
 	body := scrollLines(helpBody(ctx), m.helpOffset, m.helpViewHeight())
-	return styles.title.Render("  spoon") + styles.subtitle.Render(" "+ctx.Glyph(theme.EmDash)+" help") + "\n" +
+	return ui.Heading(ctx, 1, "  spoon", ui.ContentWidth(m.width)) + styles.subtitle.Render(" "+ctx.Glyph(theme.EmDash)+" help") + "\n" +
 		body + "\n  " + styles.help.Render("PgUp/PgDn scroll "+ctx.Glyph(theme.Separator)+" Press ? or Esc to go back")
 }
 
