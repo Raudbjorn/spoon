@@ -8,6 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	gh "github.com/svnbjrn/spoon/internal/github"
+	"github.com/svnbjrn/spoon/internal/tui/keymap"
 	"github.com/svnbjrn/spoon/internal/tui/theme"
 	"github.com/svnbjrn/spoon/internal/tui/ui"
 )
@@ -67,21 +68,21 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		return m, nil
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "ctrl+c", "esc", "q":
+		switch keymap.Dispatch(keymap.ThreadPick, msg.String()) {
+		case keymap.Quit:
 			m.cancelled = true
 			return m, tea.Quit
-		case "up", "k":
+		case keymap.Up:
 			if m.cursor > 0 {
 				m.cursor--
 			}
 			return m, nil
-		case "down", "j":
+		case keymap.Down:
 			if m.cursor < len(m.prs)-1 {
 				m.cursor++
 			}
 			return m, nil
-		case "enter":
+		case keymap.Submit:
 			if len(m.prs) == 0 {
 				m.cancelled = true
 				return m, tea.Quit

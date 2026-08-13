@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/svnbjrn/spoon/internal/tui/keymap"
 	"github.com/svnbjrn/spoon/internal/tui/theme"
 	"github.com/svnbjrn/spoon/internal/tui/ui"
 )
@@ -80,11 +81,11 @@ func (m *Model) applyFilter(q string) {
 // Esc here cancels the edit and leaves the active filter untouched; Esc on the
 // table itself is what clears it. Enter on an empty query also clears.
 func (m *Model) handleFilterKey(key, typed string) (tea.Model, tea.Cmd) {
-	switch key {
-	case "enter":
+	switch keymap.Dispatch(keymap.MainFilter, key) {
+	case keymap.Submit:
 		m.applyFilter(strings.TrimSpace(m.filterInput))
 		m.view = viewTable
-	case "esc":
+	case keymap.Back:
 		m.filterInput = ""
 		m.filterCursor = 0
 		m.view = viewTable

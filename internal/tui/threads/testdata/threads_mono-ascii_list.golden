@@ -9,5 +9,6 @@ PR #42 - Fixture PR
 ! Unresolved (active)
 Please update this.
 
-[r/Enter] reply [R] resolve [a] apply suggestion [c] counter-propose [Ctrl+A] resolve-all [A] unresolve-all [o] open
-[?] help [q] quit
+[Up/k] move thread selection up [Down/j] move thread selection down [q/ctrl+c] quit [r/Enter] reply
+[R] resolve current thread [a] apply suggestion [ctrl+a] resolve all [A] unresolve all [o] open pull request
+[c] counter-propose [?] toggle help [f] hide or restore chrome

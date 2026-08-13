@@ -1,20 +1,20 @@
 spoon threads - keybindings
 
-  ^/v, j/k     Navigate threads
-  Enter, r     Reply (opens textarea)
-  R            Resolve current thread
-  a            Apply suggestion on current thread (no-op if thread has none)
-  c            Counter-propose: opens $EDITOR with a temp file; content is
-               wrapped in a suggestion block and posted as a reply.
-               Empty content (or no edits) cancels.
-  Ctrl+A       Resolve all (with confirm)
-  A            Unresolve all (with confirm)
-  o            Open PR in browser
-  ?            Toggle this help
-  q            Quit
+  Up/k          Move thread selection up
+  Down/j        Move thread selection down
+  q/ctrl+c      Quit
+  r/Enter       Reply
+  R             Resolve current thread
+  a             Apply suggestion
+  ctrl+a        Resolve all
+  A             Unresolve all
+  o             Open pull request
+  c             Counter-propose
+  ?             Toggle help
+  f             Hide or restore chrome
 
 In the composer:
-  Ctrl+S       Submit
-  Esc          Cancel
+  ctrl+s        Submit reply
+  Esc           Cancel reply
 
 Press ? again to return.

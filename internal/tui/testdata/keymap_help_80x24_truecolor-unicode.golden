@@ -1,4 +1,4 @@
-[90;4m [0m[90;4m [0m[1;4;90;4ms[0m[1;4;90;4mp[0m[1;4;90;4mo[0m[1;4;90;4mo[0m[1;4;90;4mn[0m [2;90m— help[0m
+[38;2;78;201;176;4m [0m[38;2;78;201;176;4m [0m[1;4;38;2;78;201;176;4ms[0m[1;4;38;2;78;201;176;4mp[0m[1;4;38;2;78;201;176;4mo[0m[1;4;38;2;78;201;176;4mo[0m[1;4;38;2;78;201;176;4mn[0m [2;38;2;154;154;154m— help[0m
 
   Keybindings
   ───────────
@@ -20,10 +20,4 @@
   g               Toggle cluster grouping
   Enter           View fork details
   n               Search new repository
-  /               Filter forks
-  R               Rank by intent
-  Esc             Clear active filter
-  ?               Open help
-  s               Cycle sort column
-  S               Reverse sort order
-  [90mPgUp/PgDn scroll · Press ? or Esc to go back[0m
+  [38;2;133;133;133mPgUp/PgDn scroll · Press ? or Esc to go back[0m

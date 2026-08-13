@@ -15,7 +15,7 @@ import (
 func TestBindingLegendKeepsEveryActionWithinViewport(t *testing.T) {
 	for _, width := range []int{80, 120} {
 		legend := renderBindingLegend(theme.DefaultContext(), width)
-		for _, hint := range threadBindingHints {
+		for _, hint := range threadBindingHints() {
 			if !strings.Contains(legend, hint.label) {
 				t.Fatalf("%d-column legend omitted %q:\n%s", width, hint.label, legend)
 			}

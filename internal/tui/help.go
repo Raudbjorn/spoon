@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 
+	"github.com/svnbjrn/spoon/internal/tui/keymap"
 	"github.com/svnbjrn/spoon/internal/tui/theme"
 	"github.com/svnbjrn/spoon/internal/tui/ui"
 )
@@ -26,27 +27,34 @@ func (m Model) helpViewHeight() int {
 }
 
 func helpBody(ctx theme.Context) string {
-	return "\n  Keybindings\n  " + strings.Repeat(ctx.Glyph(theme.BoxHorizontal), 11) + "\n" +
-		"  " + ctx.Glyph(theme.ArrowUp) + "/" + ctx.Glyph(theme.ArrowDown) + `, j/k      Navigate table
-  PgUp/PgDn     Page up/down (table, detail, help)
-  Home/G        Go to top/bottom
-  g             Toggle cluster grouping (when clusters are available)
-  Enter         View fork details
-  n             Search new repository
-  /             Filter forks by owner/name
-  R             Rank filtered forks by intent (relevance, not a filter)
-  Esc           Clear the active filter
-  s             Cycle sort column (heat/stars/ahead/branches/forks/pushed)
-  S             Reverse sort order
-  o             Open selected fork in browser
-  c             Open compare view in browser
-  y             Yank clone command to clipboard
-  t             Cycle enrichment ceiling - T3 full, T2 no lone-wolf, T1 no compares
-  r             Refresh (bypass cache, restart)
-  Space         Mark/unmark fork for export
-  e             Export marked forks to JSON
-  E             Export all forks to JSON
-  ?             Toggle this help
-  q, Ctrl+C     Quit
-`
+	var b strings.Builder
+	b.WriteString("\n  Keybindings\n  ")
+	b.WriteString(strings.Repeat(ctx.Glyph(theme.BoxHorizontal), 11))
+	b.WriteString("\n\n  Transition notice (one release)\n")
+	b.WriteString("  t: enrichment ceiling -> dark/light theme\n")
+	b.WriteString("  c: open compare -> enrichment ceiling\n")
+	b.WriteString("  d: unbound -> open compare\n")
+	b.WriteString("\n")
+	for _, section := range []struct {
+		title  string
+		scopes []keymap.Scope
+	}{
+		{"Fork table", []keymap.Scope{keymap.MainTable}},
+		{"Fork details", []keymap.Scope{keymap.MainDetail}},
+		{"Help", []keymap.Scope{keymap.MainHelp}},
+	} {
+		b.WriteString("\n  " + section.title + "\n")
+		for _, binding := range keymap.ForScopes(section.scopes...) {
+			b.WriteString("  " + keymap.KeyLabel(binding.Keys))
+			padding := 16 - len([]rune(keymap.KeyLabel(binding.Keys)))
+			if padding < 1 {
+				padding = 1
+			}
+			b.WriteString(strings.Repeat(" ", padding))
+			b.WriteString(binding.Label)
+			b.WriteString("\n")
+		}
+	}
+
+	return b.String()
 }

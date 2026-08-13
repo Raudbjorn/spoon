@@ -24,7 +24,10 @@ func (m Model) viewDetail() string {
 		return "\n  No fork selected.\n"
 	}
 	body := scrollLines(m.detailBody(), m.detailOffset, m.detailViewHeight())
-	return body + "\n\n  " + m.styles().help.Render("[o] Open  [c] Compare  [y] Yank  [PgUp/PgDn] Scroll  [b/Esc] Back")
+	if m.fullscreen {
+		return body
+	}
+	return body + "\n\n  " + m.styles().help.Render("[o] Open  [d] Compare  [c] Tier  [t] Theme  [f] Chrome  [y] Yank  [PgUp/PgDn] Scroll  [b/Esc] Back")
 }
 
 // detailViewHeight is how many body lines fit on screen. Zero (no

@@ -8,6 +8,7 @@ import (
 
 	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/threadsops"
+	"github.com/svnbjrn/spoon/internal/tui/keymap"
 	"github.com/svnbjrn/spoon/internal/tui/theme"
 	"github.com/svnbjrn/spoon/internal/tui/ui"
 )
@@ -30,8 +31,10 @@ func renderModel(m Model) string {
 			ui.Text(ctx, ui.TextFaint, "press q to quit", width)
 	}
 	var b strings.Builder
-	b.WriteString(renderTUIStatus(m.prStatus, m.number, ctx))
-	b.WriteString("\n")
+	if !m.fullscreen {
+		b.WriteString(renderTUIStatus(m.prStatus, m.number, ctx))
+		b.WriteString("\n")
+	}
 	for i, thread := range m.threads {
 		marker := "  "
 		if i == m.cursor {
@@ -76,9 +79,11 @@ func renderModel(m Model) string {
 			b.WriteString("\n")
 		}
 	}
-	b.WriteString("\n")
-	b.WriteString(renderBindingLegend(ctx, width))
-	b.WriteString("\n")
+	if !m.fullscreen {
+		b.WriteString("\n")
+		b.WriteString(renderBindingLegend(ctx, width))
+		b.WriteString("\n")
+	}
 	if m.status != "" {
 		b.WriteString("\n")
 		tone := m.statusTone
@@ -107,16 +112,13 @@ type bindingHint struct {
 	key, label string
 }
 
-var threadBindingHints = []bindingHint{
-	{"r/Enter", "reply"},
-	{"R", "resolve"},
-	{"a", "apply suggestion"},
-	{"c", "counter-propose"},
-	{"Ctrl+A", "resolve-all"},
-	{"A", "unresolve-all"},
-	{"o", "open"},
-	{"?", "help"},
-	{"q", "quit"},
+func threadBindingHints() []bindingHint {
+	bindings := keymap.ForScopes(keymap.ThreadList)
+	hints := make([]bindingHint, 0, len(bindings))
+	for _, binding := range bindings {
+		hints = append(hints, bindingHint{keymap.KeyLabel(binding.Keys), strings.ToLower(binding.Label)})
+	}
+	return hints
 }
 
 // renderBindingLegend wraps whole actions so every available operation remains
@@ -127,7 +129,7 @@ func renderBindingLegend(ctx theme.Context, width int) string {
 	}
 	var lines []string
 	line := ""
-	for _, hint := range threadBindingHints {
+	for _, hint := range threadBindingHints() {
 		part := ui.Kbd(ctx, hint.key, lipgloss.Width(hint.key)+2) + " " +
 			ui.Text(ctx, ui.TextFaint, hint.label, lipgloss.Width(hint.label))
 		if line != "" && lipgloss.Width(line)+1+lipgloss.Width(part) > width {
@@ -260,25 +262,25 @@ func renderCodeContext(thread gh.ReviewThread, cc threadsops.CodeContext, ctx th
 }
 
 func renderHelp(ctx theme.Context) string {
-	return "spoon threads " + ctx.Glyph(theme.EmDash) + ` keybindings
-
-  ` + ctx.Glyph(theme.ArrowUp) + `/` + ctx.Glyph(theme.ArrowDown) + `, j/k     Navigate threads
-  Enter, r     Reply (opens textarea)
-  R            Resolve current thread
-  a            Apply suggestion on current thread (no-op if thread has none)
-  c            Counter-propose: opens $EDITOR with a temp file; content is
-               wrapped in a suggestion block and posted as a reply.
-               Empty content (or no edits) cancels.
-  Ctrl+A       Resolve all (with confirm)
-  A            Unresolve all (with confirm)
-  o            Open PR in browser
-  ?            Toggle this help
-  q            Quit
-
-In the composer:
-  Ctrl+S       Submit
-  Esc          Cancel
-
-Press ? again to return.
-`
+	var b strings.Builder
+	b.WriteString("spoon threads " + ctx.Glyph(theme.EmDash) + " keybindings\n\n")
+	for _, binding := range keymap.ForScopes(keymap.ThreadList) {
+		b.WriteString("  " + keymap.KeyLabel(binding.Keys))
+		padding := 14 - len([]rune(keymap.KeyLabel(binding.Keys)))
+		if padding < 1 {
+			padding = 1
+		}
+		b.WriteString(strings.Repeat(" ", padding) + binding.Label + "\n")
+	}
+	b.WriteString("\nIn the composer:\n")
+	for _, binding := range keymap.ForScopes(keymap.ThreadCompose) {
+		b.WriteString("  " + keymap.KeyLabel(binding.Keys))
+		padding := 14 - len([]rune(keymap.KeyLabel(binding.Keys)))
+		if padding < 1 {
+			padding = 1
+		}
+		b.WriteString(strings.Repeat(" ", padding) + binding.Label + "\n")
+	}
+	b.WriteString("\nPress ? again to return.\n")
+	return b.String()
 }

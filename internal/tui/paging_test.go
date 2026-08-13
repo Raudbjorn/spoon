@@ -173,11 +173,11 @@ func TestViewHelp_Scrolls(t *testing.T) {
 	}
 }
 
-// Every key the help screen advertises must have a handler. This is the test
-// that would have caught `t` and `/` being advertised with nothing behind them.
-func TestHelpAdvertisesOnlyImplementedKeys(t *testing.T) {
+// The generated help remains contextual and must surface the moved keys and
+// every major navigation alternate from the same registry as dispatch.
+func TestHelpAdvertisesRegistryActions(t *testing.T) {
 	body := helpBody(theme.DefaultContext())
-	for _, k := range []string{"PgUp/PgDn", "/", "Esc", "t", "branches"} {
+	for _, k := range []string{"PgUp", "/", "Esc", "t", "c", "d", "Toggle dark/light theme", "Cycle enrichment ceiling"} {
 		if !strings.Contains(body, k) {
 			t.Errorf("help body missing %q", k)
 		}

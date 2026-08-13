@@ -28,8 +28,10 @@ func (m Model) viewTable() string {
 
 	var b strings.Builder
 
-	b.WriteString(m.renderStatusBar())
-	b.WriteString("\n")
+	if !m.fullscreen {
+		b.WriteString(m.renderStatusBar())
+		b.WriteString("\n")
+	}
 
 	// Column header
 	sortInd := func(col string) string {
@@ -217,22 +219,23 @@ func (m Model) viewTable() string {
 		b.WriteString("\n")
 	}
 
-	if m.clipMsg != "" && time.Since(m.clipMsgTime) < 5*time.Second {
-		b.WriteString(" " + styles.subtitle.Render(m.clipMsg) + "\n")
-	} else if m.errMsg != "" && time.Since(m.errMsgTime) < 5*time.Second {
-		b.WriteString(" " + styles.subtitle.Render(m.errMsg) + "\n")
-	} else if rs := m.rankFooter(); rs != "" {
-		b.WriteString(" " + styles.subtitle.Render(rs) + "\n")
-	} else if cs := m.clusterFooter(); cs != "" {
-		b.WriteString(" " + styles.subtitle.Render(cs) + "\n")
-	} else {
-		b.WriteString("\n")
+	if !m.fullscreen {
+		if m.clipMsg != "" && time.Since(m.clipMsgTime) < 5*time.Second {
+			b.WriteString(" " + styles.subtitle.Render(m.clipMsg) + "\n")
+		} else if m.errMsg != "" && time.Since(m.errMsgTime) < 5*time.Second {
+			b.WriteString(" " + styles.subtitle.Render(m.errMsg) + "\n")
+		} else if rs := m.rankFooter(); rs != "" {
+			b.WriteString(" " + styles.subtitle.Render(rs) + "\n")
+		} else if cs := m.clusterFooter(); cs != "" {
+			b.WriteString(" " + styles.subtitle.Render(cs) + "\n")
+		} else {
+			b.WriteString("\n")
+		}
+		if legend := m.badgeLegend(); legend != "" {
+			b.WriteString(styles.help.Render(" "+legend) + "\n")
+		}
+		b.WriteString(styles.help.Render(" " + ctx.Glyph(theme.ArrowUp) + ctx.Glyph(theme.ArrowDown) + " navigate  PgUp/PgDn page  Enter detail  Space mark  / filter  R rank  e/E export  o open  d compare  c tier  t theme  f chrome  ? help  q quit"))
 	}
-	if legend := m.badgeLegend(); legend != "" {
-		b.WriteString(styles.help.Render(" "+legend) + "\n")
-	}
-	b.WriteString(styles.help.Render(" " + ctx.Glyph(theme.ArrowUp) + ctx.Glyph(theme.ArrowDown) + " navigate  PgUp/PgDn page  Enter detail  Space mark  / filter  R rank  e/E export  o open  y yank  s sort  g cluster  t tier  ? help  q quit"))
-
 	return b.String()
 }
 

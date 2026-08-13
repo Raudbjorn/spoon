@@ -27,6 +27,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/svnbjrn/spoon/internal/embed"
+	"github.com/svnbjrn/spoon/internal/tui/keymap"
 	"github.com/svnbjrn/spoon/internal/tui/theme"
 	"github.com/svnbjrn/spoon/internal/tui/ui"
 )
@@ -75,8 +76,8 @@ func (m *Model) promptRank() {
 // filter". Esc cancels the edit and leaves any active ranking alone — also
 // matching `/`, whose Esc-on-the-table is what clears.
 func (m *Model) handleRankKey(key, typed string) (tea.Model, tea.Cmd) {
-	switch key {
-	case "enter":
+	switch keymap.Dispatch(keymap.MainRank, key) {
+	case keymap.Submit:
 		query := strings.TrimSpace(m.rankQuery)
 		m.view = viewTable
 		if query == "" {
@@ -84,7 +85,7 @@ func (m *Model) handleRankKey(key, typed string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, m.startRankScoring(query)
-	case "esc":
+	case keymap.Back:
 		m.view = viewTable
 		return m, nil
 	default:

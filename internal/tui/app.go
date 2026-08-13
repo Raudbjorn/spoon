@@ -19,6 +19,7 @@ import (
 	"github.com/svnbjrn/spoon/internal/heat"
 	"github.com/svnbjrn/spoon/internal/store"
 	"github.com/svnbjrn/spoon/internal/topics"
+	"github.com/svnbjrn/spoon/internal/tui/keymap"
 	"github.com/svnbjrn/spoon/internal/tui/theme"
 	"github.com/svnbjrn/spoon/internal/tui/ui"
 )
@@ -88,6 +89,10 @@ type Model struct {
 	height   int
 	quitting bool
 
+	// fullscreen hides table/detail chrome without changing selection,
+	// scroll offsets, or paging geometry.
+	fullscreen bool
+
 	// theme is resolved once by command startup. Bare test literals use
 	// themeContext's deterministic default instead.
 	theme theme.Context
@@ -148,7 +153,7 @@ type Model struct {
 	enrichCtx    context.Context
 	enrichCancel context.CancelFunc
 
-	// tierCeiling is the user's maximum enrichment tier, cycled by `t`.
+	// tierCeiling is the user's maximum enrichment tier, cycled by `c`.
 	// It is a pointer to an atomic rather than a plain int because
 	// startEnrichment hands every per-fork closure to tea.Batch up front:
 	// those closures run on bubbletea's goroutines and must read the ceiling
@@ -696,7 +701,7 @@ func (m *Model) recomputeT2Score(i int) {
 	// everything the cluster pipeline wrote in place through &forks[i].Heat
 	// (cluster_bridge.go) -- cluster identity, novelty, category, sibling
 	// similarity. That is reachable today on the streaming path and becomes
-	// trivially reachable once `t` can trigger a rescore after clusters have
+	// trivially reachable once `c` can trigger a rescore after clusters have
 	// landed, at which point `g` starts reporting "no clusters available" on
 	// a repo that has them.
 	carryClusterFields(&result, m.forks[i].Heat)
@@ -739,9 +744,7 @@ func batchTick() tea.Cmd {
 
 func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
-
-	switch key {
-	case "ctrl+c":
+	if keymap.Dispatch(keymap.Global, key) == keymap.Quit {
 		m.quitting = true
 		m.cancelEnrichment()
 		m.cancelLifecycle()
@@ -768,21 +771,21 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case viewRank:
 		return m.handleRankKey(key, typed)
 	case viewHelp:
-		switch key {
-		case "?", "esc", "q":
+		switch keymap.Dispatch(keymap.MainHelp, key) {
+		case keymap.Back:
 			m.helpOffset = 0
 			m.view = viewTable
-		case "up", "k":
+		case keymap.Up:
 			m.scrollHelp(-1)
-		case "down", "j":
+		case keymap.Down:
 			m.scrollHelp(1)
-		case "pgup":
+		case keymap.PageUp:
 			m.scrollHelp(-m.helpViewHeight())
-		case "pgdown":
+		case keymap.PageDown:
 			m.scrollHelp(m.helpViewHeight())
-		case "home":
+		case keymap.Home:
 			m.helpOffset = 0
-		case "G", "end":
+		case keymap.End:
 			m.helpOffset = maxScrollOffset(helpBody(m.themeContext()), m.helpViewHeight())
 		}
 		return m, nil
@@ -792,8 +795,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleInputKey(key string, typed string) (tea.Model, tea.Cmd) {
-	switch key {
-	case "enter":
+	switch keymap.Dispatch(keymap.MainInput, key) {
+	case keymap.Submit:
 		m.inputErr = ""
 		m.errMsg = ""
 		repo := strings.TrimSpace(m.input)
@@ -802,7 +805,7 @@ func (m *Model) handleInputKey(key string, typed string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, m.startFetch()
-	case "esc":
+	case keymap.Back:
 		if m.parent != nil {
 			m.view = viewTable
 		}
@@ -813,73 +816,72 @@ func (m *Model) handleInputKey(key string, typed string) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleTableKey(key string) (tea.Model, tea.Cmd) {
-	switch key {
-	case "q":
+	switch keymap.Dispatch(keymap.MainTable, key) {
+	case keymap.Quit:
 		m.quitting = true
 		m.cancelEnrichment()
 		m.cancelLifecycle()
 		return m, tea.Quit
-	// All movement goes through visible space, so a filtered-out fork is never
-	// selectable and paging never has to know which rows are hidden.
-	case "up", "k":
+	case keymap.Up:
 		m.moveCursorBy(-1)
-	case "down", "j":
+	case keymap.Down:
 		m.moveCursorBy(1)
-	case "pgup":
+	case keymap.PageUp:
 		m.moveCursorBy(-m.pageSize())
-	case "pgdown":
+	case keymap.PageDown:
 		m.moveCursorBy(m.pageSize())
-	case "home":
+	case keymap.Home:
 		m.moveCursorTo(0)
-	case "G", "end":
+	case keymap.End:
 		m.moveCursorTo(math.MaxInt)
-	case "g":
+	case keymap.GroupClusters:
 		m.toggleGroupByCluster()
-	case "enter":
+	case keymap.OpenDetail:
 		if m.cursor >= 0 && m.cursor < len(m.forks) {
 			m.detailOffset = 0
 			m.view = viewDetail
 		}
-	case "n":
+	case keymap.NewRepository:
 		m.view = viewInput
-	case "/":
-		// Seed with the active filter so `/` edits rather than retypes.
+	case keymap.Filter:
 		m.filterInput = m.filter
 		m.filterCursor = len([]rune(m.filterInput))
 		m.view = viewFilter
-	case "R":
+	case keymap.Rank:
 		m.promptRank()
-	case "esc":
+	case keymap.ClearFilter:
 		if m.filter != "" {
 			m.applyFilter("")
 		}
-	case "?":
+	case keymap.ToggleHelp:
 		m.view = viewHelp
-	case "s":
+	case keymap.CycleSort:
 		m.cycleSortColumn()
-	case "S":
+	case keymap.ReverseSort:
 		m.sortAsc = !m.sortAsc
 		m.reapplySort()
-	case "o":
+	case keymap.OpenBrowser:
 		return m, m.openInBrowser()
-	case "c":
+	case keymap.OpenCompare:
 		return m, m.openCompare()
-	case "y":
-		return m, m.yankCloneCommand()
-	case "t":
+	case keymap.CycleTier:
 		return m, m.cycleMaxTier()
-	case "r":
+	case keymap.ToggleTheme:
+		m.theme = theme.ToggleDarkLight(m.themeContext())
+	case keymap.ToggleFullscreen:
+		m.fullscreen = !m.fullscreen
+	case keymap.Yank:
+		return m, m.yankCloneCommand()
+	case keymap.Refresh:
 		return m, m.doRefresh()
-	case " ":
+	case keymap.ToggleMark:
 		if m.cursor >= 0 && m.cursor < len(m.forks) {
 			m.forks[m.cursor].Marked = !m.forks[m.cursor].Marked
-			// Advance to the next VISIBLE fork: under a filter, cursor+1 could
-			// be a hidden row, which would strand the selection off-screen.
 			m.moveCursorBy(1)
 		}
-	case "e":
+	case keymap.ExportMarked:
 		return m, m.promptExportMarked()
-	case "E":
+	case keymap.ExportAll:
 		return m, m.promptExportAll()
 	}
 	return m, nil
@@ -949,29 +951,33 @@ func (m *Model) hasClusterData() bool {
 }
 
 func (m *Model) handleDetailKey(key string) (tea.Model, tea.Cmd) {
-	switch key {
-	case "esc", "b", "q":
-		// Reset on the way out as well as on the way in: a stale offset from a
-		// tall fork would otherwise blank the view for the next, shorter one.
+	switch keymap.Dispatch(keymap.MainDetail, key) {
+	case keymap.Back:
 		m.detailOffset = 0
 		m.view = viewTable
-	case "up", "k":
+	case keymap.Up:
 		m.scrollDetail(-1)
-	case "down", "j":
+	case keymap.Down:
 		m.scrollDetail(1)
-	case "pgup":
+	case keymap.PageUp:
 		m.scrollDetail(-m.detailViewHeight())
-	case "pgdown":
+	case keymap.PageDown:
 		m.scrollDetail(m.detailViewHeight())
-	case "home":
+	case keymap.Home:
 		m.detailOffset = 0
-	case "G", "end":
+	case keymap.End:
 		m.detailOffset = maxScrollOffset(m.detailBody(), m.detailViewHeight())
-	case "o":
+	case keymap.OpenBrowser:
 		return m, m.openInBrowser()
-	case "c":
+	case keymap.OpenCompare:
 		return m, m.openCompare()
-	case "y":
+	case keymap.CycleTier:
+		return m, m.cycleMaxTier()
+	case keymap.ToggleTheme:
+		m.theme = theme.ToggleDarkLight(m.themeContext())
+	case keymap.ToggleFullscreen:
+		m.fullscreen = !m.fullscreen
+	case keymap.Yank:
 		return m, m.yankCloneCommand()
 	}
 	return m, nil
@@ -1302,7 +1308,7 @@ func (m *Model) startEnrichment() tea.Cmd {
 
 	// Force the ceiling atomic into existence before any compareCmd closure
 	// captures m.tierCeiling below: a nil pointer captured here would never
-	// observe a later `t` press, since setMaxTier would go on to allocate a
+	// observe a later `c` press, since setMaxTier would go on to allocate a
 	// fresh atomic that the already-built closures never see.
 	m.setMaxTier(m.maxTier())
 

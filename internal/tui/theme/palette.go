@@ -33,6 +33,23 @@ func PaletteByName(name string) (Palette, error) {
 	}
 }
 
+// ToggleDarkLight switches the live palette while retaining every terminal
+// capability choice resolved at startup. Amber is a configured palette rather
+// than a toggle endpoint, so it moves to dark on its first toggle.
+func ToggleDarkLight(ctx Context) Context {
+	target := Dark
+	if ctx.Palette == resolvePalette(Dark, ctx.ColorProfile) {
+		target = Light
+	}
+	return Context{
+		Palette:      resolvePalette(target, ctx.ColorProfile),
+		ColorProfile: ctx.ColorProfile,
+		GlyphProfile: ctx.GlyphProfile,
+		gutter:       resolveGutterColors(GutterColors(target), ctx.ColorProfile),
+		initialized:  true,
+	}
+}
+
 // The gutter has no upstream semantic role: it identifies duplicate groups,
 // so each theme defines six distinct categorical hues separate from heat.
 var (

@@ -2,26 +2,28 @@
 
   Keybindings
   ───────────
-  ↑/↓, j/k      Navigate table
-  PgUp/PgDn     Page up/down (table, detail, help)
-  Home/G        Go to top/bottom
-  g             Toggle cluster grouping (when clusters are available)
-  Enter         View fork details
-  n             Search new repository
-  /             Filter forks by owner/name
-  R             Rank filtered forks by intent (relevance, not a filter)
-  Esc           Clear the active filter
-  s             Cycle sort column (heat/stars/ahead/branches/forks/pushed)
-  S             Reverse sort order
-  o             Open selected fork in browser
-  c             Open compare view in browser
-  y             Yank clone command to clipboard
-  t             Cycle enrichment ceiling - T3 full, T2 no lone-wolf, T1 no compares
-  r             Refresh (bypass cache, restart)
-  Space         Mark/unmark fork for export
-  e             Export marked forks to JSON
-  E             Export all forks to JSON
-  ?             Toggle this help
-  q, Ctrl+C     Quit
 
+  Transition notice (one release)
+  t: enrichment ceiling -> dark/light theme
+  c: open compare -> enrichment ceiling
+  d: unbound -> open compare
+
+
+  Fork table
+  q               Quit
+  Up/k            Move selection up
+  Down/j          Move selection down
+  PgUp            Page up
+  PgDn            Page down
+  home            Go to top
+  G/end           Go to bottom
+  g               Toggle cluster grouping
+  Enter           View fork details
+  n               Search new repository
+  /               Filter forks
+  R               Rank by intent
+  Esc             Clear active filter
+  ?               Open help
+  s               Cycle sort column
+  S               Reverse sort order
   [38;2;133;133;133mPgUp/PgDn scroll · Press ? or Esc to go back[0m

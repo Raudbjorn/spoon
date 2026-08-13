@@ -12,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/svnbjrn/spoon/internal/topics"
+	"github.com/svnbjrn/spoon/internal/tui/keymap"
 	"github.com/svnbjrn/spoon/internal/tui/theme"
 	"github.com/svnbjrn/spoon/internal/tui/ui"
 )
@@ -48,16 +49,16 @@ func (m *Model) handleTopicResolved(msg topicResolvedMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleTopicPickerKey(key string) (tea.Model, tea.Cmd) {
-	switch key {
-	case "up", "k":
+	switch keymap.Dispatch(keymap.MainTopics, key) {
+	case keymap.Up:
 		if m.topicCursor > 0 {
 			m.topicCursor--
 		}
-	case "down", "j":
+	case keymap.Down:
 		if m.topicCursor < len(m.topicSelections)-1 {
 			m.topicCursor++
 		}
-	case "enter":
+	case keymap.Submit:
 		if len(m.topicSelections) == 0 {
 			return m, nil
 		}
@@ -65,7 +66,7 @@ func (m *Model) handleTopicPickerKey(key string) (tea.Model, tea.Cmd) {
 		m.inputCursor = len([]rune(m.input))
 		m.view = viewTable
 		return m, func() tea.Msg { return startFetchMsg{} }
-	case "esc", "q":
+	case keymap.Back:
 		m.view = viewInput
 		m.inputErr = ""
 	}

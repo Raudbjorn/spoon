@@ -11,6 +11,7 @@ import (
 	"github.com/cli/browser"
 	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/threadsops"
+	"github.com/svnbjrn/spoon/internal/tui/keymap"
 	"github.com/svnbjrn/spoon/internal/tui/theme"
 	"github.com/svnbjrn/spoon/internal/tui/ui"
 )
@@ -41,6 +42,10 @@ type Model struct {
 	includeResolved bool
 	filter          threadsops.FilterMode
 	showHelp        bool
+
+	// fullscreen hides list chrome but does not alter the selected thread or
+	// any asynchronous operation state.
+	fullscreen bool
 
 	pendingSuggestion threadsops.Suggestion // set while m.confirm == "apply-suggestion"
 
@@ -237,11 +242,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.composing {
-			switch msg.Type {
-			case tea.KeyEsc:
+			switch keymap.Dispatch(keymap.ThreadCompose, msg.String()) {
+			case keymap.Back:
 				m.composing = false
 				m.composeBuf = nil
-			case tea.KeyCtrlS:
+			case keymap.Submit:
 				body := string(m.composeBuf)
 				m.composing = false
 				m.composeBuf = nil
@@ -256,16 +261,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case "resolve":
 					return m, m.replyThenResolveCmd(targetID, body)
 				}
-			case tea.KeyBackspace:
-				if len(m.composeBuf) > 0 {
-					m.composeBuf = m.composeBuf[:len(m.composeBuf)-1]
+			default:
+				switch msg.Type {
+				case tea.KeyBackspace:
+					if len(m.composeBuf) > 0 {
+						m.composeBuf = m.composeBuf[:len(m.composeBuf)-1]
+					}
+				case tea.KeyRunes:
+					m.composeBuf = append(m.composeBuf, msg.Runes...)
+				case tea.KeyEnter:
+					m.composeBuf = append(m.composeBuf, '\n')
+				case tea.KeySpace:
+					m.composeBuf = append(m.composeBuf, ' ')
 				}
-			case tea.KeyRunes:
-				m.composeBuf = append(m.composeBuf, msg.Runes...)
-			case tea.KeyEnter:
-				m.composeBuf = append(m.composeBuf, '\n')
-			case tea.KeySpace:
-				m.composeBuf = append(m.composeBuf, ' ')
 			}
 			return m, nil
 		}
@@ -432,6 +440,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case actHelp:
 			m.showHelp = !m.showHelp
+		case actFullscreen:
+			m.fullscreen = !m.fullscreen
 		case actQuit:
 			return m, tea.Quit
 		}

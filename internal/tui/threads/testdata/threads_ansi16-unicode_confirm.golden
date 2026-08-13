@@ -9,8 +9,9 @@ PR #42 — Fixture PR
 [1;97m⚠ Unresolved (active)[0m
 Please update this.
 
-[37;40m[r/Enter][0m [3;2;90mreply[0m [37;40m[R][0m [3;2;90mresolve[0m [37;40m[a][0m [3;2;90mapply suggestion[0m [37;40m[c][0m [3;2;90mcounter-propose[0m [37;40m[Ctrl+A][0m [3;2;90mresolve-all[0m [37;40m[A][0m [3;2;90munresolve-all[0m [37;40m[o][0m [3;2;90mopen[0m
-[37;40m[?][0m [3;2;90mhelp[0m [37;40m[q][0m [3;2;90mquit[0m
+[37;40m[Up/k][0m [3;2;90mmove thread selection up[0m [37;40m[Down/j][0m [3;2;90mmove thread selection down[0m [37;40m[q/ctrl+c][0m [3;2;90mquit[0m [37;40m[r/Enter][0m [3;2;90mreply[0m
+[37;40m[R][0m [3;2;90mresolve current thread[0m [37;40m[a][0m [3;2;90mapply suggestion[0m [37;40m[ctrl+a][0m [3;2;90mresolve all[0m [37;40m[A][0m [3;2;90munresolve all[0m [37;40m[o][0m [3;2;90mopen pull request[0m
+[37;40m[c][0m [3;2;90mcounter-propose[0m [37;40m[?][0m [3;2;90mtoggle help[0m [37;40m[f][0m [3;2;90mhide or restore chrome[0m
 
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ [1;4;97;4mC[0m[1;4;97;4mo[0m[1;4;97;4mn[0m[1;4;97;4mf[0m[1;4;97;4mi[0m[1;4;97;4mr[0m[1;4;97;4mm[0m                                                                                                              │

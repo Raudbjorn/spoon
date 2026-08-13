@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/svnbjrn/spoon/internal/forge"
+	"github.com/svnbjrn/spoon/internal/tui/keymap"
 	"github.com/svnbjrn/spoon/internal/tui/theme"
 	"github.com/svnbjrn/spoon/internal/tui/ui"
 )
@@ -215,8 +216,8 @@ func (m *Model) promptExportAll() tea.Cmd {
 
 // handleExportPathKey handles input in the export path prompt.
 func (m *Model) handleExportPathKey(key string, typed string) (tea.Model, tea.Cmd) {
-	switch key {
-	case "enter":
+	switch keymap.Dispatch(keymap.MainExport, key) {
+	case keymap.Submit:
 		path := strings.TrimSpace(m.exportPath)
 		if path == "" {
 			m.view = viewTable
@@ -226,7 +227,7 @@ func (m *Model) handleExportPathKey(key string, typed string) (tea.Model, tea.Cm
 		m.exportForks = nil
 		m.view = viewTable
 		return m, cmd
-	case "esc":
+	case keymap.Back:
 		m.exportForks = nil
 		m.view = viewTable
 	default:
