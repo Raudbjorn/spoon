@@ -313,25 +313,33 @@ func (m Model) badgeLegend() string {
 }
 
 func (m Model) renderStatusBar() string {
+	type statusSegment struct {
+		text     string
+		priority int
+	}
+
 	ctx, styles := m.themeContext(), m.styles()
 	separator := " " + ctx.Glyph(theme.BoxVertical) + " "
 	var variable []string
-	tail := make([]string, 0, 6)
+	tail := make([]statusSegment, 0, 6)
+	appendTail := func(priority int, text string) {
+		tail = append(tail, statusSegment{text: text, priority: priority})
+	}
 
 	if m.parent != nil {
 		variable = append(variable, m.parent.FullName)
 		if m.filter != "" {
 			// Both numbers, so a filter can never quietly shrink the fork
 			// count into looking like the repo has fewer forks than it does.
-			tail = append(tail, fmt.Sprintf("%d/%d forks", m.visibleCount(), len(m.forks)))
+			appendTail(1, fmt.Sprintf("%d/%d forks", m.visibleCount(), len(m.forks)))
 			variable = append(variable, fmt.Sprintf("filter: %q", m.filter))
 		} else {
-			tail = append(tail, fmt.Sprintf("%d forks", len(m.forks)))
+			appendTail(1, fmt.Sprintf("%d forks", len(m.forks)))
 		}
 	}
 
 	if m.enriching {
-		tail = append(tail, fmt.Sprintf("T2: %d/%d", m.enrichDone, m.enrichTotal))
+		appendTail(2, fmt.Sprintf("T2: %d/%d", m.enrichDone, m.enrichTotal))
 	}
 
 	// Enrichment ceiling. Shown only when it is actually capping something --
@@ -348,17 +356,17 @@ func (m Model) renderStatusBar() string {
 		if skipped > 0 {
 			seg += fmt.Sprintf(" (%d skipped)", skipped)
 		}
-		tail = append(tail, seg)
+		appendTail(3, seg)
 	}
 	if m.auth.RateLimit > 0 {
 		headroom := m.provider.Headroom()
 		remaining := int(headroom * float64(m.auth.RateLimit))
-		tail = append(tail, fmt.Sprintf("API: %d/%d", remaining, m.auth.RateLimit))
+		appendTail(4, fmt.Sprintf("API: %d/%d", remaining, m.auth.RateLimit))
 	}
 	if !m.auth.Authenticated() {
 		// Keep the authentication warning in the fixed tail: long repository
 		// names and filters are informative, but this warning is actionable.
-		tail = append(tail, styles.warn.Render(ctx.Glyph(theme.Warning)+" Unauthenticated"))
+		appendTail(6, styles.warn.Render(ctx.Glyph(theme.Warning)+" Unauthenticated"))
 	}
 	marked := 0
 	for _, fork := range m.forks {
@@ -367,7 +375,7 @@ func (m Model) renderStatusBar() string {
 		}
 	}
 	if marked > 0 {
-		tail = append(tail, fmt.Sprintf("%d marked", marked))
+		appendTail(5, fmt.Sprintf("%d marked", marked))
 	}
 
 	contentWidth := ui.ContentWidth(m.width)
@@ -379,15 +387,51 @@ func (m Model) renderStatusBar() string {
 		contentLimit = 0
 	}
 
-	mandatory := strings.Join(append([]string{"spoon"}, tail...), separator)
-	content := ansi.Truncate(mandatory, contentLimit, "")
+	render := func(prefix []string, selected []bool) string {
+		parts := append([]string(nil), prefix...)
+		for i, segment := range tail {
+			if selected[i] {
+				parts = append(parts, segment.text)
+			}
+		}
+		return strings.Join(parts, separator)
+	}
+
+	prefix := []string{"spoon"}
 	if len(variable) > 0 {
-		available := contentLimit - lipgloss.Width(mandatory) - lipgloss.Width(separator)
-		if available > 0 {
-			elided := ansi.Truncate(strings.Join(variable, separator), available, ctx.Glyph(theme.EmDash))
-			content = strings.Join(append([]string{"spoon", elided}, tail...), separator)
+		// Reserve a visible omission marker before allocating status fields.
+		// At narrow widths the parent/filter give way to actionable state.
+		prefix = []string{ctx.Glyph(theme.EmDash)}
+	}
+	// Keep status fields in this documented priority order when the terminal is
+	// narrow: authentication warning, marked-work count, API budget, requested
+	// tier ceiling, enrichment progress, then the informational fork count.
+	// Rendering still preserves their normal left-to-right order below.
+	selected := make([]bool, len(tail))
+	for priority := 6; priority >= 1; priority-- {
+		for i, segment := range tail {
+			if segment.priority != priority {
+				continue
+			}
+			selected[i] = true
+			if lipgloss.Width(render(prefix, selected)) > contentLimit {
+				selected[i] = false
+			}
 		}
 	}
+
+	if len(variable) > 0 {
+		selectedContent := render(prefix, selected)
+		available := contentLimit - lipgloss.Width(selectedContent) - lipgloss.Width(separator)
+		if available > 0 {
+			elided := ansi.Truncate(strings.Join(variable, separator), available, ctx.Glyph(theme.EmDash))
+			candidatePrefix := []string{"spoon", elided}
+			if lipgloss.Width(render(candidatePrefix, selected)) <= contentLimit {
+				prefix = candidatePrefix
+			}
+		}
+	}
+	content := render(prefix, selected)
 	return styles.statusBar.Width(contentWidth).Render(content)
 }
 

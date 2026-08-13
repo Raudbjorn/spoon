@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -90,6 +91,59 @@ func TestLongStatusStaysOnOneLineAndPagingRemainsAligned(t *testing.T) {
 	}
 	if !strings.Contains(status, "Unauthenticated") {
 		t.Fatalf("long status lost the critical auth warning: %q", status)
+	}
+
+	_, _ = m.handleTableKey("pgdown")
+	if got, want := m.cursor, m.pageSize(); got != want {
+		t.Fatalf("PgDown cursor = %d, want page-size %d", got, want)
+	}
+	if got, want := strings.Count(m.viewTable(), "fork-"), m.pageSize(); got != want {
+		t.Fatalf("rendered rows after PgDown = %d, want page-size %d", got, want)
+	}
+}
+
+func TestNarrowStatusPreservesActionableTailAndElidesVariables(t *testing.T) {
+	const forkCount = 50
+	filter := "fork-" + strings.Repeat("x", 80)
+	forks := make([]ScoredFork, forkCount)
+	for i := range forks {
+		forks[i] = ScoredFork{
+			Fork:        forge.T1Data{ID: fmt.Sprintf("%s-%d", filter, i)},
+			Marked:      i == 0,
+			TierSkipped: i == 1,
+		}
+	}
+	ctx, err := theme.ResolveContext("", "", "no-color", "", "unicode")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := Model{
+		view:        viewTable,
+		width:       80,
+		height:      24,
+		theme:       ctx,
+		parent:      &forge.ParentData{FullName: "owner/" + strings.Repeat("parent", 25), DefaultBranch: "main"},
+		filter:      filter,
+		forks:       forks,
+		enriching:   true,
+		enrichDone:  1,
+		enrichTotal: forkCount,
+		auth:        forge.AuthInfo{RateLimit: 10},
+		provider:    &tierFakeForge{headroom: 0.5},
+	}
+	m.setMaxTier(2)
+
+	status := m.renderStatusBar()
+	if strings.Count(status, "\n") != 0 {
+		t.Fatalf("narrow status wrapped: %q", status)
+	}
+	if got, want := lipgloss.Width(status), 80; got != want {
+		t.Fatalf("narrow status width = %d, want %d", got, want)
+	}
+	for _, field := range []string{"—", "T2: 1/50", "T<=2 (1 skipped)", "API: 5/10", "Unauthenticated", "1 marked"} {
+		if !strings.Contains(status, field) {
+			t.Errorf("narrow status lost %q: %q", field, status)
+		}
 	}
 
 	_, _ = m.handleTableKey("pgdown")
