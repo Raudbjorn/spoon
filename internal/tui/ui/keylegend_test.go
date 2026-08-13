@@ -9,9 +9,21 @@ import (
 	"github.com/svnbjrn/spoon/internal/tui/theme"
 )
 
+func contextualScopes() []keymap.Scope {
+	seen := map[keymap.Scope]bool{}
+	var scopes []keymap.Scope
+	for _, binding := range keymap.Registry {
+		if binding.Scope != keymap.Global && !seen[binding.Scope] {
+			seen[binding.Scope] = true
+			scopes = append(scopes, binding.Scope)
+		}
+	}
+	return scopes
+}
+
 func TestKeyLegendMatchesEveryEffectiveScopeExactlyOnce(t *testing.T) {
 	ctx := theme.DefaultContext()
-	scopes := []keymap.Scope{keymap.MainInput, keymap.MainTable, keymap.MainDetail, keymap.MainExport, keymap.MainTopics, keymap.MainFilter, keymap.MainRank, keymap.MainHelp, keymap.ThreadList, keymap.ThreadCompose, keymap.ThreadPick}
+	scopes := contextualScopes()
 	for _, scope := range scopes {
 		t.Run(string(scope), func(t *testing.T) {
 			legend := KeyLegend(ctx, 80, scope)
@@ -49,7 +61,7 @@ func TestKeyLegendMatchesEveryEffectiveScopeExactlyOnce(t *testing.T) {
 }
 
 func TestKeyLegendFits80Columns(t *testing.T) {
-	for _, scope := range []keymap.Scope{keymap.MainInput, keymap.MainTable, keymap.MainDetail, keymap.MainExport, keymap.MainTopics, keymap.MainFilter, keymap.MainRank, keymap.MainHelp, keymap.ThreadList, keymap.ThreadCompose, keymap.ThreadPick} {
+	for _, scope := range contextualScopes() {
 		legend := KeyLegend(theme.DefaultContext(), 80, scope)
 		for _, line := range strings.Split(legend, "\n") {
 			if got := lipgloss.Width(line); got > 80 {
