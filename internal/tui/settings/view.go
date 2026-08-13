@@ -88,7 +88,7 @@ func (m Model) sectionParts(width int) []ui.BoxPart {
 			row := Resolve(field, m.Config, m.Flags)
 			value := row.Value
 			if field.Secret && value != "" {
-				value = m.secret.RenderWithTheme(m.Theme)
+				value = credentialMask()
 			}
 			out = append(out, ui.BoxPart{Text: ui.Input(m.Theme, ui.InputState{Value: field.Label + ": " + value + " [" + string(row.Source) + "]", Focused: i == m.focus, Enabled: field.Editable && m.canEdit()}, width)})
 			if i == m.focus {
@@ -108,6 +108,7 @@ func (m Model) sectionParts(width int) []ui.BoxPart {
 
 func hostParts(m Model, width int) []ui.BoxPart {
 	facts := []string{
+		"Schema version: " + Resolve(FieldByMust("version"), m.Config, m.Flags).Value,
 		"Config path: " + m.Path,
 		"Layer: " + map[bool]string{true: "system (affects every user)", false: "user"}[m.hasSystemPath()],
 		"System config: " + m.Host.SystemConfig,

@@ -36,10 +36,10 @@ type Config struct {
 	Embedder EmbedderConfig `json:"embedder,omitempty"`
 	UI       UIConfig       `json:"ui,omitempty"`
 
-	// present is load/save metadata, deliberately outside the persisted schema.
-	// It distinguishes explicit false/zero file values from absent values while
-	// effective settings are resolved.
+	// present/raw are load/save metadata, deliberately outside the persisted
+	// schema. Together they distinguish explicit false/zero from absent values.
 	present map[string]bool
+	raw     map[string]json.RawMessage
 }
 
 // UIConfig stores terminal appearance preferences. Environment variables remain
@@ -161,7 +161,7 @@ func Load(path string) (*Config, error) {
 	if err := json.Unmarshal(data, &c); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
-	c.present = leafPresence(data)
+	c.present, c.raw = leafMetadata(data)
 	c.normalizeLegacy()
 	if err := c.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config %s: %w", path, err)
@@ -235,7 +235,7 @@ func Save(path string, c *Config) error {
 	if err := os.Rename(tmp, path); err != nil {
 		return fmt.Errorf("rename %s -> %s: %w", tmp, path, err)
 	}
-	c.present = leafPresence(data)
+	c.present, c.raw = leafMetadata(data)
 	return nil
 }
 
@@ -415,10 +415,18 @@ func LoadDefaultWithLayer() LoadedLayer {
 	if err != nil {
 		return loadedLayer(systemPathForLoad(), true, LayerInvalid, nil, err)
 	}
+	primaryPath := path
+	primarySystem := path == systemPathForLoad()
 	cfg, err := loadForLayer(path)
-	if errors.Is(err, os.ErrNotExist) && path != systemPathForLoad() {
-		path = systemPathForLoad()
-		cfg, err = loadForLayer(path)
+	if errors.Is(err, os.ErrNotExist) && !primarySystem {
+		systemPath := systemPathForLoad()
+		cfg, err = loadForLayer(systemPath)
+		if errors.Is(err, os.ErrNotExist) {
+			// System defaults are absent too. The user layer remains the
+			// publication candidate: never bootstrap defaults into /etc.
+			return loadedLayer(primaryPath, false, LayerMissing, nil, nil)
+		}
+		path = systemPath
 	}
 	system := path == systemPathForLoad()
 	if errors.Is(err, os.ErrNotExist) {

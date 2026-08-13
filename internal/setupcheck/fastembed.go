@@ -39,8 +39,14 @@ func ValidateFastEmbed(cfg config.EmbedderConfig) error {
 	if cfg.Backend != "" && cfg.Backend != embed.BackendFastEmbed {
 		return fmt.Errorf("unsupported FastEmbed backend %q", cfg.Backend)
 	}
-	if cfg.MaxLength < 0 || cfg.BatchSize < 0 {
-		return fmt.Errorf("FastEmbed limits must not be negative")
+	if cfg.Model != "" && cfg.Model != DefaultFastEmbedModel {
+		return fmt.Errorf("FastEmbed model is fixed at %q", DefaultFastEmbedModel)
+	}
+	if cfg.MaxLength != 0 && cfg.MaxLength != DefaultFastEmbedMaxLength {
+		return fmt.Errorf("FastEmbed max length is fixed at %d", DefaultFastEmbedMaxLength)
+	}
+	if cfg.BatchSize < 0 {
+		return fmt.Errorf("FastEmbed batch size must not be negative")
 	}
 	return nil
 }

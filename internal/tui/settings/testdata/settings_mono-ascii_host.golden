@@ -4,6 +4,7 @@ Layer: user  Path: /settings-golden/config.json
 +------------------------------------------------------------------------------+
 | Host                                                                         |
 +------------------------------------------------------------------------------+
+| Schema version: 2                                                            |
 | Config path: /settings-golden/config.json                                    |
 | Layer: user                                                                  |
 | System config: absent                                                        |

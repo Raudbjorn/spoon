@@ -4,7 +4,7 @@ Layer: user  Path: /settings-golden/config.json
 +------------------------------------------------------------------------------+
 | GitHub                                                                       |
 +------------------------------------------------------------------------------+
-| > GitHub tokens:  [FILE]                                                     |
+| > GitHub tokens: ************ [FILE]                                         |
 | One token per line; values are always masked.                                |
 |   Requests per minute: 300 [FILE]                                            |
 +------------------------------------------------------------------------------+

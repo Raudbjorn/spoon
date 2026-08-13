@@ -28,9 +28,10 @@ func main() {
 	// Zero-configuration first run: make sure a documented default config
 	// exists before anything consults it. Never fatal — a bad or unwritable
 	// config degrades to built-in defaults with a warning.
-	cfg, cfgErr := config.EnsureDefault(os.Stderr)
-	if cfgErr != nil {
-		fmt.Fprintf(os.Stderr, "warning: ignoring config: %v\n", cfgErr)
+	boot := config.Bootstrap(os.Stderr)
+	cfg := boot.Config
+	if boot.Warning != nil {
+		fmt.Fprintf(os.Stderr, "warning: ignoring config: %v\n", boot.Warning)
 	}
 
 	// Subcommand dispatch: "spoon threads <pr-ref> ..."
@@ -227,7 +228,6 @@ func main() {
 	}
 	defer db.Close()
 
-	layer := config.LoadDefaultWithLayer()
 	settingsFlags := map[string]string{}
 	if explicitForgeFlag != "" {
 		settingsFlags["forge.provider"] = explicitForgeFlag
@@ -238,10 +238,10 @@ func main() {
 	if noColor {
 		settingsFlags["ui.color"] = "no-color"
 	}
-	settingsModel := settings.NewFromLayer(layer, db).WithFlags(settingsFlags)
+	settingsModel := settings.NewFromLayer(boot.Layer, db).WithFlags(settingsFlags)
 	m := tui.NewModelWithCluster(provider, auth, repoArg, refresh, tuiClusterOpts).
 		WithHeatWeights(heatWeights).WithMaxTier(maxTier).WithStore(db).
-		WithQueryScorer(tuiQueryScorer(db)).WithTheme(tuiContext).WithSettings(settingsModel)
+		WithQueryScorer(tuiQueryScorer(db, cfg)).WithTheme(tuiContext).WithSettings(settingsModel)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 
 	if _, err := p.Run(); err != nil {
@@ -250,17 +250,13 @@ func main() {
 	}
 }
 
-// tuiQueryScorer returns the scorer the `R` intent ranking uses: the Voyage
-// cross-encoder when a key is configured, nil (the built-in lexical scorer)
-// otherwise. The store is passed as Voyage's paid-response cache, so re-ranking
-// the same intent costs nothing the second time.
-//
-// A misconfigured or unusable Voyage setup returns nil rather than failing: the
-// TUI must start with no key, no network and no config, and a ranking that falls
-// back to lexical still labels itself as lexical in the footer.
-func tuiQueryScorer(db *store.Store) embed.QueryScorer {
+// tuiQueryScorer returns the scorer the `R` intent ranking uses from the
+// startup-resolved configuration snapshot. Reusing Bootstrap's exact result
+// prevents a second load from silently selecting a different layer than the
+// runtime and settings editor.
+func tuiQueryScorer(db *store.Store, cfg *config.Config) embed.QueryScorer {
 	var fileCfg config.VoyageConfig
-	if cfg, err := config.LoadDefault(); err == nil && cfg != nil {
+	if cfg != nil {
 		fileCfg = cfg.Embedder.Voyage
 	}
 	voyageCfg, active, err := embed.ResolveVoyageConfig(context.Background(), fileCfg, false, db)

@@ -900,6 +900,7 @@ func (m *Model) handleTableKey(key string) (tea.Model, tea.Cmd) {
 		return m, m.cycleMaxTier()
 	case keymap.ToggleTheme:
 		m.theme = theme.ToggleDarkLight(m.themeContext())
+		m.settings = m.settings.WithTheme(m.theme)
 	case keymap.ToggleFullscreen:
 		m.fullscreen = !m.fullscreen
 	case keymap.Yank:

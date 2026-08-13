@@ -12,7 +12,7 @@ func TestLoadDefaultWithLayerDistinguishesMissingAndInvalidWithoutHostFiles(t *t
 	defaultPathForLoad = func() (string, error) { return "/user/config.json", nil }
 	systemPathForLoad = func() string { return "/system/config.json" }
 	loadForLayer = func(string) (*Config, error) { return nil, os.ErrNotExist }
-	if layer := LoadDefaultWithLayer(); layer.State != LayerMissing || layer.Path != "/system/config.json" || !layer.System {
+	if layer := LoadDefaultWithLayer(); layer.State != LayerMissing || layer.Path != "/user/config.json" || layer.System {
 		t.Fatalf("missing = %#v", layer)
 	}
 	loadForLayer = func(path string) (*Config, error) {

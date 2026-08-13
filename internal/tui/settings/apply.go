@@ -29,6 +29,7 @@ func Candidate(field Field, cfg *config.Config, value string) (*config.Config, e
 	if err := field.Set(candidate, value); err != nil {
 		return nil, err
 	}
+	config.RecordFieldValue(candidate, field.Key, value)
 	candidate.GitHub.Tokens = nonEmpty(candidate.GitHub.Tokens)
 	if err := candidate.Validate(); err != nil {
 		return nil, err

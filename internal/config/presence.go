@@ -1,11 +1,47 @@
 package config
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // FieldPresent reports whether key was explicitly present in the loaded or
 // saved JSON layer. It preserves false and zero as intentional file values.
-func FieldPresent(c *Config, key string) bool {
-	return c != nil && c.present[key]
+func FieldPresent(c *Config, key string) bool { return c != nil && c.present[key] }
+
+// RecordFieldValue marks a settings edit as explicit. Empty strings deliberately
+// remove the leaf, while bool/numeric settings retain their zero values.
+func RecordFieldValue(c *Config, key, value string) {
+	if c == nil {
+		return
+	}
+	if c.present == nil {
+		c.present = map[string]bool{}
+	}
+	if c.raw == nil {
+		c.raw = map[string]json.RawMessage{}
+	}
+	if value == "" {
+		delete(c.present, key)
+		delete(c.raw, key)
+		return
+	}
+	c.present[key] = true
+	if boolOrNumberField(key) {
+		c.raw[key] = json.RawMessage(value)
+		return
+	}
+	encoded, _ := json.Marshal(value)
+	c.raw[key] = encoded
+}
+
+func boolOrNumberField(key string) bool {
+	switch key {
+	case "github.proxy.enabled", "embedder.voyage.disabled", "github.requestsPerMinute", "embedder.maxLength", "embedder.batchSize", "embedder.voyage.outputDimension":
+		return true
+	default:
+		return false
+	}
 }
 
 // Clone returns an independent Config while retaining source-presence metadata
@@ -19,21 +55,37 @@ func Clone(c *Config) (*Config, error) {
 	if err := json.Unmarshal(data, &clone); err != nil {
 		return nil, err
 	}
-	if len(c.present) != 0 {
-		clone.present = make(map[string]bool, len(c.present))
-		for key, value := range c.present {
-			clone.present[key] = value
-		}
-	}
+	clone.present, clone.raw = copyPresence(c.present), copyRaw(c.raw)
 	return &clone, nil
 }
 
-func leafPresence(data []byte) map[string]bool {
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
+func copyPresence(in map[string]bool) map[string]bool {
+	if len(in) == 0 {
 		return nil
 	}
-	present := make(map[string]bool)
+	out := make(map[string]bool, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
+}
+func copyRaw(in map[string]json.RawMessage) map[string]json.RawMessage {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]json.RawMessage, len(in))
+	for key, value := range in {
+		out[key] = append(json.RawMessage(nil), value...)
+	}
+	return out
+}
+
+func leafMetadata(data []byte) (map[string]bool, map[string]json.RawMessage) {
+	var root map[string]json.RawMessage
+	if json.Unmarshal(data, &root) != nil {
+		return nil, nil
+	}
+	present, raw := map[string]bool{}, map[string]json.RawMessage{}
 	var walk func(string, map[string]json.RawMessage)
 	walk = func(prefix string, values map[string]json.RawMessage) {
 		for key, value := range values {
@@ -47,8 +99,67 @@ func leafPresence(data []byte) map[string]bool {
 				continue
 			}
 			present[name] = true
+			raw[name] = append(json.RawMessage(nil), value...)
 		}
 	}
-	walk("", raw)
-	return present
+	walk("", root)
+	return present, raw
+}
+
+// MarshalJSON re-inserts explicitly persisted zero values omitted by Go's
+// `omitempty`, so unrelated settings saves cannot silently change precedence.
+func (c Config) MarshalJSON() ([]byte, error) {
+	type wire Config
+	data, err := json.Marshal(wire(c))
+	if err != nil {
+		return nil, err
+	}
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(data, &root); err != nil {
+		return nil, err
+	}
+	for key := range c.present {
+		if !boolOrNumberField(key) {
+			continue
+		}
+		parts := strings.Split(key, ".")
+		if raw := c.raw[key]; raw != nil && !hasRawPath(root, parts) {
+			setRawPath(root, parts, raw)
+		}
+	}
+	return json.Marshal(root)
+}
+
+func hasRawPath(root map[string]json.RawMessage, parts []string) bool {
+	if len(parts) == 0 {
+		return false
+	}
+	value, ok := root[parts[0]]
+	if !ok {
+		return false
+	}
+	if len(parts) == 1 {
+		return true
+	}
+	var nested map[string]json.RawMessage
+	return json.Unmarshal(value, &nested) == nil && hasRawPath(nested, parts[1:])
+}
+func setRawPath(root map[string]json.RawMessage, parts []string, value json.RawMessage) {
+	if len(parts) == 0 {
+		return
+	}
+	if len(parts) == 1 {
+		root[parts[0]] = value
+		return
+	}
+	var child map[string]json.RawMessage
+	if existing := root[parts[0]]; existing != nil {
+		_ = json.Unmarshal(existing, &child)
+	}
+	if child == nil {
+		child = map[string]json.RawMessage{}
+	}
+	setRawPath(child, parts[1:], value)
+	encoded, _ := json.Marshal(child)
+	root[parts[0]] = encoded
 }

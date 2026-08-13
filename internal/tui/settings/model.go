@@ -52,6 +52,7 @@ type Model struct {
 	confirming       bool
 	pendingCandidate *config.Config
 	pending          Field
+	pendingAction    ActionID
 	systemLayer      bool
 	readOnly         string
 	noConfig         bool
@@ -65,7 +66,14 @@ func NewFromLayer(layer config.LoadedLayer, cache embed.ResponseCache) Model {
 	var m Model
 	switch layer.State {
 	case config.LayerMissing:
-		m = New(&config.Config{}, layer.Path, cache)
+		cfg := layer.Config
+		if cfg == nil {
+			cfg = &config.Config{}
+		}
+		m = New(cfg, layer.Path, cache)
+		if layer.Reason != nil {
+			m.readOnly = layer.Reason.Error()
+		}
 	case config.LayerDisabled:
 		m = New(nil, layer.Path, cache)
 		m.noConfig = true
@@ -205,8 +213,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.alert = m.readOnly
 			return m, nil
 		}
-		if action.ID == ActionSave && m.isSystemWrite() {
+		if m.isSystemWrite() && (action.ID == ActionSave || action.ID == ActionRewriteReadme) {
 			m.pending = Field{Consequence: Hostwide}
+			m.pendingAction = action.ID
 			m.confirming = true
 			return m, nil
 		}
@@ -295,13 +304,19 @@ func (m Model) updateEdit(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if action == keymap.Back || action == keymap.Edit || action == keymap.Submit || action == keymap.Refresh {
 		action = keymap.None
 	}
+	typed := edit.TypedText(key)
+	if field.Key == "github.tokens" && key.Type == tea.KeyRunes && !key.Alt {
+		typed = strings.ReplaceAll(string(key.Runes), "\r\n", "\n")
+		typed = strings.Map(func(r rune) rune {
+			if r == '\n' || r == '\t' || r >= ' ' {
+				return r
+			}
+			return -1
+		}, typed)
+	}
 	value := m.input
 	if field.Secret {
 		value = m.secret.Value()
-	}
-	typed := edit.TypedText(key)
-	if field.Key == "github.tokens" && key.Type == tea.KeyRunes && !key.Alt {
-		typed = strings.ReplaceAll(strings.ReplaceAll(string(key.Runes), "\r\n", "\n"), "\r", "\n")
 	}
 	updated, cursor, handled := edit.Apply(value, m.cursor, action, typed)
 	if !handled {
@@ -329,16 +344,21 @@ func (m Model) updateConfirmation(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.confirming = false
 		m.pending = Field{}
 		m.pendingCandidate = nil
+		m.pendingAction = ""
 		m.clearEditor()
 		return m, nil
 	case "enter", "y":
 		if m.pending.Consequence == Hostwide && !m.pending.Editable {
+			action := m.pendingAction
+			if action == "" {
+				action = ActionSave
+			}
 			m.confirming = false
 			m.pending = Field{}
 			m.pendingCandidate = nil
+			m.pendingAction = ""
 			m.clearEditor()
-			cmd := m.startAction(ActionSave)
-			return m, cmd
+			return m, m.startAction(action)
 		}
 		if m.pendingCandidate != nil {
 			*m.Config = *m.pendingCandidate
@@ -348,6 +368,7 @@ func (m Model) updateConfirmation(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.confirming = false
 		m.pending = Field{}
 		m.pendingCandidate = nil
+		m.pendingAction = ""
 	}
 	return m, nil
 }
@@ -357,7 +378,7 @@ func (m Model) sectionRowCount() int {
 	case EnvironmentSection:
 		return len(DocumentedEnvironment)
 	case HostSection:
-		return 7
+		return 8
 	default:
 		return len(m.fields())
 	}

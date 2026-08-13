@@ -63,7 +63,7 @@ func boolField(key, label string, section Section, help string, consequence Cons
 
 // Registry is the sole inventory of persisted config settings exposed by the TUI.
 var Registry = []Field{
-	{Key: "version", Label: "Schema version", Section: HostSection, Help: "Written by Spoon; version 2 introduces UI preferences.", Get: func(c *config.Config) string { return strconv.Itoa(c.Version) }},
+	{Key: "version", Label: "Schema version", Section: HostSection, Help: "Written by Spoon; version 2 introduces UI preferences.", Default: strconv.Itoa(config.CurrentVersion), Get: func(c *config.Config) string { return strconv.Itoa(c.Version) }},
 	stringField("forge.provider", "Provider", ForgeSection, "github, gitlab, or empty to auto-detect", "", func(c *config.Config) string { return c.Forge.Provider }, func(c *config.Config, v string) { c.Forge.Provider = strings.ToLower(strings.TrimSpace(v)) }),
 	stringField("forge.host", "Host", ForgeSection, "Self-hosted GitHub or GitLab hostname.", "", func(c *config.Config) string { return c.Forge.Host }, func(c *config.Config, v string) { c.Forge.Host = strings.TrimSpace(v) }),
 	{Key: "github.tokens", Label: "GitHub tokens", Section: GitHubSection, Help: "One token per line; values are always masked.", Secret: true, Credential: true, Editable: true, Get: func(c *config.Config) string { return strings.Join(c.GitHub.Tokens, "\n") }, Set: func(c *config.Config, v string) error {

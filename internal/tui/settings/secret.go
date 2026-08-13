@@ -22,12 +22,16 @@ func (s SecretInput) Render() string {
 	return s.RenderWithTheme(theme.DefaultContext())
 }
 
-func (s SecretInput) RenderWithTheme(ctx theme.Context) string {
+func (s SecretInput) RenderWithTheme(_ theme.Context) string {
 	if s.value == "" {
 		return ""
 	}
-	return strings.Repeat(ctx.Glyph(theme.Selected), 12)
+	return credentialMask()
 }
+
+// credentialMask is fixed-width and ASCII so all profiles preserve terminal
+// width while revealing only set/unset state.
+func credentialMask() string      { return strings.Repeat("*", 12) }
 func (s SecretInput) Yank() error { return ErrSecretClipboard }
 func (s *SecretInput) Backspace() {
 	if s.value == "" {
