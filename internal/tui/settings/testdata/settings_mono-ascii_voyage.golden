@@ -10,7 +10,7 @@ Layer: user  Path: /settings-golden/config.json
 |   Embed model: voyage-code-3 [DEFAULT]                                       |
 |   Rerank model: rerank-2.5 [DEFAULT]                                         |
 |   Output dimension: 1024 [DEFAULT]                                           |
-|   Base URL:  [DEFAULT]                                                       |
+|   Base URL: https://api.voyageai.com/v1 [DEFAULT]                            |
 +------------------------------------------------------------------------------+
 [p] Probe provider credentials  [o] Check store  [f] Check FastEmbed  [v] Check
 [tab] section [enter] edit [esc] back

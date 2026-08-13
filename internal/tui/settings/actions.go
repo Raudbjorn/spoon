@@ -3,12 +3,14 @@ package settings
 import (
 	"context"
 	"fmt"
+	"os"
+	"strconv"
+	"time"
+
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/svnbjrn/spoon/internal/config"
 	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/setupcheck"
-	"os"
-	"time"
 )
 
 // ActionID identifies an operation available from settings. The registry is
@@ -67,9 +69,9 @@ type actionMsg struct {
 func (m *Model) startAction(id ActionID) tea.Cmd {
 	m.busy = true
 	m.busyAction = id
-	cfg, path, cache := m.Config, m.Path, m.Cache
+	cfg, path, cache, flags := m.Config, m.Path, m.Cache, m.Flags
 	action := func() tea.Msg {
-		text, err := runAction(id, cfg, path, cache)
+		text, err := runActionWithFlags(id, cfg, path, cache, flags)
 		return actionMsg{id: id, text: text, err: err}
 	}
 	return tea.Batch(action, spinnerTick())
@@ -85,6 +87,10 @@ func spinnerTick() tea.Cmd {
 // construct a Voyage client or call a provider endpoint; status is a safe
 // resolution diagnostic rather than a billable connectivity test.
 func runAction(id ActionID, cfg *config.Config, path string, cache embed.ResponseCache) (string, error) {
+	return runActionWithFlags(id, cfg, path, cache, nil)
+}
+
+func runActionWithFlags(id ActionID, cfg *config.Config, path string, cache embed.ResponseCache, flags map[string]string) (string, error) {
 	switch id {
 	case ActionProviderProbe:
 		if cfg == nil {
@@ -94,7 +100,7 @@ func runAction(id ActionID, cfg *config.Config, path string, cache embed.Respons
 			return "", err
 		}
 		if os.Getenv("GH_TOKEN") != "" || os.Getenv("GITHUB_TOKEN") != "" || os.Getenv("GITLAB_TOKEN") != "" || len(cfg.GitHub.Tokens) > 0 {
-			return "Provider credentials configured from config, environment, or installed CLI (no HTTP request made)", nil
+			return "Provider credentials configured from config or environment (no HTTP request made)", nil
 		}
 		return "Provider credentials not configured (no HTTP request made)", nil
 	case ActionStoreCheck:
@@ -109,7 +115,8 @@ func runAction(id ActionID, cfg *config.Config, path string, cache embed.Respons
 		if cfg == nil {
 			return "FastEmbed unavailable: configuration layer is disabled", nil
 		}
-		if err := setupcheck.ValidateFastEmbed(cfg.Embedder); err != nil {
+		effective := effectiveEmbedder(cfg, flags)
+		if err := setupcheck.ValidateFastEmbed(effective); err != nil {
 			return "", err
 		}
 		return "FastEmbed configuration is valid (no model download made)", nil
@@ -155,4 +162,28 @@ func voyageDiagnostic(cfg *config.Config, cache embed.ResponseCache) (string, er
 		return "Voyage configured and active", nil
 	}
 	return "Voyage not configured", nil
+}
+
+func effectiveEmbedder(cfg *config.Config, flags map[string]string) config.EmbedderConfig {
+	effective := config.ResolveEffectiveConfig(cfg, flags, actionEnvironment())
+	out := config.EmbedderConfig{}
+	out.Backend = effective.Value("embedder.backend").Value
+	out.Model = effective.Value("embedder.model").Value
+	out.CacheDir = effective.Value("embedder.cacheDir").Value
+	out.MaxLength, _ = strconv.Atoi(effective.Value("embedder.maxLength").Value)
+	out.BatchSize, _ = strconv.Atoi(effective.Value("embedder.batchSize").Value)
+	if out.BatchSize < 0 {
+		out.BatchSize = 0
+	}
+	return out
+}
+
+func actionEnvironment() map[string]string {
+	env := map[string]string{"XDG_CACHE_HOME": os.Getenv("XDG_CACHE_HOME")}
+	for _, setting := range config.Settings() {
+		for _, name := range setting.Environment {
+			env[name] = os.Getenv(name)
+		}
+	}
+	return env
 }

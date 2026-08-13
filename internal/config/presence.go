@@ -106,8 +106,9 @@ func leafMetadata(data []byte) (map[string]bool, map[string]json.RawMessage) {
 	return present, raw
 }
 
-// MarshalJSON re-inserts explicitly persisted zero values omitted by Go's
-// `omitempty`, so unrelated settings saves cannot silently change precedence.
+// MarshalJSON preserves explicitly present zero values which Go's omitempty
+// would otherwise erase. It always serializes the current typed value rather
+// than replaying the loaded bytes, so ordinary direct mutations remain valid.
 func (c Config) MarshalJSON() ([]byte, error) {
 	type wire Config
 	data, err := json.Marshal(wire(c))
@@ -119,15 +120,38 @@ func (c Config) MarshalJSON() ([]byte, error) {
 		return nil, err
 	}
 	for key := range c.present {
-		if !boolOrNumberField(key) {
+		if !boolOrNumberField(key) || hasRawPath(root, strings.Split(key, ".")) {
 			continue
 		}
-		parts := strings.Split(key, ".")
-		if raw := c.raw[key]; raw != nil && !hasRawPath(root, parts) {
-			setRawPath(root, parts, raw)
+		raw, ok := c.currentZeroValue(key)
+		if !ok {
+			continue
 		}
+		setRawPath(root, strings.Split(key, "."), raw)
 	}
 	return json.Marshal(root)
+}
+
+func (c Config) currentZeroValue(key string) (json.RawMessage, bool) {
+	var value any
+	switch key {
+	case "github.proxy.enabled":
+		value = c.GitHub.Proxy.Enabled
+	case "embedder.voyage.disabled":
+		value = c.Embedder.Voyage.Disabled
+	case "github.requestsPerMinute":
+		value = c.GitHub.RequestsPerMinute
+	case "embedder.maxLength":
+		value = c.Embedder.MaxLength
+	case "embedder.batchSize":
+		value = c.Embedder.BatchSize
+	case "embedder.voyage.outputDimension":
+		value = c.Embedder.Voyage.OutputDimension
+	default:
+		return nil, false
+	}
+	raw, err := json.Marshal(value)
+	return raw, err == nil
 }
 
 func hasRawPath(root map[string]json.RawMessage, parts []string) bool {

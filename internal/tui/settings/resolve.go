@@ -23,28 +23,26 @@ type Resolved struct {
 	Inactive string
 }
 
-// Resolve delegates precedence to config.ResolveString, the same typed layer
-// runtime consumers use. Field-specific presence avoids treating false and 0
-// as absent merely because they are useful values.
+// Resolve consumes the central runtime-effective configuration result. The
+// Settings screen therefore reports exactly the defaults and override source
+// that command startup will use rather than maintaining a parallel table.
 func Resolve(field Field, cfg *config.Config, flags map[string]string) Resolved {
-	fileValue, filePresent := "", false
-	if cfg != nil {
-		fileValue = field.Get(cfg)
-		filePresent = fieldPresent(field, cfg)
-	}
-	env := make(map[string]string, len(field.Environment))
-	for _, name := range field.Environment {
-		value := os.Getenv(name)
-		if name == "NO_COLOR" && value != "" {
-			value = "no-color"
+	env := map[string]string{}
+	for _, setting := range config.Settings() {
+		for _, name := range setting.Environment {
+			env[name] = os.Getenv(name)
 		}
-		env[name] = value
 	}
-	flag := ""
-	if flags != nil {
-		flag = flags[field.Key]
+	// These influence derived runtime values but are not themselves settings.
+	env["XDG_CACHE_HOME"] = os.Getenv("XDG_CACHE_HOME")
+	resolved := config.ResolveEffectiveConfig(cfg, flags, env).Value(field.Key)
+	if resolved.Source == "" {
+		fileValue, filePresent := "", false
+		if cfg != nil {
+			fileValue, filePresent = field.Get(cfg), fieldPresent(field, cfg)
+		}
+		resolved = config.ResolveString(fileValue, filePresent, field.Default, flags[field.Key], env, field.Environment...)
 	}
-	resolved := config.ResolveString(fileValue, filePresent, field.Default, flag, env, field.Environment...)
 	row := Resolved{Value: resolved.Value, Source: resolved.Source}
 	if resolved.Environment != "" {
 		value := resolved.Value

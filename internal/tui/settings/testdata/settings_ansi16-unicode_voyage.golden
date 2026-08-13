@@ -10,7 +10,7 @@
 │ [37m  Embed model: voyage-code-3 [DEFAULT][0m                                       │
 │ [37m  Rerank model: rerank-2.5 [DEFAULT][0m                                         │
 │ [37m  Output dimension: 1024 [DEFAULT][0m                                           │
-│ [37m  Base URL:  [DEFAULT][0m                                                       │
+│ [37m  Base URL: https://api.voyageai.com/v1 [DEFAULT][0m                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 [2;90m[p] Probe provider credentials  [o] Check store  [f] Check FastEmbed  [v] Check[0m
 [37;40m[tab][0m section [37;40m[enter][0m edit [37;40m[esc][0m back

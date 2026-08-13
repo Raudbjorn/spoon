@@ -37,6 +37,7 @@ type Model struct {
 	Cache            embed.ResponseCache
 	Host             HostFacts
 	Theme            theme.Context
+	copyValue        func(string) error
 	focus            int
 	width, height    int
 	section          int
@@ -127,6 +128,13 @@ func (m Model) WithTheme(ctx theme.Context) Model {
 	return m
 }
 
+// WithClipboard injects the single clipboard side effect; production uses the
+// local platform boundary and tests use an in-memory recorder.
+func (m Model) WithClipboard(copy func(string) error) Model {
+	m.copyValue = copy
+	return m
+}
+
 func (m Model) fields() []Field {
 	var out []Field
 	for _, f := range Registry {
@@ -208,6 +216,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.busy {
 		return m, nil
 	}
+	if keymap.Dispatch(keymap.MainSettings, key.String()) == keymap.Yank {
+		return m.copySelected()
+	}
 	if action, ok := ActionForKey(key.String()); ok {
 		if !m.canEdit() && (action.ID == ActionSave || action.ID == ActionRewriteReadme) {
 			m.alert = m.readOnly
@@ -273,9 +284,12 @@ func (m Model) updateEdit(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.clearEditor()
 		return m, nil
 	}
-	if field.Credential && keymap.Dispatch(keymap.MainSettings, key.String()) == keymap.Yank {
-		m.alert = ErrSecretClipboard.Error()
-		return m, nil
+	if keymap.Dispatch(keymap.MainSettings, key.String()) == keymap.Yank {
+		if field.Credential {
+			m.alert = ErrSecretClipboard.Error()
+			return m, nil
+		}
+		return m.copyValueFor(valueForEdit(m, field))
 	}
 	if key.String() == "enter" {
 		value := m.input
@@ -307,6 +321,7 @@ func (m Model) updateEdit(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	typed := edit.TypedText(key)
 	if field.Key == "github.tokens" && key.Type == tea.KeyRunes && !key.Alt {
 		typed = strings.ReplaceAll(string(key.Runes), "\r\n", "\n")
+		typed = strings.ReplaceAll(typed, "\r", "\n")
 		typed = strings.Map(func(r rune) rune {
 			if r == '\n' || r == '\t' || r >= ' ' {
 				return r
@@ -328,6 +343,38 @@ func (m Model) updateEdit(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	} else {
 		m.input = updated
 	}
+	return m, nil
+}
+
+func valueForEdit(m Model, field Field) string {
+	if field.Secret {
+		return m.secret.Value()
+	}
+	return m.input
+}
+
+func (m Model) copySelected() (tea.Model, tea.Cmd) {
+	field, ok := m.selected()
+	if !ok {
+		return m, nil
+	}
+	if field.Credential {
+		m.alert = ErrSecretClipboard.Error()
+		return m, nil
+	}
+	return m.copyValueFor(Resolve(field, m.Config, m.Flags).Value)
+}
+
+func (m Model) copyValueFor(value string) (tea.Model, tea.Cmd) {
+	copy := m.copyValue
+	if copy == nil {
+		copy = copySettingValue
+	}
+	if err := copy(value); err != nil {
+		m.alert = "clipboard: " + err.Error()
+		return m, nil
+	}
+	m.alert = "copied selected value"
 	return m, nil
 }
 
