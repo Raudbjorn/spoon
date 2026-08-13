@@ -10,4 +10,4 @@
 [37;40m[/][0m [3;2;90mFilter forks[0m [37;40m[R][0m [3;2;90mRank by intent[0m [37;40m[Esc][0m [3;2;90mClear active filter[0m [37;40m[?][0m [3;2;90mOpen help[0m [37;40m[s][0m [3;2;90mCycle sort column[0m [37;40m[S][0m [3;2;90mReverse sort order[0m
 [37;40m[o][0m [3;2;90mOpen selected fork[0m [37;40m[d][0m [3;2;90mOpen compare[0m [37;40m[c][0m [3;2;90mCycle enrichment ceiling[0m [37;40m[t][0m [3;2;90mToggle dark/light theme[0m
 [37;40m[f][0m [3;2;90mHide or restore chrome[0m [37;40m[y][0m [3;2;90mYank clone command[0m [37;40m[r][0m [3;2;90mRefresh[0m [37;40m[Space][0m [3;2;90mMark or unmark fork[0m [37;40m[e][0m [3;2;90mExport marked forks[0m
-[37;40m[E][0m [3;2;90mExport all forks[0m
+[37;40m[E][0m [3;2;90mExport all forks[0m [37;40m[,][0m [3;2;90mOpen settings[0m

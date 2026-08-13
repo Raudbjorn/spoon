@@ -219,7 +219,6 @@ func main() {
 	}
 	defer db.Close()
 
-	cfg, _ := config.LoadDefault()
 	settingsPath, _ := config.DefaultPath()
 	if _, err := os.Stat(settingsPath); os.IsNotExist(err) && cfg != nil {
 		settingsPath = config.SystemPath()

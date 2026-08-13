@@ -10,4 +10,4 @@
 [/] Filter forks [R] Rank by intent [Esc] Clear active filter [?] Open help [s] Cycle sort column [S] Reverse sort order
 [o] Open selected fork [d] Open compare [c] Cycle enrichment ceiling [t] Toggle dark/light theme
 [f] Hide or restore chrome [y] Yank clone command [r] Refresh [Space] Mark or unmark fork [e] Export marked forks
-[E] Export all forks
+[E] Export all forks [,] Open settings
