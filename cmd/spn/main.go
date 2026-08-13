@@ -26,12 +26,12 @@ func dispatch(args []string, stdout, stderr io.Writer) int {
 	if len(args) < 1 {
 		return agentio.NewError(agentio.CodeBadInput, "missing subcommand", usageRemediation).Emit(stderr)
 	}
-	// Zero-configuration first run: make sure a documented default config
-	// exists before any subcommand consults it. Never fatal — a bad or
-	// unwritable config degrades to built-in defaults with a warning.
-	if _, err := config.EnsureDefault(stderr); err != nil {
-		fmt.Fprintf(stderr, "warning: ignoring config: %v\n", err)
+	boot := config.Bootstrap(stderr)
+	if boot.Warning != nil {
+		fmt.Fprintf(stderr, "warning: ignoring config: %v\n", boot.Warning)
 	}
+	env := config.EnvironmentSnapshot()
+	effective := config.ResolveEffectiveConfig(boot.Config, nil, env)
 	switch args[0] {
 	case "-h", "--help":
 		printHelp(stdout)
@@ -44,14 +44,12 @@ func dispatch(args []string, stdout, stderr io.Writer) int {
 	case "pr":
 		return runPR(args[1:])
 	case "forks":
-		// `spn forks eval` is a sub-verb of forks; dispatch by args[1] when
-		// present. Everything else (incl. `spn forks list`) keeps runForks.
 		if len(args) >= 2 && args[1] == "eval" {
 			return runEval(args[2:])
 		}
-		return runForks(args[1:])
+		return runForksWithEffective(args[1:], stdout, stderr, effective, env)
 	case "search":
-		return runSearch(args[1:])
+		return runSearchWithEffective(args[1:], stdout, stderr, effective, env)
 	case "repo":
 		return runRepo(args[1:])
 	default:

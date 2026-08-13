@@ -38,6 +38,16 @@ var embedderHookForTest embed.Embedder
 
 type githubRPMContextKey struct{}
 
+type effectiveConfigContextKey struct{}
+
+func effectiveFromContext(ctx context.Context) (config.EffectiveConfig, map[string]string, bool) {
+	effective, ok := ctx.Value(effectiveConfigContextKey{}).(config.EffectiveConfig)
+	env, envOK := ctx.Value(environmentContextKey{}).(map[string]string)
+	return effective, env, ok && envOK
+}
+
+type environmentContextKey struct{}
+
 func githubRPMFromContext(ctx context.Context) float64 {
 	rpm, _ := ctx.Value(githubRPMContextKey{}).(float64)
 	return rpm
@@ -60,7 +70,11 @@ var providerFactory = func(ctx context.Context, repo, forgeFlag, forgeHost strin
 	}
 	switch parsed.Provider {
 	case forge.ProviderGitHub:
-		client, status, cerr := gh.CheckAuthConfigured(githubRPMFromContext(ctx))
+		effective, _, ok := effectiveFromContext(ctx)
+		if !ok {
+			effective = config.ResolveEffectiveConfig(nil, nil, config.EnvironmentSnapshot())
+		}
+		client, status, cerr := gh.CheckAuthWithEffective(effective)
 		if cerr != nil {
 			return nil, "", agentio.NewError(agentio.CodeAuthRequired, cerr.Error(), agentio.RemediationAuthRequired())
 		}
@@ -82,14 +96,22 @@ var providerFactory = func(ctx context.Context, repo, forgeFlag, forgeHost strin
 
 func runForks(args []string) int { return runForksWith(args, os.Stdout, os.Stderr) }
 
+// runForksWith is the package test seam. Production dispatch supplies the
+// single Bootstrap-owned result to runForksWithEffective.
 func runForksWith(args []string, stdout, stderr io.Writer) int {
+	boot := config.Bootstrap(io.Discard)
+	env := config.EnvironmentSnapshot()
+	return runForksWithEffective(args, stdout, stderr, config.ResolveEffectiveConfig(boot.Config, nil, env), env)
+}
+
+func runForksWithEffective(args []string, stdout, stderr io.Writer, effective config.EffectiveConfig, env map[string]string) int {
 	if len(args) == 0 {
 		return agentio.NewError(agentio.CodeBadInput, "missing verb (list)", agentio.RemediationBadInput("forks", "")).Emit(stderr)
 	}
 	verb, rest := args[0], args[1:]
 	switch verb {
 	case "list":
-		return doForksList(rest, stdout, stderr)
+		return doForksList(rest, stdout, stderr, effective, env)
 	default:
 		return agentio.NewError(agentio.CodeBadInput, "unknown verb: "+verb, agentio.RemediationBadInput("forks", "")).Emit(stderr)
 	}
@@ -101,7 +123,7 @@ type detailOptions struct {
 	commitFiles bool
 }
 
-func doForksList(args []string, stdout, stderr io.Writer) int {
+func doForksList(args []string, stdout, stderr io.Writer, effective config.EffectiveConfig, env map[string]string) int {
 	var repo, forgeFlag, forgeHost, botList string
 	details := detailOptions{}
 	var githubRPM float64
@@ -454,7 +476,7 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 	var semanticModelID string
 	fastembedActive := false
 	if embedderHookForTest == nil && !noEmbed {
-		instance, embedderID, closeEmbedder, err := embed.SelectBackendConfig(embed.BackendFastEmbed, embed.BackendConfig{FastEmbed: resolveFastEmbedConfig("", "")})
+		instance, embedderID, closeEmbedder, err := embed.SelectBackendConfig(embed.BackendFastEmbed, embed.BackendConfig{FastEmbed: resolveFastEmbedConfigEffective(effective, "", "")})
 		if err != nil {
 			_ = json.NewEncoder(stderr).Encode(map[string]any{"warning": map[string]any{
 				"code":        "embed_unavailable",
@@ -500,7 +522,15 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 	// when a query was actually given, so an unused key costs nothing.
 	opts.Query = query
 
+	if githubRPM != 0 {
+		effective.GitHub.RequestsPerMinute = config.ResolvedString{
+			Value: strconv.FormatFloat(githubRPM, 'f', -1, 64), Source: config.SourceFlag,
+			Inactive: effective.GitHub.RequestsPerMinute.Source == config.SourceFile || effective.GitHub.RequestsPerMinute.Inactive,
+		}
+	}
 	ctx := context.WithValue(context.Background(), githubRPMContextKey{}, githubRPM)
+	ctx = context.WithValue(ctx, effectiveConfigContextKey{}, effective)
+	ctx = context.WithValue(ctx, environmentContextKey{}, env)
 
 	// Cluster-pipeline progress logs are silenced to keep NDJSON stable;
 	// only structured ClusterSkip warnings are emitted on stderr via
@@ -548,7 +578,7 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 	// modality blobs per fork through a paid API would multiply the spend for no
 	// ranking gain.
 	if embedderHookForTest == nil && !noEmbed {
-		if voyage := resolveVoyageEmbedder(context.Background(), noVoyage, db, stderr); voyage != nil {
+		if voyage := resolveVoyageEmbedderEffective(context.Background(), effective, env, noVoyage, db, stderr); voyage != nil {
 			searchEmbedders = append(searchEmbedders, voyage)
 			if semanticModelID == "" {
 				semanticModelID = voyage.ModelID()
@@ -559,7 +589,7 @@ func doForksList(args []string, stdout, stderr io.Writer) int {
 	// the built-in lexical scorer otherwise (opts.QueryScorer nil). Resolved only
 	// when a query was given, so an unused key costs nothing.
 	if query != "" && !noVoyage {
-		if cfg, active, err := resolveVoyageConfig(context.Background(), noVoyage, db); err != nil {
+		if cfg, active, err := resolveVoyageConfigEffective(context.Background(), effective, env, noVoyage, db); err != nil {
 			emitVoyageWarning(stderr, "is configured but unusable; scoring --query lexically", err)
 		} else if active {
 			if reranker, rerr := embed.NewVoyageReranker(cfg); rerr != nil {
@@ -948,11 +978,8 @@ func voyageRemediation(err error) string {
 	}
 }
 
-// resolveVoyageEmbedder returns an active Voyage embedder, or nil when Voyage is
-// not configured (the ordinary zero-configuration case, silent) or cannot be
-// used (warned, then skipped).
-func resolveVoyageEmbedder(ctx context.Context, disable bool, cache embed.ResponseCache, stderr io.Writer) *embed.VoyageEmbedder {
-	cfg, active, err := resolveVoyageConfig(ctx, disable, cache)
+func resolveVoyageEmbedderEffective(ctx context.Context, effective config.EffectiveConfig, env map[string]string, disable bool, cache embed.ResponseCache, stderr io.Writer) *embed.VoyageEmbedder {
+	cfg, active, err := resolveVoyageConfigEffective(ctx, effective, env, disable, cache)
 	if err != nil {
 		emitVoyageWarning(stderr, "is configured but unusable", err)
 		return nil
@@ -968,17 +995,16 @@ func resolveVoyageEmbedder(ctx context.Context, disable bool, cache embed.Respon
 	return embedder
 }
 
-// resolveVoyageConfig layers Voyage settings from the environment over the
-// config file, mirroring resolveFastEmbedConfig. A config file that fails to
-// load is treated as absent here: a broken config must not be the reason an
-// optional provider silently changes behavior, and every command already
-// surfaces config load failures on its own.
-func resolveVoyageConfig(ctx context.Context, disable bool, cache embed.ResponseCache) (embed.VoyageConfig, bool, error) {
-	var fileCfg config.VoyageConfig
-	if cfg, err := config.LoadDefault(); err == nil && cfg != nil {
-		fileCfg = cfg.Embedder.Voyage
-	}
-	return embed.ResolveVoyageConfig(ctx, fileCfg, disable, cache)
+func resolveVoyageConfigEffective(ctx context.Context, effective config.EffectiveConfig, env map[string]string, disable bool, cache embed.ResponseCache) (embed.VoyageConfig, bool, error) {
+	return embed.ResolveVoyageEffective(ctx, effective, disable, cache, env)
+}
+
+// resolveVoyageEmbedder is retained for focused tests. Command paths use the
+// Bootstrap-owned effective variant above.
+func resolveVoyageEmbedder(ctx context.Context, disable bool, cache embed.ResponseCache, stderr io.Writer) *embed.VoyageEmbedder {
+	boot := config.Bootstrap(io.Discard)
+	env := config.EnvironmentSnapshot()
+	return resolveVoyageEmbedderEffective(ctx, config.ResolveEffectiveConfig(boot.Config, nil, env), env, disable, cache, stderr)
 }
 
 // persistSnapshotBestEffort stores a fork snapshot without ever failing the
@@ -1364,16 +1390,26 @@ func emitClusterWarning(stderr io.Writer, skip *forksops.ClusterSkip) {
 	_ = enc.Encode(envelope)
 }
 
+func resolveFastEmbedConfigEffective(effective config.EffectiveConfig, model, cacheDir string) embed.FastEmbedConfig {
+	resolved, err := effective.EmbedderConfig()
+	if err != nil {
+		return embed.FastEmbedConfig{}
+	}
+	if model != "" {
+		resolved.Model = model
+	}
+	if cacheDir != "" {
+		resolved.CacheDir = cacheDir
+	}
+	return embed.FastEmbedConfig{Model: resolved.Model, CacheDir: resolved.CacheDir, MaxLength: resolved.MaxLength, BatchSize: resolved.BatchSize}
+}
+
+// resolveFastEmbedConfig is retained for focused tests. Command paths use the
+// Bootstrap-owned effective variant above.
 func resolveFastEmbedConfig(model, cacheDir string) embed.FastEmbedConfig {
-	var fileCfg config.EmbedderConfig
-	if cfg, err := config.LoadDefault(); err == nil && cfg != nil {
-		fileCfg = cfg.Embedder
-	}
-	model = config.Coalesce(model, os.Getenv("SPOON_FASTEMBED_MODEL"), fileCfg.Model)
-	cacheDir = config.Coalesce(cacheDir, os.Getenv("SPOON_FASTEMBED_CACHE"), fileCfg.CacheDir)
-	return embed.FastEmbedConfig{
-		Model: model, CacheDir: cacheDir, MaxLength: fileCfg.MaxLength, BatchSize: fileCfg.BatchSize,
-	}
+	boot := config.Bootstrap(io.Discard)
+	env := config.EnvironmentSnapshot()
+	return resolveFastEmbedConfigEffective(config.ResolveEffectiveConfig(boot.Config, nil, env), model, cacheDir)
 }
 
 // streamAndEmit runs the fork pipeline for one upstream and emits NDJSON

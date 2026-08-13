@@ -5,13 +5,14 @@ import (
 	"github.com/svnbjrn/spoon/internal/tui/theme"
 )
 
-func resolveTUIContext(cfg *config.Config) (theme.Context, error) {
-	return resolveTUIContextWithNoColor(cfg, false)
-}
-
-func resolveTUIContextWithNoColor(cfg *config.Config, noColor bool) (theme.Context, error) {
-	if cfg == nil {
-		return theme.ResolveStartupContextWithNoColor("", "", "", noColor)
+// resolveTUIContextWithNoColor consumes startup-resolved values so rendering
+// cannot independently reread environment or choose a different config layer.
+func resolveTUIContextWithNoColor(effective config.EffectiveConfig, noColor bool) (theme.Context, error) {
+	color := effective.Appearance.Color.Value
+	if noColor {
+		color = "no-color"
 	}
-	return theme.ResolveStartupContextWithNoColor(cfg.UI.Theme, cfg.UI.Color, cfg.UI.Glyphs, noColor)
+	return theme.ResolveConfiguredContext(
+		"", effective.Appearance.Theme.Value, color, "", "", effective.Appearance.Glyphs.Value, "",
+	)
 }

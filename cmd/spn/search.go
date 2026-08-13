@@ -48,7 +48,16 @@ const (
 
 func runSearch(args []string) int { return runSearchWith(args, os.Stdout, os.Stderr) }
 
+// runSearchWith is the package test seam. Production dispatch provides its
+// Bootstrap-owned effective result to runSearchWithEffective.
 func runSearchWith(args []string, stdout, stderr io.Writer) int {
+	boot := config.Bootstrap(io.Discard)
+	env := config.EnvironmentSnapshot()
+	return runSearchWithEffective(args, stdout, stderr, config.ResolveEffectiveConfig(boot.Config, nil, env), env)
+}
+
+func runSearchWithEffective(args []string, stdout, stderr io.Writer, effective config.EffectiveConfig, env map[string]string) int {
+	ctx := context.Background()
 	query := ""
 	repoOwner, repoName := "", ""
 	top := 20
@@ -122,22 +131,16 @@ func runSearchWith(args []string, stdout, stderr io.Writer) int {
 		return agentio.NewError(agentio.CodeBadInput, "search query must not be empty", searchUsage).Emit(stderr)
 	}
 
-	// An absent or empty config is valid and resolves to defaults. A config that
-	// fails to load (bad permissions/JSON) is surfaced.
-	cfg, err := config.LoadDefault()
+	embCfg, err := effective.EmbedderConfig()
 	if err != nil {
-		return agentio.NewError(agentio.CodeBadInput, "embedder_unavailable: "+err.Error(), "Secure and repair the spoon config, then retry.").Emit(stderr)
-	}
-	var embCfg config.EmbedderConfig
-	if cfg != nil {
-		embCfg = cfg.Embedder
+		return agentio.NewError(agentio.CodeBadInput, "embedder_unavailable: "+err.Error(), "Correct the effective spoon configuration, then retry.").Emit(stderr)
 	}
 
 	// A flag naming Voyage is a promise we cannot keep without a key, and the key
 	// check needs nothing else — so reject it before any store or model work.
 	// Failing beats silently ranking against a different model's index.
 	voyageRequested := useVoyage || rerankChoice == rerankForceOn
-	keyed, keyErr := embed.VoyageKeyConfigured(embCfg.Voyage, false)
+	keyed, keyErr := embed.VoyageKeyConfiguredEffective(effective, false, env)
 	if keyErr != nil && voyageRequested {
 		return agentio.NewError(agentio.CodeBadInput, "voyage_unavailable: "+keyErr.Error(), voyageRemediation(keyErr)).Emit(stderr)
 	}
@@ -171,8 +174,7 @@ func runSearchWith(args []string, stdout, stderr io.Writer) int {
 	}
 	defer db.Close()
 
-	ctx := context.Background()
-	voyageCfg, voyageActive, voyageErr := embed.ResolveVoyageConfig(ctx, embCfg.Voyage, false, db)
+	voyageCfg, voyageActive, voyageErr := embed.ResolveVoyageEffective(ctx, effective, false, db, env)
 	if voyageErr != nil {
 		if voyageRequested {
 			return agentio.NewError(agentio.CodeBadInput, "voyage_unavailable: "+voyageErr.Error(), voyageRemediation(voyageErr)).Emit(stderr)

@@ -379,7 +379,7 @@ func renderCodeContextBlock(t threadsops.ReviewThreadWithPolicy, cc threadsops.C
 
 // runThreads is the entry point for the "threads" subcommand. It returns
 // an exit code (0/1/2) and writes any error messages to stderr.
-func runThreads(args []string) int {
+func runThreadsWithEffective(args []string, effective config.EffectiveConfig) int {
 	flags, err := parseThreadsFlags(args)
 	if err != nil {
 		if err == errThreadsHelp {
@@ -401,7 +401,7 @@ func runThreads(args []string) int {
 		flags.interactive = false
 	}
 
-	client, status, err := gh.CheckAuthConfigured(0)
+	client, status, err := gh.CheckAuthWithEffective(effective)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "❌ Error: GitHub auth:", err)
 		return 1
@@ -418,7 +418,7 @@ func runThreads(args []string) int {
 
 	ctx := context.Background()
 
-	tuiContexts := newThreadsTUIContextCache()
+	tuiContexts := newThreadsTUIContextCache(effective)
 
 	// Interactive picker: no PR ref given, --interactive was set, repo
 	// context detected. Fetch open PRs, run the picker, and treat the
@@ -811,16 +811,10 @@ func runThreadsTUI(ctx context.Context, client *gh.Client, owner, repo string, n
 	return 0
 }
 
-// resolveOptionalThreadsTUIContext keeps non-interactive thread operations
-// independent from appearance config. Invalid/missing config follows Spoon's
-// startup fallback policy; invalid explicit TUI variables still fail clearly.
-func resolveOptionalThreadsTUIContext() (theme.Context, error) {
-	cfg, err := config.LoadDefault()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "warning: ignoring config:", err)
-		return resolveTUIContext(nil)
-	}
-	return resolveTUIContext(cfg)
+// resolveThreadsTUIContext uses the command's effective startup result rather
+// than loading another config layer for the interactive picker.
+func resolveThreadsTUIContext(effective config.EffectiveConfig) (theme.Context, error) {
+	return resolveTUIContextWithNoColor(effective, false)
 }
 
 type threadsTUIContextCache struct {
@@ -832,9 +826,9 @@ type threadsTUIContextCache struct {
 	err       error
 }
 
-func newThreadsTUIContextCache() *threadsTUIContextCache {
+func newThreadsTUIContextCache(effective config.EffectiveConfig) *threadsTUIContextCache {
 	return &threadsTUIContextCache{
-		resolve: resolveOptionalThreadsTUIContext,
+		resolve: func() (theme.Context, error) { return resolveThreadsTUIContext(effective) },
 		pin:     theme.PinColorProfile,
 	}
 }
