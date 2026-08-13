@@ -1,9 +1,12 @@
 spoon threads - keybindings
 
-  ?             Close help
+Global:
+  ctrl+c        Quit
+
+Thread list:
   Up/k          Move thread selection up
   Down/j        Move thread selection down
-  q/ctrl+c      Quit
+  q             Quit
   r/Enter       Reply
   R             Resolve current thread
   a             Apply suggestion
@@ -14,8 +17,9 @@ spoon threads - keybindings
   ?             Toggle help
   f             Hide or restore chrome
 
-In the composer:
+Composer:
   ctrl+s        Submit reply
   Esc           Cancel reply
 
-Press ? again to return.
+Help:
+  ?             Close help

@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/rivo/uniseg"
+	"github.com/svnbjrn/spoon/internal/tui/keymap"
 	"github.com/svnbjrn/spoon/internal/tui/theme"
 )
 
@@ -366,4 +367,32 @@ func background(ctx theme.Context, color lipgloss.Color) lipgloss.Color {
 		return ""
 	}
 	return color
+}
+
+// KeyLegend renders the selected scope plus its inherited global bindings.
+// It wraps whole entries, keeping each line within width terminal cells.
+func KeyLegend(ctx theme.Context, width int, scopes ...keymap.Scope) string {
+	if width <= 0 {
+		width = MaxContentWidth
+	}
+	bindings := keymap.ForScopes(append([]keymap.Scope{keymap.Global}, scopes...)...)
+	var lines []string
+	line := ""
+	for _, binding := range bindings {
+		key := keymap.KeyLabel(binding.Keys)
+		part := Kbd(ctx, key, lipgloss.Width(key)+2) + " " + Text(ctx, TextFaint, binding.Label, lipgloss.Width(binding.Label))
+		if line != "" && lipgloss.Width(line)+1+lipgloss.Width(part) > width {
+			lines = append(lines, line)
+			line = part
+			continue
+		}
+		if line != "" {
+			line += " "
+		}
+		line += part
+	}
+	if line != "" {
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
 }

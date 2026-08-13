@@ -11,7 +11,7 @@ import (
 
 func TestThreadHelpMatchesRegistry(t *testing.T) {
 	help := renderHelp(theme.DefaultContext())
-	for _, binding := range append(append(keymap.ForScopes(keymap.ThreadHelp), keymap.ForScopes(keymap.ThreadList)...), keymap.ForScopes(keymap.ThreadCompose)...) {
+	for _, binding := range append(append(append(keymap.ForScopes(keymap.Global), keymap.ForScopes(keymap.ThreadHelp)...), keymap.ForScopes(keymap.ThreadList)...), keymap.ForScopes(keymap.ThreadCompose)...) {
 		key := keymap.KeyLabel(binding.Keys)
 		padding := 14 - len([]rune(key))
 		if padding < 1 {

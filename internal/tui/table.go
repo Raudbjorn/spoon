@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/svnbjrn/spoon/internal/tui/keymap"
 	"github.com/svnbjrn/spoon/internal/tui/theme"
 	"github.com/svnbjrn/spoon/internal/tui/ui"
 )
@@ -234,7 +235,7 @@ func (m Model) viewTable() string {
 		if legend := m.badgeLegend(); legend != "" {
 			b.WriteString(styles.help.Render(" "+legend) + "\n")
 		}
-		b.WriteString(styles.help.Render(" " + ctx.Glyph(theme.ArrowUp) + ctx.Glyph(theme.ArrowDown) + " navigate  PgUp/PgDn page  Enter detail  Space mark  / filter  R rank  e/E export  o open  d compare  c tier  t theme  f chrome  ? help  q quit"))
+		b.WriteString(ui.KeyLegend(ctx, ui.ContentWidth(m.width), keymap.MainTable))
 	}
 	return b.String()
 }

@@ -6,7 +6,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/svnbjrn/spoon/internal/tui/keymap"
-	"github.com/svnbjrn/spoon/internal/tui/theme"
 	"github.com/svnbjrn/spoon/internal/tui/ui"
 )
 
@@ -104,7 +103,7 @@ func (m Model) viewFilterPrompt() string {
 	b.WriteString("  Match: " + ui.Input(m.themeContext(), ui.InputState{
 		Value: m.filterInput, Cursor: m.filterCursor, Focused: true, Enabled: true,
 	}, ui.ContentWidth(m.width)-11) + "\n\n")
-	b.WriteString("  " + m.styles().help.Render(m.themeContext().Glyph(theme.ArrowLeft)+"/"+m.themeContext().Glyph(theme.ArrowRight)+" move  Home/End  Enter apply  Esc cancel  Ctrl+U clear  (empty clears the filter)") + "\n")
+	b.WriteString("  " + ui.KeyLegend(m.themeContext(), ui.ContentWidth(m.width)-2, keymap.MainFilter) + "\n")
 	return b.String()
 }
 

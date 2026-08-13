@@ -1,3 +1,4 @@
 No open PRs in this repo
 
-press q/Esc to cancel
+[ctrl+c] Quit [Up/k] Move selection up [Down/j] Move selection down [Enter] Choose pull request
+[ctrl+c/Esc/q] Cancel picker

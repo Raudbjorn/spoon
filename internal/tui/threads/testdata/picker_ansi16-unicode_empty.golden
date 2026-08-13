@@ -1,3 +1,4 @@
 [1;4;97;4mN[0m[1;4;97;4mo[0m[97;4m [0m[1;4;97;4mo[0m[1;4;97;4mp[0m[1;4;97;4me[0m[1;4;97;4mn[0m[97;4m [0m[1;4;97;4mP[0m[1;4;97;4mR[0m[1;4;97;4ms[0m[97;4m [0m[1;4;97;4mi[0m[1;4;97;4mn[0m[97;4m [0m[1;4;97;4mt[0m[1;4;97;4mh[0m[1;4;97;4mi[0m[1;4;97;4ms[0m[97;4m [0m[1;4;97;4mr[0m[1;4;97;4me[0m[1;4;97;4mp[0m[1;4;97;4mo[0m
 
-[3;2;90mpress q/Esc to cancel[0m
+[37;40m[ctrl+c][0m [3;2;90mQuit[0m [37;40m[Up/k][0m [3;2;90mMove selection up[0m [37;40m[Down/j][0m [3;2;90mMove selection down[0m [37;40m[Enter][0m [3;2;90mChoose pull request[0m
+[37;40m[ctrl+c/Esc/q][0m [3;2;90mCancel picker[0m

@@ -1654,8 +1654,7 @@ func (m Model) viewInput() string {
 	}
 	if m.loading {
 	} else {
-		b.WriteString("\n  " + ui.Button(m.themeContext(), ui.ButtonState{Label: "Enter search", Enabled: true}, 18) + " " + s.help.Render("Enter a GitHub or GitLab repository (e.g., golang/go)") + "\n")
-		b.WriteString("  " + s.help.Render(m.themeContext().Glyph(theme.ArrowLeft)+"/"+m.themeContext().Glyph(theme.ArrowRight)+" move  Home/End  paste supported  Enter to search  Ctrl+C to quit") + "\n")
+		b.WriteString("\n  " + ui.KeyLegend(m.themeContext(), ui.ContentWidth(m.width)-2, keymap.MainInput) + "\n")
 	}
 	return b.String()
 }

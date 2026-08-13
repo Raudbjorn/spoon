@@ -74,7 +74,7 @@ func (m *Model) handleTopicPickerKey(key string) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) viewTopicPicker() string {
-	ctx, styles := m.themeContext(), m.styles()
+	ctx := m.themeContext()
 	var b strings.Builder
 	b.WriteString("\n")
 	b.WriteString(ui.Heading(ctx, 1, "  Topic: "+m.topicName+" "+ctx.Glyph(theme.EmDash)+" pick a repository to prospect", ui.ContentWidth(m.width)))
@@ -90,7 +90,7 @@ func (m Model) viewTopicPicker() string {
 		b.WriteString("  " + cursor + line + "\n")
 	}
 	b.WriteString("\n  ")
-	b.WriteString(styles.help.Render(ctx.Glyph(theme.ArrowUp) + "/" + ctx.Glyph(theme.ArrowDown) + " navigate " + ctx.Glyph(theme.Separator) + " Enter prospect forks " + ctx.Glyph(theme.Separator) + " Esc back"))
+	b.WriteString(ui.KeyLegend(ctx, ui.ContentWidth(m.width)-2, keymap.MainTopics))
 	b.WriteString("\n")
 	return b.String()
 }

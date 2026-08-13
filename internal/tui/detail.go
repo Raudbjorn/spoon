@@ -2,18 +2,23 @@ package tui
 
 import (
 	"fmt"
+	"sort"
+	"strings"
+
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
-	"sort"
 
 	"github.com/svnbjrn/spoon/internal/forge"
+	"github.com/svnbjrn/spoon/internal/tui/keymap"
 	"github.com/svnbjrn/spoon/internal/tui/theme"
 	"github.com/svnbjrn/spoon/internal/tui/ui"
 )
 
-// detailFooterLines is how many lines viewDetail reserves for the pinned
-// action hint below the scrolled body (one blank + one hint).
-const detailFooterLines = 2
+// detailFooterLines reserves the actual wrapped contextual legend below the
+// scroll window, so the footer never spills beyond the viewport at 80×24.
+func (m Model) detailFooterLines() int {
+	return 2 + strings.Count(m.detailLegend(), "\n") + 1
+}
 
 // viewDetail renders the selected fork's detail box, scrolled to
 // m.detailOffset, with the action hint pinned below the window. The hint
@@ -27,7 +32,7 @@ func (m Model) viewDetail() string {
 	if m.fullscreen {
 		return body
 	}
-	return body + "\n\n  " + m.styles().help.Render("[o] Open  [d] Compare  [c] Tier  [t] Theme  [f] Chrome  [y] Yank  [PgUp/PgDn] Scroll  [b/Esc] Back")
+	return body + "\n\n  " + m.detailLegend()
 }
 
 // detailViewHeight is how many body lines fit on screen. Zero (no
@@ -37,7 +42,11 @@ func (m Model) detailViewHeight() int {
 	if m.height <= 0 {
 		return 0
 	}
-	return m.height - detailFooterLines
+	return m.height - m.detailFooterLines()
+}
+
+func (m Model) detailLegend() string {
+	return ui.KeyLegend(m.themeContext(), ui.ContentWidth(m.width)-2, keymap.MainDetail)
 }
 
 func (m Model) detailBody() string {

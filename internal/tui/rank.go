@@ -28,7 +28,6 @@ import (
 
 	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/tui/keymap"
-	"github.com/svnbjrn/spoon/internal/tui/theme"
 	"github.com/svnbjrn/spoon/internal/tui/ui"
 )
 
@@ -254,6 +253,6 @@ func (m Model) viewRankPrompt() string {
 		scorer = m.queryScorer.Method()
 	}
 	b.WriteString("  " + m.styles().help.Render("scorer: "+scorer) + "\n")
-	b.WriteString("  " + m.styles().help.Render(m.themeContext().Glyph(theme.ArrowLeft)+"/"+m.themeContext().Glyph(theme.ArrowRight)+" move  Home/End  Enter rank  Esc cancel  Ctrl+U clear  (empty clears the ranking)") + "\n")
+	b.WriteString("  " + ui.KeyLegend(m.themeContext(), ui.ContentWidth(m.width)-2, keymap.MainRank) + "\n")
 	return b.String()
 }

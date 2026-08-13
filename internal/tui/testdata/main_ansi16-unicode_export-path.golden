@@ -3,4 +3,6 @@
 
   Save to: [1;37m> forks.json█[0m
 
-  [90m←/→ move  Home/End  Enter confirm  Esc cancel  Ctrl+U clear[0m
+  [37;40m[ctrl+c][0m [3;2;90mQuit[0m [37;40m[Enter][0m [3;2;90mExport[0m [37;40m[Esc][0m [3;2;90mCancel export[0m [37;40m[left/ctrl+b][0m [3;2;90mMove input cursor left[0m
+[37;40m[right/ctrl+f][0m [3;2;90mMove input cursor right[0m [37;40m[home/ctrl+a][0m [3;2;90mMove input cursor to start[0m [37;40m[end/ctrl+e][0m [3;2;90mMove input cursor to end[0m
+[37;40m[backspace][0m [3;2;90mDelete previous character[0m [37;40m[delete][0m [3;2;90mDelete next character[0m [37;40m[ctrl+u][0m [3;2;90mClear input[0m

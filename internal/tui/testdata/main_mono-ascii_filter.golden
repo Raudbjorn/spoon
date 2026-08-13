@@ -3,4 +3,6 @@
 
   Match: > owner_
 
-  </- move  Home/End  Enter apply  Esc cancel  Ctrl+U clear  (empty clears the filter)
+  [ctrl+c] Quit [Enter] Apply filter [Esc] Cancel filter [left/ctrl+b] Move input cursor left
+[right/ctrl+f] Move input cursor right [home/ctrl+a] Move input cursor to start [end/ctrl+e] Move input cursor to end
+[backspace] Delete previous character [delete] Delete next character [ctrl+u] Clear input

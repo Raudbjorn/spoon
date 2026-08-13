@@ -14,6 +14,6 @@ Please update this.
 |    8 |   after
 +-----
 
-[Up/k] move thread selection up [Down/j] move thread selection down [q/ctrl+c] quit [r/Enter] reply
-[R] resolve current thread [a] apply suggestion [ctrl+a] resolve all [A] unresolve all [o] open pull request
-[c] counter-propose [?] toggle help [f] hide or restore chrome
+[ctrl+c] Quit [Up/k] Move thread selection up [Down/j] Move thread selection down [q] Quit [r/Enter] Reply
+[R] Resolve current thread [a] Apply suggestion [ctrl+a] Resolve all [A] Unresolve all [o] Open pull request
+[c] Counter-propose [?] Toggle help [f] Hide or restore chrome

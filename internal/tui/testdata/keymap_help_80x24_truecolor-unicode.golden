@@ -19,5 +19,5 @@
   right/ctrl+f    Move input cursor right
   home/ctrl+a     Move input cursor to start
   end/ctrl+e      Move input cursor to end
-  backspace       Delete previous character
-  [38;2;133;133;133mPgUp/PgDn scroll · Press ? or Esc to go back[0m
+  [38;2;211;211;211;48;2;25;25;25m[ctrl+c][0m [3;2;38;2;133;133;133mQuit[0m [38;2;211;211;211;48;2;25;25;25m[?/Esc/q][0m [3;2;38;2;133;133;133mClose help[0m [38;2;211;211;211;48;2;25;25;25m[Up/k][0m [3;2;38;2;133;133;133mScroll up[0m [38;2;211;211;211;48;2;25;25;25m[Down/j][0m [3;2;38;2;133;133;133mScroll down[0m
+[38;2;211;211;211;48;2;25;25;25m[PgUp][0m [3;2;38;2;133;133;133mPage up[0m [38;2;211;211;211;48;2;25;25;25m[PgDn][0m [3;2;38;2;133;133;133mPage down[0m [38;2;211;211;211;48;2;25;25;25m[home][0m [3;2;38;2;133;133;133mGo to top[0m [38;2;211;211;211;48;2;25;25;25m[G/end][0m [3;2;38;2;133;133;133mGo to bottom[0m

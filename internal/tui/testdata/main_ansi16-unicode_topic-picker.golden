@@ -3,4 +3,5 @@
 
   ▸ [1;97;40mowner/repo                                score  98.5  ★ 42       forks 3      A fixture repository[0m
 
-  [90m↑/↓ navigate · Enter prospect forks · Esc back[0m
+  [37;40m[ctrl+c][0m [3;2;90mQuit[0m [37;40m[Up/k][0m [3;2;90mMove selection up[0m [37;40m[Down/j][0m [3;2;90mMove selection down[0m [37;40m[Enter][0m [3;2;90mChoose topic repository[0m
+[37;40m[Esc/q][0m [3;2;90mCancel topic picker[0m

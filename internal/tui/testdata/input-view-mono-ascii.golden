@@ -4,5 +4,6 @@
   Repository: > svnbjrn/spoon_
   error: Repository: fixture validation error
 
-    Enter search Enter a GitHub or GitLab repository (e.g., golang/go)
-  </- move  Home/End  paste supported  Enter to search  Ctrl+C to quit
+  [ctrl+c] Quit [Enter] Search repository [Esc] Return to fork table [left/ctrl+b] Move input cursor left
+[right/ctrl+f] Move input cursor right [home/ctrl+a] Move input cursor to start [end/ctrl+e] Move input cursor to end
+[backspace] Delete previous character [delete] Delete next character [ctrl+u] Clear input

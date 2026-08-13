@@ -3,4 +3,5 @@
 
   > owner/repo                                score  98.5  * 42       forks 3      A fixture repository
 
-  ^/v navigate . Enter prospect forks . Esc back
+  [ctrl+c] Quit [Up/k] Move selection up [Down/j] Move selection down [Enter] Choose topic repository
+[Esc/q] Cancel topic picker

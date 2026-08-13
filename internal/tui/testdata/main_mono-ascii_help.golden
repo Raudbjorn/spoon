@@ -25,5 +25,5 @@
 
   Fork table
   q               Quit
-  Up/k            Move selection up
-  PgUp/PgDn scroll . Press ? or Esc to go back
+  [ctrl+c] Quit [?/Esc/q] Close help [Up/k] Scroll up [Down/j] Scroll down [PgUp] Page up [PgDn] Page down
+[home] Go to top [G/end] Go to bottom

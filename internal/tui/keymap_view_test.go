@@ -92,12 +92,26 @@ func TestTableFullscreenPreservesCursorAndPaging(t *testing.T) {
 	if !m.fullscreen || m.cursor != beforeCursor || m.pageSize() != beforePage {
 		t.Fatal("fullscreen changed table selection or paging")
 	}
-	if strings.Contains(m.View(), "navigate  PgUp/PgDn") {
+	if strings.Contains(m.View(), "Move selection up") {
 		t.Fatal("fullscreen kept table chrome")
 	}
 	_, _ = m.handleTableKey("f")
 	if m.fullscreen || m.cursor != beforeCursor || m.pageSize() != beforePage || m.View() != normal {
 		t.Fatal("table chrome did not restore losslessly")
+	}
+}
+
+func TestDetailLegendReservesItsWrappedFooterAt80x24(t *testing.T) {
+	m := detailTestModel(t, 80)
+	m.view, m.width, m.height = viewDetail, 80, 24
+	rendered := m.viewDetail()
+	if lines := len(strings.Split(rendered, "\n")); lines > m.height {
+		t.Fatalf("detail view uses %d rows at 80x24, want <= %d", lines, m.height)
+	}
+	for _, binding := range keymap.ForScopes(keymap.Global, keymap.MainDetail) {
+		if !strings.Contains(m.detailLegend(), binding.Label) {
+			t.Errorf("detail legend omits %q/%q", binding.Scope, binding.Label)
+		}
 	}
 }
 

@@ -18,4 +18,7 @@
 │ "Packer files for building CentOS 7, 8, Rocky Linux 8, 9 and U..." │
 ╰────────────────────────────────────────────────────────────────────╯
 
-  [90m[o] Open  [d] Compare  [c] Tier  [t] Theme  [f] Chrome  [y] Yank  [PgUp/PgDn] Scroll  [b/Esc] Back[0m
+  [37;40m[ctrl+c][0m [3;2;90mQuit[0m [37;40m[Esc/b/q][0m [3;2;90mReturn to fork table[0m [37;40m[Up/k][0m [3;2;90mScroll up[0m [37;40m[Down/j][0m [3;2;90mScroll down[0m [37;40m[PgUp][0m [3;2;90mPage up[0m
+[37;40m[PgDn][0m [3;2;90mPage down[0m [37;40m[home][0m [3;2;90mGo to top[0m [37;40m[G/end][0m [3;2;90mGo to bottom[0m [37;40m[o][0m [3;2;90mOpen selected fork[0m [37;40m[d][0m [3;2;90mOpen compare[0m
+[37;40m[c][0m [3;2;90mCycle enrichment ceiling[0m [37;40m[t][0m [3;2;90mToggle dark/light theme[0m [37;40m[f][0m [3;2;90mHide or restore chrome[0m
+[37;40m[y][0m [3;2;90mYank clone command[0m

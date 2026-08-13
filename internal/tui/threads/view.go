@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
-
 	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/threadsops"
 	"github.com/svnbjrn/spoon/internal/tui/keymap"
@@ -21,14 +19,14 @@ func renderModel(m Model) string {
 	}
 	if m.err != nil {
 		return ui.Alert(ctx, ui.AlertError, m.err.Error(), width) + "\n\n" +
-			ui.Text(ctx, ui.TextFaint, "press q to quit", width)
+			ui.KeyLegend(ctx, width, keymap.ThreadList)
 	}
 	if !m.loaded {
 		return ui.Alert(ctx, ui.AlertInfo, "loading threads...", width)
 	}
 	if len(m.threads) == 0 {
 		return ui.Alert(ctx, ui.AlertInfo, "no unresolved threads on this PR", width) + "\n\n" +
-			ui.Text(ctx, ui.TextFaint, "press q to quit", width)
+			ui.KeyLegend(ctx, width, keymap.ThreadList)
 	}
 	var b strings.Builder
 	if !m.fullscreen {
@@ -100,52 +98,31 @@ func renderModel(m Model) string {
 	}
 	if m.composing {
 		b.WriteString("\n")
-		b.WriteString(ui.Heading(ctx, 3, "Compose ("+m.composeFor+") "+ctx.Glyph(theme.EmDash)+" Ctrl+S to send, Esc to cancel", width))
+		b.WriteString(ui.Heading(ctx, 3, "Compose ("+m.composeFor+")", width))
 		b.WriteString("\n")
 		b.WriteString(ui.Input(ctx, ui.InputState{Value: string(m.composeBuf), Cursor: len(m.composeBuf), Focused: true, Enabled: true}, width))
+		b.WriteString("\n")
+		b.WriteString(ui.KeyLegend(ctx, width, keymap.ThreadCompose))
 		b.WriteString("\n")
 	}
 	return b.String()
 }
 
-type bindingHint struct {
-	key, label string
-}
+// threadBindingHints remains a registry projection for existing tests and
+// consumers; rendering delegates to ui.KeyLegend.
+type bindingHint struct{ key, label string }
 
 func threadBindingHints() []bindingHint {
-	bindings := keymap.ForScopes(keymap.ThreadList)
+	bindings := keymap.ForScopes(keymap.Global, keymap.ThreadList)
 	hints := make([]bindingHint, 0, len(bindings))
 	for _, binding := range bindings {
-		hints = append(hints, bindingHint{keymap.KeyLabel(binding.Keys), strings.ToLower(binding.Label)})
+		hints = append(hints, bindingHint{keymap.KeyLabel(binding.Keys), binding.Label})
 	}
 	return hints
 }
 
-// renderBindingLegend wraps whole actions so every available operation remains
-// reachable and visible at the 80-column viewport floor.
 func renderBindingLegend(ctx theme.Context, width int) string {
-	if width <= 0 {
-		width = ui.MaxContentWidth
-	}
-	var lines []string
-	line := ""
-	for _, hint := range threadBindingHints() {
-		part := ui.Kbd(ctx, hint.key, lipgloss.Width(hint.key)+2) + " " +
-			ui.Text(ctx, ui.TextFaint, hint.label, lipgloss.Width(hint.label))
-		if line != "" && lipgloss.Width(line)+1+lipgloss.Width(part) > width {
-			lines = append(lines, line)
-			line = part
-			continue
-		}
-		if line != "" {
-			line += " "
-		}
-		line += part
-	}
-	if line != "" {
-		lines = append(lines, line)
-	}
-	return strings.Join(lines, "\n")
+	return ui.KeyLegend(ctx, width, keymap.ThreadList)
 }
 
 // renderTUIStatus formats the PR status header for the TUI panel.
@@ -263,24 +240,25 @@ func renderCodeContext(thread gh.ReviewThread, cc threadsops.CodeContext, ctx th
 
 func renderHelp(ctx theme.Context) string {
 	var b strings.Builder
-	b.WriteString("spoon threads " + ctx.Glyph(theme.EmDash) + " keybindings\n\n")
-	for _, binding := range append(keymap.ForScopes(keymap.ThreadHelp), keymap.ForScopes(keymap.ThreadList)...) {
-		b.WriteString("  " + keymap.KeyLabel(binding.Keys))
-		padding := 14 - len([]rune(keymap.KeyLabel(binding.Keys)))
-		if padding < 1 {
-			padding = 1
+	b.WriteString("spoon threads " + ctx.Glyph(theme.EmDash) + " keybindings\n")
+	for _, section := range []struct {
+		title  string
+		scopes []keymap.Scope
+	}{
+		{"Global", []keymap.Scope{keymap.Global}},
+		{"Thread list", []keymap.Scope{keymap.ThreadList}},
+		{"Composer", []keymap.Scope{keymap.ThreadCompose}},
+		{"Help", []keymap.Scope{keymap.ThreadHelp}},
+	} {
+		b.WriteString("\n" + section.title + ":\n")
+		for _, binding := range keymap.ForScopes(section.scopes...) {
+			key := keymap.KeyLabel(binding.Keys)
+			padding := 14 - len([]rune(key))
+			if padding < 1 {
+				padding = 1
+			}
+			b.WriteString("  " + key + strings.Repeat(" ", padding) + binding.Label + "\n")
 		}
-		b.WriteString(strings.Repeat(" ", padding) + binding.Label + "\n")
 	}
-	b.WriteString("\nIn the composer:\n")
-	for _, binding := range keymap.ForScopes(keymap.ThreadCompose) {
-		b.WriteString("  " + keymap.KeyLabel(binding.Keys))
-		padding := 14 - len([]rune(keymap.KeyLabel(binding.Keys)))
-		if padding < 1 {
-			padding = 1
-		}
-		b.WriteString(strings.Repeat(" ", padding) + binding.Label + "\n")
-	}
-	b.WriteString("\nPress ? again to return.\n")
 	return b.String()
 }

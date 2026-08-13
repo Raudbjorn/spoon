@@ -100,14 +100,14 @@ func TestUpdate_PageKeysReachTheTableHandler(t *testing.T) {
 
 func TestViewDetail_ScrollsAndKeepsFooterPinned(t *testing.T) {
 	m := movementModel(3)
-	// Short enough that the ~9-line detail box genuinely overflows; a window
-	// taller than the body has nothing to scroll and would pass vacuously.
-	m.height = 6
+	// The contextual legend occupies several pinned lines at 80 columns, so
+	// twelve rows still leaves a genuinely scrollable detail body.
+	m.height = 12
 	m.view = viewDetail
 	m.cursor = 0
 
 	top := m.viewDetail()
-	if !strings.Contains(top, "Back") {
+	if !strings.Contains(top, "Return to fork table") {
 		t.Fatal("detail footer missing at offset 0")
 	}
 
@@ -116,7 +116,7 @@ func TestViewDetail_ScrollsAndKeepsFooterPinned(t *testing.T) {
 		t.Fatal("pgdown did not scroll the detail view")
 	}
 	scrolled := m.viewDetail()
-	if !strings.Contains(scrolled, "Back") {
+	if !strings.Contains(scrolled, "Return to fork table") {
 		t.Error("detail footer scrolled off; it must stay pinned below the window")
 	}
 	if scrolled == top {
@@ -163,7 +163,7 @@ func TestViewHelp_Scrolls(t *testing.T) {
 	if m.viewHelp() == top {
 		t.Error("scrolled help body is identical to the unscrolled one")
 	}
-	if !strings.Contains(m.viewHelp(), "go back") {
+	if !strings.Contains(m.viewHelp(), "Close help") {
 		t.Error("help dismiss hint scrolled off; it must stay pinned")
 	}
 

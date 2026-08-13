@@ -11,7 +11,6 @@ import (
 
 	"github.com/svnbjrn/spoon/internal/forge"
 	"github.com/svnbjrn/spoon/internal/tui/keymap"
-	"github.com/svnbjrn/spoon/internal/tui/theme"
 	"github.com/svnbjrn/spoon/internal/tui/ui"
 )
 
@@ -254,7 +253,7 @@ func (m Model) viewExportPath() string {
 	b.WriteString("  Save to: " + ui.Input(m.themeContext(), ui.InputState{
 		Value: m.exportPath, Cursor: m.exportCursor, Focused: true, Enabled: true,
 	}, ui.ContentWidth(m.width)-13) + "\n\n")
-	b.WriteString("  " + m.styles().help.Render(m.themeContext().Glyph(theme.ArrowLeft)+"/"+m.themeContext().Glyph(theme.ArrowRight)+" move  Home/End  Enter confirm  Esc cancel  Ctrl+U clear") + "\n")
+	b.WriteString("  " + ui.KeyLegend(m.themeContext(), ui.ContentWidth(m.width)-2, keymap.MainExport) + "\n")
 	return b.String()
 }
 

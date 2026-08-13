@@ -104,7 +104,7 @@ func (m PickerModel) View() string {
 	width := ui.ContentWidth(m.width)
 	if len(m.prs) == 0 {
 		return ui.Heading(ctx, 2, "No open PRs in this repo", width) + "\n\n" +
-			ui.Text(ctx, ui.TextFaint, "press q/Esc to cancel", width) + "\n"
+			ui.KeyLegend(ctx, width, keymap.ThreadPick) + "\n"
 	}
 
 	var b strings.Builder
@@ -122,7 +122,7 @@ func (m PickerModel) View() string {
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
-	b.WriteString(ui.Text(ctx, ui.TextFaint, ctx.Glyph(theme.ArrowUp)+"/"+ctx.Glyph(theme.ArrowDown)+" navigate, Enter select, q/Esc cancel", width))
+	b.WriteString(ui.KeyLegend(ctx, width, keymap.ThreadPick))
 	b.WriteString("\n")
 	return b.String()
 }

@@ -8,22 +8,28 @@ import (
 	"github.com/svnbjrn/spoon/internal/tui/ui"
 )
 
-// helpFooterLines is how many lines viewHelp reserves for the title above and
-// the dismiss hint below the scrolled body.
-const helpFooterLines = 3
+// helpFooterLines reserves the actual wrapped contextual legend below the
+// scrolled help body.
+func (m Model) helpFooterLines() int {
+	return 2 + strings.Count(m.helpLegend(), "\n") + 1
+}
 
 func (m Model) viewHelp() string {
-	ctx, styles := m.themeContext(), m.styles()
+	ctx := m.themeContext()
 	body := scrollLines(helpBody(ctx), m.helpOffset, m.helpViewHeight())
 	return ui.Sheet(ctx, "  spoon", ctx.Glyph(theme.EmDash)+" help", ui.ContentWidth(m.width)) + "\n" +
-		body + "\n  " + styles.help.Render("PgUp/PgDn scroll "+ctx.Glyph(theme.Separator)+" Press ? or Esc to go back")
+		body + "\n  " + m.helpLegend()
 }
 
 func (m Model) helpViewHeight() int {
 	if m.height <= 0 {
 		return 0
 	}
-	return m.height - helpFooterLines
+	return m.height - m.helpFooterLines()
+}
+
+func (m Model) helpLegend() string {
+	return ui.KeyLegend(m.themeContext(), ui.ContentWidth(m.width)-2, keymap.MainHelp)
 }
 
 func helpBody(ctx theme.Context) string {
