@@ -297,9 +297,12 @@ func (m Model) voyageStatus() tea.Cmd {
 	cfg := m.Config
 	cache := m.Cache
 	return func() tea.Msg {
+		if cfg == nil {
+			return statusMsg{text: "Voyage not configured: configuration layer is disabled"}
+		}
 		_, active, err := embed.ResolveVoyageConfig(context.Background(), cfg.Embedder.Voyage, false, cache)
 		if err != nil {
-			return statusMsg{err: err}
+			return statusMsg{text: "Voyage configured but unusable", err: err}
 		}
 		if active {
 			return statusMsg{text: "Voyage configured and active"}
