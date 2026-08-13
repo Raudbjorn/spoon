@@ -4,5 +4,4 @@
 [37m  PR #41: Add new feature (@bob, updated 3d ago)[0m
 [37m  PR #40: Refactor module (@carol, updated 5d ago)[0m
 
-[37;40m[ctrl+c][0m [3;2;90mQuit[0m [37;40m[Up/k][0m [3;2;90mMove selection up[0m [37;40m[Down/j][0m [3;2;90mMove selection down[0m [37;40m[Enter][0m [3;2;90mChoose pull request[0m
-[37;40m[ctrl+c/Esc/q][0m [3;2;90mCancel picker[0m
+[37;40m[ctrl+c][0m [3;2;90mQuit[0m [37;40m[Up/k][0m [3;2;90mMove selection up[0m [37;40m[Down/j][0m [3;2;90mMove selection down[0m [37;40m[Enter][0m [3;2;90mChoose pull request[0m [37;40m[Esc/q][0m [3;2;90mCancel picker[0m

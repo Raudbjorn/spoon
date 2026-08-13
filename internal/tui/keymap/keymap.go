@@ -185,7 +185,7 @@ var Registry = []Binding{
 	{ThreadPick, []string{"up", "k"}, Up, "Move selection up", ""},
 	{ThreadPick, []string{"down", "j"}, Down, "Move selection down", ""},
 	{ThreadPick, []string{"enter"}, Submit, "Choose pull request", ""},
-	{ThreadPick, []string{"ctrl+c", "esc", "q"}, Quit, "Cancel picker", ""},
+	{ThreadPick, []string{"esc", "q"}, Quit, "Cancel picker", ""},
 }
 
 func Lookup(scope Scope, key string) (Action, bool) {
