@@ -101,7 +101,10 @@ func runAction(id ActionID, cfg *config.Config, path string, cache embed.Respons
 		if cache == nil {
 			return "Store/cache is unavailable", nil
 		}
-		return "Store/cache is available", nil
+		if err := cache.VoyageCacheWritable(context.Background()); err != nil {
+			return "", fmt.Errorf("store/cache is not writable: %w", err)
+		}
+		return "Store/cache is available and writable", nil
 	case ActionFastEmbedCheck:
 		if cfg == nil {
 			return "FastEmbed unavailable: configuration layer is disabled", nil
