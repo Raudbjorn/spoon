@@ -86,7 +86,7 @@ func (m Model) viewTable() string {
 			"AHEAD"+sortInd("ahead"), "BEHIND",
 			"BRANCH"+sortInd("branches"),
 			"PUSHED"+sortInd("pushed"), "STATUS")
-		b.WriteString(styles.header.Render(header))
+		b.WriteString(ui.TableHeader(ctx, " "+header, 0))
 	} else {
 		header := fmt.Sprintf("%-4s %3s  %-30s %s %s %7s  %-12s",
 			"HEAT", sortInd("heat"), "REPOSITORY",
@@ -94,7 +94,7 @@ func (m Model) viewTable() string {
 			padLeftCells(ctx.Glyph(theme.Fork)+sortInd("forks"), 5),
 			"BRANCH"+sortInd("branches"),
 			"PUSHED"+sortInd("pushed"))
-		b.WriteString(styles.header.Render(header))
+		b.WriteString(ui.TableHeader(ctx, " "+header, 0))
 	}
 	b.WriteString("\n")
 
@@ -211,9 +211,7 @@ func (m Model) viewTable() string {
 				gutter, prefix, scorePrefix, heatBar, scoreStyled, name, sf.Fork.Stars, sf.Fork.SubForkCount, branches, pushed)
 		}
 
-		if isSelected {
-			row = styles.selected.Render(row)
-		}
+		row = ui.TableRow(ctx, row, isSelected, 0)
 
 		b.WriteString(row)
 		b.WriteString("\n")
@@ -432,7 +430,7 @@ func (m Model) renderStatusBar() string {
 		}
 	}
 	content := render(prefix, selected)
-	return styles.statusBar.Width(contentWidth).Render(content)
+	return ui.NavBar(ctx, content, contentWidth)
 }
 
 func (m *Model) cycleSortColumn() {

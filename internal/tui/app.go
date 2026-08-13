@@ -92,6 +92,12 @@ type Model struct {
 	// themeContext's deterministic default instead.
 	theme theme.Context
 
+	// overlay is intentionally independent of view. Settings can place a
+	// confirmation over any view without allowing its key handler to run.
+	overlay      ui.Overlay
+	overlayFocus overlayFocus
+	overlayTitle string
+
 	// Input
 	input string
 	// inputCursor is the insertion point as a rune offset into input.
@@ -219,6 +225,29 @@ type Model struct {
 	queryScorer embed.QueryScorer
 }
 
+// overlayFocus is the main model's active focus identity. The overlay leaves
+// background state untouched, but captures it explicitly so closing has one
+// deterministic restoration path when settings later adds focused controls.
+type overlayFocus struct {
+	view   viewState
+	cursor int
+}
+
+func (m *Model) openOverlay(kind ui.OverlayKind, title string) {
+	m.overlayFocus = overlayFocus{view: m.view, cursor: m.cursor}
+	m.overlayTitle = title
+	m.overlay.Open(kind, fmt.Sprintf("%d:%d", m.view, m.cursor))
+}
+
+func (m *Model) restoreOverlayFocus(token string) {
+	if token == "" {
+		return
+	}
+	m.view = m.overlayFocus.view
+	m.cursor = m.overlayFocus.cursor
+	m.overlayTitle = ""
+}
+
 // --- Constructor ---
 
 func NewModel(provider forge.Forge, auth forge.AuthInfo, repo string, refresh bool) Model {
@@ -328,9 +357,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		return m, nil
-
 	case tea.KeyMsg:
+		if handled, restoredFocus := m.overlay.HandleKey(msg.String()); handled {
+			m.restoreOverlayFocus(restoredFocus)
+			return m, nil
+		}
 		return m.handleKey(msg)
 
 	case startFetchMsg:
@@ -1548,6 +1579,13 @@ func (m Model) View() string {
 	if m.quitting {
 		return ""
 	}
+	if m.overlay.IsOpen() {
+		width := ui.ContentWidth(m.width)
+		if m.overlay.Kind() == ui.SheetOverlay {
+			return ui.Sheet(m.themeContext(), "Help", m.overlayTitle, width)
+		}
+		return ui.Modal(m.themeContext(), "Confirm", m.overlayTitle, width)
+	}
 
 	switch m.view {
 	case viewInput:
@@ -1591,15 +1629,14 @@ func (m Model) viewInput() string {
 		Value: m.input, Cursor: m.inputCursor, Focused: true, Enabled: true,
 	}, ui.ContentWidth(m.width)-14) + "\n")
 	if m.inputErr != "" {
-		b.WriteString("  " + s.error.Render(m.inputErr) + "\n")
+		b.WriteString("  " + ui.TitledAlert(m.themeContext(), ui.AlertError, "Repository", m.inputErr, ui.ContentWidth(m.width)-2) + "\n")
 	}
 	if m.errMsg != "" {
-		b.WriteString("  " + s.error.Render(m.errMsg) + "\n")
+		b.WriteString("  " + ui.TitledAlert(m.themeContext(), ui.AlertError, "Operation", m.errMsg, ui.ContentWidth(m.width)-2) + "\n")
 	}
 	if m.loading {
-		b.WriteString("\n  " + m.loadMsg + "\n")
 	} else {
-		b.WriteString("\n  " + s.help.Render("Enter a GitHub or GitLab repository (e.g., golang/go)") + "\n")
+		b.WriteString("\n  " + ui.Button(m.themeContext(), ui.ButtonState{Label: "Enter search", Enabled: true}, 18) + " " + s.help.Render("Enter a GitHub or GitLab repository (e.g., golang/go)") + "\n")
 		b.WriteString("  " + s.help.Render(m.themeContext().Glyph(theme.ArrowLeft)+"/"+m.themeContext().Glyph(theme.ArrowRight)+" move  Home/End  paste supported  Enter to search  Ctrl+C to quit") + "\n")
 	}
 	return b.String()

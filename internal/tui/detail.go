@@ -62,7 +62,7 @@ func (m Model) detailBody() string {
 	writeLine(lipgloss.NewStyle().Bold(true).Render("Fork: " + sf.Fork.ID))
 
 	scoreStr := lipgloss.NewStyle().Foreground(m.heatColor(sf.Heat.Score)).Bold(true).Render(fmt.Sprintf("%.0f/100", sf.Heat.Score))
-	writeLine(fmt.Sprintf("Heat: %s %s", m.renderHeatBar(sf.Heat.Score), scoreStr))
+	writeLine(ui.StatCard(ctx, "heat "+m.renderHeatBar(sf.Heat.Score), scoreStr, true, boxWidth-4))
 	divider()
 
 	// The former width-two fire pictograph becomes a text label in both glyph
@@ -189,7 +189,7 @@ func (m Model) detailBody() string {
 		writeLine(fmt.Sprintf("%q", desc))
 	}
 
-	return "\n" + ui.Box(ctx, boxWidth, parts)
+	return "\n" + ui.Card(ctx, "Fork details", boxWidth, parts)
 }
 
 func componentDescription(ctx theme.Context, name string, raw, points, max float64) string {

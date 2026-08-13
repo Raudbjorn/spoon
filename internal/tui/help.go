@@ -14,7 +14,7 @@ const helpFooterLines = 3
 func (m Model) viewHelp() string {
 	ctx, styles := m.themeContext(), m.styles()
 	body := scrollLines(helpBody(ctx), m.helpOffset, m.helpViewHeight())
-	return ui.Heading(ctx, 1, "  spoon", ui.ContentWidth(m.width)) + styles.subtitle.Render(" "+ctx.Glyph(theme.EmDash)+" help") + "\n" +
+	return ui.Sheet(ctx, "  spoon", ctx.Glyph(theme.EmDash)+" help", ui.ContentWidth(m.width)) + "\n" +
 		body + "\n  " + styles.help.Render("PgUp/PgDn scroll "+ctx.Glyph(theme.Separator)+" Press ? or Esc to go back")
 }
 
