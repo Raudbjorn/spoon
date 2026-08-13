@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/svnbjrn/spoon/internal/config"
@@ -72,9 +73,12 @@ func LocalProviderProbe(ctx context.Context, input ProviderInput, transport http
 		}
 	}
 	auth := forge.AuthInfo{Provider: input.Provider, Host: host}
-	envToken, tokenRate, publicRate, unit := input.Environment["GH_TOKEN"] != "" || input.Environment["GITHUB_TOKEN"] != "", 5000, 60, "hour"
+	envToken, tokenRate, publicRate, unit := environmentValueForOS(input.Environment, "GH_TOKEN", runtime.GOOS) != "" ||
+		environmentValueForOS(input.Environment, "GITHUB_TOKEN", runtime.GOOS) != "", 5000, 60, "hour"
 	if input.Provider == forge.ProviderGitLab {
-		envToken = input.Environment["GITLAB_TOKEN"] != "" || input.Environment["GITLAB_PAT"] != "" || input.Environment["CI_JOB_TOKEN"] != ""
+		envToken = environmentValueForOS(input.Environment, "GITLAB_TOKEN", runtime.GOOS) != "" ||
+			environmentValueForOS(input.Environment, "GITLAB_PAT", runtime.GOOS) != "" ||
+			environmentValueForOS(input.Environment, "CI_JOB_TOKEN", runtime.GOOS) != ""
 		tokenRate, publicRate, unit = 2000, 500, "minute"
 	}
 	auth.RateUnit = unit
@@ -148,25 +152,51 @@ func localProviderTokenConfigured(provider forge.Provider, host string, env map[
 }
 
 func providerConfigPath(provider forge.Provider, env map[string]string) string {
+	return providerConfigPathForOS(provider, env, runtime.GOOS)
+}
+
+func providerConfigPathForOS(provider forge.Provider, env map[string]string, goos string) string {
 	if provider == forge.ProviderGitHub {
-		if root := env["GH_CONFIG_DIR"]; root != "" {
+		if root := environmentValueForOS(env, "GH_CONFIG_DIR", goos); root != "" {
 			return filepath.Join(root, "hosts.yml")
 		}
-	} else if root := env["GLAB_CONFIG_DIR"]; root != "" {
+	} else if root := environmentValueForOS(env, "GLAB_CONFIG_DIR", goos); root != "" {
 		return filepath.Join(root, "config.yml")
 	}
 
-	root := env["XDG_CONFIG_HOME"]
-	if root == "" && env["HOME"] != "" {
-		root = filepath.Join(env["HOME"], ".config")
+	if root := environmentValueForOS(env, "XDG_CONFIG_HOME", goos); root != "" {
+		if provider == forge.ProviderGitLab {
+			return filepath.Join(root, "glab-cli", "config.yml")
+		}
+		return filepath.Join(root, "gh", "hosts.yml")
 	}
-	if root == "" {
-		return ""
+	if goos == "windows" {
+		if root := environmentValueForOS(env, "AppData", goos); root != "" {
+			if provider == forge.ProviderGitLab {
+				return filepath.Join(root, "glab-cli", "config.yml")
+			}
+			return filepath.Join(root, "GitHub CLI", "hosts.yml")
+		}
 	}
-	if provider == forge.ProviderGitLab {
-		return filepath.Join(root, "glab-cli", "config.yml")
+	if home := environmentValueForOS(env, "HOME", goos); home != "" {
+		if provider == forge.ProviderGitLab {
+			return filepath.Join(home, ".config", "glab-cli", "config.yml")
+		}
+		return filepath.Join(home, ".config", "gh", "hosts.yml")
 	}
-	return filepath.Join(root, "gh", "hosts.yml")
+	return ""
+}
+
+func environmentValueForOS(env map[string]string, name, goos string) string {
+	if goos != "windows" {
+		return env[name]
+	}
+	for key, value := range env {
+		if strings.EqualFold(key, name) {
+			return value
+		}
+	}
+	return ""
 }
 
 // Store is the shared open-and-writability contract for setup and settings.
