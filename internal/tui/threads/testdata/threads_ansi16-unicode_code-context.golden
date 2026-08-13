@@ -1,0 +1,18 @@
+PR #42 — Fixture PR
+  Mergeable: —
+  Reviews:   —
+  Checks:    —
+  Threads:   1 unresolved
+
+[1;97;40m▸ alice (User)      main.go:7[0m
+
+[1;97m⚠ Unresolved (active)[0m
+Please update this.
+
+╭── code at main.go:7-0 [ref ] ──
+│    7 │ ← before
+│    8 │   after
+╰─────
+
+[37;40m[r/Enter][0m [3;2;90mreply[0m [37;40m[R][0m [3;2;90mresolve[0m [37;40m[a][0m [3;2;90mapply suggestion[0m [37;40m[c][0m [3;2;90mcounter-propose[0m [37;40m[Ctrl+A][0m [3;2;90mresolve-all[0m [37;40m[A][0m [3;2;90munresolve-all[0m [37;40m[o][0m [3;2;90mopen[0m
+[37;40m[?][0m [3;2;90mhelp[0m [37;40m[q][0m [3;2;90mquit[0m

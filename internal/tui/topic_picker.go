@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/svnbjrn/spoon/internal/topics"
 	"github.com/svnbjrn/spoon/internal/tui/theme"
@@ -85,7 +84,7 @@ func (m Model) viewTopicPicker() string {
 			selection.FullName, selection.Score, ctx.Glyph(theme.Star), selection.Stars, selection.ForkCount, truncateDesc(selection.Description, 50))
 		if i == m.topicCursor {
 			cursor = ctx.Glyph(theme.Selected) + " "
-			line = lipgloss.NewStyle().Bold(true).Render(line)
+			line = ui.TableRow(ctx, line, true, ui.ContentWidth(m.width)-4)
 		}
 		b.WriteString("  " + cursor + line + "\n")
 	}

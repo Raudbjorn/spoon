@@ -6,10 +6,6 @@ import (
 	"github.com/svnbjrn/spoon/internal/tui/theme"
 )
 
-// gutterColors and duplicateGutter preserve deterministic default helpers for
-// existing tests; production rendering receives its colors from Model.styles.
-var gutterColors = theme.GutterColors(theme.Dark)
-
 type styleSet struct {
 	title, subtitle, warn, error, statusBar, help, selected, header, cell lipgloss.Style
 	heat                                                                  []lipgloss.Color
@@ -53,12 +49,6 @@ func heatColor(colors []lipgloss.Color, score float64) lipgloss.Color {
 	return colors[idx]
 }
 
-// HeatColor retains the deterministic default-context helper used by legacy
-// tests. Renderers use Model.heatColor so selected startup context wins.
-func HeatColor(score float64) lipgloss.Color {
-	return heatColor(stylesFor(theme.DefaultContext()).heat, score)
-}
-
 func (m Model) heatColor(score float64) lipgloss.Color { return heatColor(m.styles().heat, score) }
 
 func heatBar(ctx theme.Context, score float64) string {
@@ -77,17 +67,7 @@ func heatBar(ctx theme.Context, score float64) string {
 	return out[0] + out[1] + out[2] + out[3]
 }
 
-// HeatBar retains a Unicode default for legacy callers. Model renderers use
-// Model.heatBar and therefore follow their immutable glyph context.
-func HeatBar(score float64) string { return heatBar(theme.DefaultContext(), score) }
-
 func (m Model) heatBar(score float64) string { return heatBar(m.themeContext(), score) }
-
-// RenderHeatBar retains a deterministic default-context helper for callers
-// outside a Model. Main views use Model.renderHeatBar.
-func RenderHeatBar(score float64) string {
-	return lipgloss.NewStyle().Foreground(HeatColor(score)).Render(HeatBar(score))
-}
 
 func (m Model) renderHeatBar(score float64) string {
 	return lipgloss.NewStyle().Foreground(m.heatColor(score)).Render(m.heatBar(score))
@@ -103,11 +83,4 @@ func (m Model) gutterColour(ordinal int) lipgloss.Color {
 	}
 	colors := m.styles().gutter
 	return colors[ordinal%len(colors)]
-}
-
-// gutterColour retains the dark default for existing color-choice tests.
-func gutterColour(ordinal int) lipgloss.Color { return Model{}.gutterColour(ordinal) }
-
-func duplicateGutter(sf ScoredFork, ordinals map[string]int) string {
-	return Model{}.duplicateGutter(sf, ordinals)
 }

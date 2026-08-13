@@ -1,0 +1,6 @@
+
+  Filter 4 forks by owner/name
+
+  Match: [1;38;2;211;211;211m> owner█[0m
+
+  [38;2;133;133;133m←/→ move  Home/End  Enter apply  Esc cancel  Ctrl+U clear  (empty clears the filter)[0m

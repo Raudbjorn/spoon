@@ -1,13 +1,13 @@
-PR #42 - owner/库
+PR #42 - Fixture PR
   Mergeable: -
   Reviews:   -
   Checks:    -
-  Threads:   0 unresolved
+  Threads:   1 unresolved
 
-> reviewer (User)   owner/é.go:7
+> alice (User)      main.go:7
 
 ! Unresolved (active)
-combining: é
+Please update this.
 
 [r/Enter] reply [R] resolve [a] apply suggestion [c] counter-propose [Ctrl+A] resolve-all [A] unresolve-all [o] open
 [?] help [q] quit

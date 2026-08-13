@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/lipgloss"
+
 	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/threadsops"
 	"github.com/svnbjrn/spoon/internal/tui/theme"
@@ -12,17 +14,20 @@ import (
 
 func renderModel(m Model) string {
 	ctx := m.themeContext()
+	width := ui.ContentWidth(m.width)
 	if m.showHelp {
 		return renderHelp(ctx)
 	}
 	if m.err != nil {
-		return ui.Alert(ctx, ui.AlertError, m.err.Error(), m.width) + "\n\npress q to quit"
+		return ui.Alert(ctx, ui.AlertError, m.err.Error(), width) + "\n\n" +
+			ui.Text(ctx, ui.TextFaint, "press q to quit", width)
 	}
 	if !m.loaded {
-		return "loading threads..."
+		return ui.Alert(ctx, ui.AlertInfo, "loading threads...", width)
 	}
 	if len(m.threads) == 0 {
-		return "no unresolved threads on this PR\n\npress q to quit"
+		return ui.Alert(ctx, ui.AlertInfo, "no unresolved threads on this PR", width) + "\n\n" +
+			ui.Text(ctx, ui.TextFaint, "press q to quit", width)
 	}
 	var b strings.Builder
 	b.WriteString(renderTUIStatus(m.prStatus, m.number, ctx))
@@ -40,21 +45,27 @@ func renderModel(m Model) string {
 		if thread.IsOutdated {
 			outdated = " (outdated)"
 		}
-		fmt.Fprintf(&b, "%s%-16s  %s:%d%s\n", marker, reviewer, thread.Path, thread.Line, outdated)
+		row := fmt.Sprintf("%s%-16s  %s:%d%s", marker, reviewer, thread.Path, thread.Line, outdated)
+		b.WriteString(ui.TableRow(ctx, row, i == m.cursor, width))
+		b.WriteString("\n")
 	}
 	if m.cursor < len(m.threads) {
 		thread := m.threads[m.cursor]
 		b.WriteString("\n")
-		fmt.Fprintf(&b, "%s\n", threadStateLabel(thread, ctx))
+		b.WriteString(ui.Text(ctx, ui.TextStrong, threadStateLabel(thread, ctx), width))
+		b.WriteString("\n")
 		if len(thread.Comments) > 0 {
 			if m.Verbose && thread.Comments[0].CreatedAt != "" {
-				fmt.Fprintf(&b, "  Created: %s\n", thread.Comments[0].CreatedAt)
+				b.WriteString(ui.Text(ctx, ui.TextMuted, "  Created: "+thread.Comments[0].CreatedAt, width))
+				b.WriteString("\n")
 			}
 			b.WriteString(renderCommentBody(thread.Comments[0].Body))
 			b.WriteString("\n")
 			for _, comment := range thread.Comments {
 				if len(threadsops.ParseSuggestions(comment.ID, comment.Body)) > 0 {
-					fmt.Fprintf(&b, "\nSuggestion available (a to apply)\n")
+					b.WriteString("\n")
+					b.WriteString(ui.Alert(ctx, ui.AlertInfo, "Suggestion available (a to apply)", width))
+					b.WriteString("\n")
 					break
 				}
 			}
@@ -65,17 +76,74 @@ func renderModel(m Model) string {
 			b.WriteString("\n")
 		}
 	}
-	b.WriteString("\n[r/Enter] reply  [R] resolve  [a] apply-suggestion  [c] counter-propose  [Ctrl+A] resolve-all  [A] unresolve-all  [o] open  [?] help  [q] quit\n")
+	b.WriteString("\n")
+	b.WriteString(renderBindingLegend(ctx, width))
+	b.WriteString("\n")
 	if m.status != "" {
-		fmt.Fprintf(&b, "\n%s\n", m.status)
+		b.WriteString("\n")
+		tone := m.statusTone
+		if tone == "" {
+			tone = ui.AlertInfo
+		}
+		b.WriteString(ui.Alert(ctx, tone, m.status, width))
+		b.WriteString("\n")
 	}
 	if m.confirm != "" {
-		fmt.Fprintf(&b, "\n[%s] press y to confirm, any other key to cancel\n", m.confirm)
+		b.WriteString("\n")
+		b.WriteString(ui.Modal(ctx, "Confirm", fmt.Sprintf("%s: press y to confirm, any other key to cancel", m.confirm), width))
+		b.WriteString("\n")
 	}
 	if m.composing {
-		fmt.Fprintf(&b, "\n--- compose (%s) %s Ctrl+S to send, Esc to cancel ---\n%s_\n", m.composeFor, ctx.Glyph(theme.EmDash), string(m.composeBuf))
+		b.WriteString("\n")
+		b.WriteString(ui.Heading(ctx, 3, "Compose ("+m.composeFor+") "+ctx.Glyph(theme.EmDash)+" Ctrl+S to send, Esc to cancel", width))
+		b.WriteString("\n")
+		b.WriteString(ui.Input(ctx, ui.InputState{Value: string(m.composeBuf), Cursor: len(m.composeBuf), Focused: true, Enabled: true}, width))
+		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+type bindingHint struct {
+	key, label string
+}
+
+var threadBindingHints = []bindingHint{
+	{"r/Enter", "reply"},
+	{"R", "resolve"},
+	{"a", "apply suggestion"},
+	{"c", "counter-propose"},
+	{"Ctrl+A", "resolve-all"},
+	{"A", "unresolve-all"},
+	{"o", "open"},
+	{"?", "help"},
+	{"q", "quit"},
+}
+
+// renderBindingLegend wraps whole actions so every available operation remains
+// reachable and visible at the 80-column viewport floor.
+func renderBindingLegend(ctx theme.Context, width int) string {
+	if width <= 0 {
+		width = ui.MaxContentWidth
+	}
+	var lines []string
+	line := ""
+	for _, hint := range threadBindingHints {
+		part := ui.Kbd(ctx, hint.key, lipgloss.Width(hint.key)+2) + " " +
+			ui.Text(ctx, ui.TextFaint, hint.label, lipgloss.Width(hint.label))
+		if line != "" && lipgloss.Width(line)+1+lipgloss.Width(part) > width {
+			lines = append(lines, line)
+			line = part
+			continue
+		}
+		if line != "" {
+			line += " "
+		}
+		line += part
+	}
+	if line != "" {
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // renderTUIStatus formats the PR status header for the TUI panel.

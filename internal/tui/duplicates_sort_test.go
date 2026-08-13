@@ -118,36 +118,37 @@ func TestDuplicateGutter_AdjacentGroupsAlwaysDiffer(t *testing.T) {
 		{SiblingGroup: "f:bbb", SiblingCount: 2},
 	}
 	ord := gutterOrdinals(forks)
+	m := Model{}
 
 	if ord["f:aaa"] == ord["f:bbb"] {
 		t.Error("two groups share an ordinal; their gutters would be the same colour")
 	}
-	if c0, c1 := gutterColour(ord["f:aaa"]), gutterColour(ord["f:bbb"]); c0 == c1 {
+	if c0, c1 := m.gutterColour(ord["f:aaa"]), m.gutterColour(ord["f:bbb"]); c0 == c1 {
 		t.Errorf("adjacent groups both drew %v; they would merge into one line", c0)
 	}
 
-	if got := duplicateGutter(ScoredFork{}, ord); got != " " {
+	if got := m.duplicateGutter(ScoredFork{}, ord); got != " " {
 		t.Errorf("ungrouped fork gutter = %q, want a single space", got)
 	}
 	// One cell wide either way, or every column to the right shifts.
-	if w := lipgloss.Width(duplicateGutter(forks[0], ord)); w != 1 {
+	if w := lipgloss.Width(m.duplicateGutter(forks[0], ord)); w != 1 {
 		t.Errorf("gutter is %d cells wide, want 1", w)
 	}
 	// Members of one group must share a colour, or the line breaks mid-group.
-	if gutterColour(ord["f:aaa"]) != gutterColour(ord[forks[1].SiblingGroup]) {
+	if m.gutterColour(ord["f:aaa"]) != m.gutterColour(ord[forks[1].SiblingGroup]) {
 		t.Error("members of one group were assigned different colours")
 	}
 
 	// More groups than palette entries must still never repeat a neighbour.
-	n := 2*len(gutterColors) + 2
+	n := 2*len(m.styles().gutter) + 2
 	many := make([]ScoredFork, 0, n)
 	for i := range n {
 		many = append(many, ScoredFork{SiblingGroup: fmt.Sprintf("f:%d", i), SiblingCount: 2})
 	}
 	ordMany := gutterOrdinals(many)
 	for i := 1; i < len(many); i++ {
-		prev := gutterColour(ordMany[many[i-1].SiblingGroup])
-		cur := gutterColour(ordMany[many[i].SiblingGroup])
+		prev := m.gutterColour(ordMany[many[i-1].SiblingGroup])
+		cur := m.gutterColour(ordMany[many[i].SiblingGroup])
 		if prev == cur {
 			t.Fatalf("groups %d and %d share colour %v", i-1, i, cur)
 		}

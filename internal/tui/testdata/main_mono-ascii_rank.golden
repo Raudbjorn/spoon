@@ -1,0 +1,7 @@
+
+  Rank 4 fork(s) by intent
+
+  Intent: > terminal_
+
+  scorer: lexical (set VOYAGE_AI_API_KEY for the cross-encoder)
+  </- move  Home/End  Enter rank  Esc cancel  Ctrl+U clear  (empty clears the ranking)

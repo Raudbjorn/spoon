@@ -6,14 +6,14 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/tui/theme"
+	"github.com/svnbjrn/spoon/internal/tui/ui"
 )
 
 // PickerModel is the Bubble Tea model for choosing a PR from an open-PR list.
-// Returned from `NewPicker(prs)`; runs as its own tea.Program. After Run() the
+// Returned from NewPicker(prs); runs as its own tea.Program. After Run() the
 // caller inspects Selected()/Cancelled() to decide whether to proceed.
 type PickerModel struct {
 	prs       []gh.PullRequest
@@ -21,14 +21,8 @@ type PickerModel struct {
 	selected  *gh.PullRequest // nil until user hits Enter
 	cancelled bool            // true if user pressed Esc/Ctrl+C/q
 	err       error
-
-	// styling
-	cursorStyle    lipgloss.Style
-	highlightStyle lipgloss.Style
-	headerStyle    lipgloss.Style
-	footerStyle    lipgloss.Style
-	authorStyle    lipgloss.Style
-	timeStyle      lipgloss.Style
+	width     int
+	height    int
 
 	// now is captured at construction so "updated 2d ago" rendering is
 	// deterministic in tests.
@@ -49,16 +43,10 @@ func (m PickerModel) withPRs(prs []gh.PullRequest) PickerModel {
 	return m
 }
 
-// WithTheme returns a copy whose picker styles are derived from the immutable
+// WithTheme returns a copy whose picker rendering derives from the immutable
 // startup context.
 func (m PickerModel) WithTheme(ctx theme.Context) PickerModel {
 	m.theme = ctx
-	m.cursorStyle = lipgloss.NewStyle().Foreground(ctx.Palette.Accent)
-	m.highlightStyle = lipgloss.NewStyle().Bold(true).Foreground(ctx.Palette.Accent)
-	m.headerStyle = lipgloss.NewStyle().Bold(true).Foreground(ctx.Palette.TextStrong)
-	m.footerStyle = lipgloss.NewStyle().Faint(true).Foreground(ctx.Palette.TextFaint)
-	m.authorStyle = lipgloss.NewStyle().Foreground(ctx.Palette.Info)
-	m.timeStyle = lipgloss.NewStyle().Faint(true).Foreground(ctx.Palette.TextMuted)
 	return m
 }
 
@@ -72,9 +60,12 @@ func (m PickerModel) themeContext() theme.Context {
 // Init satisfies tea.Model; no startup I/O is required.
 func (m PickerModel) Init() tea.Cmd { return nil }
 
-// Update handles navigation, selection, and cancellation.
+// Update handles navigation, selection, cancellation, and terminal dimensions.
 func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width, m.height = msg.Width, msg.Height
+		return m, nil
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "esc", "q":
@@ -105,32 +96,32 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // View renders the picker rows + footer (or the empty-list message).
 func (m PickerModel) View() string {
+	ctx := m.themeContext()
+	if m.width > 0 && m.height > 0 && ui.TooSmall(m.width, m.height) {
+		return ui.FallbackMessageFor(ctx, m.width, m.height)
+	}
+	width := ui.ContentWidth(m.width)
 	if len(m.prs) == 0 {
-		var b strings.Builder
-		b.WriteString(m.headerStyle.Render("No open PRs in this repo"))
-		b.WriteString("\n\n")
-		b.WriteString(m.footerStyle.Render("press q/Esc to cancel"))
-		b.WriteString("\n")
-		return b.String()
+		return ui.Heading(ctx, 2, "No open PRs in this repo", width) + "\n\n" +
+			ui.Text(ctx, ui.TextFaint, "press q/Esc to cancel", width) + "\n"
 	}
 
-	ctx := m.themeContext()
 	var b strings.Builder
-	b.WriteString(m.headerStyle.Render(fmt.Sprintf("Open PRs (%d) %s select one:", len(m.prs), ctx.Glyph(theme.EmDash))))
+	b.WriteString(ui.TableHeader(ctx, fmt.Sprintf("Open PRs (%d) %s select one:", len(m.prs), ctx.Glyph(theme.EmDash)), width))
 	b.WriteString("\n\n")
 	for i, pr := range m.prs {
 		row := fmt.Sprintf("PR #%d: %s (@%s, updated %s)", pr.Number, pr.Title, pr.Author, humanizeDuration(m.now.Sub(pr.UpdatedAt)))
-		if i == m.cursor {
-			b.WriteString(m.cursorStyle.Render(ctx.Glyph(theme.Selected) + " "))
-			b.WriteString(m.highlightStyle.Render(row))
+		selected := i == m.cursor
+		if selected {
+			row = ctx.Glyph(theme.Selected) + " " + row
 		} else {
-			b.WriteString("  ")
-			b.WriteString(row)
+			row = "  " + row
 		}
+		b.WriteString(ui.TableRow(ctx, row, selected, width))
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
-	b.WriteString(m.footerStyle.Render(ctx.Glyph(theme.ArrowUp) + "/" + ctx.Glyph(theme.ArrowDown) + " navigate, Enter select, q/Esc cancel"))
+	b.WriteString(ui.Text(ctx, ui.TextFaint, ctx.Glyph(theme.ArrowUp)+"/"+ctx.Glyph(theme.ArrowDown)+" navigate, Enter select, q/Esc cancel", width))
 	b.WriteString("\n")
 	return b.String()
 }

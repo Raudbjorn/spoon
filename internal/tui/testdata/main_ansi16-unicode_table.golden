@@ -1,0 +1,8 @@
+[40m [0m[37;40m[37mspoon │ owner/repo │ 4 forks │ [1;93m⚠ Unauthenticated[0m[0m[0m[40m [0m[40m                                                                      [0m
+[1;97m HEAT      REPOSITORY                        ★     ⑂  BRANCH   PUSHED      [0m
+[1;97;40m ▸ [91m███░[0m[91m90[0m  alice/tool                         1     0       -  1h ago      [0m
+[37m   [91m███░[0m[91m80[0m  bob/tool                           1     0       -  1h ago      [0m
+[37m   [93m██░░[0m[93m70[0m  carol/widget                       1     0       -  1h ago      [0m
+[37m   [93m██░░[0m[93m60[0m  dave/widget                        1     0       -  1h ago      [0m
+
+[90m ↑↓ navigate  PgUp/PgDn page  Enter detail  Space mark  / filter  R rank  e/E export  o open  y yank  s sort  g cluster  t tier  ? help  q quit[0m

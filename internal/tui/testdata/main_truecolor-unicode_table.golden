@@ -1,0 +1,8 @@
+[48;2;36;36;38m [0m[38;2;211;211;211;48;2;36;36;38m[38;2;211;211;211mspoon │ owner/repo │ 4 forks │ [1;38;2;255;165;0m⚠ Unauthenticated[0m[0m[0m[48;2;36;36;38m [0m[48;2;36;36;38m                                                                      [0m
+[1;38;2;245;245;245m HEAT      REPOSITORY                        ★     ⑂  BRANCH   PUSHED      [0m
+[1;38;2;245;245;245;48;2;44;44;44m ▸ [38;2;255;91;72m███░[0m[38;2;255;91;72m90[0m  alice/tool                         1     0       -  1h ago      [0m
+[38;2;211;211;211m   [38;2;255;91;72m███░[0m[38;2;255;91;72m80[0m  bob/tool                           1     0       -  1h ago      [0m
+[38;2;211;211;211m   [38;2;255;165;0m██░░[0m[38;2;255;165;0m70[0m  carol/widget                       1     0       -  1h ago      [0m
+[38;2;211;211;211m   [38;2;255;165;0m██░░[0m[38;2;255;165;0m60[0m  dave/widget                        1     0       -  1h ago      [0m
+
+[38;2;133;133;133m ↑↓ navigate  PgUp/PgDn page  Enter detail  Space mark  / filter  R rank  e/E export  o open  y yank  s sort  g cluster  t tier  ? help  q quit[0m

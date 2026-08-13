@@ -34,8 +34,9 @@ type Model struct {
 	composeBuf []rune
 	composeFor string // "reply" or "resolve"
 	mutating   bool   // true while a mutation command is in flight
-	confirm    string // non-empty while waiting for y/n on a bulk action: "resolve-all" or "unresolve-all"
+	confirm    string // non-empty while waiting for y/n on a bulk action
 	status     string // last status line
+	statusTone ui.AlertTone
 
 	includeResolved bool
 	filter          threadsops.FilterMode
@@ -178,6 +179,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case codeContextLoadedMsg:
 		if msg.err != nil {
 			m.status = "code context fetch failed: " + msg.err.Error()
+			m.statusTone = ui.AlertError
 			return m, nil
 		}
 		if m.codeContexts == nil {
@@ -191,18 +193,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch {
 		case msg.cancelled:
 			m.status = "counter-propose cancelled"
+			m.statusTone = ui.AlertWarning
 		case msg.err != nil:
 			m.status = "counter-propose failed: " + msg.err.Error()
+			m.statusTone = ui.AlertError
 		default:
 			m.status = "counter-propose posted (comment " + msg.commentID + ")"
+			m.statusTone = ui.AlertSuccess
 		}
 		return m, nil
 	case mutationDoneMsg:
 		m.mutating = false
 		if msg.err != nil {
 			m.status = "ERROR: " + msg.err.Error()
+			m.statusTone = ui.AlertError
 		} else {
 			m.status = "OK: " + msg.what
+			m.statusTone = ui.AlertSuccess
 		}
 		// Refresh the thread list (skip for browser open — it's fire-and-forget).
 		if msg.what == "open" {
@@ -316,8 +323,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			if sug == nil {
-				// No suggestion on this thread — show a status message and do nothing.
 				m.status = "no suggestion on this thread"
+				m.statusTone = ui.AlertWarning
 				return m, nil
 			}
 			m.confirm = "apply-suggestion"
