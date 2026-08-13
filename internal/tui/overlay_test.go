@@ -89,15 +89,20 @@ func TestModelViewOverlayViewportContract(t *testing.T) {
 				t.Fatalf("79x24 overlay fallback = %q, want %q", got, want)
 			}
 
-			m.width, m.height = 80, 24
-			if got := m.View(); got == ui.FallbackMessageFor(ctx, 80, 24) || got == "" {
-				t.Fatalf("80x24 overlay did not render full composition: %q", got)
-			}
-
-			m.width, m.height = 160, 50
-			for _, line := range strings.Split(m.View(), "\n") {
-				if width := lipgloss.Width(line); width > ui.MaxContentWidth {
-					t.Fatalf("160x50 %s line width = %d, want <= %d: %q", kindName(kind), width, ui.MaxContentWidth, line)
+			for _, size := range []struct{ width, height int }{{80, 24}, {160, 50}} {
+				m.width, m.height = size.width, size.height
+				contentWidth := ui.ContentWidth(size.width)
+				want := ui.Modal(ctx, "Confirm", "current operation", contentWidth)
+				if kind == ui.SheetOverlay {
+					want = ui.Sheet(ctx, "Help", "current operation", contentWidth)
+				}
+				if got := m.View(); got != want {
+					t.Fatalf("%dx%d %s = %q, want %q", size.width, size.height, kindName(kind), got, want)
+				}
+				for _, line := range strings.Split(want, "\n") {
+					if width := lipgloss.Width(line); width > ui.MaxContentWidth {
+						t.Fatalf("%dx%d %s line width = %d, want <= %d: %q", size.width, size.height, kindName(kind), width, ui.MaxContentWidth, line)
+					}
 				}
 			}
 		})
