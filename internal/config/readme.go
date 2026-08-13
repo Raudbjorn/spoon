@@ -79,6 +79,7 @@ layer for users who have no personal config.
 |---|---|
 | SPOON_NO_CONFIG=1 | Ignore config.json entirely |
 | SPOON_NO_EMBED=1 | Skip embedding/semantic indexing on spn forks list |
+| SPOON_LOCAL_BRANCH_SCAN=1 | Include local git branches in spn fork scans |
 | VOYAGE_AI_API_KEY | Enable Voyage AI embeddings + reranking (see embedder.voyage) |
 | VOYAGE_API_KEY | Accepted as a fallback (what Voyage's own SDKs read) |
 | SPOON_NO_VOYAGE=1 | Skip Voyage even when a key is set; fastembed still runs |

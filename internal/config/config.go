@@ -312,21 +312,41 @@ func ReadCredentialFile(path, field string) (string, error) {
 // but continue — a run must not fail on a bad config); (cfg, nil) on success.
 // Honors $SPOON_NO_CONFIG=1 (returns nil, nil) so the layer can be disabled.
 func LoadDefault() (*Config, error) {
+	layer := LoadDefaultWithLayer()
+	return layer.Config, layer.LoadError
+}
+
+// LoadedLayer records the exact source selected by LoadDefaultWithLayer.
+// Disabled is distinct from a missing layer so UIs never infer persistence
+// state from a nil Config.
+type LoadedLayer struct {
+	Config    *Config
+	Path      string
+	System    bool
+	Disabled  bool
+	LoadError error
+}
+
+// LoadDefaultWithLayer is the central config-layer selector used by runtime
+// startup and the settings UI. It preserves LoadDefault's graceful semantics
+// while exposing the selected path and reason without reimplementing fallback.
+func LoadDefaultWithLayer() LoadedLayer {
 	if os.Getenv("SPOON_NO_CONFIG") == "1" {
-		return nil, nil
+		return LoadedLayer{Disabled: true}
 	}
 	path, err := DefaultPath()
 	if err != nil {
-		return nil, err
+		return LoadedLayer{Path: SystemPath(), System: true, LoadError: err}
 	}
-	c, err := Load(path)
+	cfg, err := Load(path)
 	if errors.Is(err, os.ErrNotExist) && path != SystemPath() {
-		c, err = Load(SystemPath())
+		path = SystemPath()
+		cfg, err = Load(path)
 	}
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+		return LoadedLayer{Path: path, System: path == SystemPath()}
 	}
-	return c, err
+	return LoadedLayer{Config: cfg, Path: path, System: path == SystemPath(), LoadError: err}
 }
 
 // Coalesce returns the first non-empty string, or "" if all are empty. Used to

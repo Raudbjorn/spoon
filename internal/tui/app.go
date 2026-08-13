@@ -380,6 +380,21 @@ func (m Model) Init() tea.Cmd {
 // --- Update ---
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m.view == viewSettings {
+		if _, closing := msg.(settings.CloseRequested); closing {
+			m.view = viewTable
+			if len(m.forks) == 0 {
+				m.view = viewInput
+			}
+			return m, nil
+		}
+		if window, ok := msg.(tea.WindowSizeMsg); ok {
+			m.width, m.height = window.Width, window.Height
+		}
+		updated, cmd := m.settings.Update(msg)
+		m.settings = updated.(settings.Model)
+		return m, cmd
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width

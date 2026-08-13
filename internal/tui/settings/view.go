@@ -11,7 +11,13 @@ import (
 )
 
 func render(m Model) string {
-	const width = 120
+	if m.width != 0 && ui.TooSmall(m.width, m.height) {
+		return ui.FallbackMessageFor(m.Theme, m.width, m.height)
+	}
+	width := ui.ContentWidth(m.width)
+	if width <= 0 {
+		width = ui.MaxContentWidth
+	}
 	var b strings.Builder
 	b.WriteString(ui.Heading(m.Theme, 1, "Settings", width))
 	b.WriteString("\n")

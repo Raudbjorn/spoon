@@ -1,24 +1,81 @@
 package settings
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/svnbjrn/spoon/internal/config"
 )
 
-// Save removes cleared credentials before delegating validation, permission
-// hardening, atomic replacement and schema stamping to config.Save.
-func Save(path string, cfg *config.Config) error {
-	cfg.GitHub.Tokens = nonEmpty(cfg.GitHub.Tokens)
-	if err := cfg.Validate(); err != nil {
+// Clone makes an independent candidate, including token slices and optional
+// booleans, before any validation-sensitive mutation reaches the live model.
+func Clone(cfg *config.Config) (*config.Config, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("configuration layer is disabled")
+	}
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		return nil, err
+	}
+	var candidate config.Config
+	if err := json.Unmarshal(data, &candidate); err != nil {
+		return nil, err
+	}
+	return &candidate, nil
+}
+
+// Candidate applies one field to an isolated copy and validates it. Callers
+// assign it only after success, so failed edits cannot corrupt in-memory state.
+func Candidate(field Field, cfg *config.Config, value string) (*config.Config, error) {
+	if !field.Editable || field.Set == nil {
+		return nil, fmt.Errorf("%s is read-only", field.Key)
+	}
+	candidate, err := Clone(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if err := field.Set(candidate, value); err != nil {
+		return nil, err
+	}
+	candidate.GitHub.Tokens = nonEmpty(candidate.GitHub.Tokens)
+	if err := candidate.Validate(); err != nil {
+		return nil, err
+	}
+	return candidate, nil
+}
+
+// Apply preserves the historical API but is transactional: cfg changes only
+// after Candidate has validated successfully.
+func Apply(field Field, cfg *config.Config, value string) error {
+	candidate, err := Candidate(field, cfg, value)
+	if err != nil {
 		return err
 	}
-	return config.Save(path, cfg)
+	*cfg = *candidate
+	return nil
+}
+
+// Save validates a deep candidate, performs config's atomic 0600 publish, and
+// updates the caller only if that publish succeeds.
+func Save(path string, cfg *config.Config) error {
+	candidate, err := Clone(cfg)
+	if err != nil {
+		return err
+	}
+	candidate.GitHub.Tokens = nonEmpty(candidate.GitHub.Tokens)
+	if err := candidate.Validate(); err != nil {
+		return err
+	}
+	if err := config.Save(path, candidate); err != nil {
+		return err
+	}
+	*cfg = *candidate
+	return nil
 }
 
 func nonEmpty(values []string) []string {
-	out := values[:0]
+	out := make([]string, 0, len(values))
 	for _, value := range values {
 		if value = strings.TrimSpace(value); value != "" {
 			out = append(out, value)
@@ -30,17 +87,21 @@ func nonEmpty(values []string) []string {
 	return out
 }
 
-func Apply(field Field, cfg *config.Config, value string) error {
-	if !field.Editable || field.Set == nil {
-		return fmt.Errorf("%s is read-only", field.Key)
+// RequiresConfirmationFor is value-aware. Billing applies only when the edit
+// can newly activate Voyage; a harmless disable remains an ordinary edit.
+func RequiresConfirmationFor(field Field, before, after *config.Config) bool {
+	switch field.Consequence {
+	case Reindex:
+		return before.Embedder.Voyage.OutputDimension != after.Embedder.Voyage.OutputDimension
+	case Billing:
+		return (before.Embedder.Voyage.Disabled && !after.Embedder.Voyage.Disabled) ||
+			(before.Embedder.Voyage.APIKeyFile == "" && after.Embedder.Voyage.APIKeyFile != "")
+	case Hostwide:
+		return true
+	default:
+		return false
 	}
-	if err := field.Set(cfg, value); err != nil {
-		return err
-	}
-	return cfg.Validate()
 }
-
-func RequiresConfirmation(field Field) bool { return field.Consequence != NoConsequence }
 
 func ConsequenceMessage(field Field) string {
 	switch field.Consequence {

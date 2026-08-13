@@ -21,7 +21,7 @@ func TestResolveShowsEffectiveSourceAndInactiveFile(t *testing.T) {
 		t.Fatalf("file row=%+v", got)
 	}
 	cfg.GitHub.RequestsPerMinute = 0
-	if got := Resolve(FieldByMust("github.requestsPerMinute"), cfg, nil); got.Value != "500" || got.Source != DefaultSource {
+	if got := Resolve(FieldByMust("github.requestsPerMinute"), cfg, nil); got.Value != "300" || got.Source != DefaultSource {
 		t.Fatalf("default row=%+v", got)
 	}
 }

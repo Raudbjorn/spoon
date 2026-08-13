@@ -219,11 +219,8 @@ func main() {
 	}
 	defer db.Close()
 
-	settingsPath, _ := config.DefaultPath()
-	if _, err := os.Stat(settingsPath); os.IsNotExist(err) && cfg != nil {
-		settingsPath = config.SystemPath()
-	}
-	settingsModel := settings.New(cfg, settingsPath, db)
+	layer := config.LoadDefaultWithLayer()
+	settingsModel := settings.NewFromLayer(layer, db)
 	m := tui.NewModelWithCluster(provider, auth, repoArg, refresh, tuiClusterOpts).
 		WithHeatWeights(heatWeights).WithMaxTier(maxTier).WithStore(db).
 		WithQueryScorer(tuiQueryScorer(db)).WithTheme(tuiContext).WithSettings(settingsModel)

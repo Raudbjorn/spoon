@@ -65,15 +65,12 @@ var Registry = []Field{
 	{Key: "version", Label: "Schema version", Section: HostSection, Help: "Written by Spoon; version 2 introduces UI preferences.", Get: func(c *config.Config) string { return strconv.Itoa(c.Version) }},
 	stringField("forge.provider", "Provider", ForgeSection, "github, gitlab, or empty to auto-detect", "", func(c *config.Config) string { return c.Forge.Provider }, func(c *config.Config, v string) { c.Forge.Provider = strings.ToLower(strings.TrimSpace(v)) }),
 	stringField("forge.host", "Host", ForgeSection, "Self-hosted GitHub or GitLab hostname.", "", func(c *config.Config) string { return c.Forge.Host }, func(c *config.Config, v string) { c.Forge.Host = strings.TrimSpace(v) }),
-	{Key: "github.tokens", Label: "GitHub tokens", Section: GitHubSection, Help: "Additional GitHub tokens; values are always masked.", Secret: true, Editable: true, Get: func(c *config.Config) string { return strings.Join(c.GitHub.Tokens, "\n") }, Set: func(c *config.Config, v string) error {
-		if strings.TrimSpace(v) == "" {
-			c.GitHub.Tokens = nil
-		} else {
-			c.GitHub.Tokens = []string{strings.TrimSpace(v)}
-		}
+	{Key: "github.tokens", Label: "GitHub tokens", Section: GitHubSection, Help: "One token per line; values are always masked.", Secret: true, Editable: true, Get: func(c *config.Config) string { return strings.Join(c.GitHub.Tokens, "\n") }, Set: func(c *config.Config, v string) error {
+		values := strings.Split(v, "\n")
+		c.GitHub.Tokens = nonEmpty(values)
 		return nil
 	}},
-	{Key: "github.requestsPerMinute", Label: "Requests per minute", Section: GitHubSection, Help: "Client-side pacing cap (maximum 900).", Editable: true, Default: "500", Environment: []string{"SPOON_GITHUB_RPM"}, Get: func(c *config.Config) string { return strconv.FormatFloat(c.GitHub.RequestsPerMinute, 'f', -1, 64) }, Set: func(c *config.Config, v string) error {
+	{Key: "github.requestsPerMinute", Label: "Requests per minute", Section: GitHubSection, Help: "Client-side pacing cap (maximum 900).", Editable: true, Default: "300", Environment: []string{"SPOON_GITHUB_RPM"}, Get: func(c *config.Config) string { return strconv.FormatFloat(c.GitHub.RequestsPerMinute, 'f', -1, 64) }, Set: func(c *config.Config, v string) error {
 		n, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
 		if err != nil {
 			return fmt.Errorf("github.requestsPerMinute: %w", err)
@@ -142,7 +139,7 @@ var Registry = []Field{
 // DocumentedEnvironment is the read-only environment inventory documented in
 // configReadme and surfaced by Environment.
 var DocumentedEnvironment = []string{
-	"SPOON_NO_CONFIG", "SPOON_NO_EMBED", "SPOON_NO_RESERVE", "SPOON_DEBUG", "SPOON_GITHUB_RPM", "SPOON_GH_COOKIE", "SPOON_FASTEMBED_MODEL", "SPOON_FASTEMBED_CACHE", "SPOON_FASTEMBED_SHA256", "SPOON_PROXY_KEY_PATH", "SPOON_PROXY_STATIC_PATH", "TURSO_DATABASE_URL", "TURSO_AUTH_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "GITLAB_TOKEN", "ONNX_PATH", "NO_COLOR", "VOYAGE_AI_API_KEY", "VOYAGE_API_KEY", "SPOON_NO_VOYAGE", "SPOON_VOYAGE_NO_CACHE", "SPOON_VOYAGE_DIM", "SPOON_VOYAGE_EMBED_MODEL", "SPOON_VOYAGE_RERANK_MODEL", "SPOON_VOYAGE_BASE_URL", "SPOON_TUI_THEME", "SPOON_TUI_COLOR", "SPOON_TUI_GLYPHS",
+	"SPOON_NO_CONFIG", "SPOON_NO_EMBED", "SPOON_NO_RESERVE", "SPOON_DEBUG", "SPOON_LOCAL_BRANCH_SCAN", "SPOON_GITHUB_RPM", "SPOON_GH_COOKIE", "SPOON_FASTEMBED_MODEL", "SPOON_FASTEMBED_CACHE", "SPOON_FASTEMBED_SHA256", "SPOON_PROXY_KEY_PATH", "SPOON_PROXY_STATIC_PATH", "TURSO_DATABASE_URL", "TURSO_AUTH_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "GITLAB_TOKEN", "ONNX_PATH", "NO_COLOR", "VOYAGE_AI_API_KEY", "VOYAGE_API_KEY", "SPOON_NO_VOYAGE", "SPOON_VOYAGE_NO_CACHE", "SPOON_VOYAGE_DIM", "SPOON_VOYAGE_EMBED_MODEL", "SPOON_VOYAGE_RERANK_MODEL", "SPOON_VOYAGE_BASE_URL", "SPOON_TUI_THEME", "SPOON_TUI_COLOR", "SPOON_TUI_GLYPHS",
 }
 
 // Environment makes every documented variable visible while marking secret
