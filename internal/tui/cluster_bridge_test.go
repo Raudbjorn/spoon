@@ -136,3 +136,25 @@ func TestSplitParentName(t *testing.T) {
 		})
 	}
 }
+
+func TestSettingsViewStillProcessesClusterResults(t *testing.T) {
+	m := newTestModel()
+	m.view = viewSettings
+
+	updated, cmd := m.Update(clusterResultMsg{})
+	var got Model
+	switch value := updated.(type) {
+	case Model:
+		got = value
+	case *Model:
+		got = *value
+	default:
+		t.Fatalf("Update returned %T", updated)
+	}
+	if got.clusterStatus != "done" {
+		t.Fatalf("clusterStatus = %q; want done while Settings is open", got.clusterStatus)
+	}
+	if cmd == nil {
+		t.Fatal("cluster message pump was not re-armed while Settings is open")
+	}
+}

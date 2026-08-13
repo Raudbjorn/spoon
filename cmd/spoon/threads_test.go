@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/svnbjrn/spoon/internal/threadsops"
+	"github.com/svnbjrn/spoon/internal/tui/theme"
 )
 
 func TestParseThreadsFlags(t *testing.T) {
@@ -493,5 +494,40 @@ func TestParseThreadsFlags_Verbose(t *testing.T) {
 				t.Errorf("verbose=%v want %v", f.verbose, tc.want)
 			}
 		})
+	}
+}
+
+func TestThreadsTUIContextCacheReusesPickerContextForTUI(t *testing.T) {
+	ctx, err := theme.ResolveContext("amber", "", "ansi16", "", "ascii")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolves, pins := 0, 0
+	cache := &threadsTUIContextCache{
+		resolve: func() (theme.Context, error) {
+			resolves++
+			return ctx, nil
+		},
+		pin: func(got theme.Context) {
+			pins++
+			if got != ctx {
+				t.Fatalf("pinned context = %#v, want %#v", got, ctx)
+			}
+		},
+	}
+
+	pickerContext, err := cache.Context()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tuiContext, err := cache.Context()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolves != 1 || pins != 1 {
+		t.Fatalf("picker-to-TUI resolution/pinning = %d/%d, want 1/1", resolves, pins)
+	}
+	if pickerContext != tuiContext || tuiContext != ctx {
+		t.Fatalf("picker and TUI contexts differ: %#v / %#v", pickerContext, tuiContext)
 	}
 }

@@ -1,0 +1,13 @@
+[40m [0m[37;40m[37mspoon │ owner/repo │ 4 forks │ [1;93m⚠ Unauthenticated[0m[0m[0m[40m [0m[40m                                                                      [0m
+[1;97m HEAT      REPOSITORY                        ★     ⑂  BRANCH   PUSHED      [0m
+[1;97;40m ▸ [91m███░[0m[91m90[0m  alice/tool                         1     0       -  1h ago      [0m
+[37m   [91m███░[0m[91m80[0m  bob/tool                           1     0       -  1h ago      [0m
+[37m   [93m██░░[0m[93m70[0m  carol/widget                       1     0       -  1h ago      [0m
+[37m   [93m██░░[0m[93m60[0m  dave/widget                        1     0       -  1h ago      [0m
+
+[37;40m[ctrl+c][0m [3;2;90mQuit[0m [37;40m[q][0m [3;2;90mQuit[0m [37;40m[Up/k][0m [3;2;90mMove selection up[0m [37;40m[Down/j][0m [3;2;90mMove selection down[0m [37;40m[PgUp][0m [3;2;90mPage up[0m [37;40m[PgDn][0m [3;2;90mPage down[0m
+[37;40m[home][0m [3;2;90mGo to top[0m [37;40m[G/end][0m [3;2;90mGo to bottom[0m [37;40m[g][0m [3;2;90mToggle cluster grouping[0m [37;40m[Enter][0m [3;2;90mView fork details[0m [37;40m[n][0m [3;2;90mSearch new repository[0m
+[37;40m[/][0m [3;2;90mFilter forks[0m [37;40m[R][0m [3;2;90mRank by intent[0m [37;40m[Esc][0m [3;2;90mClear active filter[0m [37;40m[?][0m [3;2;90mOpen help[0m [37;40m[s][0m [3;2;90mCycle sort column[0m [37;40m[S][0m [3;2;90mReverse sort order[0m
+[37;40m[o][0m [3;2;90mOpen selected fork[0m [37;40m[d][0m [3;2;90mOpen compare[0m [37;40m[c][0m [3;2;90mCycle enrichment ceiling[0m [37;40m[t][0m [3;2;90mToggle dark/light theme[0m
+[37;40m[f][0m [3;2;90mHide or restore chrome[0m [37;40m[y][0m [3;2;90mYank clone command[0m [37;40m[r][0m [3;2;90mRefresh[0m [37;40m[Space][0m [3;2;90mMark or unmark fork[0m [37;40m[e][0m [3;2;90mExport marked forks[0m
+[37;40m[E][0m [3;2;90mExport all forks[0m [37;40m[,][0m [3;2;90mOpen settings[0m

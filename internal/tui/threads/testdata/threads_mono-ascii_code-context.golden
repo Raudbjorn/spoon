@@ -1,0 +1,19 @@
+PR #42 - Fixture PR
+  Mergeable: -
+  Reviews:   -
+  Checks:    -
+  Threads:   1 unresolved
+
+> alice (User)      main.go:7
+
+! Unresolved (active)
+Please update this.
+
++-- code at main.go:7-0 [ref ] --
+|    7 | < before
+|    8 |   after
++-----
+
+[ctrl+c] Quit [Up/k] Move thread selection up [Down/j] Move thread selection down [q] Quit [r/Enter] Reply
+[R] Resolve current thread [a] Apply suggestion [ctrl+a] Resolve all [A] Unresolve all [o] Open pull request
+[c] Counter-propose [?] Toggle help [f] Hide or restore chrome

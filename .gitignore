@@ -16,3 +16,6 @@ embed/sidecar/
 # Experiment run artifacts (transient logs + multi-MB vector dumps; never commit)
 experiments/**/*.log
 experiments/**/*_vectors.json
+
+# Isolated implementation worktrees
+.worktrees/

@@ -1,0 +1,8 @@
+
+  Exporting 1 fork(s) to JSON
+
+  Save to: [1;38;2;211;211;211m> forks.json█[0m
+
+  [38;2;211;211;211;48;2;25;25;25m[ctrl+c][0m [3;2;38;2;133;133;133mQuit[0m [38;2;211;211;211;48;2;25;25;25m[Enter][0m [3;2;38;2;133;133;133mExport[0m [38;2;211;211;211;48;2;25;25;25m[Esc][0m [3;2;38;2;133;133;133mCancel export[0m [38;2;211;211;211;48;2;25;25;25m[left/ctrl+b][0m [3;2;38;2;133;133;133mMove input cursor left[0m
+[38;2;211;211;211;48;2;25;25;25m[right/ctrl+f][0m [3;2;38;2;133;133;133mMove input cursor right[0m [38;2;211;211;211;48;2;25;25;25m[home/ctrl+a][0m [3;2;38;2;133;133;133mMove input cursor to start[0m [38;2;211;211;211;48;2;25;25;25m[end/ctrl+e][0m [3;2;38;2;133;133;133mMove input cursor to end[0m
+[38;2;211;211;211;48;2;25;25;25m[backspace][0m [3;2;38;2;133;133;133mDelete previous character[0m [38;2;211;211;211;48;2;25;25;25m[delete][0m [3;2;38;2;133;133;133mDelete next character[0m [38;2;211;211;211;48;2;25;25;25m[ctrl+u][0m [3;2;38;2;133;133;133mClear input[0m

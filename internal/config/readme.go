@@ -27,7 +27,9 @@ layer for users who have no personal config.
 
 ## config.json fields
 
-- ` + "`version`" + ` — schema version; leave as written.
+- ` + "`version`" + ` — schema version. Version 2 means the optional ` + "`ui`" + ` section
+  (theme, color, glyphs) is available; old files without it migrate losslessly
+  when saved by the in-TUI editor.
 - ` + "`forge.provider`" + ` — "github" or "gitlab". Empty = auto-detect from the
   repo URL/flags each run (the default; usually what you want).
 - ` + "`forge.host`" + ` — self-hosted GitLab/GHES hostname. Empty = the public host.
@@ -35,10 +37,20 @@ layer for users who have no personal config.
   OPTIONAL and normally unnecessary: spoon uses the gh CLI login or
   GH_TOKEN/GITHUB_TOKEN from the environment. If you do put tokens here,
   chmod 600 config.json (spoon refuses a group/other-readable token file).
-- ` + "`github.requestsPerMinute`" + ` — client-side pacing cap (default 500, max 900).
+- ` + "`github.requestsPerMinute`" + ` — client-side pacing cap (default 300, max 900).
 - ` + "`github.proxy`" + ` — optional ProxyScrape-backed transport: enabled,
   apiKeyFile/staticFile (paths to 0600 files; contents are never copied
   here), whitelistPublicIp, cacheTtl. Off by default.
+- ` + "`ui.theme`" + ` — terminal palette: "dark", "light", or "amber". Empty =
+  dark. ` + "`SPOON_TUI_THEME`" + ` overrides it.
+- ` + "`ui.color`" + ` — terminal color profile: "truecolor", "ansi256",
+  "ansi16", "ansi8", "mono", or "no-color". Empty = truecolor; ` + "`SPOON_TUI_COLOR`" + `
+  overrides it, while non-empty ` + "`NO_COLOR`" + ` disables color when no explicit
+  profile is set.
+  ` + "`spn`" + ` deliberately gives non-empty ` + "`NO_COLOR`" + ` precedence over
+  ` + "`SPOON_TUI_COLOR`" + ` for pipeline safety, unlike the interactive TUI.
+- ` + "`ui.glyphs`" + ` — "unicode" (default) or "ascii"; ` + "`SPOON_TUI_GLYPHS`" + `
+  overrides it.
 - ` + "`embedder.backend`" + ` — "fastembed" (the only backend; empty means the
   same). Powers semantic indexing/search in spn. The model (~30 MB BGE
   small EN v1.5) downloads itself on first use; the TUI's clustering uses a
@@ -59,6 +71,11 @@ layer for users who have no personal config.
   re-request nothing unchanged. It stays OFF unless both a key resolves and the
   store is writable — with nowhere durable to keep results, every run would pay
   again for answers it had to throw away.
+- ` + "`ui.theme`" + ` — terminal palette: dark, light, or amber. ` + "`ui.color`" + `
+  selects truecolor, ansi256, ansi16, ansi8, mono, or no-color; ` + "`ui.glyphs`" + `
+  selects unicode or ascii. Use the in-TUI Settings editor (comma key) to inspect
+  the effective value and its source.
+
 
 ## Environment variables
 
@@ -66,6 +83,7 @@ layer for users who have no personal config.
 |---|---|
 | SPOON_NO_CONFIG=1 | Ignore config.json entirely |
 | SPOON_NO_EMBED=1 | Skip embedding/semantic indexing on spn forks list |
+| SPOON_LOCAL_BRANCH_SCAN=1 | Include local git branches in spn fork scans |
 | VOYAGE_AI_API_KEY | Enable Voyage AI embeddings + reranking (see embedder.voyage) |
 | VOYAGE_API_KEY | Accepted as a fallback (what Voyage's own SDKs read) |
 | SPOON_NO_VOYAGE=1 | Skip Voyage even when a key is set; fastembed still runs |
@@ -89,11 +107,15 @@ layer for users who have no personal config.
 | GITLAB_TOKEN | GitLab auth (or use: glab auth login) |
 | ONNX_PATH | Path to libonnxruntime.so if not on the loader path |
 | NO_COLOR | Disable colors |
+| SPOON_TUI_THEME | TUI palette: dark, light, or amber; overrides ui.theme |
+| SPOON_TUI_COLOR | TUI color profile: truecolor, ansi256, ansi16, ansi8, mono, or no-color |
+| SPOON_TUI_GLYPHS | TUI glyph profile: unicode or ascii |
 
 ## Changing things
 
 Edit config.json directly (spoon validates on load and tells you what is
-wrong), or re-run ` + "`spoon setup`" + ` to re-detect credentials and the embedder
-and rewrite the file. ` + "`--refresh`" + ` on any command bypasses cached reads for
-that run.
+wrong), use the in-TUI Settings editor (comma key) to inspect and safely save the
+loaded layer, or re-run ` + "`spoon setup`" + ` to re-detect credentials and
+the embedder and rewrite the file. ` + "`--refresh`" + ` on any command bypasses
+cached reads for that run.
 `

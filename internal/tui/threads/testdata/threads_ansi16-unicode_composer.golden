@@ -1,0 +1,18 @@
+PR #42 — Fixture PR
+  Mergeable: —
+  Reviews:   —
+  Checks:    —
+  Threads:   1 unresolved
+
+[1;97;40m▸ alice (User)      main.go:7[0m
+
+[1;97m⚠ Unresolved (active)[0m
+Please update this.
+
+[37;40m[ctrl+c][0m [3;2;90mQuit[0m [37;40m[Up/k][0m [3;2;90mMove thread selection up[0m [37;40m[Down/j][0m [3;2;90mMove thread selection down[0m [37;40m[q][0m [3;2;90mQuit[0m [37;40m[r/Enter][0m [3;2;90mReply[0m
+[37;40m[R][0m [3;2;90mResolve current thread[0m [37;40m[a][0m [3;2;90mApply suggestion[0m [37;40m[ctrl+a][0m [3;2;90mResolve all[0m [37;40m[A][0m [3;2;90mUnresolve all[0m [37;40m[o][0m [3;2;90mOpen pull request[0m
+[37;40m[c][0m [3;2;90mCounter-propose[0m [37;40m[?][0m [3;2;90mToggle help[0m [37;40m[f][0m [3;2;90mHide or restore chrome[0m
+
+[1;97mCompose (reply)[0m
+[1;37m> fixture reply█[0m
+[37;40m[ctrl+c][0m [3;2;90mQuit[0m [37;40m[ctrl+s][0m [3;2;90mSubmit reply[0m [37;40m[Esc][0m [3;2;90mCancel reply[0m

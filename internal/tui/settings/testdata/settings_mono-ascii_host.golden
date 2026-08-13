@@ -1,0 +1,17 @@
+Settings
+Forge - GitHub - Proxy - Embedder - Voyage - Appearance - Environment - [Host]
+Layer: user  Path: /settings-golden/config.json
++------------------------------------------------------------------------------+
+| Host                                                                         |
++------------------------------------------------------------------------------+
+| Schema version: 2                                                            |
+| Config path: /settings-golden/config.json                                    |
+| Layer: user                                                                  |
+| System config: absent                                                        |
+| Store path: /settings-golden/store.db                                        |
+| Embedder cache: /settings-golden/cache                                       |
+| Home: /settings-golden/home                                                  |
+| Config directory: /settings-golden                                           |
++------------------------------------------------------------------------------+
+[p] Probe provider credentials  [o] Check store  [f] Check FastEmbed  [v] Check
+[tab] section [enter] edit [esc] back

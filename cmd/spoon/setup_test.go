@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/svnbjrn/spoon/internal/config"
 	"github.com/svnbjrn/spoon/internal/forge"
+	"github.com/svnbjrn/spoon/internal/setupcheck"
 	"github.com/svnbjrn/spoon/internal/store"
 )
 
@@ -25,6 +27,7 @@ func TestProviderStatusLines(t *testing.T) {
 		wantSubstr string
 	}{
 		{"github authed", forge.ProviderGitHub, forge.AuthInfo{Tier: forge.AuthCLI, RateLimit: 5000, RateUnit: "hour"}, nil, true, "gh CLI"},
+		{"github configured unverified", forge.ProviderGitHub, forge.AuthInfo{Configured: true, RateLimit: 60, RateUnit: "hour"}, nil, true, "configured but unverified"},
 		{"github unauthed", forge.ProviderGitHub, forge.AuthInfo{Tier: forge.AuthNone, RateLimit: 60, RateUnit: "hour"}, nil, false, "gh auth login"},
 		{"gitlab token", forge.ProviderGitLab, forge.AuthInfo{Tier: forge.AuthToken, Username: "alice", RateLimit: 2000, RateUnit: "minute"}, nil, true, "GITLAB_TOKEN"},
 		{"gitlab unauthed", forge.ProviderGitLab, forge.AuthInfo{Tier: forge.AuthNone, RateLimit: 500, RateUnit: "minute"}, nil, false, "glab auth login"},
@@ -50,8 +53,8 @@ func stubProvider(t *testing.T, auth forge.AuthInfo, err error) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	prev := setupProviderFn
 	t.Cleanup(func() { setupProviderFn = prev })
-	setupProviderFn = func(_ context.Context, _, _, _ string) (forge.Forge, forge.AuthInfo, string, error) {
-		return nil, auth, "", err
+	setupProviderFn = func(_ context.Context, _ setupcheck.ProviderInput, _ http.RoundTripper) (forge.AuthInfo, error) {
+		return auth, err
 	}
 }
 

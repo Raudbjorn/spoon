@@ -18,14 +18,14 @@ import (
 	"github.com/svnbjrn/spoon/internal/config"
 	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/forge"
+	"github.com/svnbjrn/spoon/internal/setupcheck"
 	"github.com/svnbjrn/spoon/internal/store"
 )
 
-// Indirection points so tests can stub the network credential probe and the
-// store open.
+// Indirection points so tests can stub the local credential and store probes.
 var (
-	setupProviderFn = createProvider
-	setupStoreFn    = store.OpenDefault
+	setupProviderFn setupcheck.ProviderProbe = setupcheck.LocalProviderProbe
+	setupStoreFn                             = store.OpenDefault
 )
 
 func runSetup(args []string) int {
@@ -44,8 +44,9 @@ type setupFlags struct {
 }
 
 func runSetupWith(ctx context.Context, args []string, stdin io.Reader, interactive bool, stdout, stderr io.Writer) int {
+	env := config.EnvironmentSnapshot()
 	f := setupFlags{
-		noColor: os.Getenv("NO_COLOR") != "",
+		noColor: env["NO_COLOR"] != "",
 	}
 
 	needsValue := func(i int) bool { return i+1 >= len(args) }
@@ -133,8 +134,13 @@ func runSetupWith(ctx context.Context, args []string, stdin io.Reader, interacti
 	if f.forgeFlag == "gitlab" || (f.forgeFlag == "" && f.forgeHost != "") {
 		provider = forge.ProviderGitLab
 	}
-	_, auth, _, provErr := setupProviderFn(ctx, "", f.forgeFlag, f.forgeHost)
-	provOK, provLines := providerStatusLines(provider, auth, provErr)
+	providerCheck, provErr := setupcheck.CheckProvider(ctx, setupcheck.ProviderInput{
+		Provider:        provider,
+		Host:            f.forgeHost,
+		ConfiguredToken: provider == forge.ProviderGitHub && loadedCfg != nil && len(loadedCfg.GitHub.Tokens) > 0,
+		Environment:     env,
+	}, setupProviderFn, setupcheck.DenyHTTPTransport{})
+	provOK, provLines := providerStatusLines(provider, providerCheck.Auth, provErr)
 	printCheck(stdout, fmt.Sprintf("Provider (%s)", provider), provOK, provLines, f.noColor)
 
 	// --- Global store ---------------------------------------------------------
@@ -170,21 +176,20 @@ func runSetupWith(ctx context.Context, args []string, stdin io.Reader, interacti
 	return 1
 }
 
-// setupStore reports the mandatory global store: its location and whether it
-// opens. An unusable store fails every spoon/spn run, so it fails setup too.
 func setupStore(noColor bool, out io.Writer) bool {
 	path, _ := store.DefaultPath()
-	s, err := setupStoreFn()
+	err := setupcheck.CheckStore(context.Background(), func() (setupcheck.Store, error) {
+		return setupStoreFn()
+	})
 	if err != nil {
 		printCheck(out, "Store", false, []string{
-			"Cannot open " + path + ": " + err.Error(),
+			"Cannot open or write " + path + ": " + err.Error(),
 			"Every run needs the store (it is the cache and the persistence layer).",
 			"Check disk space and directory permissions.",
 		}, noColor)
 		return false
 	}
-	defer s.Close()
-	lines := []string{"Open: " + path}
+	lines := []string{"Open and writable: " + path}
 	if info, statErr := os.Stat(path); statErr == nil {
 		lines = append(lines, fmt.Sprintf("Size: %.1f MB", float64(info.Size())/(1024*1024)))
 	}
@@ -242,6 +247,11 @@ func providerStatusLines(provider forge.Provider, auth forge.AuthInfo, err error
 		lines = append(lines, fmt.Sprintf("Could not check credentials: %v", err))
 		lines = append(lines, providerFixLines(provider)...)
 		return false, lines
+	}
+	if auth.Configured {
+		lines = append(lines, "Credentials configured but unverified (local no-network check)")
+		lines = append(lines, fmt.Sprintf("Public fallback rate limit: ~%d req/%s", auth.RateLimit, auth.RateUnit))
+		return true, lines
 	}
 	if auth.Authenticated() {
 		via := authSource(provider, auth.Tier)
@@ -348,18 +358,17 @@ func colorize(text, ansiCode string, noColor bool) string {
 }
 
 func setupFastEmbed(cfg *config.Config, cacheDir string, noColor bool, out io.Writer) bool {
-	// Record fastembed as the embedder regardless of runtime availability, so
-	// the written config is correct and the feature activates as soon as
-	// onnxruntime is installed.
-	cfg.Embedder.Backend = embed.BackendFastEmbed
-	cfg.Embedder.Model = "fast-bge-small-en-v1.5"
-	cfg.Embedder.CacheDir = cacheDir
-	if cfg.Embedder.CacheDir == "" {
-		cfg.Embedder.CacheDir, _ = embed.DefaultFastEmbedCacheDir()
+	// Keep setup's durable defaults and the settings preflight on one shared
+	// configuration helper; only this command performs the optional model probe.
+	fastCfg, err := setupcheck.PrepareFastEmbed(cfg, cacheDir)
+	if err != nil {
+		printCheck(out, "FastEmbed", false, []string{err.Error()}, noColor)
+		return false
 	}
-	cfg.Embedder.MaxLength = 512
-	cfg.Embedder.BatchSize = 32
-	fastCfg := embed.FastEmbedConfig{Model: cfg.Embedder.Model, CacheDir: cfg.Embedder.CacheDir, MaxLength: 512, BatchSize: 32}
+	if _, err := setupcheck.CheckFastEmbed(cfg.Embedder); err != nil {
+		printCheck(out, "FastEmbed", false, []string{err.Error()}, noColor)
+		return false
+	}
 	model, err := embed.NewFastEmbedEmbedder(fastCfg)
 	if err != nil {
 		// Advisory, not fatal: semantic search/persistence simply stays off

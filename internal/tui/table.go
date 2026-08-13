@@ -9,11 +9,17 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
+
+	"github.com/svnbjrn/spoon/internal/tui/keymap"
+	"github.com/svnbjrn/spoon/internal/tui/theme"
+	"github.com/svnbjrn/spoon/internal/tui/ui"
 )
 
 func (m Model) viewTable() string {
+	ctx, styles := m.themeContext(), m.styles()
 	if m.parent == nil || len(m.forks) == 0 {
-		return "\n  No forks found.\n"
+		return "\n  " + ui.Text(ctx, ui.TextMuted, "No forks found.", ui.ContentWidth(m.width)-2) + "\n"
 	}
 
 	// Absolute indices of the rows the active filter admits. Everything below
@@ -23,18 +29,20 @@ func (m Model) viewTable() string {
 
 	var b strings.Builder
 
-	b.WriteString(m.renderStatusBar())
-	b.WriteString("\n")
+	if !m.fullscreen {
+		b.WriteString(m.renderStatusBar())
+		b.WriteString("\n")
+	}
 
 	// Column header
 	sortInd := func(col string) string {
-		if col == m.sortCol {
-			if m.sortAsc {
-				return "▲"
-			}
-			return "▼"
+		if col != m.sortCol {
+			return " "
 		}
-		return " "
+		if m.sortAsc {
+			return ctx.Glyph(theme.SortUp)
+		}
+		return ctx.Glyph(theme.SortDown)
 	}
 
 	// Colour duplicate groups by order of appearance so two groups that end up
@@ -77,19 +85,19 @@ func (m Model) viewTable() string {
 	if hasCompare {
 		header := fmt.Sprintf("%-4s %3s  %-26s  %s %6s %7s %7s  %-10s  %s",
 			"HEAT", sortInd("heat"), "REPOSITORY",
-			padLeftCells("★"+sortInd("stars"), 5),
+			padLeftCells(ctx.Glyph(theme.Star)+sortInd("stars"), 5),
 			"AHEAD"+sortInd("ahead"), "BEHIND",
 			"BRANCH"+sortInd("branches"),
 			"PUSHED"+sortInd("pushed"), "STATUS")
-		b.WriteString(headerStyle.Render(header))
+		b.WriteString(ui.TableHeader(ctx, " "+header, 0))
 	} else {
 		header := fmt.Sprintf("%-4s %3s  %-30s %s %s %7s  %-12s",
 			"HEAT", sortInd("heat"), "REPOSITORY",
-			padLeftCells("★"+sortInd("stars"), 5),
-			padLeftCells("⑂"+sortInd("forks"), 5),
+			padLeftCells(ctx.Glyph(theme.Star)+sortInd("stars"), 5),
+			padLeftCells(ctx.Glyph(theme.Fork)+sortInd("forks"), 5),
 			"BRANCH"+sortInd("branches"),
 			"PUSHED"+sortInd("pushed"))
-		b.WriteString(headerStyle.Render(header))
+		b.WriteString(ui.TableHeader(ctx, " "+header, 0))
 	}
 	b.WriteString("\n")
 
@@ -97,8 +105,8 @@ func (m Model) viewTable() string {
 	// early return above only covers len(m.forks) == 0, so without this the
 	// frame renders a header, zero rows and no way out.
 	if len(vis) == 0 {
-		b.WriteString("\n  " + subtitleStyle.Render(fmt.Sprintf("No forks match %q", m.filter)) + "\n")
-		b.WriteString(helpStyle.Render("  Esc clear filter  /  edit filter  ? help  q quit"))
+		b.WriteString("\n  " + styles.subtitle.Render(fmt.Sprintf("No forks match %q", m.filter)) + "\n")
+		b.WriteString(styles.help.Render("  Esc clear filter  /  edit filter  ? help  q quit"))
 		return b.String()
 	}
 
@@ -153,7 +161,7 @@ func (m Model) viewTable() string {
 
 		prefix := " "
 		if isSelected {
-			prefix = "▸"
+			prefix = ctx.Glyph(theme.Selected)
 		} else if sf.Marked {
 			prefix = "*"
 		}
@@ -164,16 +172,13 @@ func (m Model) viewTable() string {
 			scorePrefix = "~"
 		}
 
-		heatBar := RenderHeatBar(sf.Heat.Score)
+		heatBar := m.renderHeatBar(sf.Heat.Score)
 		score := fmt.Sprintf("%2.0f", sf.Heat.Score)
-		scoreColor := HeatColor(sf.Heat.Score)
-		scoreStyled := lipgloss.NewStyle().Foreground(scoreColor).Render(score)
+		scoreStyled := lipgloss.NewStyle().Foreground(m.heatColor(sf.Heat.Score)).Render(score)
 
 		name := sf.Fork.ID
 		pushed := relativeTimeSince(sf.Fork.PushedAt)
-
-		// Badges
-		badges := renderBadges(sf)
+		badges := m.renderBadges(sf)
 
 		// Branches carrying commits upstream lacks. Nil means never counted
 		// (non-GitHub provider, or the sweep has not landed yet) and renders
@@ -183,9 +188,7 @@ func (m Model) viewTable() string {
 			branches = fmt.Sprintf("%7d", *n)
 		}
 
-		// Duplicate-group gutter. Members of a contiguous group all draw the
-		// same coloured bar, so the group reads as one unbroken line.
-		gutter := duplicateGutter(sf, gutterOrd)
+		gutter := m.duplicateGutter(sf, gutterOrd)
 
 		var row string
 		if hasCompare {
@@ -211,67 +214,52 @@ func (m Model) viewTable() string {
 				gutter, prefix, scorePrefix, heatBar, scoreStyled, name, sf.Fork.Stars, sf.Fork.SubForkCount, branches, pushed)
 		}
 
-		if isSelected {
-			row = selectedStyle.Render(row)
-		}
+		row = ui.TableRow(ctx, row, isSelected, 0)
 
 		b.WriteString(row)
 		b.WriteString("\n")
 	}
 
-	// Feedback messages (export, clipboard)
-	if m.clipMsg != "" && time.Since(m.clipMsgTime) < 5*time.Second {
-		b.WriteString(" " + subtitleStyle.Render(m.clipMsg) + "\n")
-	} else if m.errMsg != "" && time.Since(m.errMsgTime) < 5*time.Second {
-		b.WriteString(" " + subtitleStyle.Render(m.errMsg) + "\n")
-	} else if rs := m.rankFooter(); rs != "" {
-		b.WriteString(" " + subtitleStyle.Render(rs) + "\n")
-	} else if cs := m.clusterFooter(); cs != "" {
-		b.WriteString(" " + subtitleStyle.Render(cs) + "\n")
-	} else {
-		b.WriteString("\n")
+	if !m.fullscreen {
+		if m.clipMsg != "" && time.Since(m.clipMsgTime) < 5*time.Second {
+			b.WriteString(" " + styles.subtitle.Render(m.clipMsg) + "\n")
+		} else if m.errMsg != "" && time.Since(m.errMsgTime) < 5*time.Second {
+			b.WriteString(" " + styles.subtitle.Render(m.errMsg) + "\n")
+		} else if rs := m.rankFooter(); rs != "" {
+			b.WriteString(" " + styles.subtitle.Render(rs) + "\n")
+		} else if cs := m.clusterFooter(); cs != "" {
+			b.WriteString(" " + styles.subtitle.Render(cs) + "\n")
+		} else {
+			b.WriteString("\n")
+		}
+		if legend := m.badgeLegend(); legend != "" {
+			b.WriteString(styles.help.Render(" "+legend) + "\n")
+		}
+		b.WriteString(ui.KeyLegend(ctx, ui.ContentWidth(m.width), keymap.MainTable))
 	}
-	if legend := m.badgeLegend(); legend != "" {
-		b.WriteString(helpStyle.Render(" "+legend) + "\n")
-	}
-	b.WriteString(helpStyle.Render(" ↑↓ navigate  PgUp/PgDn page  Enter detail  Space mark  / filter  R rank  e/E export  o open  y yank  s sort  g cluster  t tier  ? help  q quit"))
-
 	return b.String()
 }
 
-func renderBadges(sf ScoredFork) string {
+func (m Model) renderBadges(sf ScoredFork) string {
 	var badges []string
-
-	// Lone wolf badge (v2)
 	if sf.Heat.LoneWolfV2 != nil && sf.Heat.LoneWolfV2.Detected {
-		badges = append(badges, lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Render("🐺"))
+		badges = append(badges, lipgloss.NewStyle().Foreground(m.themeContext().Palette.AccentRust).Render("WOLF"))
 	}
-
-	// Open PR badge
 	if sf.Fork.OpenPRCount > 0 {
-		badges = append(badges, "📬")
+		badges = append(badges, "PR")
 	}
-
-	// Fork of fork badge
 	if sf.Fork.SubForkCount > 0 {
-		badges = append(badges, "⛓")
+		badges = append(badges, "SUB")
 	}
-
-	// Side branch badge
 	if sf.T2 != nil && sf.T2.IsBranchWork && sf.T2.ActiveBranch != sf.Fork.DefaultBranch {
-		badges = append(badges, "🌱")
+		badges = append(badges, "BRANCH")
 	}
-
-	// Releases badge
 	if sf.Fork.ReleaseCount > 0 {
-		badges = append(badges, "🏷️")
+		badges = append(badges, "REL")
 	}
-
-	// Duplicate work: this fork is one of N carrying identical changes.
 	if sf.SiblingCount > 1 {
-		badges = append(badges, fmt.Sprintf("👯%d", sf.SiblingCount))
+		badges = append(badges, fmt.Sprintf("DUP%d", sf.SiblingCount))
 	}
-
 	return strings.Join(badges, " ")
 }
 
@@ -306,46 +294,54 @@ func (m Model) badgeLegend() string {
 
 	var parts []string
 	if hasWolf {
-		parts = append(parts, "🐺 lone wolf")
+		parts = append(parts, "WOLF lone wolf")
 	}
 	if hasPR {
-		parts = append(parts, "📬 open PR")
+		parts = append(parts, "PR open PR")
 	}
 	if hasSubFork {
-		parts = append(parts, "⛓ has sub-forks")
+		parts = append(parts, "SUB has sub-forks")
 	}
 	if hasBranch {
-		parts = append(parts, "🌱 branch work")
+		parts = append(parts, "BRANCH branch work")
 	}
 	if hasRelease {
-		parts = append(parts, "🏷️ releases")
+		parts = append(parts, "REL releases")
 	}
 	if hasDupe {
-		parts = append(parts, "👯 duplicate work (same line = same group)")
-	}
-	if len(parts) == 0 {
-		return ""
+		parts = append(parts, "DUP duplicate work (same line = same group)")
 	}
 	return strings.Join(parts, "  ")
 }
 
 func (m Model) renderStatusBar() string {
-	parts := []string{"spoon"}
+	type statusSegment struct {
+		text     string
+		priority int
+	}
+
+	ctx, styles := m.themeContext(), m.styles()
+	separator := " " + ctx.Glyph(theme.BoxVertical) + " "
+	var variable []string
+	tail := make([]statusSegment, 0, 6)
+	appendTail := func(priority int, text string) {
+		tail = append(tail, statusSegment{text: text, priority: priority})
+	}
 
 	if m.parent != nil {
-		parts = append(parts, m.parent.FullName)
+		variable = append(variable, m.parent.FullName)
 		if m.filter != "" {
 			// Both numbers, so a filter can never quietly shrink the fork
 			// count into looking like the repo has fewer forks than it does.
-			parts = append(parts, fmt.Sprintf("%d/%d forks", m.visibleCount(), len(m.forks)))
-			parts = append(parts, fmt.Sprintf("filter: %q", m.filter))
+			appendTail(1, fmt.Sprintf("%d/%d forks", m.visibleCount(), len(m.forks)))
+			variable = append(variable, fmt.Sprintf("filter: %q", m.filter))
 		} else {
-			parts = append(parts, fmt.Sprintf("%d forks", len(m.forks)))
+			appendTail(1, fmt.Sprintf("%d forks", len(m.forks)))
 		}
 	}
 
 	if m.enriching {
-		parts = append(parts, fmt.Sprintf("T2: %d/%d", m.enrichDone, m.enrichTotal))
+		appendTail(2, fmt.Sprintf("T2: %d/%d", m.enrichDone, m.enrichTotal))
 	}
 
 	// Enrichment ceiling. Shown only when it is actually capping something --
@@ -358,34 +354,87 @@ func (m Model) renderStatusBar() string {
 				skipped++
 			}
 		}
-		seg := fmt.Sprintf("T≤%d", ceiling)
+		seg := fmt.Sprintf("T<=%d", ceiling)
 		if skipped > 0 {
 			seg += fmt.Sprintf(" (%d skipped)", skipped)
 		}
-		parts = append(parts, seg)
+		appendTail(3, seg)
 	}
-
 	if m.auth.RateLimit > 0 {
 		headroom := m.provider.Headroom()
 		remaining := int(headroom * float64(m.auth.RateLimit))
-		parts = append(parts, fmt.Sprintf("API: %d/%d", remaining, m.auth.RateLimit))
+		appendTail(4, fmt.Sprintf("API: %d/%d", remaining, m.auth.RateLimit))
 	}
 	if !m.auth.Authenticated() {
-		parts = append(parts, warnStyle.Render("⚠ Unauthenticated"))
+		// Keep the authentication warning in the fixed tail: long repository
+		// names and filters are informative, but this warning is actionable.
+		appendTail(6, styles.warn.Render(ctx.Glyph(theme.Warning)+" Unauthenticated"))
 	}
-
 	marked := 0
-	for _, f := range m.forks {
-		if f.Marked {
+	for _, fork := range m.forks {
+		if fork.Marked {
 			marked++
 		}
 	}
 	if marked > 0 {
-		parts = append(parts, fmt.Sprintf("%d marked", marked))
+		appendTail(5, fmt.Sprintf("%d marked", marked))
 	}
 
-	bar := strings.Join(parts, " │ ")
-	return statusBarStyle.Width(m.width).Render(bar)
+	contentWidth := ui.ContentWidth(m.width)
+	if contentWidth <= 0 {
+		return ""
+	}
+	contentLimit := contentWidth - 2 // statusBar supplies one cell of padding on either side.
+	if contentLimit < 0 {
+		contentLimit = 0
+	}
+
+	render := func(prefix []string, selected []bool) string {
+		parts := append([]string(nil), prefix...)
+		for i, segment := range tail {
+			if selected[i] {
+				parts = append(parts, segment.text)
+			}
+		}
+		return strings.Join(parts, separator)
+	}
+
+	prefix := []string{"spoon"}
+	if len(variable) > 0 {
+		// Reserve a visible omission marker before allocating status fields.
+		// At narrow widths the parent/filter give way to actionable state.
+		prefix = []string{ctx.Glyph(theme.EmDash)}
+	}
+	// Keep status fields in this documented priority order when the terminal is
+	// narrow: authentication warning, marked-work count, API budget, requested
+	// tier ceiling, enrichment progress, then the informational fork count.
+	// Rendering still preserves their normal left-to-right order below.
+	selected := make([]bool, len(tail))
+	for priority := 6; priority >= 1; priority-- {
+		for i, segment := range tail {
+			if segment.priority != priority {
+				continue
+			}
+			selected[i] = true
+			if lipgloss.Width(render(prefix, selected)) > contentLimit {
+				selected[i] = false
+			}
+		}
+	}
+
+	if len(variable) > 0 {
+		selectedContent := render(prefix, selected)
+		available := contentLimit - lipgloss.Width(selectedContent) - lipgloss.Width(separator)
+		if available > 0 {
+			elided := ansi.Truncate(strings.Join(variable, separator), available, ctx.Glyph(theme.EmDash))
+			candidatePrefix := []string{"spoon", elided}
+			if lipgloss.Width(render(candidatePrefix, selected)) <= contentLimit {
+				prefix = candidatePrefix
+			}
+		}
+	}
+	content := render(prefix, selected)
+	return ui.NavBar(ctx, content, contentWidth)
 }
 
 func (m *Model) cycleSortColumn() {
@@ -474,17 +523,9 @@ func (m *Model) forkLess() func(i, j int) bool {
 	}
 }
 
-// renderClusterHeader returns a one-line styled header for a cluster
-// group. The label and member-count are pulled from any fork in the
-// group that has them populated (cluster fields are written uniformly
-// per-cluster by the pipeline, so any member's copy suffices).
-//
-// Empty ClusterID renders as "(ungrouped)"; "noise" renders as "noise"
-// with no label. Real clusters render as "── <id>: <label> (N members) ──"
-// in the dim help-text style so they don't visually compete with rows.
+// renderClusterHeader returns a one-line styled header for a cluster group.
 func (m Model) renderClusterHeader(clusterID string) string {
 	label, count := m.clusterLabelAndCount(clusterID)
-
 	var inner string
 	switch clusterID {
 	case "":
@@ -498,8 +539,9 @@ func (m Model) renderClusterHeader(clusterID string) string {
 			inner = fmt.Sprintf("%s: %s (%d members)", clusterID, label, count)
 		}
 	}
-	line := "── " + inner + " ──"
-	return helpStyle.Render(" " + line)
+	ctx := m.themeContext()
+	line := strings.Repeat(ctx.Glyph(theme.BoxHorizontal), 2) + " " + inner + " " + strings.Repeat(ctx.Glyph(theme.BoxHorizontal), 2)
+	return m.styles().help.Render(" " + line)
 }
 
 // clusterLabelAndCount returns the label and member-count for a cluster

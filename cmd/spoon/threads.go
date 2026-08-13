@@ -11,8 +11,10 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/mattn/go-isatty"
+	"github.com/svnbjrn/spoon/internal/config"
 	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/threadsops"
+	"github.com/svnbjrn/spoon/internal/tui/theme"
 	threadstui "github.com/svnbjrn/spoon/internal/tui/threads"
 )
 
@@ -377,7 +379,7 @@ func renderCodeContextBlock(t threadsops.ReviewThreadWithPolicy, cc threadsops.C
 
 // runThreads is the entry point for the "threads" subcommand. It returns
 // an exit code (0/1/2) and writes any error messages to stderr.
-func runThreads(args []string) int {
+func runThreadsWithEffective(args []string, effective config.EffectiveConfig) int {
 	flags, err := parseThreadsFlags(args)
 	if err != nil {
 		if err == errThreadsHelp {
@@ -399,7 +401,7 @@ func runThreads(args []string) int {
 		flags.interactive = false
 	}
 
-	client, status, err := gh.CheckAuthConfigured(0)
+	client, status, err := gh.CheckAuthWithEffective(effective)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "❌ Error: GitHub auth:", err)
 		return 1
@@ -415,6 +417,8 @@ func runThreads(args []string) int {
 	}
 
 	ctx := context.Background()
+
+	tuiContexts := newThreadsTUIContextCache(effective)
 
 	// Interactive picker: no PR ref given, --interactive was set, repo
 	// context detected. Fetch open PRs, run the picker, and treat the
@@ -433,7 +437,12 @@ func runThreads(args []string) int {
 			fmt.Println("No open PRs in this repo")
 			return 0
 		}
-		picker := threadstui.NewPicker(prs)
+		tuiContext, contextErr := tuiContexts.Context()
+		if contextErr != nil {
+			fmt.Fprintln(os.Stderr, "Error:", contextErr)
+			return 1
+		}
+		picker := threadstui.NewPicker(prs).WithTheme(tuiContext)
 		final, runErr := tea.NewProgram(picker, tea.WithAltScreen()).Run()
 		if runErr != nil {
 			fmt.Fprintln(os.Stderr, "❌ Error:", runErr)
@@ -707,7 +716,12 @@ func runThreads(args []string) int {
 		return 0
 
 	case modeTUI:
-		return runThreadsTUI(ctx, client, owner, repo, number, flags.filter, flags.showCodeLines, flags.verbose)
+		tuiContext, contextErr := tuiContexts.Context()
+		if contextErr != nil {
+			fmt.Fprintln(os.Stderr, "Error:", contextErr)
+			return 1
+		}
+		return runThreadsTUI(ctx, client, owner, repo, number, flags.filter, flags.showCodeLines, flags.verbose, tuiContext)
 
 	default:
 		fmt.Fprintln(os.Stderr, "❌ Error: unknown mode")
@@ -784,17 +798,53 @@ Examples:
 `)
 }
 
-func runThreadsTUI(ctx context.Context, client *gh.Client, owner, repo string, number int, mode threadsops.FilterMode, showCodeLines int, verbose bool) int {
+func runThreadsTUI(ctx context.Context, client *gh.Client, owner, repo string, number int, mode threadsops.FilterMode, showCodeLines int, verbose bool, tuiContext theme.Context) int {
 	_ = ctx // reserved for future cancellable Init paths
-	m := threadstui.NewWithFilter(client, owner, repo, number, mode)
+	m := threadstui.NewWithFilter(client, owner, repo, number, mode).WithTheme(tuiContext)
 	m.ShowCodeLines = showCodeLines
 	m.Verbose = verbose
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
-		fmt.Fprintln(os.Stderr, "❌ Error:", err)
+		fmt.Fprintln(os.Stderr, "Error:", err)
 		return 1
 	}
 	return 0
+}
+
+// resolveThreadsTUIContext uses the command's effective startup result rather
+// than loading another config layer for the interactive picker.
+func resolveThreadsTUIContext(effective config.EffectiveConfig) (theme.Context, error) {
+	return resolveTUIContextWithNoColor(effective, false)
+}
+
+type threadsTUIContextCache struct {
+	resolve func() (theme.Context, error)
+	pin     func(theme.Context)
+
+	attempted bool
+	context   theme.Context
+	err       error
+}
+
+func newThreadsTUIContextCache(effective config.EffectiveConfig) *threadsTUIContextCache {
+	return &threadsTUIContextCache{
+		resolve: func() (theme.Context, error) { return resolveThreadsTUIContext(effective) },
+		pin:     theme.PinColorProfile,
+	}
+}
+
+// Context resolves and pins once, so an interactive picker and the selected
+// thread TUI share exactly one terminal context.
+func (c *threadsTUIContextCache) Context() (theme.Context, error) {
+	if c.attempted {
+		return c.context, c.err
+	}
+	c.attempted = true
+	c.context, c.err = c.resolve()
+	if c.err == nil {
+		c.pin(c.context)
+	}
+	return c.context, c.err
 }
 
 // emitStatus writes the PR status header to w (unless suppressed). glyphs

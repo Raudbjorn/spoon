@@ -289,6 +289,19 @@ func TestSearchWithoutVoyageIsUnchanged(t *testing.T) {
 	}
 }
 
+func TestSearchWithoutVoyageIgnoresMalformedVoyageDimension(t *testing.T) {
+	isolateSpoonHome(t)
+	t.Setenv(embed.VoyageDimensionEnv, "not-a-number")
+
+	var stdout, stderr bytes.Buffer
+	if code := runSearchWith([]string{"anything"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d, stderr: %s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "semantic_index_empty") {
+		t.Errorf("stderr = %s, want semantic_index_empty for FastEmbed-only search", stderr.String())
+	}
+}
+
 func TestSearchRejectsBadRerankOverfetch(t *testing.T) {
 	isolateSpoonHome(t)
 	for _, args := range [][]string{

@@ -1,0 +1,7 @@
+Open PRs (3) - select one:
+
+> PR #42: Fix the thing (@alice, updated 2d ago)
+  PR #41: Add new feature (@bob, updated 3d ago)
+  PR #40: Refactor module (@carol, updated 5d ago)
+
+[ctrl+c] Quit [Up/k] Move selection up [Down/j] Move selection down [Enter] Choose pull request [Esc/q] Cancel picker

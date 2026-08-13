@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/svnbjrn/spoon/internal/agentio"
+	"github.com/svnbjrn/spoon/internal/config"
 	"github.com/svnbjrn/spoon/internal/eval"
 	"github.com/svnbjrn/spoon/internal/forksops"
 	gh "github.com/svnbjrn/spoon/internal/github"
@@ -26,7 +27,15 @@ import (
 func runEval(args []string) int { return runEvalWith(args, os.Stdout, os.Stderr) }
 
 func runEvalWith(args []string, stdout, stderr io.Writer) int {
-	var repoArg, judgmentsPath, forgeFlag, forgeHost string
+	boot := config.Bootstrap(io.Discard)
+	env := config.EnvironmentSnapshot()
+	return runEvalWithEffective(args, stdout, stderr, config.ResolveEffectiveConfig(boot.Config, nil, env), env)
+}
+
+func runEvalWithEffective(args []string, stdout, stderr io.Writer, effective config.EffectiveConfig, env map[string]string) int {
+	var repoArg, judgmentsPath string
+	forgeFlag := strings.ToLower(effective.Forge.Provider.Value)
+	forgeHost := effective.Forge.Host.Value
 	opts := forksops.Options{
 		Cluster: forksops.ClusterOptions{
 			Enabled:        true,
@@ -108,18 +117,20 @@ func runEvalWith(args []string, stdout, stderr io.Writer) int {
 		opts.Cluster.SetEmbedderForTest(embedderHookForTest)
 	}
 
-	opts.Logger = io.Discard
+	opts.Logger = debugDataLogger(io.Discard)
 	if os.Getenv("SPOON_DEBUG") == "1" {
-		opts.Logger = stderr
+		opts.Logger = debugDataLogger(stderr)
 	}
 	opts.ReserveDisabled = os.Getenv("SPOON_NO_RESERVE") == "1"
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx := context.WithValue(context.Background(), effectiveConfigContextKey{}, effective)
+	ctx = context.WithValue(ctx, environmentContextKey{}, env)
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	provider, repo, e := providerFactory(ctx, repoArg, forgeFlag, forgeHost)
 	if e != nil {
-		return e.Emit(stderr)
+		return emitDataError(stderr, e)
 	}
 	owner, name := splitRepoArg(repo)
 	if owner == "" || name == "" {
@@ -166,8 +177,7 @@ func runEvalWith(args []string, stdout, stderr io.Writer) int {
 		})
 	}
 	report := eval.Compute(repo, rows, jtmt)
-	enc := json.NewEncoder(stdout)
-	if err := enc.Encode(report); err != nil {
+	if err := writeDataJSON(stdout, report); err != nil {
 		return agentio.NewError(agentio.CodeInternal, err.Error(), agentio.RemediationInternal()).Emit(stderr)
 	}
 	return 0

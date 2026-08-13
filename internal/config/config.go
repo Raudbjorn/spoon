@@ -21,7 +21,8 @@ import (
 )
 
 // CurrentVersion is the schema version written into new/updated config files.
-const CurrentVersion = 1
+// Version 2 adds the optional ui block; absent UI remains a lossless v1 input.
+const CurrentVersion = 2
 
 // Config is the root user configuration. Zero values mean "unset"; omitempty
 // keeps the written file minimal.
@@ -33,6 +34,21 @@ type Config struct {
 	Forge    ForgeConfig    `json:"forge,omitempty"`
 	GitHub   GitHubConfig   `json:"github,omitempty"`
 	Embedder EmbedderConfig `json:"embedder,omitempty"`
+	UI       UIConfig       `json:"ui,omitempty"`
+
+	// present/raw are load/save metadata, deliberately outside the persisted
+	// schema. Together they distinguish explicit false/zero from absent values.
+	present map[string]bool
+	raw     map[string]json.RawMessage
+}
+
+// UIConfig stores terminal appearance preferences. Environment variables remain
+// higher precedence and invalid values are reported by TUI startup resolution.
+// Empty values defer to built-in defaults; v2 settings saves stamp this schema.
+type UIConfig struct {
+	Theme  string `json:"theme,omitempty"`
+	Color  string `json:"color,omitempty"`
+	Glyphs string `json:"glyphs,omitempty"`
 }
 
 // EmbedderConfig configures the in-process fastembed embedder that powers
@@ -145,17 +161,12 @@ func Load(path string) (*Config, error) {
 	if err := json.Unmarshal(data, &c); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
+	c.present, c.raw = leafMetadata(data)
 	c.normalizeLegacy()
 	if err := c.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config %s: %w", path, err)
 	}
-	if err := validateCredentialFile(c.GitHub.Proxy.APIKeyFile, "github.proxy.apiKeyFile"); err != nil {
-		return nil, fmt.Errorf("invalid config %s: %w", path, err)
-	}
-	if err := validateCredentialFile(c.GitHub.Proxy.StaticFile, "github.proxy.staticFile"); err != nil {
-		return nil, fmt.Errorf("invalid config %s: %w", path, err)
-	}
-	if err := validateCredentialFile(c.Embedder.Voyage.APIKeyFile, "embedder.voyage.apiKeyFile"); err != nil {
+	if err := validateCredentials(&c); err != nil {
 		return nil, fmt.Errorf("invalid config %s: %w", path, err)
 	}
 	return &c, nil
@@ -180,18 +191,12 @@ func Save(path string, c *Config) error {
 	}
 	// Apply the same credential-file checks Load performs, so setup can never
 	// write a config that the next command refuses to load.
-	if err := validateCredentialFile(c.GitHub.Proxy.APIKeyFile, "github.proxy.apiKeyFile"); err != nil {
+	if err := validateCredentials(c); err != nil {
 		return err
 	}
-	if err := validateCredentialFile(c.GitHub.Proxy.StaticFile, "github.proxy.staticFile"); err != nil {
-		return err
-	}
-	if err := validateCredentialFile(c.Embedder.Voyage.APIKeyFile, "embedder.voyage.apiKeyFile"); err != nil {
-		return err
-	}
-	if c.Version == 0 {
-		c.Version = CurrentVersion
-	}
+	// Always stamp the current schema. Version is an output marker, never a
+	// validation input, so rewriting a v1 file is a safe lossless migration.
+	c.Version = CurrentVersion
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
 	}
@@ -218,7 +223,112 @@ func Save(path string, c *Config) error {
 	if err := os.Rename(tmp, path); err != nil {
 		return fmt.Errorf("rename %s -> %s: %w", tmp, path, err)
 	}
+	c.present, c.raw = leafMetadata(data)
 	return nil
+}
+
+// ProbeAtomicPublication verifies that the current process can publish a
+// replacement in path's directory using the same create-and-rename primitive
+// as Save. It never opens, replaces, or changes the target config. File mode
+// bits are deliberately not used: replacing a read-only file is valid when
+// its directory is writable, while an owner-write bit says nothing about this
+// process's ability to create the temporary sibling.
+func ProbeAtomicPublication(path string) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".spoon-config-probe-*")
+	if err != nil {
+		return fmt.Errorf("cannot atomically publish %s: %w", path, err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close publication probe %s: %w", path, err)
+	}
+	published := tmpPath + ".published"
+	defer os.Remove(published)
+	if err := os.Rename(tmpPath, published); err != nil {
+		return fmt.Errorf("cannot atomically publish %s: %w", path, err)
+	}
+	return nil
+}
+
+// CredentialDescriptor declares one persisted field whose presence requires a
+// 0600 config file. Settings uses this same registry for masking and clipboard
+// refusal, so a new credential cannot be protected in one surface but exposed
+type CredentialDescriptor struct {
+	Key      string
+	Values   func(*Config) []string
+	Set      func(*Config, string)
+	Validate func(*Config) error
+}
+
+var credentialDescriptors = []CredentialDescriptor{
+	{
+		Key:    "github.tokens",
+		Values: func(c *Config) []string { return c.GitHub.Tokens },
+		Set:    func(c *Config, value string) { c.GitHub.Tokens = []string{value} },
+	},
+	{
+		Key:    "github.proxy.apiKeyFile",
+		Values: func(c *Config) []string { return []string{c.GitHub.Proxy.APIKeyFile} },
+		Set:    func(c *Config, value string) { c.GitHub.Proxy.APIKeyFile = value },
+		Validate: func(c *Config) error {
+			return validateCredentialFile(c.GitHub.Proxy.APIKeyFile, "github.proxy.apiKeyFile")
+		},
+	},
+	{
+		Key:    "github.proxy.staticFile",
+		Values: func(c *Config) []string { return []string{c.GitHub.Proxy.StaticFile} },
+		Set:    func(c *Config, value string) { c.GitHub.Proxy.StaticFile = value },
+		Validate: func(c *Config) error {
+			return validateCredentialFile(c.GitHub.Proxy.StaticFile, "github.proxy.staticFile")
+		},
+	},
+	{
+		Key:    "embedder.voyage.apiKeyFile",
+		Values: func(c *Config) []string { return []string{c.Embedder.Voyage.APIKeyFile} },
+		Set:    func(c *Config, value string) { c.Embedder.Voyage.APIKeyFile = value },
+		Validate: func(c *Config) error {
+			return validateCredentialFile(c.Embedder.Voyage.APIKeyFile, "embedder.voyage.apiKeyFile")
+		},
+	},
+}
+
+// CredentialDescriptors returns the one persisted credential inventory.
+func CredentialDescriptors() []CredentialDescriptor {
+	return append([]CredentialDescriptor(nil), credentialDescriptors...)
+}
+
+// IsCredentialKey reports whether a persisted field must never be rendered or
+// copied from Settings.
+func IsCredentialKey(key string) bool {
+	for _, descriptor := range credentialDescriptors {
+		if descriptor.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
+// CredentialValues returns the configured credential values for redaction.
+func CredentialValues(c *Config) []string {
+	if c == nil {
+		return nil
+	}
+	var values []string
+	for _, descriptor := range credentialDescriptors {
+		for _, value := range descriptor.Values(c) {
+			if value != "" {
+				values = append(values, value)
+			}
+		}
+	}
+	return values
+}
+
+// ContainsCredentials reports whether any registry credential is configured.
+func ContainsCredentials(c *Config) bool {
+	return len(CredentialValues(c)) != 0
 }
 
 func configContainsCredentials(path string) bool {
@@ -226,27 +336,23 @@ func configContainsCredentials(path string) bool {
 	if err != nil {
 		return false
 	}
-	// Every credential-bearing field must appear here, or the permission gate in
-	// Load silently does not apply to it.
-	var raw struct {
-		GitHub struct {
-			Tokens []string `json:"tokens"`
-			Proxy  struct {
-				APIKeyFile string `json:"apiKeyFile"`
-			} `json:"proxy"`
-		} `json:"github"`
-		Embedder struct {
-			Voyage struct {
-				APIKeyFile string `json:"apiKeyFile"`
-			} `json:"voyage"`
-		} `json:"embedder"`
-	}
-	if json.Unmarshal(data, &raw) != nil {
+	var c Config
+	if json.Unmarshal(data, &c) != nil {
 		return false
 	}
-	return len(raw.GitHub.Tokens) > 0 ||
-		raw.GitHub.Proxy.APIKeyFile != "" ||
-		raw.Embedder.Voyage.APIKeyFile != ""
+	return ContainsCredentials(&c)
+}
+
+func validateCredentials(c *Config) error {
+	for _, descriptor := range credentialDescriptors {
+		if descriptor.Validate == nil {
+			continue
+		}
+		if err := descriptor.Validate(c); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func validateCredentialFile(path, field string) error {
@@ -301,21 +407,87 @@ func ReadCredentialFile(path, field string) (string, error) {
 // but continue — a run must not fail on a bad config); (cfg, nil) on success.
 // Honors $SPOON_NO_CONFIG=1 (returns nil, nil) so the layer can be disabled.
 func LoadDefault() (*Config, error) {
+	layer := LoadDefaultWithLayer()
+	return layer.Config, layer.LoadError
+}
+
+// LayerState describes the selected configuration layer without overloading a
+// nil Config. Settings and command startup consume this same bootstrap result.
+type LayerState int
+
+const (
+	LayerLoaded LayerState = iota
+	LayerMissing
+	LayerDisabled
+	LayerInvalid
+)
+
+// LoadedLayer records the exact source selected by LoadDefaultWithLayer.
+// Reason is non-nil only for an invalid layer; a missing layer is a valid,
+// writable candidate path and must never be presented as SPOON_NO_CONFIG.
+type LoadedLayer struct {
+	Config    *Config
+	Path      string
+	Layer     string
+	State     LayerState
+	Reason    error
+	System    bool  // compatibility for existing consumers
+	Disabled  bool  // compatibility; mirrors State == LayerDisabled
+	LoadError error // compatibility; mirrors Reason
+}
+
+func (l LoadedLayer) Missing() bool { return l.State == LayerMissing }
+func (l LoadedLayer) Invalid() bool { return l.State == LayerInvalid }
+
+func loadedLayer(path string, system bool, state LayerState, cfg *Config, reason error) LoadedLayer {
+	layer := "user"
+	if system {
+		layer = "system"
+	}
+	return LoadedLayer{
+		Config: cfg, Path: path, Layer: layer, State: state, Reason: reason,
+		System: system, Disabled: state == LayerDisabled, LoadError: reason,
+	}
+}
+
+var (
+	defaultPathForLoad = DefaultPath
+	systemPathForLoad  = SystemPath
+	loadForLayer       = Load
+)
+
+// LoadDefaultWithLayer is the central config-layer selector used by runtime
+// startup and the settings UI. It preserves all layer semantics in one typed
+// result so callers cannot infer persistence state from a nil Config.
+func LoadDefaultWithLayer() LoadedLayer {
 	if os.Getenv("SPOON_NO_CONFIG") == "1" {
-		return nil, nil
+		return loadedLayer("", false, LayerDisabled, nil, nil)
 	}
-	path, err := DefaultPath()
+	path, err := defaultPathForLoad()
 	if err != nil {
-		return nil, err
+		return loadedLayer(systemPathForLoad(), true, LayerInvalid, nil, err)
 	}
-	c, err := Load(path)
-	if errors.Is(err, os.ErrNotExist) && path != SystemPath() {
-		c, err = Load(SystemPath())
+	primaryPath := path
+	primarySystem := path == systemPathForLoad()
+	cfg, err := loadForLayer(path)
+	if errors.Is(err, os.ErrNotExist) && !primarySystem {
+		systemPath := systemPathForLoad()
+		cfg, err = loadForLayer(systemPath)
+		if errors.Is(err, os.ErrNotExist) {
+			// System defaults are absent too. The user layer remains the
+			// publication candidate: never bootstrap defaults into /etc.
+			return loadedLayer(primaryPath, false, LayerMissing, nil, nil)
+		}
+		path = systemPath
 	}
+	system := path == systemPathForLoad()
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+		return loadedLayer(path, system, LayerMissing, nil, nil)
 	}
-	return c, err
+	if err != nil {
+		return loadedLayer(path, system, LayerInvalid, nil, err)
+	}
+	return loadedLayer(path, system, LayerLoaded, cfg, nil)
 }
 
 // Coalesce returns the first non-empty string, or "" if all are empty. Used to
@@ -345,6 +517,9 @@ func (c *Config) normalizeLegacy() {
 var (
 	validProviders = map[string]bool{"": true, "github": true, "gitlab": true}
 	validBackends  = map[string]bool{"": true, "fastembed": true}
+	validThemes    = map[string]bool{"": true, "dark": true, "light": true, "amber": true}
+	validColors    = map[string]bool{"": true, "truecolor": true, "ansi256": true, "ansi16": true, "ansi8": true, "mono": true, "no-color": true}
+	validGlyphs    = map[string]bool{"": true, "unicode": true, "ascii": true}
 	// Mirrors the output widths voyage-code-3 accepts. Kept here rather than
 	// imported from internal/embed so the config package stays dependency-free.
 	validVoyageDimensions = map[int]bool{256: true, 512: true, 1024: true, 2048: true}
@@ -357,6 +532,15 @@ func (c *Config) Validate() error {
 	}
 	if !validBackends[strings.ToLower(c.Embedder.Backend)] {
 		return fmt.Errorf("embedder.backend %q must be 'fastembed' (or empty)", c.Embedder.Backend)
+	}
+	if !validThemes[strings.ToLower(c.UI.Theme)] {
+		return fmt.Errorf("ui.theme %q must be dark, light or amber", c.UI.Theme)
+	}
+	if !validColors[strings.ToLower(c.UI.Color)] {
+		return fmt.Errorf("ui.color %q is not a supported terminal profile", c.UI.Color)
+	}
+	if !validGlyphs[strings.ToLower(c.UI.Glyphs)] {
+		return fmt.Errorf("ui.glyphs %q must be unicode or ascii", c.UI.Glyphs)
 	}
 	if math.IsNaN(c.GitHub.RequestsPerMinute) || math.IsInf(c.GitHub.RequestsPerMinute, 0) || c.GitHub.RequestsPerMinute < 0 || c.GitHub.RequestsPerMinute > 900 {
 		return fmt.Errorf("github.requestsPerMinute must be a finite value in (0, 900] when set")

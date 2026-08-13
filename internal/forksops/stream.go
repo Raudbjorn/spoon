@@ -30,6 +30,10 @@ type Options struct {
 	BotAllowlist map[string]bool
 	HeatWeights  map[string]float64
 
+	// Now is an optional run clock. Nil uses time.Now. Callers that need
+	// reproducible stream records may supply one fixed instant.
+	Now func() time.Time
+
 	// Budget caps how many forks get the expensive compare (T2) / contributors
 	// (T3) calls. When > 0, the forks to spend on are chosen by an
 	// optimal-stopping ("secretary problem") gate over a cheap divergence
@@ -344,6 +348,9 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 		}
 
 		now := time.Now()
+		if opts.Now != nil {
+			now = opts.Now()
+		}
 		momentumByID := unknownMomentumMap(t1Forks)
 		if opts.MomentumSnapshots {
 			momentumByID = buildMomentumMap(now, momentumProviderKey(ctx, provider), owner, repo, t1Forks, logger)

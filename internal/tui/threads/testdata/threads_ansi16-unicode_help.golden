@@ -1,0 +1,25 @@
+spoon threads — keybindings
+
+Global:
+  ctrl+c        Quit
+
+Thread list:
+  Up/k          Move thread selection up
+  Down/j        Move thread selection down
+  q             Quit
+  r/Enter       Reply
+  R             Resolve current thread
+  a             Apply suggestion
+  ctrl+a        Resolve all
+  A             Unresolve all
+  o             Open pull request
+  c             Counter-propose
+  ?             Toggle help
+  f             Hide or restore chrome
+
+Composer:
+  ctrl+s        Submit reply
+  Esc           Cancel reply
+
+Help:
+  ?             Close help
