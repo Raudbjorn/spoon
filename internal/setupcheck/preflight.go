@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os/exec"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/svnbjrn/spoon/internal/config"
 	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/forge"
+	"gopkg.in/yaml.v3"
 )
 
 // DenyHTTPTransport is the fail-closed transport passed to local preflights.
@@ -57,9 +59,10 @@ func CheckProvider(ctx context.Context, input ProviderInput, probe ProviderProbe
 	return ProviderResult{Provider: input.Provider, Auth: auth, Ready: input.ConfiguredToken || auth.Authenticated()}, nil
 }
 
-// LocalProviderProbe checks only configured environment/config credentials and
-// the gh/glab CLI's local auth state. It never validates a token over HTTP.
-func LocalProviderProbe(ctx context.Context, input ProviderInput, _ http.RoundTripper) (forge.AuthInfo, error) {
+// LocalProviderProbe checks only credentials from the startup environment
+// snapshot, spoon's loaded config, and local gh/glab config files. It never
+// executes provider CLIs or constructs a network client.
+func LocalProviderProbe(ctx context.Context, input ProviderInput, transport http.RoundTripper) (forge.AuthInfo, error) {
 	host := input.Host
 	if host == "" {
 		if input.Provider == forge.ProviderGitLab {
@@ -69,10 +72,8 @@ func LocalProviderProbe(ctx context.Context, input ProviderInput, _ http.RoundTr
 		}
 	}
 	auth := forge.AuthInfo{Provider: input.Provider, Host: host}
-	command, args := "gh", []string{"auth", "status", "--hostname", host}
 	envToken, tokenRate, publicRate, unit := input.Environment["GH_TOKEN"] != "" || input.Environment["GITHUB_TOKEN"] != "", 5000, 60, "hour"
 	if input.Provider == forge.ProviderGitLab {
-		command, args = "glab", []string{"auth", "status", "--hostname", host}
 		envToken = input.Environment["GITLAB_TOKEN"] != "" || input.Environment["GITLAB_PAT"] != "" || input.Environment["CI_JOB_TOKEN"] != ""
 		tokenRate, publicRate, unit = 2000, 500, "minute"
 	}
@@ -81,12 +82,91 @@ func LocalProviderProbe(ctx context.Context, input ProviderInput, _ http.RoundTr
 		auth.Tier, auth.RateLimit = forge.AuthToken, tokenRate
 		return auth, nil
 	}
-	if err := exec.CommandContext(ctx, command, args...).Run(); err == nil {
+	if transport == nil {
+		return auth, fmt.Errorf("provider network guard is unavailable")
+	}
+	if err := ctx.Err(); err != nil {
+		return auth, err
+	}
+	if localProviderTokenConfigured(input.Provider, host, input.Environment) {
 		auth.Tier, auth.RateLimit = forge.AuthCLI, tokenRate
 		return auth, nil
 	}
 	auth.Tier, auth.RateLimit = forge.AuthNone, publicRate
 	return auth, nil
+}
+
+const maxProviderConfigBytes = 1 << 20
+
+func localProviderTokenConfigured(provider forge.Provider, host string, env map[string]string) bool {
+	path := providerConfigPath(provider, env)
+	if path == "" {
+		return false
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, maxProviderConfigBytes+1))
+	if err != nil || len(data) > maxProviderConfigBytes {
+		return false
+	}
+
+	if provider == forge.ProviderGitLab {
+		var cfg struct {
+			Hosts map[string]struct {
+				Token string `yaml:"token"`
+			} `yaml:"hosts"`
+		}
+		return yaml.Unmarshal(data, &cfg) == nil && strings.TrimSpace(cfg.Hosts[host].Token) != ""
+	}
+
+	var cfg map[string]struct {
+		OAuthToken string `yaml:"oauth_token"`
+		User       string `yaml:"user"`
+		Users      map[string]struct {
+			OAuthToken string `yaml:"oauth_token"`
+		} `yaml:"users"`
+	}
+	if yaml.Unmarshal(data, &cfg) != nil {
+		return false
+	}
+	entry := cfg[host]
+	if strings.TrimSpace(entry.OAuthToken) != "" {
+		return true
+	}
+	if user := entry.Users[entry.User]; strings.TrimSpace(user.OAuthToken) != "" {
+		return true
+	}
+	for _, user := range entry.Users {
+		if strings.TrimSpace(user.OAuthToken) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func providerConfigPath(provider forge.Provider, env map[string]string) string {
+	if provider == forge.ProviderGitHub {
+		if root := env["GH_CONFIG_DIR"]; root != "" {
+			return filepath.Join(root, "hosts.yml")
+		}
+	} else if root := env["GLAB_CONFIG_DIR"]; root != "" {
+		return filepath.Join(root, "config.yml")
+	}
+
+	root := env["XDG_CONFIG_HOME"]
+	if root == "" && env["HOME"] != "" {
+		root = filepath.Join(env["HOME"], ".config")
+	}
+	if root == "" {
+		return ""
+	}
+	if provider == forge.ProviderGitLab {
+		return filepath.Join(root, "glab-cli", "config.yml")
+	}
+	return filepath.Join(root, "gh", "hosts.yml")
 }
 
 // Store is the shared open-and-writability contract for setup and settings.
