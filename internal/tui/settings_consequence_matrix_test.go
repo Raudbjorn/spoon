@@ -87,7 +87,6 @@ func TestRootSystemLayerHostwideModalAcceptsAndPublishesTempIdentity(t *testing.
 	}
 }
 
-
 func consequenceModalPrefix(consequence settings.Consequence) string {
 	switch consequence {
 	case settings.Billing:

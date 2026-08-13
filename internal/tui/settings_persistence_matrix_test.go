@@ -200,7 +200,7 @@ func matrixFullConfig(t *testing.T) config.Config {
 	whitelist := true
 	return config.Config{
 		Version: config.CurrentVersion,
-		Forge: config.ForgeConfig{Provider: "github", Host: "forge.example.test"},
+		Forge:   config.ForgeConfig{Provider: "github", Host: "forge.example.test"},
 		GitHub: config.GitHubConfig{Tokens: []string{"matrix-token"}, RequestsPerMinute: 300, Proxy: config.ProxyConfig{
 			Enabled: true, APIKeyFile: key("proxy-api"), StaticFile: key("proxy-static"), WhitelistPublicIP: &whitelist, CacheTTL: "2m",
 		}},
