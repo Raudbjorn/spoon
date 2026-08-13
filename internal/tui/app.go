@@ -19,6 +19,7 @@ import (
 	"github.com/svnbjrn/spoon/internal/heat"
 	"github.com/svnbjrn/spoon/internal/store"
 	"github.com/svnbjrn/spoon/internal/topics"
+	"github.com/svnbjrn/spoon/internal/tui/settings"
 )
 
 // View state
@@ -35,6 +36,8 @@ const (
 	// the existing values would make every diff below this line noise.
 	viewFilter
 	viewRank
+	// Appended rather than inserted: the enum is positional.
+	viewSettings
 )
 
 // ScoredFork holds a fork with its computed heat score.
@@ -211,6 +214,7 @@ type Model struct {
 	rankSeq     int
 	rankPending bool
 	queryScorer embed.QueryScorer
+	settings    settings.Model
 }
 
 // --- Constructor ---
@@ -282,6 +286,13 @@ func (m Model) WithMaxTier(n int) Model {
 // be opened — but stays nil-able so unit tests can run modelless.
 func (m Model) WithStore(db *store.Store) Model {
 	m.db = db
+	return m
+}
+
+// WithSettings attaches the complete in-TUI settings surface after startup has
+// resolved the active configuration layer.
+func (m Model) WithSettings(settingsModel settings.Model) Model {
+	m.settings = settingsModel
 	return m
 }
 
@@ -696,6 +707,23 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// KeyRunes event whose String() is bracketed and never matches a binding.
 	typed := typedText(msg)
 
+	if key == "," {
+		m.view = viewSettings
+		return m, nil
+	}
+
+	if m.view == viewSettings {
+		if key == "esc" {
+			m.view = viewTable
+			if len(m.forks) == 0 {
+				m.view = viewInput
+			}
+			return m, nil
+		}
+		updated, cmd := m.settings.Update(msg)
+		m.settings = updated.(settings.Model)
+		return m, cmd
+	}
 	switch m.view {
 	case viewInput:
 		return m.handleInputKey(key, typed)
@@ -1549,6 +1577,8 @@ func (m Model) View() string {
 		return m.viewRankPrompt()
 	case viewHelp:
 		return m.viewHelp()
+	case viewSettings:
+		return m.settings.View()
 	}
 	return ""
 }

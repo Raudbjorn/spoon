@@ -21,7 +21,8 @@ import (
 )
 
 // CurrentVersion is the schema version written into new/updated config files.
-const CurrentVersion = 1
+// Version 2 adds the optional ui block; absent UI remains a lossless v1 input.
+const CurrentVersion = 2
 
 // Config is the root user configuration. Zero values mean "unset"; omitempty
 // keeps the written file minimal.
@@ -33,6 +34,15 @@ type Config struct {
 	Forge    ForgeConfig    `json:"forge,omitempty"`
 	GitHub   GitHubConfig   `json:"github,omitempty"`
 	Embedder EmbedderConfig `json:"embedder,omitempty"`
+	UI       UIConfig       `json:"ui,omitempty"`
+}
+
+// UIConfig stores terminal presentation preferences. Empty values defer to
+// environment and then the built-in defaults resolved at TUI startup.
+type UIConfig struct {
+	Theme  string `json:"theme,omitempty"`
+	Color  string `json:"color,omitempty"`
+	Glyphs string `json:"glyphs,omitempty"`
 }
 
 // EmbedderConfig configures the in-process fastembed embedder that powers
@@ -189,9 +199,9 @@ func Save(path string, c *Config) error {
 	if err := validateCredentialFile(c.Embedder.Voyage.APIKeyFile, "embedder.voyage.apiKeyFile"); err != nil {
 		return err
 	}
-	if c.Version == 0 {
-		c.Version = CurrentVersion
-	}
+	// Always stamp the current schema. Version is an output marker, never a
+	// validation input, so rewriting a v1 file is a safe lossless migration.
+	c.Version = CurrentVersion
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
 	}
@@ -345,6 +355,9 @@ func (c *Config) normalizeLegacy() {
 var (
 	validProviders = map[string]bool{"": true, "github": true, "gitlab": true}
 	validBackends  = map[string]bool{"": true, "fastembed": true}
+	validThemes    = map[string]bool{"": true, "dark": true, "light": true, "amber": true}
+	validColors    = map[string]bool{"": true, "truecolor": true, "ansi256": true, "ansi16": true, "ansi8": true, "mono": true, "no-color": true}
+	validGlyphs    = map[string]bool{"": true, "unicode": true, "ascii": true}
 	// Mirrors the output widths voyage-code-3 accepts. Kept here rather than
 	// imported from internal/embed so the config package stays dependency-free.
 	validVoyageDimensions = map[int]bool{256: true, 512: true, 1024: true, 2048: true}
@@ -357,6 +370,15 @@ func (c *Config) Validate() error {
 	}
 	if !validBackends[strings.ToLower(c.Embedder.Backend)] {
 		return fmt.Errorf("embedder.backend %q must be 'fastembed' (or empty)", c.Embedder.Backend)
+	}
+	if !validThemes[strings.ToLower(c.UI.Theme)] {
+		return fmt.Errorf("ui.theme %q must be dark, light or amber", c.UI.Theme)
+	}
+	if !validColors[strings.ToLower(c.UI.Color)] {
+		return fmt.Errorf("ui.color %q is not a supported terminal profile", c.UI.Color)
+	}
+	if !validGlyphs[strings.ToLower(c.UI.Glyphs)] {
+		return fmt.Errorf("ui.glyphs %q must be unicode or ascii", c.UI.Glyphs)
 	}
 	if math.IsNaN(c.GitHub.RequestsPerMinute) || math.IsInf(c.GitHub.RequestsPerMinute, 0) || c.GitHub.RequestsPerMinute < 0 || c.GitHub.RequestsPerMinute > 900 {
 		return fmt.Errorf("github.requestsPerMinute must be a finite value in (0, 900] when set")
