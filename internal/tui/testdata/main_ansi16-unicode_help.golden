@@ -9,21 +9,21 @@
   d: unbound -> open compare
 
 
+  Global
+  ctrl+c          Quit
+
+  Repository input
+  Enter           Search repository
+  Esc             Return to fork table
+  left/ctrl+b     Move input cursor left
+  right/ctrl+f    Move input cursor right
+  home/ctrl+a     Move input cursor to start
+  end/ctrl+e      Move input cursor to end
+  backspace       Delete previous character
+  delete          Delete next character
+  ctrl+u          Clear input
+
   Fork table
   q               Quit
   Up/k            Move selection up
-  Down/j          Move selection down
-  PgUp            Page up
-  PgDn            Page down
-  home            Go to top
-  G/end           Go to bottom
-  g               Toggle cluster grouping
-  Enter           View fork details
-  n               Search new repository
-  /               Filter forks
-  R               Rank by intent
-  Esc             Clear active filter
-  ?               Open help
-  s               Cycle sort column
-  S               Reverse sort order
   [90mPgUp/PgDn scroll · Press ? or Esc to go back[0m

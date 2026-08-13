@@ -264,7 +264,7 @@ func renderCodeContext(thread gh.ReviewThread, cc threadsops.CodeContext, ctx th
 func renderHelp(ctx theme.Context) string {
 	var b strings.Builder
 	b.WriteString("spoon threads " + ctx.Glyph(theme.EmDash) + " keybindings\n\n")
-	for _, binding := range keymap.ForScopes(keymap.ThreadList) {
+	for _, binding := range append(keymap.ForScopes(keymap.ThreadHelp), keymap.ForScopes(keymap.ThreadList)...) {
 		b.WriteString("  " + keymap.KeyLabel(binding.Keys))
 		padding := 14 - len([]rune(keymap.KeyLabel(binding.Keys)))
 		if padding < 1 {

@@ -38,7 +38,7 @@ Confirmation and composer handlers run before the list registry, so background `
 | --- | --- | --- |
 | `j`/`k`, `G` | Vi-style movement | Efficient terminal navigation; retained existing Spoon behavior. |
 | `/`, `n`, `g`, `s`/`S`, `o`, `d`, `c`, `y`, `r`, `e`/`E`, `R` | Fork discovery, enrichment, export, and intent actions | Spoon-specific fork-browser operations have no gallery counterpart. |
-| `b` | Back from details | Retained existing Spoon shortcut alongside `Esc`. |
+| Detail `q`, `b` | Return to fork table | Unlike upstream's quit meaning, Spoon retains historical detail back behavior; `b` is its added shortcut. |
 | Thread `r`, `R`, `a`, `Ctrl+A`, `A`, `o`, `c` | Review workflow actions | Spoon-specific review-thread operations have no gallery counterpart. |
 
-`q`, `?`, `Esc`, arrows, `Home`/`End`, `PgUp`/`PgDn`, `Enter`, `Space`, `t`, and `f` conform to the applicable published intent. The gallery's selected-story fullscreen behavior is translated narrowly to hiding/restoring existing Spoon chrome; Spoon does not add a gallery preview mode.
+`?`, `Esc`, arrows, `Home`/`End`, `PgUp`/`PgDn`, `Enter`, `Space`, `t`, and `f` conform to the applicable published intent. `q` conforms in browser/list contexts but deliberately returns from fork details as recorded above. The gallery's selected-story fullscreen behavior is translated narrowly to hiding/restoring existing Spoon chrome; Spoon does not add a gallery preview mode.

@@ -81,7 +81,8 @@ func (m *Model) applyFilter(q string) {
 // Esc here cancels the edit and leaves the active filter untouched; Esc on the
 // table itself is what clears it. Enter on an empty query also clears.
 func (m *Model) handleFilterKey(key, typed string) (tea.Model, tea.Cmd) {
-	switch keymap.Dispatch(keymap.MainFilter, key) {
+	action := keymap.Dispatch(keymap.MainFilter, key)
+	switch action {
 	case keymap.Submit:
 		m.applyFilter(strings.TrimSpace(m.filterInput))
 		m.view = viewTable
@@ -90,7 +91,7 @@ func (m *Model) handleFilterKey(key, typed string) (tea.Model, tea.Cmd) {
 		m.filterCursor = 0
 		m.view = viewTable
 	default:
-		m.filterInput, m.filterCursor, _ = lineEdit(m.filterInput, m.filterCursor, key, typed)
+		m.filterInput, m.filterCursor, _ = lineEdit(m.filterInput, m.filterCursor, action, typed)
 	}
 	return m, nil
 }

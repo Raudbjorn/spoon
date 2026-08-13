@@ -1,5 +1,6 @@
 spoon threads - keybindings
 
+  ?             Close help
   Up/k          Move thread selection up
   Down/j        Move thread selection down
   q/ctrl+c      Quit

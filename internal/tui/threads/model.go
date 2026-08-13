@@ -277,6 +277,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if m.showHelp {
+			// Help is foreground state: only its own toggle key closes it.
+			// List shortcuts, including fullscreen, cannot leak through.
+			if keymap.Dispatch(keymap.ThreadHelp, msg.String()) == keymap.ToggleHelp {
+				m.showHelp = false
+			}
+			return m, nil
+		}
 		switch dispatchKey(msg) {
 		case actUp:
 			if m.cursor > 0 {

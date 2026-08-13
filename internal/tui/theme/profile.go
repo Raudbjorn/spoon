@@ -117,6 +117,7 @@ func ResolveConfiguredContext(envTheme, configTheme, envColor, noColor, configCo
 		Palette:      resolvePalette(palette, profile),
 		ColorProfile: profile,
 		GlyphProfile: glyphProfile,
+		paletteName:  name,
 		gutter:       resolveGutterColors(GutterColors(palette), profile),
 		initialized:  true,
 	}, nil

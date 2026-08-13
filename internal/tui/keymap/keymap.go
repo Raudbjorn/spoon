@@ -17,6 +17,7 @@ const (
 	MainRank      Scope = "main-rank"
 	ThreadCompose Scope = "thread-compose"
 	ThreadList    Scope = "thread-list"
+	ThreadHelp    Scope = "thread-help"
 	ThreadPick    Scope = "thread-picker"
 )
 
@@ -34,6 +35,13 @@ const (
 	End              Action = "end"
 	Submit           Action = "submit"
 	Edit             Action = "edit"
+	CursorLeft       Action = "cursor-left"
+	CursorRight      Action = "cursor-right"
+	CursorStart      Action = "cursor-start"
+	CursorEnd        Action = "cursor-end"
+	DeleteBackward   Action = "delete-backward"
+	DeleteForward    Action = "delete-forward"
+	ClearInput       Action = "clear-input"
 	ToggleHelp       Action = "toggle-help"
 	ToggleTheme      Action = "toggle-theme"
 	ToggleFullscreen Action = "toggle-fullscreen"
@@ -75,7 +83,13 @@ var Registry = []Binding{
 	{Global, []string{"ctrl+c"}, Quit, "Quit", ""},
 	{MainInput, []string{"enter"}, Submit, "Search repository", ""},
 	{MainInput, []string{"esc"}, Back, "Return to fork table", ""},
-	{MainInput, []string{"left", "ctrl+b", "right", "ctrl+f", "home", "ctrl+a", "end", "ctrl+e", "backspace", "delete", "ctrl+u"}, Edit, "Edit repository", ""},
+	{MainInput, []string{"left", "ctrl+b"}, CursorLeft, "Move input cursor left", ""},
+	{MainInput, []string{"right", "ctrl+f"}, CursorRight, "Move input cursor right", ""},
+	{MainInput, []string{"home", "ctrl+a"}, CursorStart, "Move input cursor to start", ""},
+	{MainInput, []string{"end", "ctrl+e"}, CursorEnd, "Move input cursor to end", ""},
+	{MainInput, []string{"backspace"}, DeleteBackward, "Delete previous character", ""},
+	{MainInput, []string{"delete"}, DeleteForward, "Delete next character", ""},
+	{MainInput, []string{"ctrl+u"}, ClearInput, "Clear input", ""},
 	{MainTable, []string{"q"}, Quit, "Quit", ""},
 	{MainTable, []string{"up", "k"}, Up, "Move selection up", "Spoon adds vi navigation"},
 	{MainTable, []string{"down", "j"}, Down, "Move selection down", "Spoon adds vi navigation"},
@@ -102,7 +116,7 @@ var Registry = []Binding{
 	{MainTable, []string{" "}, ToggleMark, "Mark or unmark fork", ""},
 	{MainTable, []string{"e"}, ExportMarked, "Export marked forks", "No upstream counterpart"},
 	{MainTable, []string{"E"}, ExportAll, "Export all forks", "No upstream counterpart"},
-	{MainDetail, []string{"esc", "b", "q"}, Back, "Return to fork table", "Spoon adds b back shortcut"},
+	{MainDetail, []string{"esc", "b", "q"}, Back, "Return to fork table", "Spoon maps q to back in detail; b is an added back shortcut"},
 	{MainDetail, []string{"up", "k"}, Up, "Scroll up", "Spoon adds vi navigation"},
 	{MainDetail, []string{"down", "j"}, Down, "Scroll down", "Spoon adds vi navigation"},
 	{MainDetail, []string{"pgup"}, PageUp, "Page up", ""},
@@ -126,17 +140,35 @@ var Registry = []Binding{
 	{MainHelp, []string{"G", "end"}, End, "Go to bottom", ""},
 	{MainExport, []string{"enter"}, Submit, "Export", ""},
 	{MainExport, []string{"esc"}, Back, "Cancel export", ""},
-	{MainExport, []string{"left", "ctrl+b", "right", "ctrl+f", "home", "ctrl+a", "end", "ctrl+e", "backspace", "delete", "ctrl+u"}, Edit, "Edit export path", ""},
+	{MainExport, []string{"left", "ctrl+b"}, CursorLeft, "Move input cursor left", ""},
+	{MainExport, []string{"right", "ctrl+f"}, CursorRight, "Move input cursor right", ""},
+	{MainExport, []string{"home", "ctrl+a"}, CursorStart, "Move input cursor to start", ""},
+	{MainExport, []string{"end", "ctrl+e"}, CursorEnd, "Move input cursor to end", ""},
+	{MainExport, []string{"backspace"}, DeleteBackward, "Delete previous character", ""},
+	{MainExport, []string{"delete"}, DeleteForward, "Delete next character", ""},
+	{MainExport, []string{"ctrl+u"}, ClearInput, "Clear input", ""},
 	{MainTopics, []string{"up", "k"}, Up, "Move selection up", ""},
 	{MainTopics, []string{"down", "j"}, Down, "Move selection down", ""},
 	{MainTopics, []string{"enter"}, Submit, "Choose topic repository", ""},
 	{MainTopics, []string{"esc", "q"}, Back, "Cancel topic picker", ""},
 	{MainFilter, []string{"enter"}, Submit, "Apply filter", ""},
 	{MainFilter, []string{"esc"}, Back, "Cancel filter", ""},
-	{MainFilter, []string{"left", "ctrl+b", "right", "ctrl+f", "home", "ctrl+a", "end", "ctrl+e", "backspace", "delete", "ctrl+u"}, Edit, "Edit filter", ""},
+	{MainFilter, []string{"left", "ctrl+b"}, CursorLeft, "Move input cursor left", ""},
+	{MainFilter, []string{"right", "ctrl+f"}, CursorRight, "Move input cursor right", ""},
+	{MainFilter, []string{"home", "ctrl+a"}, CursorStart, "Move input cursor to start", ""},
+	{MainFilter, []string{"end", "ctrl+e"}, CursorEnd, "Move input cursor to end", ""},
+	{MainFilter, []string{"backspace"}, DeleteBackward, "Delete previous character", ""},
+	{MainFilter, []string{"delete"}, DeleteForward, "Delete next character", ""},
+	{MainFilter, []string{"ctrl+u"}, ClearInput, "Clear input", ""},
 	{MainRank, []string{"enter"}, Submit, "Apply ranking", ""},
 	{MainRank, []string{"esc"}, Back, "Cancel ranking", ""},
-	{MainRank, []string{"left", "ctrl+b", "right", "ctrl+f", "home", "ctrl+a", "end", "ctrl+e", "backspace", "delete", "ctrl+u"}, Edit, "Edit ranking query", ""},
+	{MainRank, []string{"left", "ctrl+b"}, CursorLeft, "Move input cursor left", ""},
+	{MainRank, []string{"right", "ctrl+f"}, CursorRight, "Move input cursor right", ""},
+	{MainRank, []string{"home", "ctrl+a"}, CursorStart, "Move input cursor to start", ""},
+	{MainRank, []string{"end", "ctrl+e"}, CursorEnd, "Move input cursor to end", ""},
+	{MainRank, []string{"backspace"}, DeleteBackward, "Delete previous character", ""},
+	{MainRank, []string{"delete"}, DeleteForward, "Delete next character", ""},
+	{MainRank, []string{"ctrl+u"}, ClearInput, "Clear input", ""},
 	{ThreadList, []string{"up", "k"}, Up, "Move thread selection up", "Spoon adds vi navigation"},
 	{ThreadList, []string{"down", "j"}, Down, "Move thread selection down", "Spoon adds vi navigation"},
 	{ThreadList, []string{"q", "ctrl+c"}, Quit, "Quit", ""},
@@ -146,6 +178,7 @@ var Registry = []Binding{
 	{ThreadList, []string{"ctrl+a"}, ResolveAll, "Resolve all", "No upstream counterpart"},
 	{ThreadList, []string{"A"}, UnresolveAll, "Unresolve all", "No upstream counterpart"},
 	{ThreadList, []string{"o"}, OpenBrowser, "Open pull request", "No upstream counterpart"},
+	{ThreadHelp, []string{"?"}, ToggleHelp, "Close help", ""},
 	{ThreadList, []string{"c"}, CounterPropose, "Counter-propose", "No upstream counterpart"},
 	{ThreadList, []string{"?"}, ToggleHelp, "Toggle help", ""},
 	{ThreadList, []string{"f"}, ToggleFullscreen, "Hide or restore chrome", ""},

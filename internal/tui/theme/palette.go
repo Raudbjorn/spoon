@@ -15,6 +15,9 @@ type Context struct {
 	ColorProfile ColorProfile
 	GlyphProfile GlyphProfile
 
+	// paletteName preserves the selected source palette when a low-color
+	// profile quantizes different palettes to identical rendered values.
+	paletteName string
 	gutter      [6]lipgloss.Color
 	initialized bool
 }
@@ -33,19 +36,24 @@ func PaletteByName(name string) (Palette, error) {
 	}
 }
 
-// ToggleDarkLight switches the live palette while retaining every terminal
-// capability choice resolved at startup. Amber is a configured palette rather
-// than a toggle endpoint, so it moves to dark on its first toggle.
+// ToggleDarkLight switches the source palette before quantizing it for the
+// already selected terminal profile. Amber is configured rather than a toggle
+// endpoint, so its first toggle moves to dark.
 func ToggleDarkLight(ctx Context) Context {
-	target := Dark
-	if ctx.Palette == resolvePalette(Dark, ctx.ColorProfile) {
-		target = Light
+	name := "dark"
+	if ctx.paletteName == "dark" {
+		name = "light"
+	}
+	palette, err := PaletteByName(name)
+	if err != nil {
+		panic(err)
 	}
 	return Context{
-		Palette:      resolvePalette(target, ctx.ColorProfile),
+		Palette:      resolvePalette(palette, ctx.ColorProfile),
 		ColorProfile: ctx.ColorProfile,
 		GlyphProfile: ctx.GlyphProfile,
-		gutter:       resolveGutterColors(GutterColors(target), ctx.ColorProfile),
+		paletteName:  name,
+		gutter:       resolveGutterColors(GutterColors(palette), ctx.ColorProfile),
 		initialized:  true,
 	}
 }

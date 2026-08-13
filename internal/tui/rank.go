@@ -76,7 +76,8 @@ func (m *Model) promptRank() {
 // filter". Esc cancels the edit and leaves any active ranking alone — also
 // matching `/`, whose Esc-on-the-table is what clears.
 func (m *Model) handleRankKey(key, typed string) (tea.Model, tea.Cmd) {
-	switch keymap.Dispatch(keymap.MainRank, key) {
+	action := keymap.Dispatch(keymap.MainRank, key)
+	switch action {
 	case keymap.Submit:
 		query := strings.TrimSpace(m.rankQuery)
 		m.view = viewTable
@@ -89,7 +90,7 @@ func (m *Model) handleRankKey(key, typed string) (tea.Model, tea.Cmd) {
 		m.view = viewTable
 		return m, nil
 	default:
-		m.rankQuery, m.rankCursor, _ = lineEdit(m.rankQuery, m.rankCursor, key, typed)
+		m.rankQuery, m.rankCursor, _ = lineEdit(m.rankQuery, m.rankCursor, action, typed)
 	}
 	return m, nil
 }

@@ -795,7 +795,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleInputKey(key string, typed string) (tea.Model, tea.Cmd) {
-	switch keymap.Dispatch(keymap.MainInput, key) {
+	action := keymap.Dispatch(keymap.MainInput, key)
+	switch action {
 	case keymap.Submit:
 		m.inputErr = ""
 		m.errMsg = ""
@@ -810,7 +811,7 @@ func (m *Model) handleInputKey(key string, typed string) (tea.Model, tea.Cmd) {
 			m.view = viewTable
 		}
 	default:
-		m.input, m.inputCursor, _ = lineEdit(m.input, m.inputCursor, key, typed)
+		m.input, m.inputCursor, _ = lineEdit(m.input, m.inputCursor, action, typed)
 	}
 	return m, nil
 }

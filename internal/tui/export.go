@@ -216,7 +216,8 @@ func (m *Model) promptExportAll() tea.Cmd {
 
 // handleExportPathKey handles input in the export path prompt.
 func (m *Model) handleExportPathKey(key string, typed string) (tea.Model, tea.Cmd) {
-	switch keymap.Dispatch(keymap.MainExport, key) {
+	action := keymap.Dispatch(keymap.MainExport, key)
+	switch action {
 	case keymap.Submit:
 		path := strings.TrimSpace(m.exportPath)
 		if path == "" {
@@ -231,7 +232,7 @@ func (m *Model) handleExportPathKey(key string, typed string) (tea.Model, tea.Cm
 		m.exportForks = nil
 		m.view = viewTable
 	default:
-		m.exportPath, m.exportCursor, _ = lineEdit(m.exportPath, m.exportCursor, key, typed)
+		m.exportPath, m.exportCursor, _ = lineEdit(m.exportPath, m.exportCursor, action, typed)
 	}
 	return m, nil
 }

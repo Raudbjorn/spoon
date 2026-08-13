@@ -5,6 +5,7 @@ import (
 	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/svnbjrn/spoon/internal/tui/keymap"
 )
 
 // typedText returns the literal characters a key event contributes to a text
@@ -55,7 +56,7 @@ func typedText(msg tea.KeyMsg) string {
 //
 // Everything is indexed in runes, never bytes: byte-slicing the tail off a
 // multi-byte character leaves an invalid UTF-8 fragment in the field.
-func lineEdit(text string, cursor int, key, typed string) (string, int, bool) {
+func lineEdit(text string, cursor int, action keymap.Action, typed string) (string, int, bool) {
 	r := []rune(text)
 	if cursor < 0 {
 		cursor = 0
@@ -64,31 +65,31 @@ func lineEdit(text string, cursor int, key, typed string) (string, int, bool) {
 		cursor = len(r)
 	}
 
-	switch key {
-	case "left", "ctrl+b":
+	switch action {
+	case keymap.CursorLeft:
 		if cursor > 0 {
 			cursor--
 		}
-	case "right", "ctrl+f":
+	case keymap.CursorRight:
 		if cursor < len(r) {
 			cursor++
 		}
-	case "home", "ctrl+a":
+	case keymap.CursorStart:
 		cursor = 0
-	case "end", "ctrl+e":
+	case keymap.CursorEnd:
 		cursor = len(r)
-	case "backspace":
+	case keymap.DeleteBackward:
 		if cursor > 0 {
 			r = append(r[:cursor-1], r[cursor:]...)
 			cursor--
 		}
-	case "delete":
+	case keymap.DeleteForward:
 		if cursor < len(r) {
 			r = append(r[:cursor], r[cursor+1:]...)
 		}
-	case "ctrl+u":
+	case keymap.ClearInput:
 		r, cursor = nil, 0
-	default:
+	case keymap.None:
 		if typed == "" {
 			return text, cursor, false
 		}
@@ -99,6 +100,8 @@ func lineEdit(text string, cursor int, key, typed string) (string, int, bool) {
 		out = append(out, r[cursor:]...)
 		r = out
 		cursor += len(ins)
+	default:
+		return text, cursor, false
 	}
 
 	return string(r), cursor, true

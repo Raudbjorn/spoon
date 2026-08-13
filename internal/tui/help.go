@@ -39,8 +39,14 @@ func helpBody(ctx theme.Context) string {
 		title  string
 		scopes []keymap.Scope
 	}{
+		{"Global", []keymap.Scope{keymap.Global}},
+		{"Repository input", []keymap.Scope{keymap.MainInput}},
 		{"Fork table", []keymap.Scope{keymap.MainTable}},
 		{"Fork details", []keymap.Scope{keymap.MainDetail}},
+		{"Export path", []keymap.Scope{keymap.MainExport}},
+		{"Topic picker", []keymap.Scope{keymap.MainTopics}},
+		{"Filter prompt", []keymap.Scope{keymap.MainFilter}},
+		{"Rank prompt", []keymap.Scope{keymap.MainRank}},
 		{"Help", []keymap.Scope{keymap.MainHelp}},
 	} {
 		b.WriteString("\n  " + section.title + "\n")
