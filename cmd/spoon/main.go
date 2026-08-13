@@ -16,9 +16,11 @@ import (
 	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/gitlab"
 	"github.com/svnbjrn/spoon/internal/heat"
+	"github.com/svnbjrn/spoon/internal/setupcheck"
 	"github.com/svnbjrn/spoon/internal/store"
 	"github.com/svnbjrn/spoon/internal/tui"
 	"github.com/svnbjrn/spoon/internal/tui/settings"
+	"github.com/svnbjrn/spoon/internal/tui/theme"
 )
 
 var version = "0.3.0-dev"
@@ -27,13 +29,16 @@ func main() {
 	// Zero-configuration first run: make sure a documented default config
 	// exists before anything consults it. Never fatal — a bad or unwritable
 	// config degrades to built-in defaults with a warning.
-	if _, err := config.EnsureDefault(os.Stderr); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: ignoring config: %v\n", err)
+	boot := config.Bootstrap(os.Stderr)
+	cfg := boot.Config
+	if boot.Warning != nil {
+		fmt.Fprintf(os.Stderr, "warning: ignoring config: %v\n", boot.Warning)
 	}
 
 	// Subcommand dispatch: "spoon threads <pr-ref> ..."
 	if len(os.Args) >= 2 && os.Args[1] == "threads" {
-		os.Exit(runThreads(os.Args[2:]))
+		effective := config.ResolveEffectiveConfig(cfg, nil, config.EnvironmentSnapshot())
+		os.Exit(runThreadsWithEffective(os.Args[2:], effective))
 	}
 
 	// Subcommand dispatch: "spoon setup ..."
@@ -175,9 +180,26 @@ func main() {
 		}
 	}
 
-	if noColor {
-		os.Setenv("NO_COLOR", "1")
+	settingsFlags := map[string]string{}
+	if forgeFlag != "" {
+		settingsFlags["forge.provider"] = forgeFlag
 	}
+	if forgeHost != "" {
+		settingsFlags["forge.host"] = forgeHost
+	}
+	if noColor {
+		settingsFlags["ui.color"] = "no-color"
+	}
+	env := config.EnvironmentSnapshot()
+	effective := config.ResolveEffectiveConfig(cfg, settingsFlags, env)
+	forgeFlag, forgeHost = effective.Forge.Provider.Value, effective.Forge.Host.Value
+
+	tuiContext, err := resolveTUIContextWithNoColor(effective, noColor)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	theme.PinColorProfile(tuiContext)
 
 	ctx := context.Background()
 
@@ -188,8 +210,7 @@ func main() {
 		clusterEpsilon = 0.55
 	}
 
-	// Detect provider from repo URL and flags
-	provider, auth, repoArg, err := createProvider(ctx, repo, forgeFlag, forgeHost)
+	provider, auth, repoArg, err := createProvider(ctx, repo, forgeFlag, forgeHost, effective)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -214,15 +235,14 @@ func main() {
 	}
 	defer db.Close()
 
-	cfg, _ := config.LoadDefault()
-	settingsPath, _ := config.DefaultPath()
-	if _, err := os.Stat(settingsPath); os.IsNotExist(err) && cfg != nil {
-		settingsPath = config.SystemPath()
-	}
-	settingsModel := settings.New(cfg, settingsPath, db)
+	settingsModel := settings.NewFromLayer(boot.Layer, db).
+		WithFlags(settingsFlags).
+		WithEnvironment(env).
+		WithEffective(effective).
+		WithActionDeps(settingsActionDeps(env))
 	m := tui.NewModelWithCluster(provider, auth, repoArg, refresh, tuiClusterOpts).
 		WithHeatWeights(heatWeights).WithMaxTier(maxTier).WithStore(db).
-		WithQueryScorer(tuiQueryScorer(db)).WithSettings(settingsModel)
+		WithQueryScorer(tuiQueryScorer(db, effective, env)).WithTheme(tuiContext).WithSettings(settingsModel)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 
 	if _, err := p.Run(); err != nil {
@@ -231,20 +251,21 @@ func main() {
 	}
 }
 
-// tuiQueryScorer returns the scorer the `R` intent ranking uses: the Voyage
-// cross-encoder when a key is configured, nil (the built-in lexical scorer)
-// otherwise. The store is passed as Voyage's paid-response cache, so re-ranking
-// the same intent costs nothing the second time.
-//
-// A misconfigured or unusable Voyage setup returns nil rather than failing: the
-// TUI must start with no key, no network and no config, and a ranking that falls
-// back to lexical still labels itself as lexical in the footer.
-func tuiQueryScorer(db *store.Store) embed.QueryScorer {
-	var fileCfg config.VoyageConfig
-	if cfg, err := config.LoadDefault(); err == nil && cfg != nil {
-		fileCfg = cfg.Embedder.Voyage
+func settingsActionDeps(_ map[string]string) settings.ActionDeps {
+	return settings.ActionDeps{
+		Provider: setupcheck.LocalProviderProbe,
+		StoreOpen: func() (setupcheck.Store, error) {
+			opened, err := store.OpenDefault()
+			return opened, err
+		},
+		Clipboard: tui.CopyToClipboard,
 	}
-	voyageCfg, active, err := embed.ResolveVoyageConfig(context.Background(), fileCfg, false, db)
+}
+
+// tuiQueryScorer returns the scorer the `R` intent ranking uses from the
+// startup-owned effective configuration result.
+func tuiQueryScorer(db *store.Store, effective config.EffectiveConfig, env map[string]string) embed.QueryScorer {
+	voyageCfg, active, err := embed.ResolveVoyageEffective(context.Background(), effective, false, db, env)
 	if err != nil || !active {
 		return nil
 	}
@@ -267,8 +288,7 @@ func backendFor(fullMDG bool) string {
 // createProvider detects the forge provider from the repo URL and flags,
 // creates the appropriate Forge implementation, and returns it with auth info.
 // repoArg is returned as the owner/repo string to pass to TUI (without host prefix).
-func createProvider(ctx context.Context, repo, forgeFlag, forgeHost string) (forge.Forge, forge.AuthInfo, string, error) {
-	// Determine provider
+func createProvider(ctx context.Context, repo, forgeFlag, forgeHost string, effective config.EffectiveConfig) (forge.Forge, forge.AuthInfo, string, error) {
 	var forceProvider forge.Provider
 	switch forgeFlag {
 	case "gitlab":
@@ -279,7 +299,6 @@ func createProvider(ctx context.Context, repo, forgeFlag, forgeHost string) (for
 		forceProvider = forge.ProviderGitea
 	}
 
-	// If no repo given, default to GitHub provider for interactive mode
 	if repo == "" {
 		if forceProvider == forge.ProviderGitea {
 			host := forgeHost
@@ -302,8 +321,7 @@ func createProvider(ctx context.Context, repo, forgeFlag, forgeHost string) (for
 			client := gitlab.NewClient(host, token)
 			return gitlab.NewProvider(client, auth), auth, "", nil
 		}
-		// Default: GitHub
-		client, status, err := gh.CheckAuthConfigured(0)
+		client, status, err := gh.CheckAuthWithEffective(effective)
 		if err != nil {
 			return nil, forge.AuthInfo{}, "", fmt.Errorf("GitHub auth: %w", err)
 		}
@@ -312,18 +330,13 @@ func createProvider(ctx context.Context, repo, forgeFlag, forgeHost string) (for
 		return provider, auth, "", nil
 	}
 
-	// Parse repo URL to detect provider
 	parsed, err := forge.Parse(forge.Config{
-		RepoURL:       repo,
-		ForceProvider: forceProvider,
-		ForgeHost:     forgeHost,
+		RepoURL: repo, ForceProvider: forceProvider, ForgeHost: forgeHost,
 	})
 	if err != nil {
 		return nil, forge.AuthInfo{}, "", err
 	}
-
 	repoArg := parsed.Owner + "/" + parsed.Repo
-
 	switch parsed.Provider {
 	case forge.ProviderGitLab:
 		auth, err := gitlab.DetectAuth(ctx, parsed.Host)
@@ -333,20 +346,17 @@ func createProvider(ctx context.Context, repo, forgeFlag, forgeHost string) (for
 		token := gitlab.TokenFromAuth(ctx, parsed.Host)
 		client := gitlab.NewClient(parsed.Host, token)
 		return gitlab.NewProvider(client, auth), auth, repoArg, nil
-
 	case forge.ProviderGitHub:
-		client, status, err := gh.CheckAuthConfigured(0)
+		client, status, err := gh.CheckAuthWithEffective(effective)
 		if err != nil {
 			return nil, forge.AuthInfo{}, "", fmt.Errorf("GitHub auth: %w", err)
 		}
 		provider := gh.NewGHProvider(client, status)
 		auth, _ := provider.Auth(ctx)
 		return provider, auth, repoArg, nil
-
 	case forge.ProviderGitea:
 		auth, client := gitea.DetectAuth(ctx, parsed.Host)
 		return gitea.NewProvider(client, auth, parsed.Host), auth, repoArg, nil
-
 	default:
 		return nil, forge.AuthInfo{}, "", forge.ErrUnsupportedProvider
 	}

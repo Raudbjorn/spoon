@@ -350,7 +350,7 @@ func TestRankPromptRendersCurrentBehavior(t *testing.T) {
 	if !strings.Contains(out, "voyage") {
 		t.Errorf("prompt = %q, want it to name the active scorer", out)
 	}
-	if !strings.Contains(out, "Esc cancel") {
+	if !strings.Contains(out, "Cancel ranking") {
 		t.Errorf("prompt = %q, want Esc described as cancel (it does not clear)", out)
 	}
 	if !strings.Contains(out, "empty clears") {

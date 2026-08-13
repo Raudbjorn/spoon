@@ -10,6 +10,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/svnbjrn/spoon/internal/forge"
+	"github.com/svnbjrn/spoon/internal/tui/keymap"
+	"github.com/svnbjrn/spoon/internal/tui/ui"
 )
 
 // ExportData is the top-level JSON export structure.
@@ -184,7 +186,7 @@ func (m *Model) promptExportMarked() tea.Cmd {
 		}
 	}
 	if len(toExport) == 0 {
-		m.errMsg = "No forks marked — use Space to mark, then e to export"
+		m.errMsg = "No forks marked - use Space to mark, then e to export"
 		m.errMsgTime = time.Now()
 		return nil
 	}
@@ -213,8 +215,9 @@ func (m *Model) promptExportAll() tea.Cmd {
 
 // handleExportPathKey handles input in the export path prompt.
 func (m *Model) handleExportPathKey(key string, typed string) (tea.Model, tea.Cmd) {
-	switch key {
-	case "enter":
+	action := keymap.Dispatch(keymap.MainExport, key)
+	switch action {
+	case keymap.Submit:
 		path := strings.TrimSpace(m.exportPath)
 		if path == "" {
 			m.view = viewTable
@@ -224,11 +227,11 @@ func (m *Model) handleExportPathKey(key string, typed string) (tea.Model, tea.Cm
 		m.exportForks = nil
 		m.view = viewTable
 		return m, cmd
-	case "esc":
+	case keymap.Back:
 		m.exportForks = nil
 		m.view = viewTable
 	default:
-		m.exportPath, m.exportCursor, _ = lineEdit(m.exportPath, m.exportCursor, key, typed)
+		m.exportPath, m.exportCursor, _ = lineEdit(m.exportPath, m.exportCursor, action, typed)
 	}
 	return m, nil
 }
@@ -243,12 +246,14 @@ func (m Model) viewExportPath() string {
 	// all forks -- so say so here, where the user can still back out, rather
 	// than let a filtered view imply a filtered export.
 	if m.filter != "" {
-		b.WriteString(fmt.Sprintf("  %s\n", helpStyle.Render(
+		b.WriteString(fmt.Sprintf("  %s\n", m.styles().help.Render(
 			fmt.Sprintf("filter %q is active but does not limit this export", m.filter))))
 	}
 	b.WriteString("\n")
-	b.WriteString("  Save to: " + renderWithCursor(m.exportPath, m.exportCursor) + "\n\n")
-	b.WriteString("  " + helpStyle.Render("←/→ move  Home/End  Enter confirm  Esc cancel  Ctrl+U clear") + "\n")
+	b.WriteString("  Save to: " + ui.Input(m.themeContext(), ui.InputState{
+		Value: m.exportPath, Cursor: m.exportCursor, Focused: true, Enabled: true,
+	}, ui.ContentWidth(m.width)-13) + "\n\n")
+	b.WriteString("  " + ui.KeyLegend(m.themeContext(), ui.ContentWidth(m.width)-2, keymap.MainExport) + "\n")
 	return b.String()
 }
 

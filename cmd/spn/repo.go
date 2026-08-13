@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/svnbjrn/spoon/internal/agentio"
+	"github.com/svnbjrn/spoon/internal/config"
 	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/mdg"
 	"github.com/svnbjrn/spoon/internal/repo"
@@ -19,9 +20,15 @@ var repoCentralityFn = func(ctx context.Context, treeSrc repo.TreeSource, commit
 	return repo.Compute(ctx, treeSrc, commitSrc, provider, owner, repoName, sampleSize)
 }
 
-// repoCheckAuthFn is indirected so tests can stub GitHub auth.
-var repoCheckAuthFn = func() (*gh.Client, gh.AuthStatus, error) {
-	return gh.CheckAuthConfigured(0)
+// repoCheckAuthFn is the legacy test seam. Production routing calls
+// repoCheckAuthWithEffective with the Bootstrap-owned effective configuration.
+var repoCheckAuthFn func() (*gh.Client, gh.AuthStatus, error)
+
+var repoCheckAuthWithEffective = func(effective config.EffectiveConfig) (*gh.Client, gh.AuthStatus, error) {
+	if repoCheckAuthFn != nil {
+		return repoCheckAuthFn()
+	}
+	return gh.CheckAuthWithEffective(effective)
 }
 
 // repoMDGCentralityFn is the test-stubbable MDG centrality entry. Production
@@ -43,22 +50,31 @@ var repoMDGCentralityFn = func(ctx context.Context, provider, owner, repoName st
 	return c, nil
 }
 
-func runRepo(args []string) int { return runRepoWith(args, os.Stdout, os.Stderr) }
+func runRepo(args []string) int {
+	boot := config.Bootstrap(os.Stderr)
+	return runRepoWithEffective(args, os.Stdout, os.Stderr, config.ResolveEffectiveConfig(boot.Config, nil, config.EnvironmentSnapshot()))
+}
 
+// runRepoWith is the package test seam. Production dispatch calls
+// runRepoWithEffective with its startup-owned configuration.
 func runRepoWith(args []string, stdout, stderr io.Writer) int {
+	return runRepoWithEffective(args, stdout, stderr, config.ResolveEffectiveConfig(nil, nil, config.EnvironmentSnapshot()))
+}
+
+func runRepoWithEffective(args []string, stdout, stderr io.Writer, effective config.EffectiveConfig) int {
 	if len(args) == 0 {
 		return agentio.NewError(agentio.CodeBadInput, "missing verb (centrality)", agentio.RemediationBadInput("repo", "")).Emit(stderr)
 	}
 	verb, rest := args[0], args[1:]
 	switch verb {
 	case "centrality":
-		return doRepoCentrality(rest, stdout, stderr)
+		return doRepoCentrality(rest, stdout, stderr, effective)
 	default:
 		return agentio.NewError(agentio.CodeBadInput, "unknown verb: "+verb, agentio.RemediationBadInput("repo", "")).Emit(stderr)
 	}
 }
 
-func doRepoCentrality(args []string, stdout, stderr io.Writer) int {
+func doRepoCentrality(args []string, stdout, stderr io.Writer, effective config.EffectiveConfig) int {
 	var repoArg, forgeFlag string
 	var fullMDG bool
 	for i := 0; i < len(args); i++ {
@@ -112,7 +128,7 @@ func doRepoCentrality(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	client, _, err := repoCheckAuthFn()
+	client, _, err := repoCheckAuthWithEffective(effective)
 	if err != nil {
 		return agentio.NewError(agentio.CodeAuthRequired, "GitHub auth: "+err.Error(), agentio.RemediationAuthRequired()).Emit(stderr)
 	}

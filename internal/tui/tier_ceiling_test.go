@@ -63,19 +63,19 @@ func TestMaxTier_NilCeilingDefaultsToThree(t *testing.T) {
 func TestCycleMaxTier_WrapsThreeTwoOne(t *testing.T) {
 	m := movementModel(3)
 	for _, want := range []int{2, 1, 3, 2} {
-		_, _ = m.handleTableKey("t")
+		_, _ = m.handleTableKey("c")
 		if got := m.maxTier(); got != want {
-			t.Fatalf("after t: maxTier() = %d, want %d", got, want)
+			t.Fatalf("after c: maxTier() = %d, want %d", got, want)
 		}
 	}
 }
 
-func TestUpdate_TKeyReachesTheTableHandler(t *testing.T) {
+func TestUpdate_CKeyReachesTheTableHandler(t *testing.T) {
 	m := movementModel(3)
 	m.view = viewTable
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
 	if got := updated.(*Model).maxTier(); got != 2 {
-		t.Errorf("maxTier() after 't' through Update = %d, want 2", got)
+		t.Errorf("maxTier() after 'c' through Update = %d, want 2", got)
 	}
 }
 
@@ -207,7 +207,7 @@ func TestCycleMaxTier_TogglesLoneWolfScoring(t *testing.T) {
 	}
 	t3Score := m.forks[0].Heat.Score
 
-	_, _ = m.handleTableKey("t") // → T2
+	_, _ = m.handleTableKey("c") // → T2
 	if m.forks[0].Heat.LoneWolfV2 != nil {
 		t.Error("lone-wolf still wired at ceiling T2")
 	}
@@ -218,8 +218,8 @@ func TestCycleMaxTier_TogglesLoneWolfScoring(t *testing.T) {
 		t.Errorf("score at T2 (%v) should be below the T3 score (%v)", m.forks[0].Heat.Score, t3Score)
 	}
 
-	_, _ = m.handleTableKey("t") // → T1
-	_, _ = m.handleTableKey("t") // → T3
+	_, _ = m.handleTableKey("c") // → T1
+	_, _ = m.handleTableKey("c") // → T3
 	if m.forks[0].Heat.LoneWolfV2 == nil {
 		t.Error("lone-wolf not restored at ceiling T3")
 	}
@@ -236,8 +236,8 @@ func TestCycleMaxTier_PreservesClusterFields(t *testing.T) {
 	m.forks[0].Heat.NoveltyScore = 0.7
 	m.forks[0].Heat.Category = "feature"
 
-	_, _ = m.handleTableKey("t")
-	_, _ = m.handleTableKey("t")
+	_, _ = m.handleTableKey("c")
+	_, _ = m.handleTableKey("c")
 
 	h := m.forks[0].Heat
 	if h.ClusterID != "c0" || h.ClusterLabel != "label-a" || h.ClusterMemberCount != 3 {
@@ -256,7 +256,7 @@ func TestCycleMaxTier_PreservesClusterFields(t *testing.T) {
 
 func TestStatusBar_ShowsCeilingAndSkipCount(t *testing.T) {
 	m := movementModel(3)
-	if strings.Contains(m.renderStatusBar(), "T≤") {
+	if strings.Contains(m.renderStatusBar(), "T<=") {
 		t.Error("ceiling shown at the default T3; it should be omitted when nothing is capped")
 	}
 
@@ -264,7 +264,7 @@ func TestStatusBar_ShowsCeilingAndSkipCount(t *testing.T) {
 	m.forks[0].TierSkipped = true
 	m.forks[1].TierSkipped = true
 	bar := m.renderStatusBar()
-	if !strings.Contains(bar, "T≤1") {
+	if !strings.Contains(bar, "T<=1") {
 		t.Errorf("status bar missing the ceiling: %q", bar)
 	}
 	if !strings.Contains(bar, "2 skipped") {

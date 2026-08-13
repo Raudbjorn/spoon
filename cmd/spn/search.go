@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -23,6 +22,8 @@ import (
 // needs more candidates than the caller asked to see. Reranking the whole index
 // instead would be a cost blowout — SearchRows returns every stored vector.
 const defaultRerankOverfetch = 5
+
+type searchEmbedderFactory func(bool, config.EmbedderConfig, embed.VoyageConfig) (embed.SearchEmbedder, func(), *agentio.Error)
 
 type searchResult struct {
 	DocumentID, ForkID, Repo, Fork, URL, Model, IndexedAt string
@@ -48,7 +49,21 @@ const (
 
 func runSearch(args []string) int { return runSearchWith(args, os.Stdout, os.Stderr) }
 
+// runSearchWith is the package test seam. Production dispatch provides its
+// Bootstrap-owned effective result to runSearchWithEffective.
 func runSearchWith(args []string, stdout, stderr io.Writer) int {
+	boot := config.Bootstrap(io.Discard)
+	env := config.EnvironmentSnapshot()
+	return runSearchWithEffective(args, stdout, stderr, config.ResolveEffectiveConfig(boot.Config, nil, env), env)
+}
+
+func runSearchWithEffective(args []string, stdout, stderr io.Writer, effective config.EffectiveConfig, env map[string]string) int {
+	return runSearchWithEffectiveDeps(args, stdout, stderr, effective, env, defaultCommandDeps())
+}
+
+func runSearchWithEffectiveDeps(args []string, stdout, stderr io.Writer, effective config.EffectiveConfig, env map[string]string, deps commandDeps) int {
+	deps = deps.withDefaults()
+	ctx := context.Background()
 	query := ""
 	repoOwner, repoName := "", ""
 	top := 20
@@ -122,22 +137,16 @@ func runSearchWith(args []string, stdout, stderr io.Writer) int {
 		return agentio.NewError(agentio.CodeBadInput, "search query must not be empty", searchUsage).Emit(stderr)
 	}
 
-	// An absent or empty config is valid and resolves to defaults. A config that
-	// fails to load (bad permissions/JSON) is surfaced.
-	cfg, err := config.LoadDefault()
+	embCfg, err := effective.EmbedderConfig()
 	if err != nil {
-		return agentio.NewError(agentio.CodeBadInput, "embedder_unavailable: "+err.Error(), "Secure and repair the spoon config, then retry.").Emit(stderr)
-	}
-	var embCfg config.EmbedderConfig
-	if cfg != nil {
-		embCfg = cfg.Embedder
+		return agentio.NewError(agentio.CodeBadInput, "embedder_unavailable: "+err.Error(), "Correct the effective spoon configuration, then retry.").Emit(stderr)
 	}
 
 	// A flag naming Voyage is a promise we cannot keep without a key, and the key
 	// check needs nothing else — so reject it before any store or model work.
 	// Failing beats silently ranking against a different model's index.
 	voyageRequested := useVoyage || rerankChoice == rerankForceOn
-	keyed, keyErr := embed.VoyageKeyConfigured(embCfg.Voyage, false)
+	keyed, keyErr := embed.VoyageKeyConfiguredEffective(effective, false, env)
 	if keyErr != nil && voyageRequested {
 		return agentio.NewError(agentio.CodeBadInput, "voyage_unavailable: "+keyErr.Error(), voyageRemediation(keyErr)).Emit(stderr)
 	}
@@ -171,8 +180,7 @@ func runSearchWith(args []string, stdout, stderr io.Writer) int {
 	}
 	defer db.Close()
 
-	ctx := context.Background()
-	voyageCfg, voyageActive, voyageErr := embed.ResolveVoyageConfig(ctx, embCfg.Voyage, false, db)
+	voyageCfg, voyageActive, voyageErr := embed.ResolveVoyageEffective(ctx, effective, false, db, env)
 	if voyageErr != nil {
 		if voyageRequested {
 			return agentio.NewError(agentio.CodeBadInput, "voyage_unavailable: "+voyageErr.Error(), voyageRemediation(voyageErr)).Emit(stderr)
@@ -185,9 +193,9 @@ func runSearchWith(args []string, stdout, stderr io.Writer) int {
 	// vectors, so the fastembed index reranks just as well.
 	rerankEnabled := voyageActive && rerankChoice != rerankForceOff
 
-	model, closeModel, aerr := searchEmbedderFor(useVoyage, embCfg, voyageCfg)
+	model, closeModel, aerr := deps.searchEmbedder(useVoyage, embCfg, voyageCfg)
 	if aerr != nil {
-		return aerr.Emit(stderr)
+		return emitDataError(stderr, aerr)
 	}
 	defer closeModel()
 
@@ -219,6 +227,13 @@ func runSearchWith(args []string, stdout, stderr io.Writer) int {
 		emitSemanticEmpty(stderr, useVoyage)
 		return 0
 	}
+	if err := emitSearchResults(stdout, results); err != nil {
+		return agentio.NewError(agentio.CodeInternal, err.Error(), agentio.RemediationInternal()).Emit(stderr)
+	}
+	return 0
+}
+
+func emitSearchResults(stdout io.Writer, results []searchResult) error {
 	for _, result := range results {
 		record := map[string]any{
 			"forkId": result.ForkID, "repo": result.Repo, "fork": result.Fork,
@@ -228,11 +243,11 @@ func runSearchWith(args []string, stdout, stderr io.Writer) int {
 			record["rerankScore"] = result.RerankScore
 			record["rerankModel"] = result.RerankModel
 		}
-		if err := agentio.WriteNDJSON(stdout, record); err != nil {
-			return agentio.NewError(agentio.CodeInternal, err.Error(), agentio.RemediationInternal()).Emit(stderr)
+		if err := writeDataNDJSON(stdout, record); err != nil {
+			return err
 		}
 	}
-	return 0
+	return nil
 }
 
 const (
@@ -364,7 +379,7 @@ func rankSearchRows(queryVector []float32, rows []store.SearchRow) (results []se
 }
 
 func emitRowsSkipped(stderr io.Writer, skipped int) {
-	_ = json.NewEncoder(stderr).Encode(map[string]any{"warning": map[string]any{
+	_ = agentio.WriteNDJSON(stderr, map[string]any{"warning": map[string]any{
 		"code":        "semantic_rows_skipped",
 		"message":     fmt.Sprintf("%d stored embedding(s) were unreadable and skipped", skipped),
 		"details":     map[string]any{"skipped": skipped},
@@ -381,7 +396,7 @@ func emitRerankUnavailable(stderr io.Writer, message string, details map[string]
 	if details != nil {
 		warning["details"] = details
 	}
-	_ = json.NewEncoder(stderr).Encode(map[string]any{"warning": warning})
+	_ = agentio.WriteNDJSON(stderr, map[string]any{"warning": warning})
 }
 
 // emitSemanticEmpty reports an empty result set. The remediation names the index
@@ -392,7 +407,7 @@ func emitSemanticEmpty(stderr io.Writer, useVoyage bool) {
 	if useVoyage {
 		remediation = "Run 'spn forks list <repo>' first with " + embed.VoyageAPIKeyEnv + " set to build the Voyage index."
 	}
-	_ = json.NewEncoder(stderr).Encode(map[string]any{"warning": map[string]any{
+	_ = agentio.WriteNDJSON(stderr, map[string]any{"warning": map[string]any{
 		"code": "semantic_index_empty", "message": "no matching semantic embeddings are indexed",
 		"remediation": remediation,
 	}})

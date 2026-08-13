@@ -1,0 +1,15 @@
+Settings
+Forge - GitHub - [Proxy] - Embedder - Voyage - Appearance - Environment - Host
+Layer: user  Path: /settings-golden/config.json
++------------------------------------------------------------------------------+
+| Proxy                                                                        |
++------------------------------------------------------------------------------+
+| > Proxy enabled: false [DEFAULT]                                             |
+| Enable ProxyScrape transport routing.                                        |
+|   Proxy API key file: ************ [FILE]                                    |
+|   Proxy static file: ************ [FILE]                                     |
+|   Whitelist public IP: false [DEFAULT]                                       |
+|   Proxy cache TTL: 1h [DEFAULT]                                              |
++------------------------------------------------------------------------------+
+[p] Probe provider credentials  [o] Check store  [f] Check FastEmbed  [v] Check
+[tab] section [enter] edit [esc] back

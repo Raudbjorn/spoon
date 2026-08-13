@@ -58,6 +58,12 @@ func copyToClipboard(text string) error {
 	return fmt.Errorf("no clipboard command available")
 }
 
+// CopyToClipboard exposes the established platform clipboard boundary to
+// settings without duplicating command selection.
+func CopyToClipboard(text string) error {
+	return copyToClipboard(text)
+}
+
 func pipeToCmd(name string, input string, args ...string) error {
 	cmd := exec.Command(name, args...)
 	cmd.Stdin = nil

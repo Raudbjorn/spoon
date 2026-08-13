@@ -27,6 +27,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/svnbjrn/spoon/internal/embed"
+	"github.com/svnbjrn/spoon/internal/tui/keymap"
+	"github.com/svnbjrn/spoon/internal/tui/ui"
 )
 
 // relevanceSortCol is the sort column the ranking installs. It is deliberately
@@ -73,8 +75,9 @@ func (m *Model) promptRank() {
 // filter". Esc cancels the edit and leaves any active ranking alone — also
 // matching `/`, whose Esc-on-the-table is what clears.
 func (m *Model) handleRankKey(key, typed string) (tea.Model, tea.Cmd) {
-	switch key {
-	case "enter":
+	action := keymap.Dispatch(keymap.MainRank, key)
+	switch action {
+	case keymap.Submit:
 		query := strings.TrimSpace(m.rankQuery)
 		m.view = viewTable
 		if query == "" {
@@ -82,11 +85,11 @@ func (m *Model) handleRankKey(key, typed string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, m.startRankScoring(query)
-	case "esc":
+	case keymap.Back:
 		m.view = viewTable
 		return m, nil
 	default:
-		m.rankQuery, m.rankCursor, _ = lineEdit(m.rankQuery, m.rankCursor, key, typed)
+		m.rankQuery, m.rankCursor, _ = lineEdit(m.rankQuery, m.rankCursor, action, typed)
 	}
 	return m, nil
 }
@@ -231,7 +234,7 @@ func (m Model) rankFooter() string {
 	if m.rankApplied == "" {
 		return ""
 	}
-	return fmt.Sprintf("Ranked by %q (%s, %d fork(s) scored) — R to edit, empty R to clear",
+	return fmt.Sprintf("Ranked by %q (%s, %d fork(s) scored) - R to edit, empty R to clear",
 		m.rankApplied, m.rankMethod, len(m.rankScores))
 }
 
@@ -242,12 +245,14 @@ func (m Model) viewRankPrompt() string {
 	var b strings.Builder
 	b.WriteString("\n")
 	b.WriteString(fmt.Sprintf("  Rank %d fork(s) by intent\n\n", m.visibleCount()))
-	b.WriteString("  Intent: " + renderWithCursor(m.rankQuery, m.rankCursor) + "\n\n")
+	b.WriteString("  Intent: " + ui.Input(m.themeContext(), ui.InputState{
+		Value: m.rankQuery, Cursor: m.rankCursor, Focused: true, Enabled: true,
+	}, ui.ContentWidth(m.width)-12) + "\n\n")
 	scorer := "lexical (set VOYAGE_AI_API_KEY for the cross-encoder)"
 	if m.queryScorer != nil {
 		scorer = m.queryScorer.Method()
 	}
-	b.WriteString("  " + helpStyle.Render("scorer: "+scorer) + "\n")
-	b.WriteString("  " + helpStyle.Render("←/→ move  Home/End  Enter rank  Esc cancel  Ctrl+U clear  (empty clears the ranking)") + "\n")
+	b.WriteString("  " + m.styles().help.Render("scorer: "+scorer) + "\n")
+	b.WriteString("  " + ui.KeyLegend(m.themeContext(), ui.ContentWidth(m.width)-2, keymap.MainRank) + "\n")
 	return b.String()
 }

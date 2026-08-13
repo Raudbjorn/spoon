@@ -2,15 +2,39 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/svnbjrn/spoon/internal/agentio"
 	"github.com/svnbjrn/spoon/internal/config"
 )
 
 var version = "0.1.0-dev"
+
+// commandDeps carries startup-resolved command dependencies by value. Production
+// always uses defaults; tests provide a complete immutable replacement.
+type commandDeps struct {
+	now            func() time.Time
+	searchEmbedder searchEmbedderFactory
+}
+
+func defaultCommandDeps() commandDeps {
+	return commandDeps{now: time.Now, searchEmbedder: searchEmbedderFor}
+}
+
+func (d commandDeps) withDefaults() commandDeps {
+	defaults := defaultCommandDeps()
+	if d.now == nil {
+		d.now = defaults.now
+	}
+	if d.searchEmbedder == nil {
+		d.searchEmbedder = defaults.searchEmbedder
+	}
+	return d
+}
 
 // usageRemediation lists the valid nouns for the two top-level failure paths.
 const usageRemediation = "Run 'spn --help' for usage. Nouns: threads, pr, forks, search, repo."
@@ -23,48 +47,91 @@ func main() { os.Exit(dispatch(os.Args[1:], os.Stdout, os.Stderr)) }
 // code:"bad_input" instead of choking on a plain-text line plus a stdout usage
 // dump.
 func dispatch(args []string, stdout, stderr io.Writer) int {
+	return dispatchWithDeps(args, stdout, stderr, defaultCommandDeps())
+}
+
+func dispatchWithDeps(args []string, stdout, stderr io.Writer, deps commandDeps) int {
+	deps = deps.withDefaults()
+	args, noColor, err := parseGlobalOptions(args)
+	if err != nil {
+		return agentio.NewError(agentio.CodeBadInput, err.Error(), usageRemediation).Emit(stderr)
+	}
+	presentation, err := resolveStartupPresentation(noColor, stdout)
+	if err != nil {
+		return agentio.NewError(agentio.CodeBadInput, err.Error(), usageRemediation).Emit(stderr)
+	}
 	if len(args) < 1 {
 		return agentio.NewError(agentio.CodeBadInput, "missing subcommand", usageRemediation).Emit(stderr)
 	}
-	// Zero-configuration first run: make sure a documented default config
-	// exists before any subcommand consults it. Never fatal — a bad or
-	// unwritable config degrades to built-in defaults with a warning.
-	if _, err := config.EnsureDefault(stderr); err != nil {
-		fmt.Fprintf(stderr, "warning: ignoring config: %v\n", err)
-	}
 	switch args[0] {
 	case "-h", "--help":
-		printHelp(stdout)
+		_ = writeHuman(stdout, presentation, roleTextStrong, helpText())
 		return 0
 	case "-v", "--version":
-		fmt.Fprintf(stdout, "spn %s\n", version)
+		_ = writeHuman(stdout, presentation, roleAccent, fmt.Sprintf("spn %s\n", version))
 		return 0
-	case "threads":
-		return runThreads(args[1:])
-	case "pr":
-		return runPR(args[1:])
-	case "forks":
-		// `spn forks eval` is a sub-verb of forks; dispatch by args[1] when
-		// present. Everything else (incl. `spn forks list`) keeps runForks.
-		if len(args) >= 2 && args[1] == "eval" {
-			return runEval(args[2:])
-		}
-		return runForks(args[1:])
-	case "search":
-		return runSearch(args[1:])
-	case "repo":
-		return runRepo(args[1:])
+	case "threads", "pr", "forks", "search", "repo":
+		return dispatchConfigured(args, stdout, stderr, presentation, deps)
 	default:
 		return agentio.NewError(agentio.CodeBadInput, fmt.Sprintf("unknown subcommand %q", args[0]), usageRemediation).Emit(stderr)
 	}
 }
 
-func printHelp(w io.Writer) {
-	fmt.Fprint(w, `spn — agent-shaped CLI for spoon
+// parseGlobalOptions consumes only leading global options. Once a noun or
+// `--` begins command arguments, --no-color is preserved verbatim for that
+// command; duplicate leading globals are rejected rather than guessed at.
+func parseGlobalOptions(args []string) ([]string, bool, error) {
+	noColor := false
+	for len(args) > 0 && args[0] == "--no-color" {
+		if noColor {
+			return nil, false, fmt.Errorf("duplicate global option --no-color")
+		}
+		noColor = true
+		args = args[1:]
+	}
+	return args, noColor, nil
+}
+
+// dispatchConfigured resolves the one runtime configuration only after routing
+// confirms that the requested noun consumes configuration.
+func dispatchConfigured(args []string, stdout, stderr io.Writer, presentation presentation, deps commandDeps) int {
+	var bootstrapStderr bytes.Buffer
+	boot := config.Bootstrap(&bootstrapStderr)
+	if bootstrapStderr.Len() > 0 {
+		_ = writeError(stderr, presentation, roleWarning, bootstrapStderr.String())
+	}
+	if boot.Warning != nil {
+		_ = writeError(stderr, presentation, roleWarning, fmt.Sprintf("warning: ignoring config: %v\n", boot.Warning))
+	}
+	env := config.EnvironmentSnapshot()
+	effective := config.ResolveEffectiveConfig(boot.Config, nil, env)
+	switch args[0] {
+	case "threads":
+		return runThreadsWithEffective(args[1:], stdout, stderr, effective)
+	case "pr":
+		return runPRWithEffective(args[1:], stdout, stderr, effective)
+	case "forks":
+		if len(args) >= 2 && args[1] == "eval" {
+			return runEvalWithEffective(args[2:], stdout, stderr, effective, env)
+		}
+		return runForksWithEffectiveDeps(args[1:], stdout, stderr, effective, env, deps)
+	case "search":
+		return runSearchWithEffectiveDeps(args[1:], stdout, stderr, effective, env, deps)
+	case "repo":
+		return runRepoWithEffective(args[1:], stdout, stderr, effective)
+	}
+	panic("configured dispatch called with unrecognized noun")
+}
+
+func helpText() string {
+	return `spn — agent-shaped CLI for spoon
 
 Usage:
-  spn <noun> <verb> [args]
+  spn [--no-color] <noun> <verb> [args]
 
+Global options:
+  --no-color  Disable human/error presentation color. It must precede the noun;
+              after the noun (or --) it is passed to that command unchanged.
 Nouns and verbs:
   threads list <pr-ref> [--all] [--filter MODE]
   threads next <pr-ref>
@@ -162,5 +229,5 @@ Output:
 Exit codes: 0 success; 2 user error / policy; 1 everything else.
 
 Authentication: gh auth login (GitHub).
-`)
+`
 }

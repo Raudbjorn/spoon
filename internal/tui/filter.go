@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/svnbjrn/spoon/internal/tui/keymap"
+	"github.com/svnbjrn/spoon/internal/tui/ui"
 )
 
 // Row filtering for the fork table.
@@ -78,16 +80,17 @@ func (m *Model) applyFilter(q string) {
 // Esc here cancels the edit and leaves the active filter untouched; Esc on the
 // table itself is what clears it. Enter on an empty query also clears.
 func (m *Model) handleFilterKey(key, typed string) (tea.Model, tea.Cmd) {
-	switch key {
-	case "enter":
+	action := keymap.Dispatch(keymap.MainFilter, key)
+	switch action {
+	case keymap.Submit:
 		m.applyFilter(strings.TrimSpace(m.filterInput))
 		m.view = viewTable
-	case "esc":
+	case keymap.Back:
 		m.filterInput = ""
 		m.filterCursor = 0
 		m.view = viewTable
 	default:
-		m.filterInput, m.filterCursor, _ = lineEdit(m.filterInput, m.filterCursor, key, typed)
+		m.filterInput, m.filterCursor, _ = lineEdit(m.filterInput, m.filterCursor, action, typed)
 	}
 	return m, nil
 }
@@ -97,8 +100,10 @@ func (m Model) viewFilterPrompt() string {
 	var b strings.Builder
 	b.WriteString("\n")
 	b.WriteString(fmt.Sprintf("  Filter %d forks by owner/name\n\n", len(m.forks)))
-	b.WriteString("  Match: " + renderWithCursor(m.filterInput, m.filterCursor) + "\n\n")
-	b.WriteString("  " + helpStyle.Render("←/→ move  Home/End  Enter apply  Esc cancel  Ctrl+U clear  (empty clears the filter)") + "\n")
+	b.WriteString("  Match: " + ui.Input(m.themeContext(), ui.InputState{
+		Value: m.filterInput, Cursor: m.filterCursor, Focused: true, Enabled: true,
+	}, ui.ContentWidth(m.width)-11) + "\n\n")
+	b.WriteString("  " + ui.KeyLegend(m.themeContext(), ui.ContentWidth(m.width)-2, keymap.MainFilter) + "\n")
 	return b.String()
 }
 

@@ -11,6 +11,9 @@ import (
 	"github.com/cli/browser"
 	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/threadsops"
+	"github.com/svnbjrn/spoon/internal/tui/keymap"
+	"github.com/svnbjrn/spoon/internal/tui/theme"
+	"github.com/svnbjrn/spoon/internal/tui/ui"
 )
 
 // Model is the bubbletea model for the threads view.
@@ -27,16 +30,22 @@ type Model struct {
 	width    int
 	height   int
 
+	theme      theme.Context
 	composing  bool
 	composeBuf []rune
 	composeFor string // "reply" or "resolve"
 	mutating   bool   // true while a mutation command is in flight
-	confirm    string // non-empty while waiting for y/n on a bulk action: "resolve-all" or "unresolve-all"
+	confirm    string // non-empty while waiting for y/n on a bulk action
 	status     string // last status line
+	statusTone ui.AlertTone
 
 	includeResolved bool
 	filter          threadsops.FilterMode
 	showHelp        bool
+
+	// fullscreen hides list chrome but does not alter the selected thread or
+	// any asynchronous operation state.
+	fullscreen bool
 
 	pendingSuggestion threadsops.Suggestion // set while m.confirm == "apply-suggestion"
 
@@ -88,11 +97,25 @@ func NewWithFilter(client *gh.Client, owner, repo string, number int, mode threa
 		// launchEditor is intentionally left nil in production. The counter-propose
 		// flow uses tea.ExecProcess directly. Tests set launchEditor to a non-nil
 		// stub to bypass the real editor invocation (Option B test seam).
+		theme: theme.DefaultContext(),
 	}
 	m.replyFunc = func(ctx context.Context, threadID, body string) (gh.ThreadComment, error) {
 		return m.client.ReplyToThread(ctx, threadID, body)
 	}
 	return m
+}
+
+// WithTheme returns a copy with a startup-resolved immutable render context.
+func (m Model) WithTheme(ctx theme.Context) Model {
+	m.theme = ctx
+	return m
+}
+
+func (m Model) themeContext() theme.Context {
+	if !m.theme.IsResolved() {
+		return theme.DefaultContext()
+	}
+	return m.theme
 }
 
 // loadedMsg is delivered when FetchPR completes.
@@ -161,6 +184,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case codeContextLoadedMsg:
 		if msg.err != nil {
 			m.status = "code context fetch failed: " + msg.err.Error()
+			m.statusTone = ui.AlertError
 			return m, nil
 		}
 		if m.codeContexts == nil {
@@ -174,18 +198,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch {
 		case msg.cancelled:
 			m.status = "counter-propose cancelled"
+			m.statusTone = ui.AlertWarning
 		case msg.err != nil:
 			m.status = "counter-propose failed: " + msg.err.Error()
+			m.statusTone = ui.AlertError
 		default:
 			m.status = "counter-propose posted (comment " + msg.commentID + ")"
+			m.statusTone = ui.AlertSuccess
 		}
 		return m, nil
 	case mutationDoneMsg:
 		m.mutating = false
 		if msg.err != nil {
-			m.status = "❌ error: " + msg.err.Error()
+			m.status = "ERROR: " + msg.err.Error()
+			m.statusTone = ui.AlertError
 		} else {
-			m.status = "✅ " + msg.what + " ok"
+			m.status = "OK: " + msg.what
+			m.statusTone = ui.AlertSuccess
 		}
 		// Refresh the thread list (skip for browser open — it's fire-and-forget).
 		if msg.what == "open" {
@@ -213,11 +242,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.composing {
-			switch msg.Type {
-			case tea.KeyEsc:
+			switch keymap.Dispatch(keymap.ThreadCompose, msg.String()) {
+			case keymap.Back:
 				m.composing = false
 				m.composeBuf = nil
-			case tea.KeyCtrlS:
+			case keymap.Submit:
 				body := string(m.composeBuf)
 				m.composing = false
 				m.composeBuf = nil
@@ -232,16 +261,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case "resolve":
 					return m, m.replyThenResolveCmd(targetID, body)
 				}
-			case tea.KeyBackspace:
-				if len(m.composeBuf) > 0 {
-					m.composeBuf = m.composeBuf[:len(m.composeBuf)-1]
+			default:
+				switch msg.Type {
+				case tea.KeyBackspace:
+					if len(m.composeBuf) > 0 {
+						m.composeBuf = m.composeBuf[:len(m.composeBuf)-1]
+					}
+				case tea.KeyRunes:
+					m.composeBuf = append(m.composeBuf, msg.Runes...)
+				case tea.KeyEnter:
+					m.composeBuf = append(m.composeBuf, '\n')
+				case tea.KeySpace:
+					m.composeBuf = append(m.composeBuf, ' ')
 				}
-			case tea.KeyRunes:
-				m.composeBuf = append(m.composeBuf, msg.Runes...)
-			case tea.KeyEnter:
-				m.composeBuf = append(m.composeBuf, '\n')
-			case tea.KeySpace:
-				m.composeBuf = append(m.composeBuf, ' ')
+			}
+			return m, nil
+		}
+		if m.showHelp {
+			// Help is foreground state: only its own toggle key closes it.
+			// List shortcuts, including fullscreen, cannot leak through.
+			if keymap.Dispatch(keymap.ThreadHelp, msg.String()) == keymap.ToggleHelp {
+				m.showHelp = false
 			}
 			return m, nil
 		}
@@ -299,8 +339,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			if sug == nil {
-				// No suggestion on this thread — show a status message and do nothing.
 				m.status = "no suggestion on this thread"
+				m.statusTone = ui.AlertWarning
 				return m, nil
 			}
 			m.confirm = "apply-suggestion"
@@ -408,6 +448,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case actHelp:
 			m.showHelp = !m.showHelp
+		case actFullscreen:
+			m.fullscreen = !m.fullscreen
 		case actQuit:
 			return m, tea.Quit
 		}
@@ -505,6 +547,9 @@ func (m Model) openCmd() tea.Cmd {
 }
 
 func (m Model) View() string {
+	if ui.TooSmall(m.width, m.height) {
+		return ui.FallbackMessageFor(m.themeContext(), m.width, m.height)
+	}
 	return renderModel(m)
 }
 

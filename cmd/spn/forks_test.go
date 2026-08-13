@@ -17,9 +17,10 @@ import (
 )
 
 type fakeForge struct {
-	parent forge.ParentData
-	forks  []forge.T1Data
-	t2     map[string]forge.T2Data
+	parent     forge.ParentData
+	forks      []forge.T1Data
+	t2         map[string]forge.T2Data
+	compareErr map[string]error
 }
 
 func (f *fakeForge) Auth(_ context.Context) (forge.AuthInfo, error) {
@@ -40,6 +41,9 @@ func (f *fakeForge) Branches(_ context.Context, fk forge.T1Data, _ int) ([]forge
 	return []forge.BranchRef{{Name: fk.DefaultBranch}}, nil
 }
 func (f *fakeForge) Compare(_ context.Context, fk forge.T1Data, _ string) (forge.T2Data, error) {
+	if err := f.compareErr[fk.ID]; err != nil {
+		return forge.T2Data{}, err
+	}
 	if t2, ok := f.t2[fk.ID]; ok {
 		return t2, nil
 	}

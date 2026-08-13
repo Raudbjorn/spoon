@@ -10,9 +10,11 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/svnbjrn/spoon/internal/topics"
+	"github.com/svnbjrn/spoon/internal/tui/keymap"
+	"github.com/svnbjrn/spoon/internal/tui/theme"
+	"github.com/svnbjrn/spoon/internal/tui/ui"
 )
 
 // topicResolvedMsg carries the topic selection (or its failure) back into
@@ -47,16 +49,16 @@ func (m *Model) handleTopicResolved(msg topicResolvedMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleTopicPickerKey(key string) (tea.Model, tea.Cmd) {
-	switch key {
-	case "up", "k":
+	switch keymap.Dispatch(keymap.MainTopics, key) {
+	case keymap.Up:
 		if m.topicCursor > 0 {
 			m.topicCursor--
 		}
-	case "down", "j":
+	case keymap.Down:
 		if m.topicCursor < len(m.topicSelections)-1 {
 			m.topicCursor++
 		}
-	case "enter":
+	case keymap.Submit:
 		if len(m.topicSelections) == 0 {
 			return m, nil
 		}
@@ -64,7 +66,7 @@ func (m *Model) handleTopicPickerKey(key string) (tea.Model, tea.Cmd) {
 		m.inputCursor = len([]rune(m.input))
 		m.view = viewTable
 		return m, func() tea.Msg { return startFetchMsg{} }
-	case "esc", "q":
+	case keymap.Back:
 		m.view = viewInput
 		m.inputErr = ""
 	}
@@ -72,22 +74,23 @@ func (m *Model) handleTopicPickerKey(key string) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) viewTopicPicker() string {
+	ctx := m.themeContext()
 	var b strings.Builder
 	b.WriteString("\n")
-	b.WriteString(titleStyle.Render(fmt.Sprintf("  Topic: %s — pick a repository to prospect", m.topicName)))
+	b.WriteString(ui.Heading(ctx, 1, "  Topic: "+m.topicName+" "+ctx.Glyph(theme.EmDash)+" pick a repository to prospect", ui.ContentWidth(m.width)))
 	b.WriteString("\n\n")
-	for i, s := range m.topicSelections {
+	for i, selection := range m.topicSelections {
 		cursor := "  "
-		line := fmt.Sprintf("%-40s  score %5.1f  ★ %-7d  forks %-6d %s",
-			s.FullName, s.Score, s.Stars, s.ForkCount, truncateDesc(s.Description, 50))
+		line := fmt.Sprintf("%-40s  score %5.1f  %s %-7d  forks %-6d %s",
+			selection.FullName, selection.Score, ctx.Glyph(theme.Star), selection.Stars, selection.ForkCount, truncateDesc(selection.Description, 50))
 		if i == m.topicCursor {
-			cursor = "▸ "
-			line = lipgloss.NewStyle().Bold(true).Render(line)
+			cursor = ctx.Glyph(theme.Selected) + " "
+			line = ui.TableRow(ctx, line, true, ui.ContentWidth(m.width)-4)
 		}
 		b.WriteString("  " + cursor + line + "\n")
 	}
 	b.WriteString("\n  ")
-	b.WriteString(helpStyle.Render("↑/↓ navigate · Enter prospect forks · Esc back"))
+	b.WriteString(ui.KeyLegend(ctx, ui.ContentWidth(m.width)-2, keymap.MainTopics))
 	b.WriteString("\n")
 	return b.String()
 }
@@ -98,5 +101,5 @@ func truncateDesc(s string, n int) string {
 	if len(r) <= n {
 		return s
 	}
-	return string(r[:n-1]) + "…"
+	return string(r[:n-1]) + "..."
 }

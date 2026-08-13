@@ -1,0 +1,6 @@
+source_checkout: /home/svnbjrn/projects/spoon-design/design-system
+upstream_commit: e5a4efa347b3df7bbd766a1547e105099b33c905
+sync_date: 2026-08-12
+dark.tokens.json: b40117433750376c114b0654c353aaae80b3a7b94a7879aa02efc3c2fada4897
+light.tokens.json: 4ffa5ad7e1870e1e3a963a2b2ceb6b81dea204b72746a55d92269c7a82002882
+amber.tokens.json: 63b963499e9e9c50f0c0da90f280a328e42764b33bcf8b0c5b3ae97dc30cbf8d

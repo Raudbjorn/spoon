@@ -19,7 +19,10 @@ import (
 	"github.com/svnbjrn/spoon/internal/heat"
 	"github.com/svnbjrn/spoon/internal/store"
 	"github.com/svnbjrn/spoon/internal/topics"
+	"github.com/svnbjrn/spoon/internal/tui/keymap"
 	"github.com/svnbjrn/spoon/internal/tui/settings"
+	"github.com/svnbjrn/spoon/internal/tui/theme"
+	"github.com/svnbjrn/spoon/internal/tui/ui"
 )
 
 // View state
@@ -89,6 +92,20 @@ type Model struct {
 	height   int
 	quitting bool
 
+	// fullscreen hides table/detail chrome without changing selection,
+	// scroll offsets, or paging geometry.
+	fullscreen bool
+
+	// theme is resolved once by command startup. Bare test literals use
+	// themeContext's deterministic default instead.
+	theme theme.Context
+
+	// overlay is intentionally independent of view. Settings can place a
+	// confirmation over any view without allowing its key handler to run.
+	overlay      ui.Overlay
+	overlayFocus overlayFocus
+	overlayTitle string
+
 	// Input
 	input string
 	// inputCursor is the insertion point as a rune offset into input.
@@ -139,7 +156,7 @@ type Model struct {
 	enrichCtx    context.Context
 	enrichCancel context.CancelFunc
 
-	// tierCeiling is the user's maximum enrichment tier, cycled by `t`.
+	// tierCeiling is the user's maximum enrichment tier, cycled by `c`.
 	// It is a pointer to an atomic rather than a plain int because
 	// startEnrichment hands every per-fork closure to tea.Batch up front:
 	// those closures run on bubbletea's goroutines and must read the ceiling
@@ -217,6 +234,40 @@ type Model struct {
 	settings    settings.Model
 }
 
+// overlayFocus is the main model's active focus identity. Fork views retain
+// their selected fork ID, not merely the transient list index, so an async
+// resort cannot make Esc restore focus to a different fork. Control is the
+// extensible settings-focus identity for future non-fork overlays.
+type overlayFocus struct {
+	view    viewState
+	cursor  int
+	forkID  string
+	control string
+}
+
+func (m *Model) openOverlay(kind ui.OverlayKind, title string) {
+	focus := overlayFocus{view: m.view, cursor: m.cursor}
+	if (m.view == viewTable || m.view == viewDetail) && m.cursor >= 0 && m.cursor < len(m.forks) {
+		focus.forkID = m.forks[m.cursor].Fork.ID
+	}
+	m.overlayFocus = focus
+	m.overlayTitle = title
+	m.overlay.Open(kind, fmt.Sprintf("%d:%s", m.view, focus.forkID))
+}
+
+func (m *Model) restoreOverlayFocus(token string) {
+	if token == "" {
+		return
+	}
+	m.view = m.overlayFocus.view
+	if m.overlayFocus.forkID != "" {
+		m.restoreCursorByID(m.overlayFocus.forkID)
+	} else {
+		m.cursor = m.overlayFocus.cursor
+	}
+	m.overlayTitle = ""
+}
+
 // --- Constructor ---
 
 func NewModel(provider forge.Forge, auth forge.AuthInfo, repo string, refresh bool) Model {
@@ -232,6 +283,7 @@ func NewModel(provider forge.Forge, auth forge.AuthInfo, repo string, refresh bo
 		clusterMsgs:     make(chan tea.Msg, 16),
 		lifecycleCtx:    lifecycleCtx,
 		lifecycleCancel: lifecycleCancel,
+		theme:           theme.DefaultContext(),
 	}
 }
 
@@ -289,17 +341,24 @@ func (m Model) WithStore(db *store.Store) Model {
 	return m
 }
 
+// WithTheme returns a copy of the model with an immutable startup-resolved
+// rendering context.
+func (m Model) WithTheme(ctx theme.Context) Model {
+	m.theme = ctx
+	m.settings = m.settings.WithTheme(ctx)
+	return m
+}
+
 // WithSettings attaches the complete in-TUI settings surface after startup has
 // resolved the active configuration layer.
 func (m Model) WithSettings(settingsModel settings.Model) Model {
-	m.settings = settingsModel
+	m.settings = settingsModel.WithTheme(m.themeContext())
 	return m
 }
 
 // forkListTTL bounds how long a stored fork enumeration serves as the full
-// list: membership can change (new forks) with no push to any cached fork, so
-// list freshness is time-based, unlike compare validity which is keyed on each
-// fork's pushed_at.
+// list: membership can change (new forks with no push to any cached fork), so
+// list freshness is time-based, unlike compare validity keyed on each push.
 const forkListTTL = 12 * time.Hour
 
 func (m Model) Init() tea.Cmd {
@@ -321,13 +380,35 @@ func (m Model) Init() tea.Cmd {
 // --- Update ---
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var settingsCmd tea.Cmd
+	if m.view == viewSettings {
+		if window, ok := msg.(tea.WindowSizeMsg); ok {
+			m.width, m.height = window.Width, window.Height
+		}
+		updated, cmd := m.settings.Update(msg)
+		m.settings = updated.(settings.Model)
+		settingsCmd = cmd
+		if _, closing := msg.(settings.CloseRequested); closing {
+			m.view = viewTable
+			if len(m.forks) == 0 {
+				m.view = viewInput
+			}
+			return m, nil
+		}
+		switch msg.(type) {
+		case tea.KeyMsg, tea.WindowSizeMsg:
+			return m, settingsCmd
+		}
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		return m, nil
-
 	case tea.KeyMsg:
+		if handled, restoredFocus := m.overlay.HandleKey(msg.String()); handled {
+			m.restoreOverlayFocus(restoredFocus)
+			return m, nil
+		}
 		return m.handleKey(msg)
 
 	case startFetchMsg:
@@ -385,7 +466,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	return m, nil
+	return m, settingsCmd
 }
 
 func (m *Model) handleCachedLoad(msg cachedLoadMsg) (tea.Model, tea.Cmd) {
@@ -651,7 +732,7 @@ func (m *Model) recomputeT2Score(i int) {
 	// everything the cluster pipeline wrote in place through &forks[i].Heat
 	// (cluster_bridge.go) -- cluster identity, novelty, category, sibling
 	// similarity. That is reachable today on the streaming path and becomes
-	// trivially reachable once `t` can trigger a rescore after clusters have
+	// trivially reachable once `c` can trigger a rescore after clusters have
 	// landed, at which point `g` starts reporting "no clusters available" on
 	// a repo that has them.
 	carryClusterFields(&result, m.forks[i].Heat)
@@ -694,9 +775,7 @@ func batchTick() tea.Cmd {
 
 func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
-
-	switch key {
-	case "ctrl+c":
+	if keymap.Dispatch(keymap.Global, key) == keymap.Quit {
 		m.quitting = true
 		m.cancelEnrichment()
 		m.cancelLifecycle()
@@ -707,19 +786,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// KeyRunes event whose String() is bracketed and never matches a binding.
 	typed := typedText(msg)
 
-	if key == "," {
-		m.view = viewSettings
-		return m, nil
-	}
-
 	if m.view == viewSettings {
-		if key == "esc" {
-			m.view = viewTable
-			if len(m.forks) == 0 {
-				m.view = viewInput
-			}
-			return m, nil
-		}
 		updated, cmd := m.settings.Update(msg)
 		m.settings = updated.(settings.Model)
 		return m, cmd
@@ -740,22 +807,22 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case viewRank:
 		return m.handleRankKey(key, typed)
 	case viewHelp:
-		switch key {
-		case "?", "esc", "q":
+		switch keymap.Dispatch(keymap.MainHelp, key) {
+		case keymap.Back:
 			m.helpOffset = 0
 			m.view = viewTable
-		case "up", "k":
+		case keymap.Up:
 			m.scrollHelp(-1)
-		case "down", "j":
+		case keymap.Down:
 			m.scrollHelp(1)
-		case "pgup":
+		case keymap.PageUp:
 			m.scrollHelp(-m.helpViewHeight())
-		case "pgdown":
+		case keymap.PageDown:
 			m.scrollHelp(m.helpViewHeight())
-		case "home":
+		case keymap.Home:
 			m.helpOffset = 0
-		case "G", "end":
-			m.helpOffset = maxScrollOffset(helpBody(), m.helpViewHeight())
+		case keymap.End:
+			m.helpOffset = maxScrollOffset(helpBody(m.themeContext()), m.helpViewHeight())
 		}
 		return m, nil
 	}
@@ -764,8 +831,9 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleInputKey(key string, typed string) (tea.Model, tea.Cmd) {
-	switch key {
-	case "enter":
+	action := keymap.Dispatch(keymap.MainInput, key)
+	switch action {
+	case keymap.Submit:
 		m.inputErr = ""
 		m.errMsg = ""
 		repo := strings.TrimSpace(m.input)
@@ -774,85 +842,89 @@ func (m *Model) handleInputKey(key string, typed string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, m.startFetch()
-	case "esc":
+	case keymap.Back:
 		if m.parent != nil {
 			m.view = viewTable
 		}
 	default:
-		m.input, m.inputCursor, _ = lineEdit(m.input, m.inputCursor, key, typed)
+		m.input, m.inputCursor, _ = lineEdit(m.input, m.inputCursor, action, typed)
 	}
 	return m, nil
 }
 
 func (m *Model) handleTableKey(key string) (tea.Model, tea.Cmd) {
-	switch key {
-	case "q":
+	switch keymap.Dispatch(keymap.MainTable, key) {
+	case keymap.Quit:
 		m.quitting = true
 		m.cancelEnrichment()
 		m.cancelLifecycle()
 		return m, tea.Quit
-	// All movement goes through visible space, so a filtered-out fork is never
-	// selectable and paging never has to know which rows are hidden.
-	case "up", "k":
+	case keymap.Up:
 		m.moveCursorBy(-1)
-	case "down", "j":
+	case keymap.Down:
 		m.moveCursorBy(1)
-	case "pgup":
+	case keymap.PageUp:
 		m.moveCursorBy(-m.pageSize())
-	case "pgdown":
+	case keymap.PageDown:
 		m.moveCursorBy(m.pageSize())
-	case "home":
+	case keymap.Home:
 		m.moveCursorTo(0)
-	case "G", "end":
+	case keymap.End:
 		m.moveCursorTo(math.MaxInt)
-	case "g":
+	case keymap.GroupClusters:
 		m.toggleGroupByCluster()
-	case "enter":
+	case keymap.OpenDetail:
 		if m.cursor >= 0 && m.cursor < len(m.forks) {
 			m.detailOffset = 0
 			m.view = viewDetail
 		}
-	case "n":
+	case keymap.NewRepository:
 		m.view = viewInput
-	case "/":
-		// Seed with the active filter so `/` edits rather than retypes.
+	case keymap.Filter:
 		m.filterInput = m.filter
 		m.filterCursor = len([]rune(m.filterInput))
 		m.view = viewFilter
-	case "R":
+	case keymap.Rank:
 		m.promptRank()
-	case "esc":
+	case keymap.ClearFilter:
 		if m.filter != "" {
 			m.applyFilter("")
 		}
-	case "?":
+	case keymap.ToggleHelp:
 		m.view = viewHelp
-	case "s":
+	case keymap.CycleSort:
 		m.cycleSortColumn()
-	case "S":
+	case keymap.ReverseSort:
 		m.sortAsc = !m.sortAsc
 		m.reapplySort()
-	case "o":
+	case keymap.OpenBrowser:
 		return m, m.openInBrowser()
-	case "c":
+	case keymap.OpenCompare:
 		return m, m.openCompare()
-	case "y":
-		return m, m.yankCloneCommand()
-	case "t":
+	case keymap.CycleTier:
 		return m, m.cycleMaxTier()
-	case "r":
+	case keymap.ToggleTheme:
+		m.theme = theme.ToggleDarkLight(m.themeContext())
+		m.settings = m.settings.WithTheme(m.theme)
+	case keymap.ToggleFullscreen:
+		m.fullscreen = !m.fullscreen
+	case keymap.Yank:
+		return m, m.yankCloneCommand()
+	case keymap.Refresh:
 		return m, m.doRefresh()
-	case " ":
+	case keymap.ToggleMark:
 		if m.cursor >= 0 && m.cursor < len(m.forks) {
 			m.forks[m.cursor].Marked = !m.forks[m.cursor].Marked
-			// Advance to the next VISIBLE fork: under a filter, cursor+1 could
-			// be a hidden row, which would strand the selection off-screen.
 			m.moveCursorBy(1)
 		}
-	case "e":
+	case keymap.ExportMarked:
 		return m, m.promptExportMarked()
-	case "E":
+	case keymap.ExportAll:
 		return m, m.promptExportAll()
+	case keymap.OpenSettings:
+		m.view = viewSettings
+		updated, _ := m.settings.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+		m.settings = updated.(settings.Model)
 	}
 	return m, nil
 }
@@ -921,29 +993,33 @@ func (m *Model) hasClusterData() bool {
 }
 
 func (m *Model) handleDetailKey(key string) (tea.Model, tea.Cmd) {
-	switch key {
-	case "esc", "b", "q":
-		// Reset on the way out as well as on the way in: a stale offset from a
-		// tall fork would otherwise blank the view for the next, shorter one.
+	switch keymap.Dispatch(keymap.MainDetail, key) {
+	case keymap.Back:
 		m.detailOffset = 0
 		m.view = viewTable
-	case "up", "k":
+	case keymap.Up:
 		m.scrollDetail(-1)
-	case "down", "j":
+	case keymap.Down:
 		m.scrollDetail(1)
-	case "pgup":
+	case keymap.PageUp:
 		m.scrollDetail(-m.detailViewHeight())
-	case "pgdown":
+	case keymap.PageDown:
 		m.scrollDetail(m.detailViewHeight())
-	case "home":
+	case keymap.Home:
 		m.detailOffset = 0
-	case "G", "end":
+	case keymap.End:
 		m.detailOffset = maxScrollOffset(m.detailBody(), m.detailViewHeight())
-	case "o":
+	case keymap.OpenBrowser:
 		return m, m.openInBrowser()
-	case "c":
+	case keymap.OpenCompare:
 		return m, m.openCompare()
-	case "y":
+	case keymap.CycleTier:
+		return m, m.cycleMaxTier()
+	case keymap.ToggleTheme:
+		m.theme = theme.ToggleDarkLight(m.themeContext())
+	case keymap.ToggleFullscreen:
+		m.fullscreen = !m.fullscreen
+	case keymap.Yank:
 		return m, m.yankCloneCommand()
 	}
 	return m, nil
@@ -1274,7 +1350,7 @@ func (m *Model) startEnrichment() tea.Cmd {
 
 	// Force the ceiling atomic into existence before any compareCmd closure
 	// captures m.tierCeiling below: a nil pointer captured here would never
-	// observe a later `t` press, since setMaxTier would go on to allocate a
+	// observe a later `c` press, since setMaxTier would go on to allocate a
 	// fresh atomic that the already-built closures never see.
 	m.setMaxTier(m.maxTier())
 
@@ -1421,11 +1497,11 @@ func (m *Model) cycleMaxTier() tea.Cmd {
 
 	switch next {
 	case 3:
-		m.errMsg = "enrichment ceiling T3 — full scoring"
+		m.errMsg = "enrichment ceiling T3 - full scoring"
 	case 2:
-		m.errMsg = "enrichment ceiling T2 — lone-wolf scoring off"
+		m.errMsg = "enrichment ceiling T2 - lone-wolf scoring off"
 	default:
-		m.errMsg = "enrichment ceiling T1 — no further compares will be fetched"
+		m.errMsg = "enrichment ceiling T1 - no further compares will be fetched"
 	}
 	m.errMsgTime = time.Now()
 
@@ -1556,8 +1632,18 @@ func (m *Model) openCompare() tea.Cmd {
 // --- View ---
 
 func (m Model) View() string {
+	if ui.TooSmall(m.width, m.height) {
+		return ui.FallbackMessageFor(m.themeContext(), m.width, m.height)
+	}
 	if m.quitting {
 		return ""
+	}
+	if m.overlay.IsOpen() {
+		width := ui.ContentWidth(m.width)
+		if m.overlay.Kind() == ui.SheetOverlay {
+			return ui.Sheet(m.themeContext(), "Help", m.overlayTitle, width)
+		}
+		return ui.Modal(m.themeContext(), "Confirm", m.overlayTitle, width)
 	}
 
 	switch m.view {
@@ -1585,36 +1671,35 @@ func (m Model) View() string {
 
 func (m Model) viewInput() string {
 	var b strings.Builder
+	s := m.styles()
 
 	b.WriteString("\n")
-	b.WriteString(titleStyle.Render("  spoon"))
-	b.WriteString(subtitleStyle.Render(" — find useful forks"))
+	b.WriteString(s.title.Render("  spoon"))
+	b.WriteString(s.subtitle.Render(" " + m.themeContext().Glyph(theme.EmDash) + " find useful forks"))
 	b.WriteString("\n\n")
 
 	if m.authMsg != "" {
 		if m.auth.Authenticated() {
-			b.WriteString("  " + subtitleStyle.Render(m.authMsg) + "\n\n")
+			b.WriteString("  " + s.subtitle.Render(m.authMsg) + "\n\n")
 		} else {
-			b.WriteString("  " + warnStyle.Render("! ") + m.authMsg + "\n\n")
+			b.WriteString("  " + s.warn.Render("! ") + m.authMsg + "\n\n")
 		}
 	}
 
-	b.WriteString("  Repository: " + renderWithCursor(m.input, m.inputCursor) + "\n")
-
+	b.WriteString("  Repository: " + ui.Input(m.themeContext(), ui.InputState{
+		Value: m.input, Cursor: m.inputCursor, Focused: true, Enabled: true,
+	}, ui.ContentWidth(m.width)-14) + "\n")
 	if m.inputErr != "" {
-		b.WriteString("  " + errorStyle.Render(m.inputErr) + "\n")
+		b.WriteString("  " + ui.TitledAlert(m.themeContext(), ui.AlertError, "Repository", m.inputErr, ui.ContentWidth(m.width)-2) + "\n")
 	}
 	if m.errMsg != "" {
-		b.WriteString("  " + errorStyle.Render(m.errMsg) + "\n")
+		b.WriteString("  " + ui.TitledAlert(m.themeContext(), ui.AlertError, "Operation", m.errMsg, ui.ContentWidth(m.width)-2) + "\n")
 	}
-
 	if m.loading {
-		b.WriteString("\n  " + m.loadMsg + "\n")
+		b.WriteString("  " + ui.Alert(m.themeContext(), ui.AlertInfo, m.loadMsg, ui.ContentWidth(m.width)-2) + "\n")
 	} else {
-		b.WriteString("\n  " + helpStyle.Render("Enter a GitHub or GitLab repository (e.g., golang/go)") + "\n")
-		b.WriteString("  " + helpStyle.Render("←/→ move  Home/End  paste supported  Enter to search  Ctrl+C to quit") + "\n")
+		b.WriteString("\n  " + ui.KeyLegend(m.themeContext(), ui.ContentWidth(m.width)-2, keymap.MainInput) + "\n")
 	}
-
 	return b.String()
 }
 

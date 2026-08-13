@@ -1,0 +1,23 @@
+[38;2;78;201;176;4m [0m[38;2;78;201;176;4m [0m[1;4;38;2;78;201;176;4ms[0m[1;4;38;2;78;201;176;4mp[0m[1;4;38;2;78;201;176;4mo[0m[1;4;38;2;78;201;176;4mo[0m[1;4;38;2;78;201;176;4mn[0m [2;38;2;154;154;154m— help[0m
+
+  Keybindings
+  ───────────
+
+  Transition notice (one release)
+  t: enrichment ceiling -> dark/light theme
+  c: open compare -> enrichment ceiling
+  d: unbound -> open compare
+
+
+  Global
+  ctrl+c          Quit
+
+  Repository input
+  Enter           Search repository
+  Esc             Return to fork table
+  left/ctrl+b     Move input cursor left
+  right/ctrl+f    Move input cursor right
+  home/ctrl+a     Move input cursor to start
+  end/ctrl+e      Move input cursor to end
+  [38;2;211;211;211;48;2;25;25;25m[ctrl+c][0m [3;2;38;2;133;133;133mQuit[0m [38;2;211;211;211;48;2;25;25;25m[?/Esc/q][0m [3;2;38;2;133;133;133mClose help[0m [38;2;211;211;211;48;2;25;25;25m[Up/k][0m [3;2;38;2;133;133;133mScroll up[0m [38;2;211;211;211;48;2;25;25;25m[Down/j][0m [3;2;38;2;133;133;133mScroll down[0m
+[38;2;211;211;211;48;2;25;25;25m[PgUp][0m [3;2;38;2;133;133;133mPage up[0m [38;2;211;211;211;48;2;25;25;25m[PgDn][0m [3;2;38;2;133;133;133mPage down[0m [38;2;211;211;211;48;2;25;25;25m[home][0m [3;2;38;2;133;133;133mGo to top[0m [38;2;211;211;211;48;2;25;25;25m[G/end][0m [3;2;38;2;133;133;133mGo to bottom[0m

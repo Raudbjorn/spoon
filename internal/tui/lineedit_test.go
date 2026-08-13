@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/svnbjrn/spoon/internal/tui/keymap"
 )
 
 // Both text prompts (repo search, export path) used to gate insertion on
@@ -66,7 +67,7 @@ func TestTypedText_StripsControlCharactersFromPaste(t *testing.T) {
 
 func TestLineEdit_InsertsPasteAtCursor(t *testing.T) {
 	text, cursor := "", 0
-	text, cursor, ok := lineEdit(text, cursor, "[owner/repo]", "owner/repo")
+	text, cursor, ok := lineEdit(text, cursor, keymap.None, "owner/repo")
 	if !ok {
 		t.Fatal("paste was not consumed as an edit")
 	}
@@ -79,7 +80,7 @@ func TestLineEdit_InsertsPasteAtCursor(t *testing.T) {
 
 	// Paste into the middle rather than at the end.
 	text, cursor = "ab", 1
-	text, cursor, _ = lineEdit(text, cursor, "[XY]", "XY")
+	text, cursor, _ = lineEdit(text, cursor, keymap.None, "XY")
 	if text != "aXYb" {
 		t.Errorf("mid-string paste = %q, want %q", text, "aXYb")
 	}
@@ -90,31 +91,31 @@ func TestLineEdit_InsertsPasteAtCursor(t *testing.T) {
 
 func TestLineEdit_NavigationAndDeletion(t *testing.T) {
 	// Cursor movement.
-	_, c, ok := lineEdit("abc", 3, "left", "")
+	_, c, ok := lineEdit("abc", 3, keymap.CursorLeft, "")
 	if !ok || c != 2 {
 		t.Errorf("left: cursor=%d ok=%v, want 2/true", c, ok)
 	}
-	_, c, _ = lineEdit("abc", 0, "home", "")
+	_, c, _ = lineEdit("abc", 0, keymap.CursorStart, "")
 	if c != 0 {
 		t.Errorf("home: cursor=%d, want 0", c)
 	}
-	_, c, _ = lineEdit("abc", 0, "end", "")
+	_, c, _ = lineEdit("abc", 0, keymap.CursorEnd, "")
 	if c != 3 {
 		t.Errorf("end: cursor=%d, want 3", c)
 	}
 
 	// Rune-safe deletion.
-	got, c, _ := lineEdit("aöb", 2, "backspace", "")
+	got, c, _ := lineEdit("aöb", 2, keymap.DeleteBackward, "")
 	if got != "ab" || c != 1 {
 		t.Errorf("backspace: %q cursor=%d, want %q/1", got, c, "ab")
 	}
-	got, _, _ = lineEdit("aöb", 1, "delete", "")
+	got, _, _ = lineEdit("aöb", 1, keymap.DeleteForward, "")
 	if got != "ab" {
 		t.Errorf("delete: %q, want %q", got, "ab")
 	}
 
 	// ctrl+u clears.
-	got, c, _ = lineEdit("abc", 3, "ctrl+u", "")
+	got, c, _ = lineEdit("abc", 3, keymap.ClearInput, "")
 	if got != "" || c != 0 {
 		t.Errorf("ctrl+u: %q cursor=%d, want empty/0", got, c)
 	}
@@ -123,9 +124,9 @@ func TestLineEdit_NavigationAndDeletion(t *testing.T) {
 // Keys the prompt owns (enter/esc) must not be swallowed by the editor, or the
 // caller can never confirm or cancel.
 func TestLineEdit_LeavesControlKeysToTheCaller(t *testing.T) {
-	for _, key := range []string{"enter", "esc"} {
-		if _, _, ok := lineEdit("abc", 3, key, ""); ok {
-			t.Errorf("lineEdit consumed %q; the prompt must handle it", key)
+	for _, action := range []keymap.Action{keymap.Submit, keymap.Back} {
+		if _, _, ok := lineEdit("abc", 3, action, ""); ok {
+			t.Errorf("lineEdit consumed %q; the prompt must handle it", action)
 		}
 	}
 }

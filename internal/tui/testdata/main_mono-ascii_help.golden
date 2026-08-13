@@ -1,0 +1,29 @@
+  spoon - help
+
+  Keybindings
+  -----------
+
+  Transition notice (one release)
+  t: enrichment ceiling -> dark/light theme
+  c: open compare -> enrichment ceiling
+  d: unbound -> open compare
+
+
+  Global
+  ctrl+c          Quit
+
+  Repository input
+  Enter           Search repository
+  Esc             Return to fork table
+  left/ctrl+b     Move input cursor left
+  right/ctrl+f    Move input cursor right
+  home/ctrl+a     Move input cursor to start
+  end/ctrl+e      Move input cursor to end
+  backspace       Delete previous character
+  delete          Delete next character
+  ctrl+u          Clear input
+
+  Fork table
+  q               Quit
+  [ctrl+c] Quit [?/Esc/q] Close help [Up/k] Scroll up [Down/j] Scroll down [PgUp] Page up [PgDn] Page down
+[home] Go to top [G/end] Go to bottom

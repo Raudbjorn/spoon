@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/svnbjrn/spoon/internal/tui/theme"
 )
 
 func TestHandleTableKey_PageDownMovesOnePage(t *testing.T) {
@@ -99,14 +100,14 @@ func TestUpdate_PageKeysReachTheTableHandler(t *testing.T) {
 
 func TestViewDetail_ScrollsAndKeepsFooterPinned(t *testing.T) {
 	m := movementModel(3)
-	// Short enough that the ~9-line detail box genuinely overflows; a window
-	// taller than the body has nothing to scroll and would pass vacuously.
-	m.height = 6
+	// The contextual legend occupies several pinned lines at 80 columns, so
+	// twelve rows still leaves a genuinely scrollable detail body.
+	m.height = 12
 	m.view = viewDetail
 	m.cursor = 0
 
 	top := m.viewDetail()
-	if !strings.Contains(top, "Back") {
+	if !strings.Contains(top, "Return to fork table") {
 		t.Fatal("detail footer missing at offset 0")
 	}
 
@@ -115,7 +116,7 @@ func TestViewDetail_ScrollsAndKeepsFooterPinned(t *testing.T) {
 		t.Fatal("pgdown did not scroll the detail view")
 	}
 	scrolled := m.viewDetail()
-	if !strings.Contains(scrolled, "Back") {
+	if !strings.Contains(scrolled, "Return to fork table") {
 		t.Error("detail footer scrolled off; it must stay pinned below the window")
 	}
 	if scrolled == top {
@@ -162,7 +163,7 @@ func TestViewHelp_Scrolls(t *testing.T) {
 	if m.viewHelp() == top {
 		t.Error("scrolled help body is identical to the unscrolled one")
 	}
-	if !strings.Contains(m.viewHelp(), "go back") {
+	if !strings.Contains(m.viewHelp(), "Close help") {
 		t.Error("help dismiss hint scrolled off; it must stay pinned")
 	}
 
@@ -172,11 +173,11 @@ func TestViewHelp_Scrolls(t *testing.T) {
 	}
 }
 
-// Every key the help screen advertises must have a handler. This is the test
-// that would have caught `t` and `/` being advertised with nothing behind them.
-func TestHelpAdvertisesOnlyImplementedKeys(t *testing.T) {
-	body := helpBody()
-	for _, k := range []string{"PgUp/PgDn", "/", "Esc", "t", "branches"} {
+// The generated help remains contextual and must surface the moved keys and
+// every major navigation alternate from the same registry as dispatch.
+func TestHelpAdvertisesRegistryActions(t *testing.T) {
+	body := helpBody(theme.DefaultContext())
+	for _, k := range []string{"PgUp", "/", "Esc", "t", "c", "d", "Toggle dark/light theme", "Cycle enrichment ceiling"} {
 		if !strings.Contains(body, k) {
 			t.Errorf("help body missing %q", k)
 		}

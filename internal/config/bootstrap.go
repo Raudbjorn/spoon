@@ -14,47 +14,57 @@ import (
 	"path/filepath"
 )
 
-// EnsureDefault returns the effective config, bootstrapping one on first run.
-//
-// When a config already exists (user path, or the /etc/spoon fallback) it is
-// simply loaded. When none exists, a default config — fastembed embedder
-// enabled, provider auto-detected at runtime, proxying off — is written to
-// DefaultPath() together with a README describing every field and environment
-// variable, and a one-line notice plus a short host-detection report goes to
-// stderr. Credentials are never written: they stay with gh/glab and the token
-// environment variables.
-//
-// A failed write (e.g. /etc/spoon as non-root) degrades to a warning and the
-// in-memory defaults — the config file is a convenience; only the store is
-// mandatory. SPOON_NO_CONFIG=1 skips everything and returns nil.
-func EnsureDefault(stderr io.Writer) (*Config, error) {
-	if os.Getenv("SPOON_NO_CONFIG") == "1" {
-		return nil, nil
+// BootstrapResult is the single configuration snapshot used by command
+// startup, runtime resolution, and the settings editor. Config and
+// Layer.Config always point at the same object when configuration is enabled.
+// Warning records a first-publication failure while keeping a usable in-memory
+// default; Layer retains the selected path and the failure reason for Settings.
+type BootstrapResult struct {
+	Config  *Config
+	Layer   LoadedLayer
+	Warning error
+}
+
+var (
+	saveForBootstrap        = Save
+	writeReadmeForBootstrap = WriteReadme
+)
+
+// Bootstrap selects a layer exactly once and publishes defaults only when that
+// selected layer is missing. It never reloads after publication, preventing a
+// startup/settings race that could assign different config snapshots.
+func Bootstrap(stderr io.Writer) BootstrapResult {
+	layer := LoadDefaultWithLayer()
+	if layer.State != LayerMissing {
+		return BootstrapResult{Config: layer.Config, Layer: layer, Warning: layer.Reason}
 	}
-	if cfg, err := LoadDefault(); cfg != nil || err != nil {
-		return cfg, err
-	}
-	// Distinguish "no config anywhere" from "config present but empty-ish":
-	// LoadDefault returns (nil, nil) only when neither path has a file.
 
 	cfg := defaultConfig()
-	path, err := DefaultPath()
-	if err != nil {
-		return cfg, nil
+	if err := saveForBootstrap(layer.Path, cfg); err != nil {
+		fmt.Fprintf(stderr, "warning: first run: could not write default config to %s: %v (continuing with built-in defaults)\n", layer.Path, err)
+		layer.Config, layer.Reason, layer.LoadError = cfg, err, err
+		return BootstrapResult{Config: cfg, Layer: layer, Warning: err}
 	}
-	if err := Save(path, cfg); err != nil {
-		fmt.Fprintf(stderr, "warning: first run: could not write default config to %s: %v (continuing with built-in defaults)\n", path, err)
-		return cfg, nil
-	}
-	readmePath := filepath.Join(filepath.Dir(path), "README.md")
-	if err := WriteReadme(path); err != nil {
+	layer.State, layer.Config, layer.Reason, layer.LoadError = LayerLoaded, cfg, nil, nil
+
+	readmePath := filepath.Join(filepath.Dir(layer.Path), "README.md")
+	if err := writeReadmeForBootstrap(layer.Path); err != nil {
 		readmePath = "(README write failed: " + err.Error() + ")"
 	}
-	fmt.Fprintf(stderr, "first run: wrote default config to %s (instructions in %s)\n", path, readmePath)
+	fmt.Fprintf(stderr, "first run: wrote default config to %s (instructions in %s)\n", layer.Path, readmePath)
 	for _, line := range detectHost() {
 		fmt.Fprintf(stderr, "  %s\n", line)
 	}
-	return cfg, nil
+	return BootstrapResult{Config: cfg, Layer: layer}
+}
+
+// EnsureDefault is retained for commands that do not need layer metadata.
+func EnsureDefault(stderr io.Writer) (*Config, error) {
+	result := Bootstrap(stderr)
+	if result.Layer.State == LayerInvalid {
+		return nil, result.Warning
+	}
+	return result.Config, nil
 }
 
 // WriteReadme (re)generates the README.md documenting every config field and

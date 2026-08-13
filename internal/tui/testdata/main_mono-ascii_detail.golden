@@ -1,0 +1,24 @@
+
++--------------------------------------------------------------------+
+| Fork details                                                       |
++--------------------------------------------------------------------+
+| Fork: gregums587/proxmox-packer                                    |
+| 8/100 heat ....                                                    |
++--------------------------------------------------------------------+
+| Why it is hot:                                                     |
+|  - sync - 9.7/15 pts                                               |
++--------------------------------------------------------------------+
+| ! Work is on branch: newbranch                                     |
+|    [y] Yank clone & checkout command                               |
++--------------------------------------------------------------------+
+| * 0 stars   f 0 forks   Pushed 2y ago                              |
+| Ahead: 6 (+14/-9)  Behind: 5  Files: 3                             |
+| Authors: 1                                                         |
+|                                                                    |
+| "Packer files for building CentOS 7, 8, Rocky Linux 8, 9 and U..." |
++--------------------------------------------------------------------+
+
+  [ctrl+c] Quit [Esc/b/q] Return to fork table [Up/k] Scroll up [Down/j] Scroll down [PgUp] Page up
+[PgDn] Page down [home] Go to top [G/end] Go to bottom [o] Open selected fork [d] Open compare
+[c] Cycle enrichment ceiling [t] Toggle dark/light theme [f] Hide or restore chrome
+[y] Yank clone command
