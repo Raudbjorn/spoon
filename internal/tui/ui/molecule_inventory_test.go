@@ -32,7 +32,7 @@ func TestMoleculeInventoryMatchesFilesAndConsumers(t *testing.T) {
 		"Card":       {"adopted", "fork detail grouping", "card.go"},
 		"Modal":      {"adopted", "main-model consequence overlay", "modal.go"},
 		"Sheet":      {"adopted", "help heading and main-model overlay", "sheet.go"},
-		"Tabs":       {"declined", "settings sections do not exist yet, so a Tabs helper would be unconsumed", "—"},
+		"Tabs":       {"adopted", "settings sections: Forge, GitHub, Proxy, Embedder, Voyage, Appearance, Environment, Host", "tabs.go"},
 		"NavBar":     {"adopted", "fork-table status bar", "navbar.go"},
 		"Breadcrumb": {"declined", "no immediate settings section-path consumer; do not ship dead composition code", "—"},
 	}

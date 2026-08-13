@@ -18,6 +18,7 @@ import (
 	"github.com/svnbjrn/spoon/internal/heat"
 	"github.com/svnbjrn/spoon/internal/store"
 	"github.com/svnbjrn/spoon/internal/tui"
+	"github.com/svnbjrn/spoon/internal/tui/settings"
 	"github.com/svnbjrn/spoon/internal/tui/theme"
 )
 
@@ -218,9 +219,15 @@ func main() {
 	}
 	defer db.Close()
 
+	cfg, _ := config.LoadDefault()
+	settingsPath, _ := config.DefaultPath()
+	if _, err := os.Stat(settingsPath); os.IsNotExist(err) && cfg != nil {
+		settingsPath = config.SystemPath()
+	}
+	settingsModel := settings.New(cfg, settingsPath, db)
 	m := tui.NewModelWithCluster(provider, auth, repoArg, refresh, tuiClusterOpts).
 		WithHeatWeights(heatWeights).WithMaxTier(maxTier).WithStore(db).
-		WithQueryScorer(tuiQueryScorer(db)).WithTheme(tuiContext)
+		WithQueryScorer(tuiQueryScorer(db)).WithTheme(tuiContext).WithSettings(settingsModel)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 
 	if _, err := p.Run(); err != nil {

@@ -12,7 +12,7 @@ func mainHelpScopes() []keymap.Scope {
 	return []keymap.Scope{
 		keymap.Global, keymap.MainInput, keymap.MainTable, keymap.MainDetail,
 		keymap.MainExport, keymap.MainTopics, keymap.MainFilter, keymap.MainRank,
-		keymap.MainHelp,
+		keymap.MainSettings, keymap.MainHelp,
 	}
 }
 

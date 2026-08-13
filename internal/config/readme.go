@@ -67,6 +67,11 @@ layer for users who have no personal config.
   re-request nothing unchanged. It stays OFF unless both a key resolves and the
   store is writable — with nowhere durable to keep results, every run would pay
   again for answers it had to throw away.
+- ` + "`ui.theme`" + ` — terminal palette: dark, light, or amber. ` + "`ui.color`" + `
+  selects truecolor, ansi256, ansi16, ansi8, mono, or no-color; ` + "`ui.glyphs`" + `
+  selects unicode or ascii. Use the in-TUI Settings editor (comma key) to inspect
+  the effective value and its source.
+
 
 ## Environment variables
 
@@ -104,7 +109,8 @@ layer for users who have no personal config.
 ## Changing things
 
 Edit config.json directly (spoon validates on load and tells you what is
-wrong), or re-run ` + "`spoon setup`" + ` to re-detect credentials and the embedder
-and rewrite the file. ` + "`--refresh`" + ` on any command bypasses cached reads for
-that run.
+wrong), use the in-TUI Settings editor (comma key) to inspect and safely save the
+loaded layer, or re-run ` + "`spoon setup`" + ` to re-detect credentials and
+the embedder and rewrite the file. ` + "`--refresh`" + ` on any command bypasses
+cached reads for that run.
 `

@@ -20,6 +20,7 @@ import (
 	"github.com/svnbjrn/spoon/internal/store"
 	"github.com/svnbjrn/spoon/internal/topics"
 	"github.com/svnbjrn/spoon/internal/tui/keymap"
+	"github.com/svnbjrn/spoon/internal/tui/settings"
 	"github.com/svnbjrn/spoon/internal/tui/theme"
 	"github.com/svnbjrn/spoon/internal/tui/ui"
 )
@@ -38,6 +39,8 @@ const (
 	// the existing values would make every diff below this line noise.
 	viewFilter
 	viewRank
+	// Appended rather than inserted: the enum is positional.
+	viewSettings
 )
 
 // ScoredFork holds a fork with its computed heat score.
@@ -228,6 +231,7 @@ type Model struct {
 	rankSeq     int
 	rankPending bool
 	queryScorer embed.QueryScorer
+	settings    settings.Model
 }
 
 // overlayFocus is the main model's active focus identity. Fork views retain
@@ -341,13 +345,20 @@ func (m Model) WithStore(db *store.Store) Model {
 // rendering context.
 func (m Model) WithTheme(ctx theme.Context) Model {
 	m.theme = ctx
+	m.settings = m.settings.WithTheme(ctx)
+	return m
+}
+
+// WithSettings attaches the complete in-TUI settings surface after startup has
+// resolved the active configuration layer.
+func (m Model) WithSettings(settingsModel settings.Model) Model {
+	m.settings = settingsModel.WithTheme(m.themeContext())
 	return m
 }
 
 // forkListTTL bounds how long a stored fork enumeration serves as the full
-// list: membership can change (new forks) with no push to any cached fork, so
-// list freshness is time-based, unlike compare validity which is keyed on each
-// fork's pushed_at.
+// list: membership can change (new forks with no push to any cached fork), so
+// list freshness is time-based, unlike compare validity keyed on each push.
 const forkListTTL = 12 * time.Hour
 
 func (m Model) Init() tea.Cmd {
@@ -755,6 +766,18 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// KeyRunes event whose String() is bracketed and never matches a binding.
 	typed := typedText(msg)
 
+	if m.view == viewSettings {
+		if keymap.Dispatch(keymap.MainSettings, key) == keymap.Back {
+			m.view = viewTable
+			if len(m.forks) == 0 {
+				m.view = viewInput
+			}
+			return m, nil
+		}
+		updated, cmd := m.settings.Update(msg)
+		m.settings = updated.(settings.Model)
+		return m, cmd
+	}
 	switch m.view {
 	case viewInput:
 		return m.handleInputKey(key, typed)
@@ -884,6 +907,8 @@ func (m *Model) handleTableKey(key string) (tea.Model, tea.Cmd) {
 		return m, m.promptExportMarked()
 	case keymap.ExportAll:
 		return m, m.promptExportAll()
+	case keymap.OpenSettings:
+		m.view = viewSettings
 	}
 	return m, nil
 }
@@ -1622,6 +1647,8 @@ func (m Model) View() string {
 		return m.viewRankPrompt()
 	case viewHelp:
 		return m.viewHelp()
+	case viewSettings:
+		return m.settings.View()
 	}
 	return ""
 }

@@ -15,6 +15,7 @@ const (
 	MainTopics    Scope = "main-topics"
 	MainFilter    Scope = "main-filter"
 	MainRank      Scope = "main-rank"
+	MainSettings  Scope = "main-settings"
 	ThreadCompose Scope = "thread-compose"
 	ThreadList    Scope = "thread-list"
 	ThreadHelp    Scope = "thread-help"
@@ -67,6 +68,7 @@ const (
 	UnresolveAll     Action = "unresolve-all"
 	ApplySuggestion  Action = "apply-suggestion"
 	CounterPropose   Action = "counter-propose"
+	OpenSettings     Action = "open-settings"
 )
 
 type Binding struct {
@@ -116,6 +118,7 @@ var Registry = []Binding{
 	{MainTable, []string{" "}, ToggleMark, "Mark or unmark fork", ""},
 	{MainTable, []string{"e"}, ExportMarked, "Export marked forks", "No upstream counterpart"},
 	{MainTable, []string{"E"}, ExportAll, "Export all forks", "No upstream counterpart"},
+	{MainTable, []string{","}, OpenSettings, "Open settings", "Spoon-only host configuration editor"},
 	{MainDetail, []string{"esc", "b", "q"}, Back, "Return to fork table", "Spoon maps q to back in detail; b is an added back shortcut"},
 	{MainDetail, []string{"up", "k"}, Up, "Scroll up", "Spoon adds vi navigation"},
 	{MainDetail, []string{"down", "j"}, Down, "Scroll down", "Spoon adds vi navigation"},
@@ -169,6 +172,14 @@ var Registry = []Binding{
 	{MainRank, []string{"backspace"}, DeleteBackward, "Delete previous character", ""},
 	{MainRank, []string{"delete"}, DeleteForward, "Delete next character", ""},
 	{MainRank, []string{"ctrl+u"}, ClearInput, "Clear input", ""},
+	{MainSettings, []string{"esc", "q"}, Back, "Close settings", ""},
+	{MainSettings, []string{"up", "k"}, Up, "Move setting selection up", ""},
+	{MainSettings, []string{"down", "j"}, Down, "Move setting selection down", ""},
+	{MainSettings, []string{"tab", "right"}, CursorRight, "Next settings section", ""},
+	{MainSettings, []string{"shift+tab", "left"}, CursorLeft, "Previous settings section", ""},
+	{MainSettings, []string{"enter", "e"}, Edit, "Edit setting", ""},
+	{MainSettings, []string{"s"}, Submit, "Save settings", ""},
+	{MainSettings, []string{"v"}, Refresh, "Check Voyage status", ""},
 	{ThreadList, []string{"up", "k"}, Up, "Move thread selection up", "Spoon adds vi navigation"},
 	{ThreadList, []string{"down", "j"}, Down, "Move thread selection down", "Spoon adds vi navigation"},
 	{ThreadList, []string{"q"}, Quit, "Quit", ""},

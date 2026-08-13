@@ -40,6 +40,45 @@ func TestSaveLoad_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestSaveMigratesV1ToV2WithoutLosingFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"version":1,"forge":{"provider":"gitlab","host":"gitlab.example"},"github":{"requestsPerMinute":300}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.UI.Theme != "" || c.UI.Color != "" || c.UI.Glyphs != "" {
+		t.Fatalf("v1 should gain zero-value UI defaults, got %+v", c.UI)
+	}
+	if err := Save(path, c); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Version != 2 || updated.Forge.Provider != "gitlab" || updated.Forge.Host != "gitlab.example" || updated.GitHub.RequestsPerMinute != 300 {
+		t.Fatalf("migration lost data: %+v", updated)
+	}
+}
+
+func TestValidateUIProfiles(t *testing.T) {
+	for _, ui := range []UIConfig{
+		{Theme: "dark", Color: "truecolor", Glyphs: "unicode"},
+		{Theme: "light", Color: "ansi16", Glyphs: "ascii"},
+		{Theme: "amber", Color: "mono"},
+	} {
+		if err := (&Config{UI: ui}).Validate(); err != nil {
+			t.Fatalf("valid UI %+v: %v", ui, err)
+		}
+	}
+	if err := (&Config{UI: UIConfig{Theme: "neon"}}).Validate(); err == nil {
+		t.Fatal("invalid theme accepted")
+	}
+}
+
 func TestLoad_NotExist(t *testing.T) {
 	_, err := Load(filepath.Join(t.TempDir(), "absent.json"))
 	if !errors.Is(err, os.ErrNotExist) {

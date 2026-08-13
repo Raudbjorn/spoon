@@ -53,6 +53,7 @@ func helpBody(ctx theme.Context) string {
 		{"Topic picker", []keymap.Scope{keymap.MainTopics}},
 		{"Filter prompt", []keymap.Scope{keymap.MainFilter}},
 		{"Rank prompt", []keymap.Scope{keymap.MainRank}},
+		{"Settings", []keymap.Scope{keymap.MainSettings}},
 		{"Help", []keymap.Scope{keymap.MainHelp}},
 	} {
 		b.WriteString("\n  " + section.title + "\n")

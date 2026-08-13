@@ -26,7 +26,7 @@ is declined: Spoon has no consumer for gallery-level screens.
 | Card | adopted | fork detail grouping | card.go | `phase-4b-molecules.md:30-31,60-64` |
 | Modal | adopted | main-model consequence overlay | modal.go | `phase-4b-molecules.md:32,65-71` |
 | Sheet | adopted | help heading and main-model overlay | sheet.go | `phase-4b-molecules.md:32-33,65-71` |
-| Tabs | declined | settings sections do not exist yet, so a Tabs helper would be unconsumed | — | `phase-4b-molecules.md:34,60-64` |
+| Tabs | adopted | settings sections: Forge, GitHub, Proxy, Embedder, Voyage, Appearance, Environment, Host | tabs.go | `phase-4b-molecules.md:34,60-64` |
 | NavBar | adopted | fork-table status bar | navbar.go | `phase-4b-molecules.md:37,60-64` |
 | Breadcrumb | declined | no immediate settings section-path consumer; do not ship dead composition code | — | `phase-4b-molecules.md:38,60-64` |
 
