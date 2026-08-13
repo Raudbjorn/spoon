@@ -22,7 +22,7 @@ func TestEveryConsequenceTaggedFieldGatesItsActualTransition(t *testing.T) {
 		case "embedder.voyage.outputDimension":
 			value = "512"
 		default:
-			continue
+			t.Fatalf("uncovered consequence field %q", field.Key)
 		}
 		after, err := Candidate(field, before, value)
 		if err != nil {
