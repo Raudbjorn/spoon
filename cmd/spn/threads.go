@@ -154,7 +154,7 @@ func doThreadsList(args []string, stdout, stderr io.Writer, effective config.Eff
 	}
 	api, authErr := apiFactoryWithEffective(effective)
 	if authErr != nil {
-		return authErr.Emit(stderr)
+		return emitDataError(stderr, authErr)
 	}
 	listOpts := threadsops.ListOptions{
 		IncludeResolved: mode.NeedsResolvedFetch(),
@@ -265,7 +265,7 @@ func doThreadsNext(args []string, stdout, stderr io.Writer, effective config.Eff
 	}
 	api, authErr := apiFactoryWithEffective(effective)
 	if authErr != nil {
-		return authErr.Emit(stderr)
+		return emitDataError(stderr, authErr)
 	}
 	nextOpts := threadsops.NextOptions{ShowCodeLines: showCode}
 	if showCode > 0 {
@@ -395,7 +395,7 @@ func doThreadsReply(args []string, stdout, stderr io.Writer, effective config.Ef
 	}
 	api, authErr := apiFactoryWithEffective(effective)
 	if authErr != nil {
-		return authErr.Emit(stderr)
+		return emitDataError(stderr, authErr)
 	}
 	comment, opErr := threadsops.Reply(context.Background(), api, threadID, body)
 	if opErr != nil {
@@ -476,7 +476,7 @@ func doThreadsResolve(args []string, stdout, stderr io.Writer, effective config.
 	}
 	api, authErr := apiFactoryWithEffective(effective)
 	if authErr != nil {
-		return authErr.Emit(stderr)
+		return emitDataError(stderr, authErr)
 	}
 	t, _, opErr := threadsops.ResolveWithOptions(context.Background(), api, owner, repo, number, threadID, body, threadsops.ResolveOptions{DryRun: dryRun})
 	if opErr != nil {
@@ -535,7 +535,7 @@ func doThreadsResolveAll(args []string, stdout, stderr io.Writer, effective conf
 	}
 	api, authErr := apiFactoryWithEffective(effective)
 	if authErr != nil {
-		return authErr.Emit(stderr)
+		return emitDataError(stderr, authErr)
 	}
 	res, opErr := threadsops.ResolveAllWithOptions(context.Background(), api, owner, repo, number, threadsops.ResolveAllOptions{
 		SkipHumanThreads: true,
@@ -577,7 +577,7 @@ func doThreadsUnresolveAll(args []string, stdout, stderr io.Writer, effective co
 	}
 	api, authErr := apiFactoryWithEffective(effective)
 	if authErr != nil {
-		return authErr.Emit(stderr)
+		return emitDataError(stderr, authErr)
 	}
 	res, opErr := threadsops.UnresolveAllWithOptions(context.Background(), api, owner, repo, number, threadsops.UnresolveAllOptions{DryRun: dryRun})
 	if opErr != nil {
@@ -652,7 +652,7 @@ func doThreadsApplySuggestion(args []string, stdout, stderr io.Writer, effective
 	}
 	api, authErr := apiFactoryWithEffective(effective)
 	if authErr != nil {
-		return authErr.Emit(stderr)
+		return emitDataError(stderr, authErr)
 	}
 	status, threads, opErr := threadsops.List(context.Background(), api, owner, repo, number, true)
 	if opErr != nil {
@@ -703,7 +703,7 @@ func doThreadsApplySuggestion(args []string, stdout, stderr io.Writer, effective
 		if applyErr.Details != nil {
 			e = e.WithDetails(applyErr.Details)
 		}
-		return e.Emit(stderr)
+		return emitDataError(stderr, e)
 	}
 	if err := agentio.WriteJSON(stdout, res); err != nil {
 		return agentio.NewError(agentio.CodeInternal, "encode output: "+err.Error(), agentio.RemediationInternal()).Emit(stderr)
@@ -743,7 +743,7 @@ func translateResolveErr(op *threadsops.OpError, prRef, threadID string, stderr 
 			e = e.WithRetryAfter(secs)
 		}
 	}
-	return e.Emit(stderr)
+	return emitDataError(stderr, e)
 }
 
 // translateOpErr converts a threadsops.OpError into an agentio.Error and emits it.
@@ -775,7 +775,7 @@ func translateOpErr(op *threadsops.OpError, stderr io.Writer) int {
 			e = e.WithRetryAfter(secs)
 		}
 	}
-	return e.Emit(stderr)
+	return emitDataError(stderr, e)
 }
 
 func doThreadsListPRs(args []string, stdout, stderr io.Writer, effective config.EffectiveConfig) int {
@@ -823,7 +823,7 @@ func doThreadsListPRs(args []string, stdout, stderr io.Writer, effective config.
 	}
 	api, authErr := apiFactoryWithEffective(effective)
 	if authErr != nil {
-		return authErr.Emit(stderr)
+		return emitDataError(stderr, authErr)
 	}
 	client, ok := api.(*gh.Client)
 	if !ok {
@@ -839,7 +839,7 @@ func doThreadsListPRs(args []string, stdout, stderr io.Writer, effective config.
 				agentio.RemediationRateLimited(resetAt, secs)).
 				WithRetryAfter(secs).
 				WithDetails(map[string]any{"reset_at": resetAt, "retry_after_seconds": secs})
-			return e.Emit(stderr)
+			return emitDataError(stderr, e)
 		}
 		return agentio.NewError(agentio.CodeUpstream, err.Error(), agentio.RemediationUpstream()).Emit(stderr)
 	}

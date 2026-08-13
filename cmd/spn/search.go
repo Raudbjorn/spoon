@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -23,6 +22,8 @@ import (
 // needs more candidates than the caller asked to see. Reranking the whole index
 // instead would be a cost blowout — SearchRows returns every stored vector.
 const defaultRerankOverfetch = 5
+
+type searchEmbedderFactory func(bool, config.EmbedderConfig, embed.VoyageConfig) (embed.SearchEmbedder, func(), *agentio.Error)
 
 type searchResult struct {
 	DocumentID, ForkID, Repo, Fork, URL, Model, IndexedAt string
@@ -57,6 +58,11 @@ func runSearchWith(args []string, stdout, stderr io.Writer) int {
 }
 
 func runSearchWithEffective(args []string, stdout, stderr io.Writer, effective config.EffectiveConfig, env map[string]string) int {
+	return runSearchWithEffectiveDeps(args, stdout, stderr, effective, env, defaultCommandDeps())
+}
+
+func runSearchWithEffectiveDeps(args []string, stdout, stderr io.Writer, effective config.EffectiveConfig, env map[string]string, deps commandDeps) int {
+	deps = deps.withDefaults()
 	ctx := context.Background()
 	query := ""
 	repoOwner, repoName := "", ""
@@ -187,9 +193,9 @@ func runSearchWithEffective(args []string, stdout, stderr io.Writer, effective c
 	// vectors, so the fastembed index reranks just as well.
 	rerankEnabled := voyageActive && rerankChoice != rerankForceOff
 
-	model, closeModel, aerr := searchEmbedderFor(useVoyage, embCfg, voyageCfg)
+	model, closeModel, aerr := deps.searchEmbedder(useVoyage, embCfg, voyageCfg)
 	if aerr != nil {
-		return aerr.Emit(stderr)
+		return emitDataError(stderr, aerr)
 	}
 	defer closeModel()
 
@@ -221,6 +227,13 @@ func runSearchWithEffective(args []string, stdout, stderr io.Writer, effective c
 		emitSemanticEmpty(stderr, useVoyage)
 		return 0
 	}
+	if err := emitSearchResults(stdout, results); err != nil {
+		return agentio.NewError(agentio.CodeInternal, err.Error(), agentio.RemediationInternal()).Emit(stderr)
+	}
+	return 0
+}
+
+func emitSearchResults(stdout io.Writer, results []searchResult) error {
 	for _, result := range results {
 		record := map[string]any{
 			"forkId": result.ForkID, "repo": result.Repo, "fork": result.Fork,
@@ -230,11 +243,11 @@ func runSearchWithEffective(args []string, stdout, stderr io.Writer, effective c
 			record["rerankScore"] = result.RerankScore
 			record["rerankModel"] = result.RerankModel
 		}
-		if err := agentio.WriteNDJSON(stdout, record); err != nil {
-			return agentio.NewError(agentio.CodeInternal, err.Error(), agentio.RemediationInternal()).Emit(stderr)
+		if err := writeDataNDJSON(stdout, record); err != nil {
+			return err
 		}
 	}
-	return 0
+	return nil
 }
 
 const (
@@ -366,7 +379,7 @@ func rankSearchRows(queryVector []float32, rows []store.SearchRow) (results []se
 }
 
 func emitRowsSkipped(stderr io.Writer, skipped int) {
-	_ = json.NewEncoder(stderr).Encode(map[string]any{"warning": map[string]any{
+	_ = agentio.WriteNDJSON(stderr, map[string]any{"warning": map[string]any{
 		"code":        "semantic_rows_skipped",
 		"message":     fmt.Sprintf("%d stored embedding(s) were unreadable and skipped", skipped),
 		"details":     map[string]any{"skipped": skipped},
@@ -383,7 +396,7 @@ func emitRerankUnavailable(stderr io.Writer, message string, details map[string]
 	if details != nil {
 		warning["details"] = details
 	}
-	_ = json.NewEncoder(stderr).Encode(map[string]any{"warning": warning})
+	_ = agentio.WriteNDJSON(stderr, map[string]any{"warning": warning})
 }
 
 // emitSemanticEmpty reports an empty result set. The remediation names the index
@@ -394,7 +407,7 @@ func emitSemanticEmpty(stderr io.Writer, useVoyage bool) {
 	if useVoyage {
 		remediation = "Run 'spn forks list <repo>' first with " + embed.VoyageAPIKeyEnv + " set to build the Voyage index."
 	}
-	_ = json.NewEncoder(stderr).Encode(map[string]any{"warning": map[string]any{
+	_ = agentio.WriteNDJSON(stderr, map[string]any{"warning": map[string]any{
 		"code": "semantic_index_empty", "message": "no matching semantic embeddings are indexed",
 		"remediation": remediation,
 	}})

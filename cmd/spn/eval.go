@@ -108,9 +108,9 @@ func runEvalWith(args []string, stdout, stderr io.Writer) int {
 		opts.Cluster.SetEmbedderForTest(embedderHookForTest)
 	}
 
-	opts.Logger = io.Discard
+	opts.Logger = debugDataLogger(io.Discard)
 	if os.Getenv("SPOON_DEBUG") == "1" {
-		opts.Logger = stderr
+		opts.Logger = debugDataLogger(stderr)
 	}
 	opts.ReserveDisabled = os.Getenv("SPOON_NO_RESERVE") == "1"
 
@@ -119,7 +119,7 @@ func runEvalWith(args []string, stdout, stderr io.Writer) int {
 
 	provider, repo, e := providerFactory(ctx, repoArg, forgeFlag, forgeHost)
 	if e != nil {
-		return e.Emit(stderr)
+		return emitDataError(stderr, e)
 	}
 	owner, name := splitRepoArg(repo)
 	if owner == "" || name == "" {
@@ -166,8 +166,7 @@ func runEvalWith(args []string, stdout, stderr io.Writer) int {
 		})
 	}
 	report := eval.Compute(repo, rows, jtmt)
-	enc := json.NewEncoder(stdout)
-	if err := enc.Encode(report); err != nil {
+	if err := writeDataJSON(stdout, report); err != nil {
 		return agentio.NewError(agentio.CodeInternal, err.Error(), agentio.RemediationInternal()).Emit(stderr)
 	}
 	return 0

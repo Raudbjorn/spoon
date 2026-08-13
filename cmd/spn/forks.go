@@ -3,8 +3,6 @@ package main
 
 import (
 	"context"
-	"encoding/csv"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -101,17 +99,22 @@ func runForks(args []string) int { return runForksWith(args, os.Stdout, os.Stder
 func runForksWith(args []string, stdout, stderr io.Writer) int {
 	boot := config.Bootstrap(io.Discard)
 	env := config.EnvironmentSnapshot()
-	return runForksWithEffective(args, stdout, stderr, config.ResolveEffectiveConfig(boot.Config, nil, env), env)
+	return runForksWithEffectiveDeps(args, stdout, stderr, config.ResolveEffectiveConfig(boot.Config, nil, env), env, defaultCommandDeps())
 }
 
 func runForksWithEffective(args []string, stdout, stderr io.Writer, effective config.EffectiveConfig, env map[string]string) int {
+	return runForksWithEffectiveDeps(args, stdout, stderr, effective, env, defaultCommandDeps())
+}
+
+func runForksWithEffectiveDeps(args []string, stdout, stderr io.Writer, effective config.EffectiveConfig, env map[string]string, deps commandDeps) int {
+	deps = deps.withDefaults()
 	if len(args) == 0 {
 		return agentio.NewError(agentio.CodeBadInput, "missing verb (list)", agentio.RemediationBadInput("forks", "")).Emit(stderr)
 	}
 	verb, rest := args[0], args[1:]
 	switch verb {
 	case "list":
-		return doForksList(rest, stdout, stderr, effective, env)
+		return doForksListWithDeps(rest, stdout, stderr, effective, env, deps)
 	default:
 		return agentio.NewError(agentio.CodeBadInput, "unknown verb: "+verb, agentio.RemediationBadInput("forks", "")).Emit(stderr)
 	}
@@ -124,6 +127,11 @@ type detailOptions struct {
 }
 
 func doForksList(args []string, stdout, stderr io.Writer, effective config.EffectiveConfig, env map[string]string) int {
+	return doForksListWithDeps(args, stdout, stderr, effective, env, defaultCommandDeps())
+}
+
+func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective config.EffectiveConfig, env map[string]string, deps commandDeps) int {
+	deps = deps.withDefaults()
 	var repo, forgeFlag, forgeHost, botList string
 	details := detailOptions{}
 	var githubRPM float64
@@ -134,6 +142,7 @@ func doForksList(args []string, stdout, stderr io.Writer, effective config.Effec
 	localBranchScanEnabled := os.Getenv("SPOON_LOCAL_BRANCH_SCAN") == "1"
 	csvMode := false
 	opts := forksops.Options{
+		Now: deps.now,
 		// Default: clustering enabled — the built-in embedder is always
 		// available, so this never blocks on external services.
 		Cluster: forksops.ClusterOptions{
@@ -478,7 +487,7 @@ func doForksList(args []string, stdout, stderr io.Writer, effective config.Effec
 	if embedderHookForTest == nil && !noEmbed {
 		instance, embedderID, closeEmbedder, err := embed.SelectBackendConfig(embed.BackendFastEmbed, embed.BackendConfig{FastEmbed: resolveFastEmbedConfigEffective(effective, "", "")})
 		if err != nil {
-			_ = json.NewEncoder(stderr).Encode(map[string]any{"warning": map[string]any{
+			_ = agentio.WriteNDJSON(stderr, map[string]any{"warning": map[string]any{
 				"code":        "embed_unavailable",
 				"message":     "fastembed embedder unavailable; continuing without semantic indexing (clustering uses the built-in lexical embedder)",
 				"remediation": "Set ONNX_PATH to libonnxruntime.so and run 'spoon setup', or pass --no-embed to silence this.",
@@ -537,9 +546,9 @@ func doForksList(args []string, stdout, stderr io.Writer, effective config.Effec
 	// emitClusterWarning. The discard is intentional — do not wire stderr
 	// here, prose log lines would interleave with the agent envelopes.
 	// SPOON_DEBUG=1 overrides for troubleshooting.
-	opts.Logger = io.Discard
+	opts.Logger = debugDataLogger(io.Discard)
 	if os.Getenv("SPOON_DEBUG") == "1" {
-		opts.Logger = stderr
+		opts.Logger = debugDataLogger(stderr)
 	}
 	// Auto-budget reserve is on by default (stop enriching before the rate
 	// window is drained, marking the rest degraded). SPOON_NO_RESERVE=1 opts out
@@ -554,7 +563,7 @@ func doForksList(args []string, stdout, stderr io.Writer, effective config.Effec
 	// record carries an "upstream" field so consumers can tell the networks
 	// apart.
 	if webDiffEnabled {
-		_ = json.NewEncoder(stderr).Encode(map[string]any{"warning": map[string]any{
+		_ = agentio.WriteNDJSON(stderr, map[string]any{"warning": map[string]any{
 			"code": "web_diff_unstable", "message": "GitHub web diff HTML is an unsupported, unstable fallback",
 		}})
 	}
@@ -614,7 +623,7 @@ func doForksList(args []string, stdout, stderr io.Writer, effective config.Effec
 		}
 		provider, _, e := providerFactory(ctx, "topic/placeholder", forgeFlag, forgeHost)
 		if e != nil {
-			return e.Emit(stderr)
+			return emitDataError(stderr, e)
 		}
 		enableWebDiffIfRequested(provider, webDiffEnabled)
 		enableLocalBranchScanIfRequested(provider, localBranchScanEnabled)
@@ -642,7 +651,7 @@ func doForksList(args []string, stdout, stderr io.Writer, effective config.Effec
 			if len(parsedLanes) > 0 {
 				info["lanes"] = sel.Lanes
 			}
-			_ = json.NewEncoder(stderr).Encode(map[string]any{"info": map[string]any{
+			_ = agentio.WriteNDJSON(stderr, map[string]any{"info": map[string]any{
 				"code":    "topic_repo_selected",
 				"message": fmt.Sprintf("evaluating %s (score %.1f)", sel.FullName, sel.Score),
 				"details": info,
@@ -663,7 +672,7 @@ func doForksList(args []string, stdout, stderr io.Writer, effective config.Effec
 
 	provider, repoArg, e := providerFactory(ctx, repo, forgeFlag, forgeHost)
 	if e != nil {
-		return e.Emit(stderr)
+		return emitDataError(stderr, e)
 	}
 	enableWebDiffIfRequested(provider, webDiffEnabled)
 	enableLocalBranchScanIfRequested(provider, localBranchScanEnabled)
@@ -699,7 +708,7 @@ func doForksList(args []string, stdout, stderr io.Writer, effective config.Effec
 			if secs > 0 {
 				e = e.WithRetryAfter(secs)
 			}
-			return e.Emit(stderr)
+			return emitDataError(stderr, e)
 		}
 		return agentio.NewError(agentio.CodeUpstream, streamErr.Error(), agentio.RemediationUpstream()).Emit(stderr)
 	}
@@ -735,7 +744,7 @@ func doForksList(args []string, stdout, stderr io.Writer, effective config.Effec
 			emitStageSkipWarning(stderr, r.CommitFilesSkip)
 		}
 		if r.Err != nil {
-			_ = agentio.WriteNDJSON(stderr, perForkErrorEnvelope(r.Err))
+			_ = emitPerForkError(stderr, r.Err)
 			continue
 		}
 		total++
@@ -743,12 +752,12 @@ func doForksList(args []string, stdout, stderr io.Writer, effective config.Effec
 			degraded++
 		}
 		persistSnapshotBestEffort(ctx, db, auth, owner, name, semanticModelID, r, &storeWarned, &truncWarned, stderr)
-		if err := agentio.WriteNDJSON(stdout, forkToJSONDetailedUpstream(r, details, "")); err != nil {
+		if err := emitForkRecord(stdout, r, details, ""); err != nil {
 			return agentio.NewError(agentio.CodeInternal, err.Error(), agentio.RemediationInternal()).Emit(stderr)
 		}
 	}
 	if degraded > 0 {
-		_ = json.NewEncoder(stderr).Encode(map[string]any{"warning": map[string]any{
+		_ = agentio.WriteNDJSON(stderr, map[string]any{"warning": map[string]any{
 			"code":        "degraded_rate_reserve",
 			"message":     fmt.Sprintf("%d/%d forks left un-enriched at the rate-limit reserve; their divergence is absent, not zero", degraded, total),
 			"remediation": "Re-run after the rate window resets to backfill (cached compares resume), or set SPOON_NO_RESERVE=1 to drain the full budget.",
@@ -874,7 +883,7 @@ func emitDuplicateIdentityWarning(stderr io.Writer, client *gh.Client) {
 	if client == nil || client.DuplicateIdentities() == 0 {
 		return
 	}
-	_ = json.NewEncoder(stderr).Encode(map[string]any{"warning": map[string]any{
+	_ = agentio.WriteNDJSON(stderr, map[string]any{"warning": map[string]any{
 		"code":        "duplicate_github_identity",
 		"message":     fmt.Sprintf("%d configured token(s) were deduplicated because they resolve to an already-active GitHub login", client.DuplicateIdentities()),
 		"remediation": "Use credentials for distinct GitHub users to gain independent primary budgets; REST and GraphQL quotas remain separate.",
@@ -902,7 +911,7 @@ func emitSemanticIndexWarning(ctx context.Context, db *store.Store, models []emb
 				emitVoyageWarning(stderr, "indexing failed; the fastembed index and the relational snapshot are unaffected", err)
 				continue
 			}
-			_ = json.NewEncoder(stderr).Encode(map[string]any{"warning": map[string]any{
+			_ = agentio.WriteNDJSON(stderr, map[string]any{"warning": map[string]any{
 				"code": "semantic_index_failed", "message": err.Error(),
 				"remediation": "The relational snapshot was saved; rerun the same command after fixing FastEmbed to retry missing embeddings.",
 			}})
@@ -925,7 +934,7 @@ func emitVoyageIndexingNotice(ctx context.Context, db *store.Store, model embed.
 		// same failure with a better message.
 		return
 	}
-	_ = json.NewEncoder(stderr).Encode(map[string]any{"warning": map[string]any{
+	_ = agentio.WriteNDJSON(stderr, map[string]any{"warning": map[string]any{
 		"code":    "voyage_indexing",
 		"message": fmt.Sprintf("embedding %d document(s) with %s", len(pending), model.ModelID()),
 		"details": map[string]any{"documents": len(pending), "model": model.ModelID()},
@@ -941,7 +950,7 @@ func emitVoyageTokensNotice(stderr io.Writer, voyage *embed.VoyageEmbedder) {
 	if tokens == 0 && hits == 0 && deduped == 0 {
 		return
 	}
-	_ = json.NewEncoder(stderr).Encode(map[string]any{"warning": map[string]any{
+	_ = agentio.WriteNDJSON(stderr, map[string]any{"warning": map[string]any{
 		"code": "voyage_tokens",
 		"message": fmt.Sprintf("%s billed %d token(s) for %d document(s); %d served from cache, %d deduplicated",
 			voyage.ModelID(), tokens, misses, hits, deduped),
@@ -958,7 +967,7 @@ func emitVoyageTokensNotice(stderr io.Writer, voyage *embed.VoyageEmbedder) {
 // place a Voyage failure is fatal is `spn search --voyage`, where the user named
 // Voyage on that invocation and silently serving other results would be worse.
 func emitVoyageWarning(stderr io.Writer, message string, err error) {
-	_ = json.NewEncoder(stderr).Encode(map[string]any{"warning": map[string]any{
+	_ = agentio.WriteNDJSON(stderr, map[string]any{"warning": map[string]any{
 		"code":        "voyage_unavailable",
 		"message":     "voyage " + message + ": " + err.Error(),
 		"remediation": voyageRemediation(err),
@@ -1019,7 +1028,7 @@ func persistSnapshotBestEffort(ctx context.Context, db *store.Store, auth forge.
 	diffTruncated, err := persistForkSnapshot(ctx, db, auth, owner, name, modelID, r)
 	if err != nil && !*warned {
 		*warned = true
-		_ = json.NewEncoder(stderr).Encode(map[string]any{"warning": map[string]any{
+		_ = agentio.WriteNDJSON(stderr, map[string]any{"warning": map[string]any{
 			"code":        "store_unavailable",
 			"message":     "failed to persist fork snapshot; continuing without persistence: " + err.Error(),
 			"remediation": "Check disk space and permissions on ~/.local/share/spoon; listing/output is unaffected.",
@@ -1027,7 +1036,7 @@ func persistSnapshotBestEffort(ctx context.Context, db *store.Store, auth forge.
 	}
 	if err == nil && diffTruncated && !*truncWarned {
 		*truncWarned = true
-		_ = json.NewEncoder(stderr).Encode(map[string]any{"warning": map[string]any{
+		_ = agentio.WriteNDJSON(stderr, map[string]any{"warning": map[string]any{
 			"code":        "embed_diff_truncated",
 			"message":     "one or more fork diffs exceeded the embedding window and were truncated for indexing",
 			"remediation": "Semantic ranking uses the leading portion of large diffs; no action needed unless recall on big changes matters.",
@@ -1263,7 +1272,7 @@ func momentumToJSON(momentum forksops.MomentumInfo) map[string]any {
 }
 
 func emitForksCSV(ctx context.Context, db *store.Store, auth forge.AuthInfo, owner, name, modelID string, stdout, stderr io.Writer, ch <-chan forksops.Result) int {
-	w := csv.NewWriter(stdout)
+	w := newDataCSV(stdout)
 	header := []string{
 		"id", "owner", "name", "url", "stars", "pushed_at", "is_archived",
 		"sub_forks", "releases", "heat", "tier",
@@ -1271,7 +1280,7 @@ func emitForksCSV(ctx context.Context, db *store.Store, auth forge.AuthInfo, own
 		"t3_contributors", "t3_commit_span_days",
 		"cluster_name", "cluster_score",
 	}
-	if err := w.Write(header); err != nil {
+	if err := w.writeRecord(header); err != nil {
 		return agentio.NewError(agentio.CodeInternal, "write csv header: "+err.Error(), agentio.RemediationInternal()).Emit(stderr)
 	}
 	storeWarned := false
@@ -1300,12 +1309,11 @@ func emitForksCSV(ctx context.Context, db *store.Store, auth forge.AuthInfo, own
 			continue
 		}
 		persistSnapshotBestEffort(ctx, db, auth, owner, name, modelID, r, &storeWarned, &truncWarned, stderr)
-		if err := w.Write(forkToCSVRow(r)); err != nil {
+		if err := w.writeRecord(forkToCSVRow(r)); err != nil {
 			return agentio.NewError(agentio.CodeInternal, "write csv row: "+err.Error(), agentio.RemediationInternal()).Emit(stderr)
 		}
 	}
-	w.Flush()
-	if err := w.Error(); err != nil {
+	if err := w.flush(); err != nil {
 		return agentio.NewError(agentio.CodeInternal, "flush csv: "+err.Error(), agentio.RemediationInternal()).Emit(stderr)
 	}
 	return 0
@@ -1370,8 +1378,7 @@ func emitStageSkipWarning(stderr io.Writer, skip *forksops.StageSkip) {
 			},
 		},
 	}
-	enc := json.NewEncoder(stderr)
-	_ = enc.Encode(envelope)
+	_ = agentio.WriteNDJSON(stderr, envelope)
 }
 
 // emitClusterWarning writes a structured warning to stderr (one JSON object
@@ -1386,8 +1393,7 @@ func emitClusterWarning(stderr io.Writer, skip *forksops.ClusterSkip) {
 			"remediation": "re-run with --no-cluster to skip clustering, or report this if it persists",
 		},
 	}
-	enc := json.NewEncoder(stderr)
-	_ = enc.Encode(envelope)
+	_ = agentio.WriteNDJSON(stderr, envelope)
 }
 
 func resolveFastEmbedConfigEffective(effective config.EffectiveConfig, model, cacheDir string) embed.FastEmbedConfig {
@@ -1447,11 +1453,11 @@ func streamAndEmit(ctx context.Context, db *store.Store, auth forge.AuthInfo, pr
 			if secs > 0 {
 				e = e.WithRetryAfter(secs)
 			}
-			return e.Emit(stderr)
+			return emitDataError(stderr, e)
 		}
 		// A failing repo in a topic set degrades to a structured warning so
 		// the remaining repos still get evaluated.
-		_ = json.NewEncoder(stderr).Encode(map[string]any{
+		_ = agentio.WriteNDJSON(stderr, map[string]any{
 			"warning": map[string]any{
 				"code":    "topic_repo_failed",
 				"message": upstream + ": " + streamErr.Error(),
@@ -1479,13 +1485,7 @@ func streamAndEmit(ctx context.Context, db *store.Store, auth forge.AuthInfo, pr
 			emitStageSkipWarning(stderr, r.CommitFilesSkip)
 		}
 		if r.Err != nil {
-			_ = agentio.WriteNDJSON(stderr, map[string]any{
-				"error": map[string]any{
-					"code":    r.Err.Code,
-					"message": r.Err.Message,
-					"details": r.Err.Details,
-				},
-			})
+			_ = emitTopicPerForkError(stderr, r.Err)
 			continue
 		}
 		total++
@@ -1493,12 +1493,12 @@ func streamAndEmit(ctx context.Context, db *store.Store, auth forge.AuthInfo, pr
 			degraded++
 		}
 		persistSnapshotBestEffort(ctx, db, auth, owner, name, modelID, r, &storeWarned, &truncWarned, stderr)
-		if err := agentio.WriteNDJSON(stdout, forkToJSONDetailedUpstream(r, details, upstream)); err != nil {
+		if err := emitForkRecord(stdout, r, details, upstream); err != nil {
 			return agentio.NewError(agentio.CodeInternal, err.Error(), agentio.RemediationInternal()).Emit(stderr)
 		}
 	}
 	if degraded > 0 {
-		_ = json.NewEncoder(stderr).Encode(map[string]any{
+		_ = agentio.WriteNDJSON(stderr, map[string]any{
 			"warning": map[string]any{
 				"code":        "degraded_rate_reserve",
 				"message":     fmt.Sprintf("%s: %d/%d forks left un-enriched at the rate-limit reserve", upstream, degraded, total),
@@ -1512,6 +1512,24 @@ func streamAndEmit(ctx context.Context, db *store.Store, auth forge.AuthInfo, pr
 // forkToJSONUpstream is forkToJSON plus an optional upstream tag (topic mode).
 func forkToJSONUpstream(r forksops.Result, upstream string) map[string]any {
 	return forkToJSONDetailedUpstream(r, detailOptions{}, upstream)
+}
+
+func emitForkRecord(stdout io.Writer, r forksops.Result, details detailOptions, upstream string) error {
+	return writeDataNDJSON(stdout, forkToJSONDetailedUpstream(r, details, upstream))
+}
+
+func emitPerForkError(stderr io.Writer, e *forksops.Error) error {
+	return writeDataNDJSON(stderr, perForkErrorEnvelope(e))
+}
+
+func emitTopicPerForkError(stderr io.Writer, e *forksops.Error) error {
+	return writeDataNDJSON(stderr, map[string]any{
+		"error": map[string]any{
+			"code":    e.Code,
+			"message": e.Message,
+			"details": e.Details,
+		},
+	})
 }
 
 func forkToJSONDetailedUpstream(r forksops.Result, details detailOptions, upstream string) map[string]any {

@@ -47,6 +47,8 @@ layer for users who have no personal config.
   "ansi16", "ansi8", "mono", or "no-color". Empty = truecolor; ` + "`SPOON_TUI_COLOR`" + `
   overrides it, while non-empty ` + "`NO_COLOR`" + ` disables color when no explicit
   profile is set.
+  ` + "`spn`" + ` deliberately gives non-empty ` + "`NO_COLOR`" + ` precedence over
+  ` + "`SPOON_TUI_COLOR`" + ` for pipeline safety, unlike the interactive TUI.
 - ` + "`ui.glyphs`" + ` — "unicode" (default) or "ascii"; ` + "`SPOON_TUI_GLYPHS`" + `
   overrides it.
 - ` + "`embedder.backend`" + ` — "fastembed" (the only backend; empty means the

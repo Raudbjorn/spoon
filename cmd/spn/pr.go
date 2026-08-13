@@ -76,11 +76,11 @@ func doPRStatus(args []string, stdout, stderr io.Writer, effective config.Effect
 	}
 	api, authErr := apiFactoryWithEffective(effective)
 	if authErr != nil {
-		return authErr.Emit(stderr)
+		return emitDataError(stderr, authErr)
 	}
 	status, e := fetchPRStatus(context.Background(), api, owner, repo, number)
 	if e != nil {
-		return e.Emit(stderr)
+		return emitDataError(stderr, e)
 	}
 	if err := agentio.WriteJSON(stdout, status); err != nil {
 		return agentio.NewError(agentio.CodeInternal, "encode output: "+err.Error(), agentio.RemediationInternal()).Emit(stderr)
