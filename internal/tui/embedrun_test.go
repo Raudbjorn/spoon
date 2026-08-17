@@ -141,4 +141,34 @@ func TestEmbedRunDoublePressIsRefused(t *testing.T) {
 	}
 }
 
+// Completion can win the command race. A late lifecycle message must not
+// resurrect the run state or continue consuming progress for a completed run.
+func TestEmbedRunIgnoresLateLifecycleMessages(t *testing.T) {
+	m := Model{embedRunning: true}
+
+	updated, _ := m.Update(embedRunDoneMsg{})
+	m = updated.(Model)
+	if m.embedRunning {
+		t.Fatal("completion left the embedding run active")
+	}
+
+	updated, cmd := m.Update(embedRunStartedMsg{forks: 1})
+	m = updated.(Model)
+	if m.embedRunning {
+		t.Fatal("late start message resurrected a completed embedding run")
+	}
+	if cmd != nil {
+		t.Fatal("late start message re-armed the progress pump")
+	}
+
+	updated, cmd = m.Update(embedProgressMsg{provider: "fastembed", indexed: 1, pending: 1})
+	m = updated.(Model)
+	if m.embedRunNote != "" {
+		t.Fatalf("late progress changed the finished status to %q", m.embedRunNote)
+	}
+	if cmd != nil {
+		t.Fatal("late progress re-armed the progress pump")
+	}
+}
+
 var _ tea.Cmd = nil

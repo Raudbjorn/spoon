@@ -18,10 +18,14 @@ import (
 
 // embedRunStartedMsg announces that a run is under way, so the status bar can
 // say so before the first batch lands.
-type embedRunStartedMsg struct{ forks int }
+type embedRunStartedMsg struct {
+	forks int
+	run   int
+}
 
 // embedProgressMsg reports one completed batch for one provider.
 type embedProgressMsg struct {
+	run              int
 	provider         string
 	indexed, pending int
 }
@@ -30,6 +34,7 @@ type embedProgressMsg struct {
 // did not stop the run -- a Voyage outage must not cost the user the local
 // index that succeeded beside it.
 type embedRunDoneMsg struct {
+	run      int
 	indexed  int
 	warnings []string
 	err      error
@@ -180,19 +185,20 @@ func (m *Model) startEmbedRunWith(all, useFast, useVoyage bool) tea.Cmd {
 	if effective != nil {
 		cacheDir = effective.FastEmbed.CacheDir.Value
 	}
-	progress := m.embedMsgs
-
-	// Set here, not only in the embedRunStartedMsg handler. handleTableKey has
-	// a pointer receiver, so this lands before the next keystroke is read --
-	// which is what makes the "already in progress" guard above hold for two
-	// presses in the same frame. Waiting for the message would leave a window
-	// in which a second press starts a second run, and under Voyage a second
-	// bill.
+	parentCtx := m.lifecycleCtx
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
+	progress := make(chan tea.Msg, 16)
 	m.embedRunning = true
+	m.embedRunID++
+	run := m.embedRunID
 	m.embedRunTotal = len(work)
+	m.embedMsgs = progress
+	m.embedProgressCtx, m.embedProgressCancel = context.WithCancel(parentCtx)
 
 	return tea.Batch(
-		func() tea.Msg { return embedRunStartedMsg{forks: len(work)} },
+		func() tea.Msg { return embedRunStartedMsg{forks: len(work), run: run} },
 		func() tea.Msg {
 			ctx := context.Background()
 
@@ -206,14 +212,14 @@ func (m *Model) startEmbedRunWith(all, useFast, useVoyage bool) tea.Cmd {
 				forkKeys = append(forkKeys, item.forkKey)
 			}
 			if err := db.UpsertSnapshots(ctx, snapshots); err != nil {
-				return embedRunDoneMsg{err: fmt.Errorf("persist documents: %w", err)}
+				return embedRunDoneMsg{run: run, err: fmt.Errorf("persist documents: %w", err)}
 			}
 
 			var warnings []string
 			total := 0
 
 			if fastOK {
-				indexed, err := runFastEmbed(ctx, db, cacheDir, forkKeys, progress)
+				indexed, err := runFastEmbed(ctx, db, cacheDir, forkKeys, run, progress)
 				total += indexed
 				if err != nil {
 					warnings = append(warnings, "fastembed: "+err.Error())
@@ -226,30 +232,30 @@ func (m *Model) startEmbedRunWith(all, useFast, useVoyage bool) tea.Cmd {
 			// failures never cost the local index -- the same contract the CLI
 			// keeps.
 			if useVoyage && effective != nil {
-				indexed, err := runVoyage(ctx, db, *effective, environment, forkKeys, voyageRequired, progress)
+				indexed, err := runVoyage(ctx, db, *effective, environment, forkKeys, voyageRequired, run, progress)
 				total += indexed
 				if err != nil {
 					warnings = append(warnings, "voyage: "+err.Error())
 				}
 			}
 
-			return embedRunDoneMsg{indexed: total, warnings: warnings}
+			return embedRunDoneMsg{run: run, indexed: total, warnings: warnings}
 		},
 	)
 }
 
-func runFastEmbed(ctx context.Context, db *store.Store, cacheDir string, forkKeys []string, progress chan<- tea.Msg) (int, error) {
+func runFastEmbed(ctx context.Context, db *store.Store, cacheDir string, forkKeys []string, run int, progress chan<- tea.Msg) (int, error) {
 	model, err := embed.NewFastEmbedEmbedder(embed.FastEmbedConfig{CacheDir: cacheDir})
 	if err != nil {
 		return 0, err
 	}
 	defer model.Close()
 	return semantic.IndexPendingFor(ctx, db, model, forkKeys, func(p semantic.IndexProgress) {
-		sendEmbedProgress(progress, embedProgressMsg{provider: "fastembed", indexed: p.Indexed, pending: p.Pending})
+		sendEmbedProgress(progress, embedProgressMsg{run: run, provider: "fastembed", indexed: p.Indexed, pending: p.Pending})
 	})
 }
 
-func runVoyage(ctx context.Context, db *store.Store, effective config.EffectiveConfig, environment map[string]string, forkKeys []string, required bool, progress chan<- tea.Msg) (int, error) {
+func runVoyage(ctx context.Context, db *store.Store, effective config.EffectiveConfig, environment map[string]string, forkKeys []string, required bool, run int, progress chan<- tea.Msg) (int, error) {
 	cfg, active, err := embed.ResolveVoyageEffective(ctx, effective, false, db, environment)
 	if err != nil {
 		return 0, err
@@ -275,7 +281,7 @@ func runVoyage(ctx context.Context, db *store.Store, effective config.EffectiveC
 		return 0, err
 	}
 	return semantic.IndexPendingFor(ctx, db, model, forkKeys, func(p semantic.IndexProgress) {
-		sendEmbedProgress(progress, embedProgressMsg{provider: "voyage", indexed: p.Indexed, pending: p.Pending})
+		sendEmbedProgress(progress, embedProgressMsg{run: run, provider: "voyage", indexed: p.Indexed, pending: p.Pending})
 	})
 }
 

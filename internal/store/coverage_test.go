@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -188,4 +189,29 @@ func TestPendingDocumentsFor(t *testing.T) {
 			t.Fatalf("scoped query returned %d for the full set, unscoped returned %d", len(scoped), len(all))
 		}
 	})
+}
+
+func TestPendingDocumentsForChunksLargeSelections(t *testing.T) {
+	const (
+		fastModel = "fastembed:fast-bge-small-en-v1.5:maxlen=512:prompts=bge"
+		forks     = 1_000
+	)
+	ctx := context.Background()
+	db := coverageStore(t)
+
+	keys := make([]string, forks)
+	for i := range keys {
+		keys[i] = seedFork(t, db, fmt.Sprintf("large-%d", i), "pending").ForkKey()
+	}
+	// Fork keys form a set at the caller boundary. Repeating one key must not
+	// produce duplicate work when batching a large explicit selection.
+	keys = append(keys, keys[0])
+
+	pending, err := db.PendingDocumentsFor(ctx, fastModel, keys)
+	if err != nil {
+		t.Fatalf("large selection failed: %v", err)
+	}
+	if len(pending) != forks {
+		t.Fatalf("pending = %d, want %d selected documents", len(pending), forks)
+	}
 }

@@ -95,3 +95,24 @@ func TestEmbedColumnHeaderAndRowsStayAligned(t *testing.T) {
 		}
 	}
 }
+
+// T2 persistence rewrites a fork document. Coverage must be reloaded after
+// that write so the EMB column can show the newly stale embedding.
+func TestProcessPendingUpdatesReloadsEmbeddingCoverage(t *testing.T) {
+	db, _ := documentStore(t)
+	m := refreshModel(t)
+	m.db = db
+	m.embedModels = embedModels{fastEmbed: embed.FastEmbedModelID}
+	m.autoIndexDone = true // isolate coverage refresh from the automatic pass.
+	m.enriching = true
+	m.enrichTotal = 1
+	m.pendingUpdates = []tier2ResultMsg{{
+		forkID: m.forks[0].Fork.ID,
+		t2:     forge.T2Data{Performed: true, AheadCount: 1},
+	}}
+
+	_, cmd := m.processPendingUpdates()
+	if cmd == nil {
+		t.Fatal("T2 document persistence did not schedule an embedding coverage reload")
+	}
+}
