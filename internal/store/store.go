@@ -824,6 +824,18 @@ func (s *Store) UpsertSnapshots(ctx context.Context, snaps []Snapshot) error {
 	return s.secureArtifactsOnce()
 }
 
+// ForkKey is the key this snapshot's fork row will be written under.
+//
+// Callers that attach a Document to a Snapshot must derive its ID from this
+// rather than composing RepoKey/ForkKey from their own copies of the owner and
+// name: the write below keys off snap.Repo, so a caller working from a
+// differently-cased or redirected repository string would insert a document
+// that joins to no fork at all -- an orphan that is invisible until a coverage
+// query reports zero for every fork.
+func (s Snapshot) ForkKey() string {
+	return ForkKey(RepoKey(s.Repo.Provider, s.Repo.Host, s.Repo.Owner, s.Repo.Name), s.Fork.ForgeID)
+}
+
 func upsertSnapshotTx(ctx context.Context, tx *wtx, snap Snapshot) error {
 	repoKey := RepoKey(snap.Repo.Provider, snap.Repo.Host, snap.Repo.Owner, snap.Repo.Name)
 	forkKey := ForkKey(repoKey, snap.Fork.ForgeID)

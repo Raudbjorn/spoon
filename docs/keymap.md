@@ -11,14 +11,20 @@ Reconciled **2026-08-12** against [`design-system/docs/tui-gallery.md:43-71`](..
 | Repository input, export, filter, rank | arrows, `Home`/`End`, `Ctrl+B`/`Ctrl+F`, `Ctrl+A`/`Ctrl+E`, `Backspace`, `Delete`, `Ctrl+U` | Edit input |
 | Fork table | `Up`/`k`, `Down`/`j`, `PgUp`/`PgDn`, `Home`, `End`/`G` | Move selection or page |
 | Fork table | `Enter`, `n`, `/`, `R`, `Esc`, `?` | Details, new repository, filter, intent rank, clear filter, help |
-| Fork table | `g`, `s`, `S`, `o`, `d`, `c`, `t`, `f`, `y`, `r`, `Space`, `e`, `E`, `,`, `q` | Cluster, sort, reverse, open, compare, enrichment ceiling, theme, chrome, yank, refresh, mark, export, settings, quit |
+| Fork table | `g`, `s`, `S`, `o`, `d`, `c`, `t`, `f`, `y`, `r`, `Space`, `e`, `E`, `i`, `I`, `,`, `q` | Cluster, sort, reverse, open, compare, enrichment ceiling, theme, chrome, yank, refresh, mark, export marked, export all, embed marked, embed all, settings, quit |
 | Fork details | `Up`/`k`, `Down`/`j`, `PgUp`/`PgDn`, `Home`, `End`/`G` | Scroll |
 | Fork details | `Esc`/`b`/`q`, `o`, `d`, `c`, `t`, `f`, `y` | Back, open, compare, enrichment ceiling, theme, chrome, yank |
 | Help | `?`/`Esc`/`q`, `Up`/`k`, `Down`/`j`, `PgUp`/`PgDn`, `Home`, `End`/`G` | Close or scroll |
 | Topic picker | `Up`/`k`, `Down`/`j`, `Enter`, `Esc`/`q` | Move, choose, cancel |
 | Export/filter/rank prompt | `Enter` / `Esc` | Apply or cancel |
 | Settings | `Up`/`k`, `Down`/`j`, `Tab`/`Right`, `Shift+Tab`/`Left`, `Enter`/`e`, `s`, `v`, `Esc`/`q` | Move, change section, edit, save, check Voyage status, close |
+| Settings actions | `p`, `o`, `f`, `v`, `r`, `c`, `s` | Probe credentials, check store, check FastEmbed, check Voyage, rewrite README, copy config path, save |
 | Settings editor | `Home`/`Ctrl+A`, `End`/`Ctrl+E`, `Backspace`, `Delete`, `Ctrl+U`, `Ctrl+Y` | Move cursor, edit value, clear, copy non-credential value |
+
+The fork table's footer lists a curated subset of these bindings, not all of
+them: the full set wraps to nine lines at the 80-column floor, which is more of
+the frame than the fork rows get. `?` opens the complete list, and every key
+above works whether or not the footer names it.
 
 **D1 transition (one release):** `t` moved from enrichment ceiling to dark/light theme; `c` moved from compare to enrichment ceiling; `d` moved from unbound to compare. Both table and detail apply `c` and `d`. `f` toggles only existing table/detail chrome and preserves selection, paging, and scroll position.
 

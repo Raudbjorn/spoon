@@ -21,6 +21,11 @@ func TestEveryConsequenceTaggedFieldGatesItsActualTransition(t *testing.T) {
 			value = "/tmp/key"
 		case "embedder.voyage.outputDimension":
 			value = "512"
+		case "embedder.voyage.autoIndex":
+			// Turning this on is the single most expensive toggle in the panel:
+			// it commits every fork of every list to a per-token billed service
+			// with no further prompt, so it must be gated like the rest.
+			value = "true"
 		default:
 			t.Fatalf("uncovered consequence field %q", field.Key)
 		}

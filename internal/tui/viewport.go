@@ -1,6 +1,10 @@
 package tui
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+)
 
 // Cursor and scroll-window arithmetic, shared by the table, the detail view
 // and the help overlay. Before this file the render window and the movement
@@ -28,38 +32,120 @@ func clampCursorVisible(cursor int, vis []int) int {
 	return vis[len(vis)-1]
 }
 
-// tableChrome is the number of lines viewTable spends on anything that is not
-// a fork row: the status bar, the column header, the feedback line (always
-// emitted, blank when there is nothing to say) and the keybinding footer.
-const tableChrome = 4
+// unmeasuredPageSize is the row budget for a model that has not received a
+// WindowSizeMsg yet -- every model a test builds directly. Picking a usable
+// page keeps those tests rendering something rather than nothing.
+const unmeasuredPageSize = 10
+
+// chromeHeight is the true rendered height of everything viewTable emits that
+// is not a fork row.
+//
+// It measures rather than counts. The previous constant budgeted one line for
+// the keybinding footer, but ui.KeyLegend wraps to as many lines as the
+// bindings need -- nine of them at the enforced 80-column floor, four even at
+// 200 columns. The frame therefore overran the terminal on every single render
+// of the fork table, Bubble Tea's renderer scrolled, and the status bar and
+// column header were pushed off the top permanently. Reversing the sort order
+// was the only way to read the top-ranked forks.
+//
+// Anything conditional is measured under the same condition the renderer uses,
+// so a chrome line the renderer skips is a chrome line this does not charge for.
+func (m Model) chromeHeight() int {
+	// Fullscreen hides every piece of chrome except the column header -- and
+	// then ends on the last row's newline, so the frame carries one trailing
+	// blank line that the other modes absorb into the footer. That blank is a
+	// real terminal row, so it is charged for here rather than overrunning.
+	if m.fullscreen {
+		return 2
+	}
+	// The status bar and the feedback line are one line each by construction:
+	// renderStatusBar elides its variable fields to fit (see the priority loop
+	// there), and the feedback line is always emitted, blank when idle.
+	height := lipgloss.Height(m.renderStatusBar()) + 1 + 1
+	if legend := m.tableLegends(); legend != "" {
+		height += lipgloss.Height(m.styles().help.Render(" " + legend))
+	}
+	height += lipgloss.Height(m.tableKeyLegend())
+	return height
+}
+
+// rowWindow returns the [start, end) window of visible positions the table
+// draws for a budget of n rows with the cursor at cursorPos. The list stays
+// pinned to the top until the cursor passes the last row, after which the
+// cursor is pinned to the bottom.
+func rowWindow(cursorPos, n, total int) (int, int) {
+	start := 0
+	if cursorPos >= n {
+		start = cursorPos - n + 1
+	}
+	end := start + n
+	if end > total {
+		end = total
+	}
+	return start, end
+}
+
+// clusterHeadersIn counts the cluster header lines viewTable emits for the
+// [start, end) window. It mirrors the emit condition in viewTable exactly; the
+// two must agree or the budget is wrong in whichever direction they differ.
+func (m Model) clusterHeadersIn(vis []int, start, end int) int {
+	if !m.groupByCluster {
+		return 0
+	}
+	prev := ""
+	if start > 0 {
+		prev = m.forks[vis[start-1]].Heat.ClusterID
+	}
+	headers := 0
+	for p := start; p < end; p++ {
+		cur := m.forks[vis[p]].Heat.ClusterID
+		if (start == 0 && p == start) || cur != prev {
+			headers++
+		}
+		prev = cur
+	}
+	return headers
+}
 
 // pageSize is how many fork rows one screen holds, and therefore how far
 // PgUp/PgDn moves. Single source of truth for the render window and the paging
 // keys -- they cannot drift apart if they call the same function.
 //
-// The badge legend is optional, so it is counted only when present; the old
-// inline "m.height - 4" assumed it away and overdrew by a row whenever any
-// fork carried a badge.
-//
-// Known and deliberately unhandled: under groupByCluster the renderer also
-// emits a header line per cluster boundary in view, which this does not
-// budget for, so the frame overruns by the number of headers on screen.
-// Reserving rows for them is a fixpoint problem (the headers depend on the
-// window, the window depends on the headers), and shrinking the window would
-// hide the cursor when it sits on the last row. Paging stays self-consistent
-// because the renderer and the keys use this same number either way.
+// Cluster headers are budgeted by iterating rather than solving: the header
+// count depends on the window and the window depends on the header count, but
+// the map is monotone and converges in two passes on real data, so a bounded
+// loop is enough. The floor of one row is not optional -- without it a window
+// dense in headers could shrink to nothing and hide the cursor.
 func (m Model) pageSize() int {
-	chrome := tableChrome
-	if m.badgeLegend() != "" {
-		chrome++
+	if m.height <= 0 {
+		return unmeasuredPageSize
 	}
-	n := m.height - chrome
-	if n < 1 {
-		// No WindowSizeMsg yet (every model built directly in a test). Pick a
-		// usable page rather than a negative one.
-		n = 10
+	budget := m.height - m.chromeHeight()
+	if budget < 1 {
+		return 1
 	}
-	return n
+	if !m.groupByCluster {
+		return budget
+	}
+
+	vis := m.visibleIdx()
+	cursorPos := visiblePos(m.cursor, vis)
+	if cursorPos < 0 {
+		cursorPos = 0
+	}
+	rows := budget
+	for range 3 {
+		start, end := rowWindow(cursorPos, rows, len(vis))
+		next := budget - m.clusterHeadersIn(vis, start, end)
+		if next < 1 {
+			next = 1
+		}
+		if next == rows {
+			break
+		}
+		rows = next
+	}
+	return rows
 }
 
 // visiblePos returns the ordinal of an absolute fork index within vis, or -1

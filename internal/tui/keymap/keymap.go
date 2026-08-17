@@ -69,6 +69,8 @@ const (
 	ApplySuggestion  Action = "apply-suggestion"
 	CounterPropose   Action = "counter-propose"
 	OpenSettings     Action = "open-settings"
+	EmbedMarked      Action = "embed-marked"
+	EmbedAll         Action = "embed-all"
 )
 
 type Binding struct {
@@ -119,6 +121,8 @@ var Registry = []Binding{
 	{MainTable, []string{"e"}, ExportMarked, "Export marked forks", "No upstream counterpart"},
 	{MainTable, []string{"E"}, ExportAll, "Export all forks", "No upstream counterpart"},
 	{MainTable, []string{","}, OpenSettings, "Open settings", "Spoon-only host configuration editor"},
+	{MainTable, []string{"i"}, EmbedMarked, "Embed marked forks", "No upstream counterpart"},
+	{MainTable, []string{"I"}, EmbedAll, "Embed all forks", "No upstream counterpart"},
 	{MainDetail, []string{"esc", "b", "q"}, Back, "Return to fork table", "Spoon maps q to back in detail; b is an added back shortcut"},
 	{MainDetail, []string{"up", "k"}, Up, "Scroll up", "Spoon adds vi navigation"},
 	{MainDetail, []string{"down", "j"}, Down, "Scroll down", "Spoon adds vi navigation"},
@@ -240,6 +244,24 @@ func ForScopes(scopes ...Scope) []Binding {
 	for _, binding := range Registry {
 		if want[binding.Scope] {
 			bindings = append(bindings, binding)
+		}
+	}
+	return bindings
+}
+
+// ForActions returns the named actions' bindings within scope, in the order the
+// actions are given rather than registry order -- a curated legend orders by
+// what the reader most needs, not by where the binding happens to be declared.
+// An action with no binding in scope is skipped, so a legend cannot advertise a
+// key that does not exist.
+func ForActions(scope Scope, actions ...Action) []Binding {
+	bindings := make([]Binding, 0, len(actions))
+	for _, action := range actions {
+		for _, binding := range Registry {
+			if binding.Scope == scope && binding.Action == action {
+				bindings = append(bindings, binding)
+				break
+			}
 		}
 	}
 	return bindings

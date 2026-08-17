@@ -232,6 +232,32 @@ type Model struct {
 	rankPending bool
 	queryScorer embed.QueryScorer
 	settings    settings.Model
+
+	// embedProbe holds what the session knows about the two embedding
+	// providers. Probed from the resolved configuration rather than assumed,
+	// because both of fastembed's prerequisites live outside the binary. See
+	// embedstatus.go.
+	embedProbe embedStatus
+
+	// embedModels are the index partitions the EMB column reports on, and
+	// embedCoverage is the per-fork answer keyed by store fork key. Coverage is
+	// loaded through a command, never in View: View runs on every keystroke and
+	// must not touch the database. See embedcolumn.go.
+	embedModels   embedModels
+	embedCoverage map[string]store.ForkCoverage
+
+	// An embedding run in flight. embedMsgs carries per-batch progress from the
+	// indexing goroutine onto the update loop; it is buffered and lossy, since
+	// a UI that is not draining must never stall billed work. See embedrun.go.
+	embedRunning  bool
+	embedRunTotal int
+	embedRunNote  string
+	embedMsgs     chan tea.Msg
+
+	// autoIndexDone latches the automatic pass to once per fork list. Raising
+	// the tier ceiling re-enriches and produces a second enrichmentDoneMsg,
+	// which must not silently start another billed run.
+	autoIndexDone bool
 }
 
 // overlayFocus is the main model's active focus identity. Fork views retain
@@ -281,6 +307,7 @@ func NewModel(provider forge.Forge, auth forge.AuthInfo, repo string, refresh bo
 		sortCol:         "heat",
 		sortAsc:         false,
 		clusterMsgs:     make(chan tea.Msg, 16),
+		embedMsgs:       make(chan tea.Msg, 16),
 		lifecycleCtx:    lifecycleCtx,
 		lifecycleCancel: lifecycleCancel,
 		theme:           theme.DefaultContext(),
@@ -353,6 +380,11 @@ func (m Model) WithTheme(ctx theme.Context) Model {
 // resolved the active configuration layer.
 func (m Model) WithSettings(settingsModel settings.Model) Model {
 	m.settings = settingsModel.WithTheme(m.themeContext())
+	// The settings model carries the resolved configuration, so this is the
+	// first point at which either provider can be probed or its index
+	// partition named.
+	m.refreshEmbedStatus()
+	m.resolveEmbedModels()
 	return m
 }
 
@@ -389,11 +421,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.settings = updated.(settings.Model)
 		settingsCmd = cmd
 		if _, closing := msg.(settings.CloseRequested); closing {
+			// Re-probe on the way out. Setting embedder.voyage.apiKeyFile in
+			// this panel is the whole remedy for "my key file is never read",
+			// so a status bar that kept its startup answer until the next
+			// restart would report the problem as unfixed right after fixing
+			// it. Closing is the hook rather than every keystroke: the panel
+			// covers the status bar anyway, and this touches the filesystem.
+			m.refreshEmbedStatus()
+			m.resolveEmbedModels()
 			m.view = viewTable
 			if len(m.forks) == 0 {
 				m.view = viewInput
 			}
-			return m, nil
+			return m, m.loadEmbedCoverage()
 		}
 		switch msg.(type) {
 		case tea.KeyMsg, tea.WindowSizeMsg:
@@ -439,7 +479,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case enrichmentDoneMsg:
 		m.enriching = false
-		return m, nil
+		// Auto-indexing fires here rather than on load, and the difference is
+		// not cosmetic. A fork's document is built from its T1 data before
+		// enrichment and from T1+T2 after, so embedding at load time would
+		// index every fork against a body that enrichment then invalidates --
+		// paying twice under a provider billed per token. Waiting for the
+		// compares to settle means one pass over the final content.
+		return m, m.maybeAutoIndex()
 
 	case clusterResultMsg:
 		return m.handleClusterResult(msg)
@@ -454,6 +500,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.clipMsg = "[Manual copy] " + msg.cmd
 		}
 		m.clipMsgTime = time.Now()
+		return m, nil
+
+	case embedRunStartedMsg:
+		m.embedRunning = true
+		m.embedRunTotal = msg.forks
+		m.embedRunNote = fmt.Sprintf("embedding %d forks...", msg.forks)
+		// Arm the progress pump only now, so a session that never embeds
+		// anything never spawns the goroutine.
+		return m, waitForClusterMsg(m.embedMsgs, m.lifecycleCtx)
+
+	case embedProgressMsg:
+		m.embedRunNote = fmt.Sprintf("%s %d/%d", msg.provider, msg.indexed, msg.pending)
+		return m, waitForClusterMsg(m.embedMsgs, m.lifecycleCtx)
+
+	case embedRunDoneMsg:
+		m.embedRunning = false
+		m.embedRunNote = ""
+		m.errMsg = describeEmbedResult(msg)
+		m.errMsgTime = time.Now()
+		// Re-read coverage so the column reflects what the run just wrote.
+		return m, m.loadEmbedCoverage()
+
+	case embedCoverageMsg:
+		if msg.err != nil {
+			m.errMsg = fmt.Sprintf("Embedding coverage unavailable: %s", msg.err)
+			m.errMsgTime = time.Now()
+			return m, nil
+		}
+		m.embedCoverage = msg.coverage
 		return m, nil
 
 	case exportDoneMsg:
@@ -492,6 +567,11 @@ func (m *Model) handleCachedLoad(msg cachedLoadMsg) (tea.Model, tea.Cmd) {
 	m.gatherDuplicateGroups(0, len(m.forks))
 
 	cmds := []tea.Cmd{}
+	// The cache path writes no snapshots, so the coverage read can go straight
+	// out rather than waiting behind a persist.
+	if cov := m.loadEmbedCoverage(); cov != nil {
+		cmds = append(cmds, cov)
+	}
 	if bc := m.startBranchDivergenceSweep(); bc != nil {
 		cmds = append(cmds, bc)
 	}
@@ -543,6 +623,10 @@ func (m *Model) handleForksFetched(msg forksFetchedMsg) (tea.Model, tea.Cmd) {
 	m.loading = false
 	if msg.err != nil {
 		m.errMsg = fmt.Sprintf("Error fetching forks: %s", msg.err)
+		// The footer renders errMsg only while errMsgTime is within five
+		// seconds, so leaving the timestamp zero -- as this branch did, unlike
+		// the warn branch below -- made the message permanently unrenderable.
+		m.errMsgTime = time.Now()
 		return m, nil
 	}
 
@@ -563,7 +647,10 @@ func (m *Model) handleForksFetched(msg forksFetchedMsg) (tea.Model, tea.Cmd) {
 
 	cmds := []tea.Cmd{}
 	if persist := m.persistForkList(); persist != nil {
-		cmds = append(cmds, persist)
+		// Sequenced, not batched: the coverage read has to see the documents
+		// the persist writes, or the EMB column reports nothing on first paint
+		// and only corrects itself after some later reload.
+		cmds = append(cmds, tea.Sequence(persist, m.loadEmbedCoverage()))
 	}
 	if bc := m.startBranchDivergenceSweep(); bc != nil {
 		cmds = append(cmds, bc)
@@ -921,6 +1008,10 @@ func (m *Model) handleTableKey(key string) (tea.Model, tea.Cmd) {
 		return m, m.promptExportMarked()
 	case keymap.ExportAll:
 		return m, m.promptExportAll()
+	case keymap.EmbedMarked:
+		return m, m.startEmbedRun(false)
+	case keymap.EmbedAll:
+		return m, m.startEmbedRun(true)
 	case keymap.OpenSettings:
 		m.view = viewSettings
 		updated, _ := m.settings.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
@@ -1033,6 +1124,9 @@ func (m *Model) startFetch() tea.Cmd {
 	m.errMsg = ""
 	m.forks = nil
 	m.parent = nil
+	// A new fork list gets its own automatic pass. Latching per list rather
+	// than per session is what makes `r` and `n` behave like the first load.
+	m.autoIndexDone = false
 
 	repo := strings.TrimSpace(m.input)
 	if m.initRepo != "" {
@@ -1055,7 +1149,14 @@ func (m *Model) startFetch() tea.Cmd {
 		return nil
 	}
 	owner, name := parts[0], parts[1]
-	m.loadMsg = fmt.Sprintf("Fetching %s/%s...", owner, name)
+	// doRefresh sets its own message and then calls straight into here, so
+	// without this the word "Refreshing" never reached a frame. Which verb the
+	// user sees should match the key they pressed.
+	if m.refresh {
+		m.loadMsg = fmt.Sprintf("Refreshing %s/%s...", owner, name)
+	} else {
+		m.loadMsg = fmt.Sprintf("Fetching %s/%s...", owner, name)
+	}
 
 	provider := m.provider
 	refresh := m.refresh
@@ -1142,7 +1243,9 @@ func (m *Model) persistForkList() tea.Cmd {
 	snaps := make([]store.Snapshot, 0, len(m.forks))
 	for i := range m.forks {
 		f := &m.forks[i]
-		snaps = append(snaps, store.SnapshotFromForge(repo, f.Fork, nil, f.Heat.Score, f.Heat.Tier, now))
+		snap := store.SnapshotFromForge(repo, f.Fork, nil, f.Heat.Score, f.Heat.Tier, now)
+		attachDocument(&snap, f)
+		snaps = append(snaps, snap)
 	}
 	db := m.db
 	return func() tea.Msg {
@@ -1166,6 +1269,7 @@ func (m *Model) persistCompare(i int) {
 	}
 	f := &m.forks[i]
 	snap := store.SnapshotFromForge(repo, f.Fork, f.T2, f.Heat.Score, f.Heat.Tier, time.Now().UTC())
+	attachDocument(&snap, f)
 	if err := m.db.UpsertSnapshot(context.Background(), snap); err != nil {
 		m.errMsg = fmt.Sprintf("Store write failed: %s", err)
 		m.errMsgTime = time.Now()
@@ -1222,6 +1326,24 @@ func (m *Model) doRefresh() tea.Cmd {
 	m.cached = nil
 	m.enrichDone = 0
 	m.enrichTotal = 0
+
+	// Results buffered from the run cancelEnrichment just cancelled describe
+	// forks in the slice being thrown away. Keeping them would apply a dead
+	// run's compares to the new list.
+	m.pendingUpdates = m.pendingUpdates[:0]
+
+	// The ranking was computed against the discarded list. Scores die with the
+	// fork slice either way, but rankApplied and a "relevance" sort column
+	// would survive and keep the footer naming a query that no longer orders
+	// anything.
+	m.rankApplied = ""
+	m.rankMethod = ""
+	m.rankScores = nil
+	if m.sortCol == "relevance" {
+		m.sortCol = "heat"
+		m.sortAsc = false
+	}
+
 	m.loading = true
 	m.loadMsg = "Refreshing..."
 	return m.startFetch()

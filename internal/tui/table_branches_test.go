@@ -1,12 +1,14 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/forge"
 	"github.com/svnbjrn/spoon/internal/heat"
 )
@@ -85,7 +87,25 @@ func TestViewTable_BranchColumnRendersCountAndUnknown(t *testing.T) {
 // apart silently. Pin them to the same width.
 func TestViewTable_HeaderAndRowsAlign(t *testing.T) {
 	for _, withCompare := range []bool{true, false} {
-		m := branchTableModel(t, withCompare)
+		for _, withEmbedColumn := range []bool{false, true} {
+			t.Run(fmt.Sprintf("compare=%v/embed=%v", withCompare, withEmbedColumn), func(t *testing.T) {
+				m := branchTableModel(t, withCompare)
+				if withEmbedColumn {
+					// The EMB column is conditional, so it doubles the number of
+					// header/row format pairings that have to stay in step. Both
+					// arms need pinning, not just the one a bare test model
+					// happens to produce.
+					m.embedModels = embedModels{fastEmbed: embed.FastEmbedModelID, voyage: embed.VoyageModelID("voyage-code-3", 1024)}
+				}
+				assertHeaderAndRowsAlign(t, m, withCompare)
+			})
+		}
+	}
+}
+
+func assertHeaderAndRowsAlign(t *testing.T, m *Model, withCompare bool) {
+	t.Helper()
+	{
 
 		// Match on the owner prefix: long names are truncated, so the repo
 		// name itself is not present on every row.

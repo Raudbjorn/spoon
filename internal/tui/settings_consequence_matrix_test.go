@@ -113,6 +113,10 @@ func matrixConsequenceConfig(t *testing.T, key string) (*config.Config, string) 
 		return cfg, path
 	case "embedder.voyage.outputDimension":
 		return cfg, "1024"
+	case "embedder.voyage.autoIndex":
+		// Off in the fixture, so the edit under test is the expensive
+		// direction: switching every listed fork onto a billed service.
+		return cfg, "true"
 	default:
 		t.Fatalf("missing consequence fixture for %s", key)
 		return nil, ""

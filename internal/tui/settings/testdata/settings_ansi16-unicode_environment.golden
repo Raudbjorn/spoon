@@ -9,13 +9,13 @@
 │ [37mSPOON_LOCAL_BRANCH_SCAN = unset[0m                                              │
 │ [37mVOYAGE_AI_API_KEY = unset[0m                                                    │
 │ [37mVOYAGE_API_KEY = unset[0m                                                       │
+│ [37mSPOON_VOYAGE_API_KEY_FILE = unset[0m                                            │
+│ [37mSPOON_VOYAGE_AUTO_INDEX = unset[0m                                              │
 │ [37mSPOON_NO_VOYAGE = unset[0m                                                      │
 │ [37mSPOON_VOYAGE_NO_CACHE = unset[0m                                                │
 │ [37mSPOON_VOYAGE_DIM = unset[0m                                                     │
 │ [37mSPOON_VOYAGE_EMBED_MODEL = unset[0m                                             │
 │ [37mSPOON_VOYAGE_RERANK_MODEL = unset[0m                                            │
-│ [37mSPOON_VOYAGE_BASE_URL = unset[0m                                                │
-│ [37mSPOON_NO_RESERVE = unset[0m                                                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 [2;90m[p] Probe provider credentials  [o] Check store  [f] Check FastEmbed  [v] Check[0m
 [37;40m[tab][0m section [37;40m[enter][0m edit [37;40m[esc][0m back

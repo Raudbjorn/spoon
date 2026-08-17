@@ -5,9 +5,5 @@
    ##..70  carol/widget                       1     0       -  1h ago
    ##..60  dave/widget                        1     0       -  1h ago
 
-[ctrl+c] Quit [q] Quit [Up/k] Move selection up [Down/j] Move selection down [PgUp] Page up [PgDn] Page down
-[home] Go to top [G/end] Go to bottom [g] Toggle cluster grouping [Enter] View fork details [n] Search new repository
-[/] Filter forks [R] Rank by intent [Esc] Clear active filter [?] Open help [s] Cycle sort column [S] Reverse sort order
-[o] Open selected fork [d] Open compare [c] Cycle enrichment ceiling [t] Toggle dark/light theme
-[f] Hide or restore chrome [y] Yank clone command [r] Refresh [Space] Mark or unmark fork [e] Export marked forks
-[E] Export all forks [,] Open settings
+[Enter] View fork details [/] Filter forks [s] Cycle sort column [Space] Mark or unmark fork [e] Export marked forks
+[i] Embed marked forks [r] Refresh [,] Open settings [?] Open help [q] Quit

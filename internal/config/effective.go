@@ -37,8 +37,24 @@ var settings = []Setting{
 	{"embedder.cacheDir", "", []string{"SPOON_FASTEMBED_CACHE"}, func(c *Config) string { return c.Embedder.CacheDir }},
 	{"embedder.maxLength", "512", nil, func(c *Config) string { return strconv.Itoa(c.Embedder.MaxLength) }},
 	{"embedder.batchSize", "32", nil, func(c *Config) string { return strconv.Itoa(c.Embedder.BatchSize) }},
+	// Defaults differ deliberately, and the difference is money. The local
+	// embedder costs CPU, so it runs unasked; Voyage bills per token, so
+	// opening a large fork network must never start spending on its own.
+	{"embedder.autoIndex", "true", []string{"SPOON_AUTO_INDEX"}, func(c *Config) string {
+		if c.Embedder.AutoIndex == nil {
+			return ""
+		}
+		return strconv.FormatBool(*c.Embedder.AutoIndex)
+	}},
+	{"embedder.voyage.autoIndex", "false", []string{"SPOON_VOYAGE_AUTO_INDEX"}, func(c *Config) string {
+		return strconv.FormatBool(c.Embedder.Voyage.AutoIndex)
+	}},
 	{"embedder.voyage.disabled", "false", []string{"SPOON_NO_VOYAGE"}, func(c *Config) string { return strconv.FormatBool(c.Embedder.Voyage.Disabled) }},
-	{"embedder.voyage.apiKeyFile", "", nil, func(c *Config) string { return c.Embedder.Voyage.APIKeyFile }},
+	// The key itself has had two environment bindings from the start, but the
+	// key *file* had none, so a credential file could only be named by editing
+	// the config. That gap is how a correctly-created 0600 file ends up with
+	// nothing pointing at it and no message saying so.
+	{"embedder.voyage.apiKeyFile", "", []string{"SPOON_VOYAGE_API_KEY_FILE"}, func(c *Config) string { return c.Embedder.Voyage.APIKeyFile }},
 	{"embedder.voyage.embedModel", "voyage-code-3", []string{"SPOON_VOYAGE_EMBED_MODEL"}, func(c *Config) string { return c.Embedder.Voyage.EmbedModel }},
 	{"embedder.voyage.rerankModel", "rerank-2.5", []string{"SPOON_VOYAGE_RERANK_MODEL"}, func(c *Config) string { return c.Embedder.Voyage.RerankModel }},
 	{"embedder.voyage.outputDimension", "1024", []string{"SPOON_VOYAGE_DIM"}, func(c *Config) string { return strconv.Itoa(c.Embedder.Voyage.OutputDimension) }},
@@ -80,8 +96,11 @@ type EffectiveGitHub struct {
 	Proxy                     EffectiveProxy
 }
 type EffectiveProxy struct{ Enabled, APIKeyFile, StaticFile, WhitelistPublicIP, CacheTTL ResolvedString }
-type EffectiveFastEmbed struct{ Model, CacheDir, MaxLength, BatchSize ResolvedString }
-type EffectiveVoyage struct{ Disabled, APIKeyFile, EmbedModel, RerankModel, OutputDimension, BaseURL ResolvedString }
+type EffectiveFastEmbed struct{ Model, CacheDir, MaxLength, BatchSize, AutoIndex ResolvedString }
+type EffectiveVoyage struct {
+	Disabled, APIKeyFile, EmbedModel, RerankModel, OutputDimension, BaseURL ResolvedString
+	AutoIndex                                                               ResolvedString
+}
 type EffectiveAppearance struct{ Theme, Color, Glyphs ResolvedString }
 
 // EnvironmentSnapshot captures the process environment once at command startup.
@@ -143,8 +162,8 @@ func effectiveFromValues(values map[string]ResolvedString) EffectiveConfig {
 		GitHub: EffectiveGitHub{Tokens: value("github.tokens"), RequestsPerMinute: value("github.requestsPerMinute"), Proxy: EffectiveProxy{
 			Enabled: value("github.proxy.enabled"), APIKeyFile: value("github.proxy.apiKeyFile"), StaticFile: value("github.proxy.staticFile"), WhitelistPublicIP: value("github.proxy.whitelistPublicIp"), CacheTTL: value("github.proxy.cacheTtl"),
 		}},
-		FastEmbed:  EffectiveFastEmbed{Model: value("embedder.model"), CacheDir: value("embedder.cacheDir"), MaxLength: value("embedder.maxLength"), BatchSize: value("embedder.batchSize")},
-		Voyage:     EffectiveVoyage{Disabled: value("embedder.voyage.disabled"), APIKeyFile: value("embedder.voyage.apiKeyFile"), EmbedModel: value("embedder.voyage.embedModel"), RerankModel: value("embedder.voyage.rerankModel"), OutputDimension: value("embedder.voyage.outputDimension"), BaseURL: value("embedder.voyage.baseUrl")},
+		FastEmbed:  EffectiveFastEmbed{Model: value("embedder.model"), CacheDir: value("embedder.cacheDir"), MaxLength: value("embedder.maxLength"), BatchSize: value("embedder.batchSize"), AutoIndex: value("embedder.autoIndex")},
+		Voyage:     EffectiveVoyage{Disabled: value("embedder.voyage.disabled"), APIKeyFile: value("embedder.voyage.apiKeyFile"), EmbedModel: value("embedder.voyage.embedModel"), RerankModel: value("embedder.voyage.rerankModel"), OutputDimension: value("embedder.voyage.outputDimension"), BaseURL: value("embedder.voyage.baseUrl"), AutoIndex: value("embedder.voyage.autoIndex")},
 		Appearance: EffectiveAppearance{Theme: value("ui.theme"), Color: value("ui.color"), Glyphs: value("ui.glyphs")},
 	}
 }
@@ -183,6 +202,10 @@ func (e EffectiveConfig) Value(key string) ResolvedString {
 		return e.FastEmbed.MaxLength
 	case "embedder.batchSize":
 		return e.FastEmbed.BatchSize
+	case "embedder.autoIndex":
+		return e.FastEmbed.AutoIndex
+	case "embedder.voyage.autoIndex":
+		return e.Voyage.AutoIndex
 	case "embedder.voyage.disabled":
 		return e.Voyage.Disabled
 	case "embedder.voyage.apiKeyFile":

@@ -98,6 +98,7 @@ func TestEffectiveConfigEveryEditableLeafRetainsRuntimeSource(t *testing.T) {
 		"forge.provider", "forge.host", "github.tokens", "github.requestsPerMinute", "github.proxy.enabled",
 		"github.proxy.apiKeyFile", "github.proxy.staticFile", "github.proxy.whitelistPublicIp", "github.proxy.cacheTtl",
 		"embedder.backend", "embedder.model", "embedder.cacheDir", "embedder.maxLength", "embedder.batchSize",
+		"embedder.autoIndex", "embedder.voyage.autoIndex",
 		"embedder.voyage.disabled", "embedder.voyage.apiKeyFile", "embedder.voyage.embedModel",
 		"embedder.voyage.rerankModel", "embedder.voyage.outputDimension", "embedder.voyage.baseUrl",
 		"ui.theme", "ui.color", "ui.glyphs",

@@ -76,9 +76,24 @@ successful empty result with a `semantic_index_empty` warning.
 Voyage is enabled when **both** of these hold:
 
 1. an API key resolves — `VOYAGE_AI_API_KEY`, or `VOYAGE_API_KEY` (what Voyage's
-   own SDKs read), or `embedder.voyage.apiKeyFile` in the config pointing at a
-   0600 file; and
+   own SDKs read), or a 0600 credential file named by `embedder.voyage.apiKeyFile`
+   in the config or by `SPOON_VOYAGE_API_KEY_FILE`; and
 2. the store is writable, verified by an actual write before any request.
+
+Note the second way of naming the *file*. Before it existed, a credential file
+could be pointed at only by editing the config — so a correctly created 0600 key
+file with nothing referencing it produced exactly the same silence as no key at
+all. Resolution is forgiving in three separate places (no path set, a path
+naming a file that is not there, no key anywhere), and all three used to be
+reported as "Voyage not configured". The settings panel's `v` check now names
+the source it resolved, or the specific reason it could not:
+
+```
+Voyage active: key resolved from embedder.voyage.apiKeyFile /path/to/key
+Voyage inactive: embedder.voyage.apiKeyFile is /path/to/key, which does not exist
+Voyage inactive: no key: set embedder.voyage.apiKeyFile to a 0600 file, or export VOYAGE_AI_API_KEY
+Voyage inactive: disabled by SPOON_NO_VOYAGE
+```
 
 The second condition is not an optimization. The store holds both the cached
 responses and the vectors Voyage is paid to produce, so with nowhere durable to
@@ -191,7 +206,7 @@ error text is scrubbed of it as a second line of defense.
 ## The lexical fallback
 
 When fastembed is not active (no ONNX Runtime, `--no-embed`, or the interactive
-`spoon` TUI, which always clusters lexically), clustering uses a deterministic
+`spoon` TUI, whose *clustering* is always lexical), clustering uses a deterministic
 built-in lexical embedder — zero setup, no downloads, no "embedder unreachable"
 failure mode.
 
@@ -249,6 +264,54 @@ against the query and output is sorted by relevance; each NDJSON record gains
 `queryScore` (0..1) and `queryMethod` — `voyage` when a Voyage key is
 configured, `lexical` otherwise. This is distinct from `spn search`, which is
 vector-similarity retrieval over a persistent index.
+
+## Embedding from the TUI
+
+Until recently the interactive `spoon` TUI produced no embeddings at all, and
+had no way to say so. It persisted fork rows but never the `documents` rows that
+everything downstream reads, so a store could hold thousands of forks and a
+handful of documents. That is fixed, and three surfaces now report and drive it.
+
+**The status bar** names both providers and their real state, for example
+`emb: fastembed ready, voyage no key configured`. FastEmbed's two prerequisites
+are reported separately, because they fail independently and are fixed
+differently — `no model` is a download, `no runtime` is `ONNX_PATH`. Neither is
+compiled into the binary.
+
+**The `EMB` column** shows per-fork coverage: two cells, fastembed then Voyage.
+
+| Cell | Meaning |
+|---|---|
+| `✓` | a vector exists, computed from the document's current body |
+| `~` | a vector exists but the document has changed since; the next run redoes it |
+| `·` | no vector under this model |
+| ` ` | that provider is not configured |
+
+Coverage is matched on the **exact** model identity, not a `fastembed:`/`voyage:`
+prefix. Identities encode their parameters, so changing the output dimension
+strands the old rows — and a prefix match would show those as covered while the
+indexer, which joins on exact equality, kept re-offering the same fork. The
+column and the keys have to answer the same question.
+
+**`i` and `I`** embed the marked forks or all of them, in the background, with
+both providers. A run builds any missing documents first, then indexes only what
+is pending, so re-running costs nothing. FastEmbed is refused with a reason
+rather than attempted when the model is absent — constructing it would download
+roughly a hundred megabytes mid-keypress. A Voyage failure never costs the local
+index that ran beside it.
+
+**Auto-indexing** is configured by two settings whose defaults deliberately
+differ, because the difference is money:
+
+| Setting | Default | Why |
+|---|---|---|
+| `embedder.autoIndex` (`SPOON_AUTO_INDEX`) | `true` | fastembed is local; it costs CPU |
+| `embedder.voyage.autoIndex` (`SPOON_VOYAGE_AUTO_INDEX`) | `false` | Voyage bills per token |
+
+Both fire once per fork list, after T2 enrichment settles rather than on load. A
+fork's document is built from T1 before enrichment and from T1+T2 after, so
+indexing at load time would embed every fork against a body that enrichment then
+invalidates — paying twice under a billed provider.
 
 ## Ranking forks in the TUI (`R`)
 

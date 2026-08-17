@@ -388,10 +388,25 @@ func background(ctx theme.Context, color lipgloss.Color) lipgloss.Color {
 // KeyLegend renders the selected scope plus its inherited global bindings.
 // It wraps whole entries, keeping each line within width terminal cells.
 func KeyLegend(ctx theme.Context, width int, scopes ...keymap.Scope) string {
+	return layOutBindings(ctx, width, keymap.ForScopes(append([]keymap.Scope{keymap.Global}, scopes...)...))
+}
+
+// KeyLegendActions renders only the named actions from scope, in the order
+// given, without the inherited global bindings.
+//
+// The fork table needs this because its full legend is 28 bindings -- nine
+// wrapped lines at the 80-column floor, which is more of the frame than the
+// fork rows get. Callers curate the handful worth a permanent slot; everything
+// omitted stays bound and stays listed under the help overlay.
+func KeyLegendActions(ctx theme.Context, width int, scope keymap.Scope, actions ...keymap.Action) string {
+	return layOutBindings(ctx, width, keymap.ForActions(scope, actions...))
+}
+
+// layOutBindings wraps whole entries, keeping each line within width cells.
+func layOutBindings(ctx theme.Context, width int, bindings []keymap.Binding) string {
 	if width <= 0 {
 		width = MaxContentWidth
 	}
-	bindings := keymap.ForScopes(append([]keymap.Scope{keymap.Global}, scopes...)...)
 	var lines []string
 	line := ""
 	for _, binding := range bindings {

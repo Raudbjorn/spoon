@@ -10,6 +10,7 @@
 │ [37m  Cache directory: /home/svnbjrn/.cache/spoon/models/fastembed [DEFAULT][0m     │
 │ [37m  Maximum length: 512 [DEFAULT][0m                                              │
 │ [37m  Batch size: 32 [DEFAULT][0m                                                   │
+│ [37m  Auto-embed fork lists: true [DEFAULT][0m                                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 [2;90m[p] Probe provider credentials  [o] Check store  [f] Check FastEmbed  [v] Check[0m
 [37;40m[tab][0m section [37;40m[enter][0m edit [37;40m[esc][0m back

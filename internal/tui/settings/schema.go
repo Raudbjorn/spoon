@@ -121,6 +121,23 @@ var Registry = []Field{
 		c.Embedder.BatchSize = n
 		return nil
 	}},
+	// The local embedder defaults to ON and the paid one to OFF. The asymmetry
+	// is the point: fastembed costs CPU, Voyage costs money per token, and
+	// opening a large fork network must never start spending on its own.
+	{Key: "embedder.autoIndex", Label: "Auto-embed fork lists", Section: EmbedderSection, Help: "Embed each fork list with FastEmbed once enrichment settles. Local and free.", Editable: true, Default: "true", Environment: []string{"SPOON_AUTO_INDEX"}, Get: func(c *config.Config) string {
+		if c.Embedder.AutoIndex == nil {
+			return ""
+		}
+		return strconv.FormatBool(*c.Embedder.AutoIndex)
+	}, Set: func(c *config.Config, v string) error {
+		b, err := strconv.ParseBool(strings.TrimSpace(v))
+		if err != nil {
+			return fmt.Errorf("embedder.autoIndex: %w", err)
+		}
+		c.Embedder.AutoIndex = &b
+		return nil
+	}},
+	boolField("embedder.voyage.autoIndex", "Auto-embed with Voyage", VoyageSection, "Sends every listed fork to a per-token billed service without asking. Off by default.", Billing, func(c *config.Config) bool { return c.Embedder.Voyage.AutoIndex }, func(c *config.Config, v bool) { c.Embedder.Voyage.AutoIndex = v }),
 	boolField("embedder.voyage.disabled", "Voyage disabled", VoyageSection, "Clearing this can enable an external per-token billed service.", Billing, func(c *config.Config) bool { return c.Embedder.Voyage.Disabled }, func(c *config.Config, v bool) { c.Embedder.Voyage.Disabled = v }),
 	{Key: "embedder.voyage.apiKeyFile", Label: "Voyage API key file", Section: VoyageSection, Help: "0600 credential file path; the key itself is not shown.", Editable: true, Consequence: Billing, Get: func(c *config.Config) string { return c.Embedder.Voyage.APIKeyFile }, Set: func(c *config.Config, v string) error {
 		c.Embedder.Voyage.APIKeyFile = strings.TrimSpace(v)

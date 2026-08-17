@@ -244,6 +244,14 @@ func voyageDiagnosticForModel(m *Model, deps ActionDeps) (string, error) {
 	if m.Effective != nil {
 		effective = *m.Effective
 	}
+	// Diagnose the credential before asking whether Voyage is active. The
+	// resolver folds "no key file named", "key file names a path that is not
+	// there" and "no key anywhere" into one silent inactive result, and the
+	// old message reported all three as "Voyage not configured" -- which is
+	// what a user with a perfectly good 0600 key file sees when nothing points
+	// at it. The diagnosis names the source, so the next action is obvious.
+	diagnosis := embed.DiagnoseVoyageKey(effective, false, m.Environment)
+
 	_, active, err := deps.VoyageStatus(
 		context.Background(),
 		effective,
@@ -252,12 +260,19 @@ func voyageDiagnosticForModel(m *Model, deps ActionDeps) (string, error) {
 		&http.Client{Transport: deps.HTTPTransport},
 	)
 	if err != nil {
-		return "Voyage configured but unusable", err
+		// Label rather than Summary: for a permissions failure the two are the
+		// same sentence, and the renderer appends the error after the text.
+		return "Voyage unusable (" + diagnosis.Label + ")", err
 	}
 	if active {
-		return "Voyage configured and active", nil
+		return "Voyage active: " + diagnosis.Summary, nil
 	}
-	return "Voyage not configured", nil
+	if diagnosis.HasKey {
+		// A key resolved but Voyage still will not run, which in practice means
+		// the store is not writable -- it refuses to buy results it cannot keep.
+		return "Voyage inactive despite a " + diagnosis.Label, diagnosis.Err
+	}
+	return "Voyage inactive: " + diagnosis.Summary, diagnosis.Err
 }
 
 func voyageDiagnostic(cfg *config.Config, cache embed.ResponseCache) (string, error) {

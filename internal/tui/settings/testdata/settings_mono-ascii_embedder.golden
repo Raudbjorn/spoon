@@ -10,6 +10,7 @@ Layer: user  Path: /settings-golden/config.json
 |   Cache directory: /home/svnbjrn/.cache/spoon/models/fastembed [DEFAULT]     |
 |   Maximum length: 512 [DEFAULT]                                              |
 |   Batch size: 32 [DEFAULT]                                                   |
+|   Auto-embed fork lists: true [DEFAULT]                                      |
 +------------------------------------------------------------------------------+
 [p] Probe provider credentials  [o] Check store  [f] Check FastEmbed  [v] Check
 [tab] section [enter] edit [esc] back

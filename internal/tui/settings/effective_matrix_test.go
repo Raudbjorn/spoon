@@ -62,8 +62,14 @@ func matrixValue(key string) string {
 	switch key {
 	case "github.requestsPerMinute":
 		return "321"
-	case "github.proxy.enabled", "github.proxy.whitelistPublicIp", "embedder.voyage.disabled":
+	case "github.proxy.enabled", "github.proxy.whitelistPublicIp", "embedder.voyage.disabled",
+		"embedder.voyage.autoIndex":
 		return "true"
+	case "embedder.autoIndex":
+		// Deliberately "false": the default is true, so only an explicit false
+		// proves the file value is being read rather than the default echoing
+		// back and passing the comparison by accident.
+		return "false"
 	case "embedder.maxLength":
 		return "513"
 	case "embedder.batchSize":

@@ -88,13 +88,29 @@ func TestTableFullscreenPreservesCursorAndPaging(t *testing.T) {
 	m.width, m.height, m.cursor = 80, 24, 1
 	beforeCursor, beforePage := m.cursor, m.pageSize()
 	normal := m.View()
+
 	_, _ = m.handleTableKey("f")
-	if !m.fullscreen || m.cursor != beforeCursor || m.pageSize() != beforePage {
-		t.Fatal("fullscreen changed table selection or paging")
+	if !m.fullscreen || m.cursor != beforeCursor {
+		t.Fatal("fullscreen changed table selection")
 	}
-	if strings.Contains(m.View(), "Move selection up") {
+	// Paging deliberately does NOT stay equal across the toggle. This assertion
+	// used to require m.pageSize() == beforePage, which held only because the
+	// chrome budget was a constant that ignored fullscreen -- the same constant
+	// that budgeted one line for a footer wrapping to nine, and so pushed the
+	// status bar and column header off the top of the terminal for good. Now
+	// that the budget measures what is actually drawn, hiding the chrome buys
+	// rows, which is the entire point of the key. What must hold is that the
+	// gain is real and matches the chrome that went away.
+	if got := m.pageSize(); got <= beforePage {
+		t.Fatalf("fullscreen page size = %d, want more than the %d rows the chrome left", got, beforePage)
+	}
+	// "Cycle sort column" is in the curated table footer; "Move selection up"
+	// is not, so asserting on it would pass whether the chrome were hidden or
+	// not.
+	if strings.Contains(m.View(), "Cycle sort column") {
 		t.Fatal("fullscreen kept table chrome")
 	}
+
 	_, _ = m.handleTableKey("f")
 	if m.fullscreen || m.cursor != beforeCursor || m.pageSize() != beforePage || m.View() != normal {
 		t.Fatal("table chrome did not restore losslessly")
