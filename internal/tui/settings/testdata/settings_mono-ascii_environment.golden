@@ -9,13 +9,13 @@ Layer: user  Path: /settings-golden/config.json
 | SPOON_LOCAL_BRANCH_SCAN = unset                                              |
 | VOYAGE_AI_API_KEY = unset                                                    |
 | VOYAGE_API_KEY = unset                                                       |
+| SPOON_VOYAGE_API_KEY_FILE = unset                                            |
+| SPOON_VOYAGE_AUTO_INDEX = unset                                              |
 | SPOON_NO_VOYAGE = unset                                                      |
 | SPOON_VOYAGE_NO_CACHE = unset                                                |
 | SPOON_VOYAGE_DIM = unset                                                     |
 | SPOON_VOYAGE_EMBED_MODEL = unset                                             |
 | SPOON_VOYAGE_RERANK_MODEL = unset                                            |
-| SPOON_VOYAGE_BASE_URL = unset                                                |
-| SPOON_NO_RESERVE = unset                                                     |
 +------------------------------------------------------------------------------+
 [p] Probe provider credentials  [o] Check store  [f] Check FastEmbed  [v] Check
 [tab] section [enter] edit [esc] back

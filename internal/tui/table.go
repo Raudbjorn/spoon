@@ -19,7 +19,7 @@ import (
 func (m Model) viewTable() string {
 	ctx, styles := m.themeContext(), m.styles()
 	if m.parent == nil || len(m.forks) == 0 {
-		return "\n  " + ui.Text(ctx, ui.TextMuted, "No forks found.", ui.ContentWidth(m.width)-2) + "\n"
+		return m.viewTableWithoutRows()
 	}
 
 	// Absolute indices of the rows the active filter admits. Everything below
@@ -82,19 +82,33 @@ func (m Model) viewTable() string {
 	}
 	// headerStyle carries Padding(0,1), so its left pad is the header's first
 	// cell; the format strings therefore start one cell earlier than the rows.
+	// The EMB field is one 4-cell run -- a leading separator space plus 3 cells
+	// of content -- carried as a single string on BOTH sides rather than as a
+	// width verb with literal spaces around it. Written the latter way the
+	// spaces survive when the field is empty and the header gains a cell the
+	// rows do not, which is precisely the drift TestViewTable_HeaderAndRowsAlign
+	// exists to catch. Empty on both sides when neither provider is configured,
+	// so a host that will never embed anything does not pay a column for it.
+	embHeader := ""
+	if m.embedColumnShown() {
+		embHeader = " EMB"
+	}
+
 	if hasCompare {
-		header := fmt.Sprintf("%-4s %3s  %-26s  %s %6s %7s %7s  %-10s  %s",
+		header := fmt.Sprintf("%-4s %3s  %-26s  %s%s %6s %7s %7s  %-10s  %s",
 			"HEAT", sortInd("heat"), "REPOSITORY",
 			padLeftCells(ctx.Glyph(theme.Star)+sortInd("stars"), 5),
+			embHeader,
 			"AHEAD"+sortInd("ahead"), "BEHIND",
 			"BRANCH"+sortInd("branches"),
 			"PUSHED"+sortInd("pushed"), "STATUS")
 		b.WriteString(ui.TableHeader(ctx, " "+header, 0))
 	} else {
-		header := fmt.Sprintf("%-4s %3s  %-30s %s %s %7s  %-12s",
+		header := fmt.Sprintf("%-4s %3s  %-30s %s %s%s %7s  %-12s",
 			"HEAT", sortInd("heat"), "REPOSITORY",
 			padLeftCells(ctx.Glyph(theme.Star)+sortInd("stars"), 5),
 			padLeftCells(ctx.Glyph(theme.Fork)+sortInd("forks"), 5),
+			embHeader,
 			"BRANCH"+sortInd("branches"),
 			"PUSHED"+sortInd("pushed"))
 		b.WriteString(ui.TableHeader(ctx, " "+header, 0))
@@ -112,20 +126,11 @@ func (m Model) viewTable() string {
 
 	// Rows. The window is computed over VISIBLE positions, not raw fork
 	// indices, so a filter that hides rows does not leave gaps in the frame.
-	visibleRows := m.pageSize()
-
 	cursorPos := visiblePos(m.cursor, vis)
 	if cursorPos < 0 {
 		cursorPos = 0
 	}
-	start := 0
-	if cursorPos >= visibleRows {
-		start = cursorPos - visibleRows + 1
-	}
-	end := start + visibleRows
-	if end > len(vis) {
-		end = len(vis)
-	}
+	start, end := rowWindow(cursorPos, m.pageSize(), len(vis))
 
 	prevClusterID := ""
 	if m.groupByCluster && start > 0 {
@@ -190,6 +195,13 @@ func (m Model) viewTable() string {
 
 		gutter := m.duplicateGutter(sf, gutterOrd)
 
+		// The same 4-cell run as " EMB" above: separator, two glyph cells, and
+		// one trailing pad so the field width matches the header's word.
+		emb := ""
+		if embHeader != "" {
+			emb = " " + m.embedCellFor(sf) + " "
+		}
+
 		var row string
 		if hasCompare {
 			if len(name) > 26 {
@@ -204,14 +216,14 @@ func (m Model) viewTable() string {
 				ahead = "   ~"
 				behind = "    ~"
 			}
-			row = fmt.Sprintf("%s%s%s%s%s  %-26s  %5d %6s %7s %7s  %-10s  %s",
-				gutter, prefix, scorePrefix, heatBar, scoreStyled, name, sf.Fork.Stars, ahead, behind, branches, pushed, badges)
+			row = fmt.Sprintf("%s%s%s%s%s  %-26s  %5d%s %6s %7s %7s  %-10s  %s",
+				gutter, prefix, scorePrefix, heatBar, scoreStyled, name, sf.Fork.Stars, emb, ahead, behind, branches, pushed, badges)
 		} else {
 			if len(name) > 30 {
 				name = name[:27] + "..."
 			}
-			row = fmt.Sprintf("%s%s%s%s%s  %-30s %5d %5d %7s  %-12s",
-				gutter, prefix, scorePrefix, heatBar, scoreStyled, name, sf.Fork.Stars, sf.Fork.SubForkCount, branches, pushed)
+			row = fmt.Sprintf("%s%s%s%s%s  %-30s %5d %5d%s %7s  %-12s",
+				gutter, prefix, scorePrefix, heatBar, scoreStyled, name, sf.Fork.Stars, sf.Fork.SubForkCount, emb, branches, pushed)
 		}
 
 		row = ui.TableRow(ctx, row, isSelected, 0)
@@ -232,10 +244,10 @@ func (m Model) viewTable() string {
 		} else {
 			b.WriteString("\n")
 		}
-		if legend := m.badgeLegend(); legend != "" {
+		if legend := m.tableLegends(); legend != "" {
 			b.WriteString(styles.help.Render(" "+legend) + "\n")
 		}
-		b.WriteString(ui.KeyLegend(ctx, ui.ContentWidth(m.width), keymap.MainTable))
+		b.WriteString(m.tableKeyLegend())
 	}
 	return b.String()
 }
@@ -314,6 +326,91 @@ func (m Model) badgeLegend() string {
 	return strings.Join(parts, "  ")
 }
 
+// viewTableWithoutRows renders the table frame when there are no rows to draw:
+// a fetch is still in flight, or one settled with nothing in it.
+//
+// Both used to collapse to the bare string "No forks found.". That was wrong in
+// two directions at once. Pressing `r` nils the fork list to re-fetch it, so the
+// very next frame told the user their 113 forks were gone; and a fetch that came
+// back empty because it was rate-limited said the same thing as a repository
+// that genuinely has no forks, because this branch returned before the feedback
+// line further down was ever written.
+func (m Model) viewTableWithoutRows() string {
+	ctx, styles := m.themeContext(), m.styles()
+	width := ui.ContentWidth(m.width) - 2
+
+	var b strings.Builder
+	if !m.fullscreen {
+		b.WriteString(m.renderStatusBar())
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
+
+	switch {
+	case m.loading:
+		msg := m.loadMsg
+		if msg == "" {
+			msg = "Loading..."
+		}
+		b.WriteString("  " + ui.Alert(ctx, ui.AlertInfo, msg, width))
+	case m.errMsg != "":
+		// Deliberately not gated on errMsgTime the way the footer is: an empty
+		// table has nothing else to say, so the reason it is empty should not
+		// time out and leave the user with a bare "No forks found."
+		b.WriteString("  " + ui.TitledAlert(ctx, ui.AlertError, "Forks", m.errMsg, width))
+	default:
+		b.WriteString("  " + ui.Text(ctx, ui.TextMuted, "No forks found.", width))
+	}
+	b.WriteString("\n")
+
+	if !m.fullscreen {
+		b.WriteString(styles.help.Render("  r refresh  n new repository  ? help  q quit"))
+	}
+	return b.String()
+}
+
+// tableLegendActions are the bindings that earn a permanent slot in the fork
+// table's footer. The scope holds 28 of them, which ui.KeyLegend wraps to nine
+// lines at the 80-column floor -- more of a 24-line terminal than the fork rows
+// were getting. These are the ones a reader needs at hand; `?` reaches the rest,
+// and every omitted key still works.
+var tableLegendActions = []keymap.Action{
+	keymap.OpenDetail,
+	keymap.Filter,
+	keymap.CycleSort,
+	keymap.ToggleMark,
+	keymap.ExportMarked,
+	keymap.EmbedMarked,
+	keymap.Refresh,
+	keymap.OpenSettings,
+	keymap.ToggleHelp,
+	keymap.Quit,
+}
+
+// tableKeyLegend renders the table footer. chromeHeight measures this exact
+// string, so the two cannot disagree about how many lines the footer costs.
+func (m Model) tableKeyLegend() string {
+	return ui.KeyLegendActions(m.themeContext(), ui.ContentWidth(m.width), keymap.MainTable, tableLegendActions...)
+}
+
+// tableLegends is the single legend line beneath the rows: badges, then the EMB
+// column key.
+//
+// One line, not two, and routed through chromeHeight like everything else --
+// the badge legend was already budgeted separately, and adding a second
+// hardcoded row for the embed key is how a frame quietly grows past the
+// terminal again.
+func (m Model) tableLegends() string {
+	parts := make([]string, 0, 2)
+	if badges := m.badgeLegend(); badges != "" {
+		parts = append(parts, badges)
+	}
+	if emb := m.embedLegend(); emb != "" {
+		parts = append(parts, emb)
+	}
+	return strings.Join(parts, "  ")
+}
+
 func (m Model) renderStatusBar() string {
 	type statusSegment struct {
 		text     string
@@ -359,6 +456,17 @@ func (m Model) renderStatusBar() string {
 			seg += fmt.Sprintf(" (%d skipped)", skipped)
 		}
 		appendTail(3, seg)
+	}
+	// Below the fork count but above the API budget: it answers a question the
+	// user cannot otherwise answer from inside the session, but it is static,
+	// so it yields to anything actionable when the terminal is narrow.
+	// A run in progress outranks the static provider summary and replaces it:
+	// while work is happening, what it is doing matters more than what is
+	// configured, and both would not fit.
+	if running := m.embedRunFooter(); running != "" {
+		appendTail(2, running)
+	} else if line := m.embedStatusLine(); line != "" {
+		appendTail(2, line)
 	}
 	if m.auth.RateLimit > 0 {
 		headroom := m.provider.Headroom()

@@ -86,6 +86,8 @@ layer for users who have no personal config.
 | SPOON_LOCAL_BRANCH_SCAN=1 | Include local git branches in spn fork scans |
 | VOYAGE_AI_API_KEY | Enable Voyage AI embeddings + reranking (see embedder.voyage) |
 | VOYAGE_API_KEY | Accepted as a fallback (what Voyage's own SDKs read) |
+| SPOON_VOYAGE_API_KEY_FILE | Override embedder.voyage.apiKeyFile (path to a 0600 key file) |
+| SPOON_VOYAGE_AUTO_INDEX=1 | Embed every listed fork through Voyage automatically (billed) |
 | SPOON_NO_VOYAGE=1 | Skip Voyage even when a key is set; fastembed still runs |
 | SPOON_VOYAGE_NO_CACHE=1 | Bypass the cached Voyage responses (re-pays for them) |
 | SPOON_VOYAGE_DIM | Override embedder.voyage.outputDimension |
@@ -98,6 +100,7 @@ layer for users who have no personal config.
 | SPOON_GH_COOKIE | Session cookie for the unsupported HTML web-diff fallback |
 | SPOON_FASTEMBED_MODEL | Override embedder.model |
 | SPOON_FASTEMBED_CACHE | Override embedder.cacheDir |
+| SPOON_AUTO_INDEX | Embed fork lists with fastembed automatically (default on) |
 | SPOON_FASTEMBED_SHA256 | Expected SHA-256 of the fastembed model archive |
 | SPOON_PROXY_KEY_PATH | ProxyScrape API-key file adopted by spoon setup |
 | SPOON_PROXY_STATIC_PATH | ProxyScrape static-pool file adopted by spoon setup |

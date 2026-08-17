@@ -87,7 +87,11 @@ func RequiresConfirmationFor(field Field, before, after *config.Config) bool {
 		return before.Embedder.Voyage.OutputDimension != after.Embedder.Voyage.OutputDimension
 	case Billing:
 		return (before.Embedder.Voyage.Disabled && !after.Embedder.Voyage.Disabled) ||
-			(before.Embedder.Voyage.APIKeyFile == "" && after.Embedder.Voyage.APIKeyFile != "")
+			(before.Embedder.Voyage.APIKeyFile == "" && after.Embedder.Voyage.APIKeyFile != "") ||
+			// Turning auto-indexing on is the most expensive toggle here: it
+			// commits every fork of every list to a per-token service with no
+			// further prompt. Turning it off needs no confirmation.
+			(!before.Embedder.Voyage.AutoIndex && after.Embedder.Voyage.AutoIndex)
 	case Hostwide:
 		return true
 	default:

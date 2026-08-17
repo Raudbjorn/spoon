@@ -22,7 +22,20 @@ func TestModelMasksSecretsAndRequiresConfirmation(t *testing.T) {
 		t.Fatalf("secret leaked: %q", got)
 	}
 	m.section = 4 // Voyage
-	m.focus = 4   // output dimension within the Voyage section
+	// Locate the field by key rather than by a hardcoded ordinal: a positional
+	// index silently retargets this test at a different setting the moment any
+	// field is added to the section above it, and the test then asserts a
+	// confirmation prompt for something it is not editing.
+	m.focus = -1
+	for i, field := range m.fields() {
+		if field.Key == "embedder.voyage.outputDimension" {
+			m.focus = i
+			break
+		}
+	}
+	if m.focus < 0 {
+		t.Fatal("output dimension is not in the Voyage section")
+	}
 	m.editing = true
 	m.input = "512"
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})

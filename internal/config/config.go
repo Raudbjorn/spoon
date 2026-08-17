@@ -64,6 +64,11 @@ type EmbedderConfig struct {
 	CacheDir  string `json:"cacheDir,omitempty"`
 	MaxLength int    `json:"maxLength,omitempty"`
 	BatchSize int    `json:"batchSize,omitempty"`
+	// AutoIndex embeds the fork list without being asked. Defaults to true:
+	// fastembed is local and free, so the cost of running it is the user's CPU
+	// rather than their money. A pointer so "absent" stays distinguishable from
+	// an explicit false, which is what lets the default be true.
+	AutoIndex *bool `json:"autoIndex,omitempty"`
 	// Voyage configures the optional Voyage AI embeddings + reranking provider.
 	// It is deliberately not a Backend value: Voyage runs *in addition to*
 	// fastembed (the store keys vectors by (document, model), so both models'
@@ -82,6 +87,10 @@ type EmbedderConfig struct {
 type VoyageConfig struct {
 	// APIKeyFile is a path to a 0600 file containing only the API key.
 	APIKeyFile string `json:"apiKeyFile,omitempty"`
+	// AutoIndex embeds the fork list through Voyage without being asked.
+	// Defaults to FALSE, unlike the local embedder: Voyage bills per token, and
+	// opening a large fork network must not spend money on its own.
+	AutoIndex bool `json:"autoIndex,omitempty"`
 	// EmbedModel defaults to voyage-code-3; RerankModel to rerank-2.5.
 	EmbedModel  string `json:"embedModel,omitempty"`
 	RerankModel string `json:"rerankModel,omitempty"`

@@ -82,7 +82,13 @@ func TestRootDeliversEverySettingsActionWithoutHTTP(t *testing.T) {
 		settings.ActionProviderProbe:  "github provider credentials configured",
 		settings.ActionStoreCheck:     "Store/cache is available and writable",
 		settings.ActionFastEmbedCheck: "FastEmbed configuration is valid",
-		settings.ActionVoyageStatus:   "Voyage not configured",
+		// This model has no key configured anywhere. "Voyage inactive" replaces
+		// "Voyage not configured", which said the same thing to a host with a
+		// valid key file that nothing pointed at; the sentence after it now
+		// names what to set. Matched on the verdict alone here because the
+		// remediation text wraps -- settings_voyage_matrix_test.go pins it in
+		// full.
+		settings.ActionVoyageStatus:   "Voyage inactive",
 		settings.ActionRewriteReadme:  "Configuration README rewritten",
 		settings.ActionCopyConfigPath: "Config path copied to clipboard",
 		settings.ActionSave:           "saved",

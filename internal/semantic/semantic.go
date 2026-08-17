@@ -74,6 +74,36 @@ func IndexPending(ctx context.Context, db *store.Store, model embed.SearchEmbedd
 	if err != nil {
 		return 0, err
 	}
+	return indexDocuments(ctx, db, model, pending, nil)
+}
+
+// IndexProgress reports a completed batch: how many documents have been indexed
+// so far, out of how many were pending.
+type IndexProgress struct {
+	Model            string
+	Indexed, Pending int
+}
+
+// IndexPendingFor indexes only the named forks, reporting after each batch.
+//
+// Two things separate it from IndexPending. It is scoped, so "embed the forks I
+// marked" costs only those -- which matters most under a provider billed per
+// token. And it reports progress, because an interactive caller embedding a
+// hundred forks cannot present a frozen screen for the duration; onBatch may be
+// nil for callers that do not care.
+func IndexPendingFor(ctx context.Context, db *store.Store, model embed.SearchEmbedder, forkKeys []string, onBatch func(IndexProgress)) (int, error) {
+	pending, err := db.PendingDocumentsFor(ctx, model.ModelID(), forkKeys)
+	if err != nil {
+		return 0, err
+	}
+	return indexDocuments(ctx, db, model, pending, onBatch)
+}
+
+// indexDocuments is the shared batching loop. Batch size, vector validation and
+// the hash-guarded write are identical for both entry points; only the pending
+// set and the progress callback differ, and duplicating the loop is how those
+// two would drift.
+func indexDocuments(ctx context.Context, db *store.Store, model embed.SearchEmbedder, pending []store.PendingDocument, onBatch func(IndexProgress)) (int, error) {
 	indexed := 0
 	for start := 0; start < len(pending); start += 32 {
 		end := min(start+32, len(pending))
@@ -102,6 +132,9 @@ func IndexPending(ctx context.Context, db *store.Store, model embed.SearchEmbedd
 			return indexed, err
 		}
 		indexed += len(records)
+		if onBatch != nil {
+			onBatch(IndexProgress{Model: model.ModelID(), Indexed: indexed, Pending: len(pending)})
+		}
 	}
 	return indexed, nil
 }

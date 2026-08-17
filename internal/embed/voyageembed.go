@@ -65,7 +65,16 @@ func (e *VoyageEmbedder) Dim() int { return e.client.cfg.OutputDimension }
 // in the embeddings table under the old ID, unreferenced, and every document
 // becomes pending under the new one.
 func (e *VoyageEmbedder) ModelID() string {
-	return fmt.Sprintf("voyage:%s:dim=%d:input_type=qd", e.client.cfg.EmbedModel, e.client.cfg.OutputDimension)
+	return VoyageModelID(e.client.cfg.EmbedModel, e.client.cfg.OutputDimension)
+}
+
+// VoyageModelID composes the same identity from configuration alone, for
+// callers that need to know which partition of the index Voyage writes to
+// without paying to construct an embedder -- reporting per-fork coverage, for
+// one. It shares an implementation with ModelID so the displayed partition and
+// the written one cannot drift apart.
+func VoyageModelID(embedModel string, dimension int) string {
+	return fmt.Sprintf("voyage:%s:dim=%d:input_type=qd", embedModel, dimension)
 }
 
 // RerankModelID names the reranker configured alongside this embedder. Emitted
