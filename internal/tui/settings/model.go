@@ -373,9 +373,28 @@ func (m Model) updateEdit(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	action := keymap.Dispatch(keymap.MainSettings, key.String())
-	// q and e are ordinary text while an editor owns the event. The shared
-	// scope only interprets them as close/edit while idle.
-	if action == keymap.Back || action == keymap.Edit || action == keymap.Submit || action == keymap.Refresh {
+	// While an editor owns the event, a bare printable keystroke is text --
+	// always, with no exceptions list.
+	//
+	// MainSettings is both the list-navigation scope and the editor scope, so it
+	// binds single letters: q/e/s/v as commands and j/k as vi movement. This was
+	// a denylist naming only the four command letters, which meant `j` and `k`
+	// were still dispatched as Down/Up while typing and never reached the text.
+	// They could not be entered into any settings field at all.
+	//
+	// That is silent data loss, and it was reported from the field: the path
+	// /home/svnbjrn/.config/svnbjrn/voyage-ai became
+	// /home/svnbrn/.config/svnbrn/voyage-ai, which does not exist -- and
+	// ReadCredentialFile treats a missing file as "no credential, no error", so
+	// Voyage stayed off saying nothing. On a masked credential field it is worse
+	// still: a token containing j or k is corrupted invisibly.
+	//
+	// A denylist is the wrong shape here because it has to be re-derived every
+	// time the scope gains a binding. Keying on the event type cannot rot:
+	// editor commands arrive as named or ctrl-modified keys (up, home,
+	// backspace, ctrl+u), never as an unmodified rune. Alt-modified runes stay
+	// shortcuts, matching edit.TypedText.
+	if key.Type == tea.KeyRunes && !key.Alt {
 		action = keymap.None
 	}
 	typed := edit.TypedText(key)
