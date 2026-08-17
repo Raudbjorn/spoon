@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"sort"
 	"strings"
 )
 
@@ -55,32 +56,52 @@ func (s *Store) PendingDocumentsFor(ctx context.Context, model string, forkKeys 
 		return nil, nil
 	}
 
-	args := make([]any, 0, len(forkKeys)+1)
-	args = append(args, model)
-	placeholders := make([]string, len(forkKeys))
-	for i, key := range forkKeys {
-		placeholders[i] = "?"
-		args = append(args, key)
+	const maxForkKeysPerQuery = 900
+	uniqueKeys := make([]string, 0, len(forkKeys))
+	seen := make(map[string]struct{}, len(forkKeys))
+	for _, key := range forkKeys {
+		if _, exists := seen[key]; !exists {
+			seen[key] = struct{}{}
+			uniqueKeys = append(uniqueKeys, key)
+		}
 	}
 
-	rows, err := s.db.QueryContext(ctx, `SELECT d.document_id,d.fork_key,d.content_hash,d.body FROM documents d
-		LEFT JOIN embeddings e ON e.document_id=d.document_id AND e.model=?
-		WHERE d.fork_key IN (`+strings.Join(placeholders, ",")+`)
-		AND (e.document_id IS NULL OR e.content_hash<>d.content_hash) ORDER BY d.document_id`, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
+	pending := make([]PendingDocument, 0, len(uniqueKeys))
+	for start := 0; start < len(uniqueKeys); start += maxForkKeysPerQuery {
+		end := min(start+maxForkKeysPerQuery, len(uniqueKeys))
+		args := make([]any, 0, end-start+1)
+		args = append(args, model)
+		placeholders := make([]string, end-start)
+		for i, key := range uniqueKeys[start:end] {
+			placeholders[i] = "?"
+			args = append(args, key)
+		}
 
-	var pending []PendingDocument
-	for rows.Next() {
-		var doc PendingDocument
-		if err := rows.Scan(&doc.DocumentID, &doc.ForkKey, &doc.ContentHash, &doc.Body); err != nil {
+		rows, err := s.db.QueryContext(ctx, `SELECT d.document_id,d.fork_key,d.content_hash,d.body FROM documents d
+			LEFT JOIN embeddings e ON e.document_id=d.document_id AND e.model=?
+			WHERE d.fork_key IN (`+strings.Join(placeholders, ",")+`)
+			AND (e.document_id IS NULL OR e.content_hash<>d.content_hash) ORDER BY d.document_id`, args...)
+		if err != nil {
 			return nil, err
 		}
-		pending = append(pending, doc)
+		for rows.Next() {
+			var doc PendingDocument
+			if err := rows.Scan(&doc.DocumentID, &doc.ForkKey, &doc.ContentHash, &doc.Body); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			pending = append(pending, doc)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if err := rows.Close(); err != nil {
+			return nil, err
+		}
 	}
-	return pending, rows.Err()
+	sort.Slice(pending, func(i, j int) bool { return pending[i].DocumentID < pending[j].DocumentID })
+	return pending, nil
 }
 
 // EmbeddingCoverage reports, for every fork of repoKey that has a document,

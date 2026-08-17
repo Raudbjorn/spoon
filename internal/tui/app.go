@@ -249,10 +249,13 @@ type Model struct {
 	// An embedding run in flight. embedMsgs carries per-batch progress from the
 	// indexing goroutine onto the update loop; it is buffered and lossy, since
 	// a UI that is not draining must never stall billed work. See embedrun.go.
-	embedRunning  bool
-	embedRunTotal int
-	embedRunNote  string
-	embedMsgs     chan tea.Msg
+	embedRunning        bool
+	embedRunID          int
+	embedRunTotal       int
+	embedRunNote        string
+	embedMsgs           chan tea.Msg
+	embedProgressCtx    context.Context
+	embedProgressCancel context.CancelFunc
 
 	// autoIndexDone latches the automatic pass to once per fork list. Raising
 	// the tier ceiling re-enriches and produces a second enrichmentDoneMsg,
@@ -503,19 +506,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case embedRunStartedMsg:
-		m.embedRunning = true
+		if !m.embedRunning || msg.run != m.embedRunID {
+			return m, nil
+		}
 		m.embedRunTotal = msg.forks
 		m.embedRunNote = fmt.Sprintf("embedding %d forks...", msg.forks)
 		// Arm the progress pump only now, so a session that never embeds
 		// anything never spawns the goroutine.
-		return m, waitForClusterMsg(m.embedMsgs, m.lifecycleCtx)
+		return m, waitForClusterMsg(m.embedMsgs, m.embedProgressCtx)
 
 	case embedProgressMsg:
+		if !m.embedRunning || msg.run != m.embedRunID {
+			return m, nil
+		}
 		m.embedRunNote = fmt.Sprintf("%s %d/%d", msg.provider, msg.indexed, msg.pending)
-		return m, waitForClusterMsg(m.embedMsgs, m.lifecycleCtx)
+		return m, waitForClusterMsg(m.embedMsgs, m.embedProgressCtx)
 
 	case embedRunDoneMsg:
+		if msg.run != m.embedRunID {
+			return m, nil
+		}
 		m.embedRunning = false
+		if m.embedProgressCancel != nil {
+			m.embedProgressCancel()
+			m.embedProgressCancel = nil
+		}
 		m.embedRunNote = ""
 		m.errMsg = describeEmbedResult(msg)
 		m.errMsgTime = time.Now()
@@ -579,10 +594,12 @@ func (m *Model) handleCachedLoad(msg cachedLoadMsg) (tea.Model, tea.Cmd) {
 	cmd := m.startEnrichment()
 	if cmd == nil {
 		// No T2 enrichment scheduled (e.g. rate-limited). Still try
-		// clustering on whatever T1+cached-T2 data we have.
+		// clustering and automatic indexing on whatever T1+cached-T2 data we have.
 		if cc := m.maybeStartClusterPipeline(); cc != nil {
 			cmds = append(cmds, cc)
-			return m, tea.Batch(cmds...)
+		}
+		if auto := m.maybeAutoIndex(); auto != nil {
+			cmds = append(cmds, auto)
 		}
 	}
 	cmds = append(cmds, cmd)
@@ -660,7 +677,9 @@ func (m *Model) handleForksFetched(msg forksFetchedMsg) (tea.Model, tea.Cmd) {
 	if cmd == nil {
 		if cc := m.maybeStartClusterPipeline(); cc != nil {
 			cmds = append(cmds, cc)
-			return m, tea.Batch(cmds...)
+		}
+		if auto := m.maybeAutoIndex(); auto != nil {
+			cmds = append(cmds, auto)
 		}
 	}
 	cmds = append(cmds, cmd)
@@ -674,6 +693,7 @@ func (m *Model) processPendingUpdates() (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	coverageDirty := false
 
 	for _, update := range m.pendingUpdates {
 		m.enrichDone++
@@ -737,6 +757,7 @@ func (m *Model) processPendingUpdates() (tea.Model, tea.Cmd) {
 				// minus patch text — re-persisting would degrade the rows.
 				if !update.fromCache {
 					m.persistCompare(i)
+					coverageDirty = true
 				}
 
 				break
@@ -760,19 +781,27 @@ func (m *Model) processPendingUpdates() (tea.Model, tea.Cmd) {
 	m.gatherDuplicateGroups(0, len(m.forks))
 	m.restoreCursorByID(selectedID)
 
+	cmds := make([]tea.Cmd, 0, 3)
+	if coverageDirty {
+		cmds = append(cmds, m.loadEmbedCoverage())
+	}
 	if m.enrichDone >= m.enrichTotal && m.enriching {
 		m.enriching = false
-		// T2 streaming finished; kick off cluster pipeline if enabled.
+		// T2 streaming finished; kick off cluster pipeline and automatic
+		// indexing against the final document bodies.
 		if cmd := m.maybeStartClusterPipeline(); cmd != nil {
-			return m, cmd
+			cmds = append(cmds, cmd)
 		}
-		return m, nil
+		if cmd := m.maybeAutoIndex(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		return m, tea.Batch(cmds...)
 	}
 
 	if m.enriching {
-		return m, batchTick()
+		cmds = append(cmds, batchTick())
 	}
-	return m, nil
+	return m, tea.Batch(cmds...)
 }
 
 // recomputeT2Score recalculates the heat score for a fork after T2 data arrives.

@@ -2,8 +2,10 @@ package tui
 
 import (
 	"testing"
+	"time"
 
 	"github.com/svnbjrn/spoon/internal/config"
+	"github.com/svnbjrn/spoon/internal/forge"
 	"github.com/svnbjrn/spoon/internal/tui/settings"
 )
 
@@ -114,5 +116,43 @@ func TestAutoIndexSilentWhenNothingIsEnabled(t *testing.T) {
 	}
 	if m.errMsg != "" {
 		t.Fatalf("a disabled automatic pass reported something: %q", m.errMsg)
+	}
+}
+
+// A T1-only run has no enrichment completion message. It must still start the
+// configured automatic pass after the list settles.
+func TestAutoIndexRunsWhenTierTwoIsDisabled(t *testing.T) {
+	m := autoIndexModel(t, &config.Config{}, map[string]string{})
+	db, _ := documentStore(t)
+	m.db = db
+	m.setMaxTier(1)
+	now := time.Now()
+
+	m.handleForksFetched(forksFetchedMsg{forks: []forge.T1Data{{
+		ID: "alice/tool", Owner: "alice", Name: "tool", PushedAt: now,
+	}}})
+
+	if !m.autoIndexDone {
+		t.Fatal("T1-only fetch settled without starting the configured automatic index")
+	}
+}
+
+// Streaming T2 completion reaches processPendingUpdates, not enrichmentDoneMsg.
+// It must launch the same final-body automatic pass.
+func TestAutoIndexRunsAfterStreamingEnrichment(t *testing.T) {
+	m := autoIndexModel(t, &config.Config{}, map[string]string{})
+	db, _ := documentStore(t)
+	m.db = db
+	m.enriching = true
+	m.enrichTotal = 1
+	m.pendingUpdates = []tier2ResultMsg{{
+		forkID: m.forks[0].Fork.ID,
+		t2:     forge.T2Data{Performed: true, AheadCount: 1},
+	}}
+
+	m.processPendingUpdates()
+
+	if !m.autoIndexDone {
+		t.Fatal("streaming enrichment settled without starting the automatic index")
 	}
 }
