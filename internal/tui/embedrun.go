@@ -108,17 +108,26 @@ func (m *Model) maybeAutoIndex() tea.Cmd {
 func (m Model) autoIndexProviders() (fast bool, voyage bool) {
 	effective := m.settings.Effective
 	if effective == nil {
-		return false, false
+		return true, false
 	}
 	parse := func(value string, fallback bool) bool {
 		parsed, err := strconv.ParseBool(strings.TrimSpace(value))
 		if err != nil {
-			// An unparseable setting must not be read as consent to spend.
 			return fallback
 		}
 		return parsed
 	}
-	fast = parse(effective.FastEmbed.AutoIndex.Value, true)
+
+	// A malformed environment override must not silently undo the persisted
+	// local opt-out. Voyage remains fail-closed: malformed input is never
+	// consent to use a billed provider, even when a file value exists.
+	fastFallback := true
+	if effective.FastEmbed.AutoIndex.Source == config.SourceEnvironment &&
+		m.settings.Config != nil &&
+		m.settings.Config.Embedder.AutoIndex != nil {
+		fastFallback = *m.settings.Config.Embedder.AutoIndex
+	}
+	fast = parse(effective.FastEmbed.AutoIndex.Value, fastFallback)
 	voyage = parse(effective.Voyage.AutoIndex.Value, false)
 	return fast, voyage
 }
