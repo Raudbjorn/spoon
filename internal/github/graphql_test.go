@@ -227,3 +227,216 @@ func equalStrings(a, b []string) bool {
 	}
 	return true
 }
+
+// ── Lineage and coverage tests ─────────────────────────────────────────────────
+
+// TestGqlForkToForkInfo_LineageFields verifies that a fork node with parent
+// data produces T1Extra fields for lineage tracking.
+func TestGqlForkToForkInfo_LineageFields(t *testing.T) {
+	parentName := "octo/root-repo"
+	parentDB := int64(1001)
+	node := gqlForkNode{
+		DatabaseID:    2001,
+		NameWithOwner: "alice/fork-of-root",
+		Name:          "fork-of-root",
+		StargazerCount: 5,
+		PushedAt:     "2025-08-01T00:00:00Z",
+		CreatedAt:    "2025-07-01T00:00:00Z",
+		ForkCount:    3,
+		Parent: &struct {
+			NameWithOwner string `json:"nameWithOwner"`
+			DatabaseID   int64  `json:"databaseId"`
+		}{NameWithOwner: parentName, DatabaseID: parentDB},
+	}
+
+	_, extra := gqlForkToForkInfo(node, 15, 12, "authenticated", "2022-11-28")
+
+	if extra.ParentFullPath != parentName {
+		t.Errorf("ParentFullPath: got %q, want %q", extra.ParentFullPath, parentName)
+	}
+	if extra.ParentDatabaseID != parentDB {
+		t.Errorf("ParentDatabaseID: got %d, want %d", extra.ParentDatabaseID, parentDB)
+	}
+	if extra.WholeNetworkForkCount != 15 {
+		t.Errorf("WholeNetworkForkCount: got %d, want 15", extra.WholeNetworkForkCount)
+	}
+	if extra.DirectTotalCount != 12 {
+		t.Errorf("DirectTotalCount: got %d, want 12", extra.DirectTotalCount)
+	}
+}
+
+// TestGqlForkToForkInfo_WholeNetworkForkCount verifies that repoForkCount (root forkCount)
+// populates WholeNetworkForkCount, distinct from node.ForkCount (own child count).
+func TestGqlForkToForkInfo_WholeNetworkForkCount(t *testing.T) {
+	node := gqlForkNode{
+		DatabaseID:    3001,
+		NameWithOwner: "bob/my-fork",
+		Name:          "my-fork",
+		ForkCount:    7, // this node has 7 children
+		Parent: &struct {
+			NameWithOwner string `json:"nameWithOwner"`
+			DatabaseID   int64  `json:"databaseId"`
+		}{NameWithOwner: "octo/root", DatabaseID: 3000},
+	}
+
+	_, extra := gqlForkToForkInfo(node, 128, 118, "authenticated", "2022-11-28")
+
+	// Node's own fork count (7) goes to ForkCount.
+	if extra.ForkCount != 7 {
+		t.Errorf("ForkCount (node's own): got %d, want 7", extra.ForkCount)
+	}
+	// Root forkCount (128) goes to WholeNetworkForkCount.
+	if extra.WholeNetworkForkCount != 128 {
+		t.Errorf("WholeNetworkForkCount (root): got %d, want 128", extra.WholeNetworkForkCount)
+	}
+	// Direct total (118) goes to DirectTotalCount.
+	if extra.DirectTotalCount != 118 {
+		t.Errorf("DirectTotalCount: got %d, want 118", extra.DirectTotalCount)
+	}
+}
+
+// TestAnnotateDepths_ParentChain verifies that depths 1, 2, 3 are assigned correctly
+// from the parent_chain.json fixture (root=octo/root-repo).
+func TestAnnotateDepths_ParentChain(t *testing.T) {
+	// Simulate the parent_chain.json structure:
+	// level1: parent=octo/root-repo (depth 1)
+	// level2: parent=alice/level1-fork (depth 2)
+	// level3: parent=bob/level2-fork (depth 3)
+	forks := []ForkInfo{
+		{ID: 4003, FullName: "carol/level3-fork"},
+		{ID: 4001, FullName: "alice/level1-fork"},
+		{ID: 4002, FullName: "bob/level2-fork"},
+	}
+	// Deliberately out of order to test algorithm.
+	extras := []T1Extra{
+		{ParentFullPath: "bob/level2-fork", ParentDatabaseID: 4002}, // level3
+		{ParentFullPath: "octo/root-repo", ParentDatabaseID: 4000}, // level1
+		{ParentFullPath: "alice/level1-fork", ParentDatabaseID: 4001}, // level2
+	}
+
+	result := annotateDepths(forks, extras, "octo/root-repo")
+
+	// Collect by fork ID.
+	depth := map[int64]int{}
+	for i, f := range forks {
+		depth[f.ID] = result[i].DepthFromRoot
+	}
+
+	if depth[4001] != 1 {
+		t.Errorf("alice/level1-fork: got depth %d, want 1", depth[4001])
+	}
+	if depth[4002] != 2 {
+		t.Errorf("bob/level2-fork: got depth %d, want 2", depth[4002])
+	}
+	if depth[4003] != 3 {
+		t.Errorf("carol/level3-fork: got depth %d, want 3", depth[4003])
+	}
+
+	// DirectParent should be 1 for level1, 0 for others.
+	if result[0].DirectParent != 0 {
+		t.Errorf("carol/level3-fork: DirectParent=%d, want 0", result[0].DirectParent)
+	}
+	if result[1].DirectParent != 1 {
+		t.Errorf("alice/level1-fork: DirectParent=%d, want 1", result[1].DirectParent)
+	}
+	if result[2].DirectParent != 0 {
+		t.Errorf("bob/level2-fork: DirectParent=%d, want 0", result[2].DirectParent)
+	}
+}
+
+// TestAnnotateDepths_CycleDetection verifies that a cycle (A->B->A) does not loop.
+func TestAnnotateDepths_CycleDetection(t *testing.T) {
+	forks := []ForkInfo{
+		{ID: 5001, FullName: "alice/fork-a"},
+		{ID: 5002, FullName: "bob/fork-b"},
+	}
+	// Cycle: A's parent is B, B's parent is A.
+	extras := []T1Extra{
+		{ParentFullPath: "bob/fork-b", ParentDatabaseID: 5002},
+		{ParentFullPath: "alice/fork-a", ParentDatabaseID: 5001},
+	}
+
+	// Should terminate without looping. Depth stays 0 (unknown) for both.
+	result := annotateDepths(forks, extras, "octo/root-repo")
+
+	if result[0].DepthFromRoot != 0 {
+		t.Errorf("alice/fork-a in cycle: got depth %d, want 0 (unknown)", result[0].DepthFromRoot)
+	}
+	if result[1].DepthFromRoot != 0 {
+		t.Errorf("bob/fork-b in cycle: got depth %d, want 0 (unknown)", result[1].DepthFromRoot)
+	}
+}
+
+// TestAnnotateDepths_MissingParentUnknown verifies that a fork with no parent
+// (or a parent not in the result set) gets depth 0.
+func TestAnnotateDepths_MissingParentUnknown(t *testing.T) {
+	forks := []ForkInfo{
+		{ID: 6001, FullName: "alice/orphan-fork"},
+	}
+	extras := []T1Extra{
+		{ParentFullPath: "ghost/unknown-parent", ParentDatabaseID: 9999}, // not in result set
+	}
+
+	result := annotateDepths(forks, extras, "octo/root-repo")
+
+	if result[0].DepthFromRoot != 0 {
+		t.Errorf("orphan-fork: got depth %d, want 0 (unknown)", result[0].DepthFromRoot)
+	}
+	if result[0].DirectParent != 0 {
+		t.Errorf("orphan-fork: DirectParent=%d, want 0 (per brief: 0/1; 0=not direct/unknown)", result[0].DirectParent)
+	}
+}
+
+// TestAnnotateDepths_DirectChild verifies that a fork whose parent equals the
+// requested root gets DirectParent=1 and DepthFromRoot=1.
+func TestAnnotateDepths_DirectChild(t *testing.T) {
+	forks := []ForkInfo{
+		{ID: 7001, FullName: "alice/direct-fork"},
+	}
+	extras := []T1Extra{
+		{ParentFullPath: "octo/root-repo", ParentDatabaseID: 7000},
+	}
+
+	result := annotateDepths(forks, extras, "octo/root-repo")
+
+	if result[0].DirectParent != 1 {
+		t.Errorf("DirectParent: got %d, want 1", result[0].DirectParent)
+	}
+	if result[0].DepthFromRoot != 1 {
+		t.Errorf("DepthFromRoot: got %d, want 1", result[0].DepthFromRoot)
+	}
+}
+
+// TestAnnotateDepths_EmptyForks verifies that annotateDepths is safe on empty input.
+func TestAnnotateDepths_EmptyForks(t *testing.T) {
+	result := annotateDepths(nil, nil, "octo/root-repo")
+	if result != nil {
+		t.Errorf("nil input: got %v, want nil", result)
+	}
+	result2 := annotateDepths([]ForkInfo{}, []T1Extra{}, "octo/root-repo")
+	if result2 != nil {
+		t.Errorf("empty slices: got %v, want nil", result2)
+	}
+}
+
+// TestAnnotateDepths_RootNotInForkList verifies that annotateDepths handles the
+// case where the requested root is not itself a fork in the result list (the
+// common case for the root repo being non-fork or having been filtered).
+func TestAnnotateDepths_RootNotInForkList(t *testing.T) {
+	// root is octo/root-repo; the result list only contains forks.
+	forks := []ForkInfo{
+		{ID: 8001, FullName: "alice/fork-a"},
+	}
+	extras := []T1Extra{
+		{ParentFullPath: "octo/root-repo", ParentDatabaseID: 8000},
+	}
+
+	result := annotateDepths(forks, extras, "octo/root-repo")
+
+	if result[0].DirectParent != 1 {
+		t.Errorf("DirectParent: got %d, want 1", result[0].DirectParent)
+	}
+	if result[0].DepthFromRoot != 1 {
+		t.Errorf("DepthFromRoot: got %d, want 1", result[0].DepthFromRoot)
+	}
+}

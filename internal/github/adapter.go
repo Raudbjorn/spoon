@@ -342,7 +342,7 @@ func directParentFullPath(info RepoInfo) string {
 	return ""
 }
 
-func forkInfoToT1(f ForkInfo, extra *T1Extra, parentFullPath string) forge.T1Data {
+func forkInfoToT1(f ForkInfo, extra *T1Extra, networkRoot string) forge.T1Data {
 	pushed, _ := time.Parse(time.RFC3339, f.PushedAt)
 	created, _ := time.Parse(time.RFC3339, f.CreatedAt)
 
@@ -362,13 +362,22 @@ func forkInfoToT1(f ForkInfo, extra *T1Extra, parentFullPath string) forge.T1Dat
 		OpenIssues:     f.OpenIssues,
 		CreatedAt:      created,
 		Topics:         f.Topics,
-		SourceFullPath: parentFullPath,
-		ParentFullPath: parentFullPath,
+		SourceFullPath: networkRoot,
 	}
 
 	if extra != nil {
 		t1.OpenPRCount = extra.OpenPRCount
 		t1.ReleaseCount = extra.ReleaseCount
+		// Lineage fields are populated only on the GraphQL path (the
+		// REST fallback leaves the extras nil, so all of these stay at
+		// zero/empty/false — see brief: "REST list-forks has no parent
+		// fields: keep direct parent and depth unknown instead of
+		// fabricating the requested root").
+		t1.ParentFullPath = extra.ParentFullPath
+		t1.DepthFromRoot = extra.DepthFromRoot
+		t1.IsForkOfFork = extra.DepthFromRoot > 1
+		t1.DirectTotalCount = extra.DirectTotalCount
+		t1.WholeNetworkForkCount = extra.WholeNetworkForkCount
 
 		branches := make([]forge.BranchRef, 0, len(extra.TopBranches))
 		for _, br := range extra.TopBranches {

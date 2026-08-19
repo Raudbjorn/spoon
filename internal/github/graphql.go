@@ -225,6 +225,9 @@ func (c *Client) FetchForksGraphQL(ctx context.Context, owner, repo string, onPa
 				CaptureAt:     time.Now(),
 				AuthScopeID:   c.AuthScopeID(),
 			}
+			// Annotate lineage on the partial data we have so far before returning.
+			// DirectParent/DepthFromRoot are unknown when parent data is missing.
+			allExtras = annotateDepths(allForks, allExtras, owner+"/"+repo)
 			return allForks, allExtras, report, fmt.Errorf("GraphQL query: %w", err)
 		}
 
@@ -278,6 +281,10 @@ func (c *Client) FetchForksGraphQL(ctx context.Context, owner, repo string, onPa
 		CaptureAt:     time.Now(),
 		AuthScopeID:   c.AuthScopeID(),
 	}
+	// Annotate lineage on the full set. annotateDepths is cycle-safe and
+	// deterministic regardless of page order.
+	allExtras = annotateDepths(allForks, allExtras, owner+"/"+repo)
+
 	return allForks, allExtras, report, nil
 }
 
@@ -438,8 +445,11 @@ func gqlForkToForkInfo(node gqlForkNode, repoForkCount, directTotalCount int, au
 //
 // The fourth argument is reserved for future use (e.g., a pre-computed
 // parent map from a separate pass) and is currently unused.
-func annotateDepths(forks []ForkInfo, extras []T1Extra, root string, _ map[int64]int) []T1Extra {
-	if len(forks) == 0 || len(forks) != len(extras) {
+func annotateDepths(forks []ForkInfo, extras []T1Extra, root string) []T1Extra {
+	if len(forks) == 0 {
+		return nil
+	}
+	if len(forks) != len(extras) {
 		return extras
 	}
 

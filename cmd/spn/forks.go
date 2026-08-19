@@ -1120,6 +1120,29 @@ func forkToJSONDetailed(r forksops.Result, details detailOptions) map[string]any
 		out["queryScore"] = r.QueryScore
 		out["queryMethod"] = r.QueryMethod
 	}
+	// Lineage describes the fork's position in the fork network tree.
+	// Emit when any lineage field is known: depth>0 (a known hop from the
+	// root) or any of the path strings set. Omit-when-unknown avoids
+	// fabricating fields the provider did not return (REST has no parent
+	// data and must not emit guessed values).
+	if r.Lineage.DepthFromRoot > 0 || r.Lineage.NetworkRoot != "" || r.Lineage.DirectParent != "" {
+		out["lineage"] = map[string]any{
+			"networkRoot":   r.Lineage.NetworkRoot,
+			"directParent":  r.Lineage.DirectParent,
+			"depthFromRoot": r.Lineage.DepthFromRoot,
+		}
+	}
+	// Coverage reports how completely the fork list covers the network.
+	// Emit when either count is known (non-zero from GraphQL); a known
+	// zero unresolved gap (e.g. direct=whole=5) is still emitted. The
+	// REST path leaves both at zero and produces no entry.
+	if r.Coverage.DirectTotalCount > 0 || r.Coverage.WholeNetworkForkCount > 0 {
+		out["coverage"] = map[string]any{
+			"directTotalCount":       r.Coverage.DirectTotalCount,
+			"wholeNetworkForkCount": r.Coverage.WholeNetworkForkCount,
+			"unresolved":             r.Coverage.Unresolved,
+		}
+	}
 	// priorScore/priorReasons are emitted only when --priors ran (a match
 	// scored > 0, or a deny-only match left reasons). NDJSON-only, like
 	// visibility/momentum/networkRank; CSV is intentionally unchanged.
