@@ -293,6 +293,7 @@ func runVoyage(ctx context.Context, db *store.Store, effective config.EffectiveC
 	if err != nil {
 		return 0, err
 	}
+	defer model.Close()
 	return semantic.IndexPendingFor(ctx, db, model, forkKeys, func(p semantic.IndexProgress) {
 		sendEmbedProgress(progress, embedProgressMsg{run: run, provider: "voyage", indexed: p.Indexed, pending: p.Pending})
 	})
