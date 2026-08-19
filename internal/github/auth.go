@@ -52,7 +52,7 @@ func CheckAuthWithOptions(opts ClientOptions) (*Client, AuthStatus, error) {
 		client.probeDefaultBackend(context.Background(), &status)
 	}
 	status.AuthScopeID = client.authScopeID
-	status.APIVersion = defaultRESTVersion
+	status.APIVersion = StoredAPIVersion
 	status.AuthMode = client.AuthMode()
 	return client, status, nil
 }
