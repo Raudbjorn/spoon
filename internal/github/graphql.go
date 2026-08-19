@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -397,14 +398,24 @@ func (c *Client) FetchForksBounded(ctx context.Context, owner, repo string, onBa
 		}
 
 		query := buildBatchedForksQuery(aliases)
-		var resp gqlBatchedResponse
+		var resp gqlAliasBatch
 		if err := c.doGraphQLWithRetry(ctx, query, vars, &resp); err != nil {
 			return allForks, nil, nil, err
 		}
 
 		for j, alias := range aliases {
-			node, ok := resp.Repositories[alias]
+			raw, ok := resp.Aliases[alias]
 			if !ok {
+				continue
+			}
+			var node struct {
+				ForkCount int `json:"forkCount"`
+				Forks     struct {
+					TotalCount int          `json:"totalCount"`
+					Nodes      []gqlForkNode `json:"nodes"`
+				} `json:"forks"`
+			}
+			if err := json.Unmarshal(raw, &node); err != nil {
 				continue
 			}
 			depth := batch[j].depth
@@ -417,12 +428,15 @@ func (c *Client) FetchForksBounded(ctx context.Context, owner, repo string, onBa
 				seen[fork.ID] = struct{}{}
 				allForks = append(allForks, fork)
 				allExtras = append(allExtras, extra)
-				if f.ForkCount > 0 && depth+1 < opts.MaxDepth {
-					parts := strings.SplitN(fork.FullName, "/", 2)
-					if len(parts) == 2 {
-						queue = append(queue, queueEntry{owner: parts[0], repo: parts[1], depth: depth + 1})
+				if depth+1 < opts.MaxDepth {
+					if f.ForkCount > 0 {
+						parts := strings.SplitN(fork.FullName, "/", 2)
+						if len(parts) == 2 {
+							queue = append(queue, queueEntry{owner: parts[0], repo: parts[1], depth: depth + 1})
+						}
 					}
-				} else if f.ForkCount > 0 {
+				} else {
+					cap = CapReasonMaxDepth
 					unresolved++
 				}
 			}
@@ -483,15 +497,7 @@ func (c *Client) FetchForksBounded(ctx context.Context, owner, repo string, onBa
 	return allForks, extrasMap, report, nil
 }
 
-type gqlBatchedResponse struct {
-	Repositories map[string]struct {
-		ForkCount int `json:"forkCount"`
-		Forks     struct {
-			TotalCount int          `json:"totalCount"`
-			Nodes     []gqlForkNode `json:"nodes"`
-		} `json:"forks"`
-	} `json:"-"`
-}
+
 
 func buildBatchedForksQuery(aliases []string) string {
 	var sb strings.Builder

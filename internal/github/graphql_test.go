@@ -761,3 +761,30 @@ func loadGQLFixture(t *testing.T, path string) gqlResponse {
 	return envelope.Data
 }
 
+func TestFetchForksBounded_DecodesAliasedBatch(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/graphql") {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":{"r0":{"forkCount":1,"forks":{"totalCount":1,"nodes":[{"databaseId":4001,"nameWithOwner":"alice/level1-fork","name":"level1-fork","forkCount":0,"parent":{"nameWithOwner":"octo/root-repo","databaseId":4000},"pushedAt":"2025-08-01T00:00:00Z"}]}},"rateLimit":{"limit":5000,"remaining":4999,"used":1,"cost":1}}}`))
+	}))
+	defer srv.Close()
+
+	forks, extras, report, err := newTestClientGQL(t, srv).FetchForksBounded(
+		context.Background(), "octo", "root-repo", nil, BoundedOptions{MaxDepth: 3, MaxNodes: 50, MaxPages: 20},
+	)
+	if err != nil {
+		t.Fatalf("FetchForksBounded: %v", err)
+	}
+	if len(forks) != 1 || forks[0].FullName != "alice/level1-fork" {
+		t.Fatalf("forks=%v, want alice/level1-fork", forks)
+	}
+	if extras[forks[0].ID].ParentFullPath != "octo/root-repo" {
+		t.Fatalf("parent=%q", extras[forks[0].ID].ParentFullPath)
+	}
+	if report == nil || report.Scope != "all" || report.UniqueRows != 1 {
+		t.Fatalf("report=%+v", report)
+	}
+}
+
