@@ -77,26 +77,24 @@ func (s *Store) PendingDocumentsFor(ctx context.Context, model string, forkKeys 
 			args = append(args, key)
 		}
 
-		rows, err := s.db.QueryContext(ctx, `SELECT d.document_id,d.fork_key,d.content_hash,d.body FROM documents d
-			LEFT JOIN embeddings e ON e.document_id=d.document_id AND e.model=?
-			WHERE d.fork_key IN (`+strings.Join(placeholders, ",")+`)
-			AND (e.document_id IS NULL OR e.content_hash<>d.content_hash) ORDER BY d.document_id`, args...)
-		if err != nil {
-			return nil, err
-		}
-		for rows.Next() {
-			var doc PendingDocument
-			if err := rows.Scan(&doc.DocumentID, &doc.ForkKey, &doc.ContentHash, &doc.Body); err != nil {
-				rows.Close()
-				return nil, err
+		if err := func() error {
+			rows, err := s.db.QueryContext(ctx, `SELECT d.document_id,d.fork_key,d.content_hash,d.body FROM documents d
+				LEFT JOIN embeddings e ON e.document_id=d.document_id AND e.model=?
+				WHERE d.fork_key IN (`+strings.Join(placeholders, ",")+`)
+				AND (e.document_id IS NULL OR e.content_hash<>d.content_hash) ORDER BY d.document_id`, args...)
+			if err != nil {
+				return err
 			}
-			pending = append(pending, doc)
-		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		if err := rows.Close(); err != nil {
+			defer rows.Close()
+			for rows.Next() {
+				var doc PendingDocument
+				if err := rows.Scan(&doc.DocumentID, &doc.ForkKey, &doc.ContentHash, &doc.Body); err != nil {
+					return err
+				}
+				pending = append(pending, doc)
+			}
+			return rows.Err()
+		}(); err != nil {
 			return nil, err
 		}
 	}
