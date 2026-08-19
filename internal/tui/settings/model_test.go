@@ -1,6 +1,7 @@
 package settings
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -84,3 +85,18 @@ func TestSystemLayerSaveRequiresHostwideConfirmation(t *testing.T) {
 		t.Fatalf("missing hostwide confirmation: %q", m.View())
 	}
 }
+
+
+// writableCache is a no-op ResponseCache that lets callers override
+// VoyageCacheWritable for tests. It used to live in voyage_test.go;
+// moved here when that file was deleted alongside the legacy
+// voyageDiagnostic function.
+type writableCache struct{ err error }
+
+func (c writableCache) VoyageCacheGetMany(context.Context, []string) (map[string][]byte, error) {
+	return nil, nil
+}
+func (c writableCache) VoyageCachePutMany(context.Context, string, string, map[string][]byte) error {
+	return nil
+}
+func (c writableCache) VoyageCacheWritable(context.Context) error { return c.err }

@@ -275,22 +275,6 @@ func voyageDiagnosticForModel(m *Model, deps ActionDeps) (string, error) {
 	return "Voyage inactive: " + diagnosis.Summary, diagnosis.Err
 }
 
-func voyageDiagnostic(cfg *config.Config, cache embed.ResponseCache) (string, error) {
-	var voyage config.VoyageConfig
-	if cfg == nil {
-		return "Voyage not configured: configuration layer is disabled", nil
-	}
-	voyage = cfg.Embedder.Voyage
-	_, active, err := embed.ResolveVoyageConfig(context.Background(), voyage, false, cache)
-	if err != nil {
-		return "Voyage configured but unusable", err
-	}
-	if active {
-		return "Voyage configured and active", nil
-	}
-	return "Voyage not configured", nil
-}
-
 func effectiveEmbedder(m *Model) config.EmbedderConfig {
 	if m.Effective != nil {
 		out := config.EmbedderConfig{
