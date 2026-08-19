@@ -137,7 +137,7 @@ var Registry = []Field{
 		c.Embedder.AutoIndex = &b
 		return nil
 	}},
-	boolField("embedder.voyage.autoIndex", "Auto-embed with Voyage", VoyageSection, "Sends every listed fork to a per-token billed service without asking. Off by default.", Billing, func(c *config.Config) bool { return c.Embedder.Voyage.AutoIndex }, func(c *config.Config, v bool) { c.Embedder.Voyage.AutoIndex = v }),
+	boolField("embedder.voyage.autoIndex", "Auto-embed with Voyage", VoyageSection, "Sends every listed fork to a per-token billed service. Off by default.", Billing, func(c *config.Config) bool { return c.Embedder.Voyage.AutoIndex }, func(c *config.Config, v bool) { c.Embedder.Voyage.AutoIndex = v }),
 	boolField("embedder.voyage.disabled", "Voyage disabled", VoyageSection, "Clearing this can enable an external per-token billed service.", Billing, func(c *config.Config) bool { return c.Embedder.Voyage.Disabled }, func(c *config.Config, v bool) { c.Embedder.Voyage.Disabled = v }),
 	{Key: "embedder.voyage.apiKeyFile", Label: "Voyage API key file", Section: VoyageSection, Help: "0600 credential file path; the key itself is not shown.", Editable: true, Consequence: Billing, Get: func(c *config.Config) string { return c.Embedder.Voyage.APIKeyFile }, Set: func(c *config.Config, v string) error {
 		c.Embedder.Voyage.APIKeyFile = strings.TrimSpace(v)
