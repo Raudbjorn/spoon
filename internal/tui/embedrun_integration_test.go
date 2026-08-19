@@ -120,9 +120,24 @@ func TestEmbedRunIntegration(t *testing.T) {
 	if !ok {
 		t.Fatalf("second run command = %T, want a batch", second())
 	}
+	doneCount := 0
 	for _, sub := range secondBatch {
-		if msg, isDone := sub().(embedRunDoneMsg); isDone && msg.indexed != 0 {
+		msg, isDone := sub().(embedRunDoneMsg)
+		if !isDone {
+			continue
+		}
+		doneCount++
+		if msg.err != nil {
+			t.Fatalf("second run failed: %v", msg.err)
+		}
+		if len(msg.warnings) != 0 {
+			t.Fatalf("second run warned: %v", msg.warnings)
+		}
+		if msg.indexed != 0 {
 			t.Errorf("re-running embedded %d documents again; the content-hash join is not holding", msg.indexed)
 		}
+	}
+	if doneCount != 1 {
+		t.Fatalf("second run produced %d completion messages, want 1", doneCount)
 	}
 }
