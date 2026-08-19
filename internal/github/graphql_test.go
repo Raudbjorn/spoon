@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 
@@ -295,6 +296,207 @@ func TestGqlForkToForkInfo_WholeNetworkForkCount(t *testing.T) {
 	}
 }
 
+// ── Fixture-driven decode tests ─────────────────────────────────────────────────
+//
+// The tests below load the JSON fixtures in testdata/inventory_contract/ and run
+// them through the production decode pipeline (gqlResponse → gqlForkToForkInfo
+// → annotateDepths). They are the load-bearing integration tests for Task 3:
+// they catch drift between the GraphQL schema extension (parent { nameWithOwner
+// databaseId }) and the T1Extra lineage fields, and between the GraphQL
+// repository forkCount vs forks.totalCount and the Coverage fields.
+
+// TestFixtureParentChain_DecodeAndAnnotate loads parent_chain.json and asserts
+// that the production decode + annotateDepths pipeline produces T1Extra values
+// matching the fixture:
+//
+//   - alice/level1-fork → depth 1, direct parent = octo/root-repo
+//   - bob/level2-fork   → depth 2, parent = alice/level1-fork
+//   - carol/level3-fork → depth 3, parent = bob/level2-fork
+//
+// The fixture is loaded from disk and decoded into the production gqlResponse
+// type so this test guards against schema drift between the GraphQL query and
+// the decoder.
+func TestFixtureParentChain_DecodeAndAnnotate(t *testing.T) {
+	const fixturePath = "testdata/inventory_contract/parent_chain.json"
+	resp := loadGQLFixture(t, fixturePath)
+
+
+	root := "octo/root-repo"
+	nodes := resp.Repository.Forks.Nodes
+	if len(nodes) != 3 {
+		t.Fatalf("parent_chain.json: got %d fork nodes, want 3", len(nodes))
+	}
+
+	forks := make([]ForkInfo, 0, len(nodes))
+	extras := make([]T1Extra, 0, len(nodes))
+	for _, node := range nodes {
+		fork, extra := gqlForkToForkInfo(
+			node,
+			resp.Repository.ForkCount,
+			resp.Repository.Forks.TotalCount,
+			"authenticated",
+			"2022-11-28",
+		)
+		forks = append(forks, fork)
+		extras = append(extras, extra)
+	}
+
+	// Decode-side assertions: each fork's parent must round-trip through the
+	// GraphQL parent { nameWithOwner databaseId } payload.
+	wantParents := map[string]struct {
+		parentFullPath string
+		parentDB       int64
+	}{
+		"alice/level1-fork": {"octo/root-repo", 4000},
+		"bob/level2-fork":   {"alice/level1-fork", 4001},
+		"carol/level3-fork": {"bob/level2-fork", 4002},
+	}
+	for i, f := range forks {
+		want, ok := wantParents[f.FullName]
+		if !ok {
+			t.Errorf("unexpected fork %q in parent_chain.json", f.FullName)
+			continue
+		}
+		if extras[i].ParentFullPath != want.parentFullPath {
+			t.Errorf("%s: ParentFullPath=%q, want %q",
+				f.FullName, extras[i].ParentFullPath, want.parentFullPath)
+		}
+		if extras[i].ParentDatabaseID != want.parentDB {
+			t.Errorf("%s: ParentDatabaseID=%d, want %d",
+				f.FullName, extras[i].ParentDatabaseID, want.parentDB)
+		}
+	}
+
+	// Annotation-side assertions: depths propagate through the parent chain.
+	annotated := annotateDepths(forks, extras, root)
+	depth := map[string]int{}
+	direct := map[string]int{}
+	for i, f := range forks {
+		depth[f.FullName] = annotated[i].DepthFromRoot
+		direct[f.FullName] = annotated[i].DirectParent
+	}
+
+	if depth["alice/level1-fork"] != 1 {
+		t.Errorf("alice/level1-fork: DepthFromRoot=%d, want 1", depth["alice/level1-fork"])
+	}
+	if depth["bob/level2-fork"] != 2 {
+		t.Errorf("bob/level2-fork: DepthFromRoot=%d, want 2", depth["bob/level2-fork"])
+	}
+	if depth["carol/level3-fork"] != 3 {
+		t.Errorf("carol/level3-fork: DepthFromRoot=%d, want 3", depth["carol/level3-fork"])
+	}
+
+	// DirectParent is 1 only for the direct child of the root; deeper levels
+	// are 0 because the brief defines DirectParent as 0/1 and only direct
+	// children qualify.
+	if direct["alice/level1-fork"] != 1 {
+		t.Errorf("alice/level1-fork: DirectParent=%d, want 1", direct["alice/level1-fork"])
+	}
+	if direct["bob/level2-fork"] != 0 {
+		t.Errorf("bob/level2-fork: DirectParent=%d, want 0", direct["bob/level2-fork"])
+	}
+	if direct["carol/level3-fork"] != 0 {
+		t.Errorf("carol/level3-fork: DirectParent=%d, want 0", direct["carol/level3-fork"])
+	}
+
+	// Whole-network forkCount (15) and direct totalCount (15) from the fixture
+	// must round-trip onto T1Extra so Coverage.Unresolved can be derived later.
+	for i, f := range forks {
+		if annotated[i].WholeNetworkForkCount != 15 {
+			t.Errorf("%s: WholeNetworkForkCount=%d, want 15 (from repository.forkCount)",
+				f.FullName, annotated[i].WholeNetworkForkCount)
+		}
+		if annotated[i].DirectTotalCount != 15 {
+			t.Errorf("%s: DirectTotalCount=%d, want 15 (from forks.totalCount)",
+				f.FullName, annotated[i].DirectTotalCount)
+		}
+	}
+}
+
+// TestFixtureDirectWholeCountGap_Coverage loads direct_whole_count_gap.json and
+// asserts that the production decode pipeline separates repository.forkCount
+// (whole-network: 128) from forks.totalCount (direct: 118). This is the
+// Coverage.Unresolved = whole - direct contract; the test asserts both values
+// land on T1Extra so downstream code can derive the unresolved gap.
+func TestFixtureDirectWholeCountGap_Coverage(t *testing.T) {
+	const fixturePath = "testdata/inventory_contract/direct_whole_count_gap.json"
+	resp := loadGQLFixture(t, fixturePath)
+
+
+	if resp.Repository.ForkCount != 128 {
+		t.Errorf("repository.forkCount=%d, want 128", resp.Repository.ForkCount)
+	}
+	if resp.Repository.Forks.TotalCount != 118 {
+		t.Errorf("forks.totalCount=%d, want 118", resp.Repository.Forks.TotalCount)
+	}
+
+	for _, node := range resp.Repository.Forks.Nodes {
+		_, extra := gqlForkToForkInfo(
+			node,
+			resp.Repository.ForkCount,
+			resp.Repository.Forks.TotalCount,
+			"authenticated",
+			"2022-11-28",
+		)
+		if extra.WholeNetworkForkCount != 128 {
+			t.Errorf("%s: WholeNetworkForkCount=%d, want 128",
+				node.NameWithOwner, extra.WholeNetworkForkCount)
+		}
+		if extra.DirectTotalCount != 118 {
+			t.Errorf("%s: DirectTotalCount=%d, want 118",
+				node.NameWithOwner, extra.DirectTotalCount)
+		}
+		// Each fork in this fixture is a direct child of chunkhound/chunkhound,
+		// so its parent payload must round-trip and produce DirectParent=1.
+		if extra.ParentFullPath != "chunkhound/chunkhound" {
+			t.Errorf("%s: ParentFullPath=%q, want %q",
+				node.NameWithOwner, extra.ParentFullPath, "chunkhound/chunkhound")
+		}
+		if extra.ParentDatabaseID != 3000 {
+			t.Errorf("%s: ParentDatabaseID=%d, want 3000",
+				node.NameWithOwner, extra.ParentDatabaseID)
+		}
+	}
+}
+
+// TestFixtureDirectWholeCountGap_AnnotateDepths runs the direct_whole_count_gap
+// fixture through annotateDepths and verifies the direct-child path: every fork
+// in the fixture has ParentFullPath == root, so each gets DirectParent=1 and
+// DepthFromRoot=1, regardless of slice order.
+func TestFixtureDirectWholeCountGap_AnnotateDepths(t *testing.T) {
+	const fixturePath = "testdata/inventory_contract/direct_whole_count_gap.json"
+	resp := loadGQLFixture(t, fixturePath)
+
+
+	root := "chunkhound/chunkhound"
+	nodes := resp.Repository.Forks.Nodes
+	forks := make([]ForkInfo, 0, len(nodes))
+	extras := make([]T1Extra, 0, len(nodes))
+	for _, node := range nodes {
+		fork, extra := gqlForkToForkInfo(
+			node,
+			resp.Repository.ForkCount,
+			resp.Repository.Forks.TotalCount,
+			"authenticated",
+			"2022-11-28",
+		)
+		forks = append(forks, fork)
+		extras = append(extras, extra)
+	}
+
+	annotated := annotateDepths(forks, extras, root)
+	for i, f := range forks {
+		if annotated[i].DirectParent != 1 {
+			t.Errorf("%s: DirectParent=%d, want 1 (direct child of %s)",
+				f.FullName, annotated[i].DirectParent, root)
+		}
+		if annotated[i].DepthFromRoot != 1 {
+			t.Errorf("%s: DepthFromRoot=%d, want 1 (direct child of %s)",
+				f.FullName, annotated[i].DepthFromRoot, root)
+		}
+	}
+}
+
 // TestAnnotateDepths_ParentChain verifies that depths 1, 2, 3 are assigned correctly
 // from the parent_chain.json fixture (root=octo/root-repo).
 func TestAnnotateDepths_ParentChain(t *testing.T) {
@@ -440,3 +642,122 @@ func TestAnnotateDepths_RootNotInForkList(t *testing.T) {
 		t.Errorf("DepthFromRoot: got %d, want 1", result[0].DepthFromRoot)
 	}
 }
+
+// TestFetchForksGraphQL_FixtureDirectWholeCountGap exercises the production
+// GraphQL decoder with the inventory fixture rather than locally-built nodes.
+// It preserves the distinct direct-child (forks.totalCount) and whole-network
+// (repository.forkCount) counts end to end.
+func TestFetchForksGraphQL_FixtureDirectWholeCountGap(t *testing.T) {
+	payload, err := os.ReadFile("testdata/inventory_contract/direct_whole_count_gap.json")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/graphql") {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write(payload)
+	}))
+	defer srv.Close()
+
+	forks, extras, _, err := newTestClientGQL(t, srv).FetchForksGraphQL(
+		context.Background(), "chunkhound", "chunkhound", nil,
+	)
+	if err != nil {
+		t.Fatalf("FetchForksGraphQL: %v", err)
+	}
+	if len(forks) != 2 || len(extras) != 2 {
+		t.Fatalf("decoded fork/extras counts = %d/%d, want 2/2", len(forks), len(extras))
+	}
+	for i, fork := range forks {
+		extra := extras[i]
+		if extra.DirectTotalCount != 118 {
+			t.Errorf("%s direct count = %d, want 118", fork.FullName, extra.DirectTotalCount)
+		}
+		if extra.WholeNetworkForkCount != 128 {
+			t.Errorf("%s whole-network count = %d, want 128", fork.FullName, extra.WholeNetworkForkCount)
+		}
+		if unresolved := max(extra.WholeNetworkForkCount-extra.DirectTotalCount, 0); unresolved != 10 {
+			t.Errorf("%s unresolved = %d, want 10", fork.FullName, unresolved)
+		}
+		if extra.ParentFullPath != "chunkhound/chunkhound" || extra.DepthFromRoot != 1 {
+			t.Errorf("%s lineage = parent %q depth %d, want chunkhound/chunkhound depth 1",
+				fork.FullName, extra.ParentFullPath, extra.DepthFromRoot)
+		}
+	}
+}
+
+// TestFetchForksGraphQL_FixtureParentChainOutOfOrder feeds the real
+// parent_chain fixture through the production GraphQL path after reversing its
+// nodes. The fixed-point lineage annotation must still derive depths 1, 2, 3.
+func TestFetchForksGraphQL_FixtureParentChainOutOfOrder(t *testing.T) {
+	payload, err := os.ReadFile("testdata/inventory_contract/parent_chain.json")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	var fixture map[string]any
+	if err := json.Unmarshal(payload, &fixture); err != nil {
+		t.Fatalf("decode fixture for reordering: %v", err)
+	}
+	data := fixture["data"].(map[string]any)
+	repository := data["repository"].(map[string]any)
+	forksPayload := repository["forks"].(map[string]any)
+	nodes := forksPayload["nodes"].([]any)
+	for left, right := 0, len(nodes)-1; left < right; left, right = left+1, right-1 {
+		nodes[left], nodes[right] = nodes[right], nodes[left]
+	}
+	payload, err = json.Marshal(fixture)
+	if err != nil {
+		t.Fatalf("encode reordered fixture: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/graphql") {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write(payload)
+	}))
+	defer srv.Close()
+
+	forks, extras, _, err := newTestClientGQL(t, srv).FetchForksGraphQL(
+		context.Background(), "octo", "root-repo", nil,
+	)
+	if err != nil {
+		t.Fatalf("FetchForksGraphQL: %v", err)
+	}
+	if len(forks) != 3 || len(extras) != 3 {
+		t.Fatalf("decoded fork/extras counts = %d/%d, want 3/3", len(forks), len(extras))
+	}
+
+	depthByName := make(map[string]int, len(forks))
+	for i, fork := range forks {
+		depthByName[fork.FullName] = extras[i].DepthFromRoot
+	}
+	for name, want := range map[string]int{
+		"alice/level1-fork": 1,
+		"bob/level2-fork":   2,
+		"carol/level3-fork": 3,
+	} {
+		if got := depthByName[name]; got != want {
+			t.Errorf("%s depth = %d, want %d", name, got, want)
+		}
+	}
+}
+
+func loadGQLFixture(t *testing.T, path string) gqlResponse {
+	t.Helper()
+	var envelope struct {
+		Data gqlResponse `json:"data"`
+	}
+	if err := loadFixtureJSON(path, &envelope); err != nil {
+		t.Fatalf("load fixture: %v", err)
+	}
+	return envelope.Data
+}
+
