@@ -193,6 +193,20 @@ type ClusterOptions struct {
 // SetEmbedderForTest installs an embedder stub on ClusterOptions for tests.
 func (o *ClusterOptions) SetEmbedderForTest(e embed.Embedder) { o.Embedder = e }
 
+// Lineage describes a fork's position in the fork network tree.
+type Lineage struct {
+	NetworkRoot   string // network root owner/repo
+	DirectParent string // direct parent owner/repo
+	DepthFromRoot int    // edges from root: 1=direct child, 0=unknown
+}
+
+// Coverage reports how completely the fork list covers the network.
+type Coverage struct {
+	DirectTotalCount       int // forks.totalCount from GraphQL root (direct children)
+	WholeNetworkForkCount int // repository.forkCount from GraphQL root (whole network)
+	Unresolved             int // whole - direct; negative clamped to 0
+}
+
 // Result is a single fork's outcome. Fork is always populated; Err and the
 // T2/T3 pointers may be nil depending on tier and per-fork errors.
 type Result struct {
@@ -267,6 +281,12 @@ type Result struct {
 	SiblingSimSkip      *StageSkip
 	CommitFilesComplete bool
 	CommitFilesSkip     *StageSkip
+
+	// Lineage describes the fork's position in the fork network tree.
+	Lineage Lineage
+
+	// Coverage reports the direct vs whole-network fork counts.
+	Coverage Coverage
 }
 
 // StageSkip describes a non-fatal, per-fork enrichment skip. Unlike Error it
@@ -497,7 +517,21 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 					}
 					i := dispatchOrder[pos]
 					s := all[i]
-					r := Result{Fork: s.fork, Heat: s.res, Momentum: momentumByID[s.fork.ID]}
+					r := Result{
+						Fork:      s.fork,
+						Heat:      s.res,
+						Momentum:  momentumByID[s.fork.ID],
+						Lineage: Lineage{
+							NetworkRoot:   s.fork.SourceFullPath,
+							DirectParent:  s.fork.ParentFullPath,
+							DepthFromRoot: s.fork.DepthFromRoot,
+						},
+						Coverage: Coverage{
+							DirectTotalCount:       s.fork.DirectTotalCount,
+							WholeNetworkForkCount: s.fork.WholeNetworkForkCount,
+							Unresolved:             max(s.fork.WholeNetworkForkCount-s.fork.DirectTotalCount, 0),
+						},
+					}
 
 					// Auto-budget: an eligible fork is enriched only while the
 					// rate-limit reserve holds. Because dispatch is best-first

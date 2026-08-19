@@ -140,9 +140,12 @@ type T1Data struct {
 	BranchFingerprint string
 
 	// Fork lineage
-	SourceFullPath string // network root used for compare baseline; never the direct parent.
-	ParentFullPath string // direct parent
-	IsForkOfFork   bool
+	SourceFullPath        string // network root used for compare baseline; never the direct parent.
+	ParentFullPath        string // direct parent
+	IsForkOfFork          bool
+	DepthFromRoot         int    // edges from root: 1=direct child, 0=unknown
+	DirectTotalCount      int    // root forks.totalCount (direct children only)
+	WholeNetworkForkCount int    // root forkCount (whole network)
 
 	// Topics is the repository's topic set as returned by the provider.
 	// Empty/nil means "no signal" (e.g. provider lacks topic support, or
