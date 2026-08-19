@@ -528,7 +528,22 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 		opts.OwnerCacheTTL = 24 * time.Hour
 	}
 
-	// Validate --network-scope=all requires MaxDepth > 0
+	// Default the network traversal caps to their planned values when not explicitly set.
+	// The zero-value check covers both "never mentioned" and "set to 0 explicitly".
+	if opts.NetworkMaxNodes == 0 {
+		opts.NetworkMaxNodes = 5000
+	}
+	if opts.NetworkMaxDepth == 0 {
+		opts.NetworkMaxDepth = 3
+	}
+	if opts.NetworkMaxPages == 0 {
+		opts.NetworkMaxPages = 200
+	}
+	if opts.NetworkMaxElapsed == 0 {
+		opts.NetworkMaxElapsed = 2 * time.Minute
+	}
+
+	// Validate --network-scope=all requires MaxDepth > 0 after defaulting
 	if opts.NetworkScope == "all" && opts.NetworkMaxDepth == 0 {
 		return agentio.NewError(agentio.CodeBadInput, "--network-scope=all requires --network-max-depth > 0", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
 	}
