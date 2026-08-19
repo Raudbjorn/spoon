@@ -233,8 +233,8 @@ func NewClientWithOptions(opts ClientOptions) (*Client, error) {
 		// option resolution (it keys off an empty Host), so host and token are
 		// read from the gh config exactly as before — this is the default path
 		// when no github.tokens are configured, so it must be bounded too.
-		defaultOpts := ghAPI.ClientOptions{Timeout: requestTimeout, Transport: newVersionInjectingTransport(rotating, defaultRESTVersion)}
-		rest, err := ghAPI.NewRESTClient(defaultOpts)
+		defaultOpts := ghAPI.ClientOptions{Timeout: requestTimeout}
+		rest, err := newVersionedRESTClient(defaultOpts)
 		if err == nil {
 			b := &backend{Rest: rest, REST: newBudget(), GraphQLBudget: newBudget()}
 			if gql, gqlErr := ghAPI.NewGraphQLClient(defaultOpts); gqlErr == nil {
@@ -245,7 +245,7 @@ func NewClientWithOptions(opts ClientOptions) (*Client, error) {
 			c.initRateControls()
 			return c, nil
 		}
-		rest, err = ghAPI.NewRESTClient(ghAPI.ClientOptions{AuthToken: "x", Host: defaultHost, Transport: newVersionInjectingTransport(&unauthTransport{base: rotating}, defaultRESTVersion), Timeout: requestTimeout})
+		rest, err = newVersionedRESTClient(ghAPI.ClientOptions{AuthToken: "x", Host: defaultHost, Timeout: requestTimeout})
 		if err != nil {
 			return nil, fmt.Errorf("creating unauthenticated client: %w", err)
 		}
@@ -264,10 +264,9 @@ func NewClientWithOptions(opts ClientOptions) (*Client, error) {
 		clientOpts := ghAPI.ClientOptions{
 			AuthToken: token,
 			Host:      defaultHost,
-			Transport: newVersionInjectingTransport(rotating, defaultRESTVersion),
 			Timeout:   requestTimeout,
 		}
-		rest, err := ghAPI.NewRESTClient(clientOpts)
+		rest, err := newVersionedRESTClient(clientOpts)
 		if err != nil {
 			return nil, fmt.Errorf("creating GitHub REST backend: %w", err)
 		}

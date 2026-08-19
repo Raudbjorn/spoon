@@ -1,8 +1,6 @@
 package github
 
-import (
-	"net/http"
-)
+import ghAPI "github.com/cli/go-gh/v2/pkg/api"
 
 // defaultRESTVersion is the pinned GitHub REST API version sent on every outbound
 // REST request. This freezes the wire contract so the response schema is stable
@@ -12,18 +10,17 @@ const defaultRESTVersion = "2022-11-28"
 // restVersionHeader is the HTTP header name for the API version.
 const restVersionHeader = "X-GitHub-Api-Version"
 
-// versionInjectingTransport wraps base and injects the pinned REST version header
-// on every outbound request. go-gh does not set this header by default, so we
-// add it here to make the wire contract explicit and testable.
-type versionInjectingTransport struct {
-	base        http.RoundTripper
-	apiVersion  string
-}
-
-func newVersionInjectingTransport(base http.RoundTripper, apiVersion string) *versionInjectingTransport {
-	return &versionInjectingTransport{base: base, apiVersion: apiVersion}
-}
-func (t *versionInjectingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	req.Header.Set(restVersionHeader, t.apiVersion)
-	return t.base.RoundTrip(req)
+// newVersionedRESTClient builds a ghAPI.RESTClient with the pinned API version
+// header set, without mutating the caller's ghAPI.ClientOptions.Headers map.
+// If the caller already has a Headers map, entries are preserved. The version
+// header is added or overwritten. The caller's Transport, AuthToken, Host, and
+// Timeout are preserved as supplied.
+func newVersionedRESTClient(opts ghAPI.ClientOptions) (*ghAPI.RESTClient, error) {
+	headers := make(map[string]string, len(opts.Headers)+1)
+	for k, v := range opts.Headers {
+		headers[k] = v
+	}
+	headers[restVersionHeader] = defaultRESTVersion
+	opts.Headers = headers
+	return ghAPI.NewRESTClient(opts)
 }
