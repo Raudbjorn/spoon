@@ -1,0 +1,6 @@
+{
+  "version": "2022-11-28",
+  "schema": "Repository.forks[].parent chain traversal",
+  "reason": "Defends lineage-aware fork records: each fork carries its immediate parent's nameWithOwner and databaseId, enabling multi-hop chain reconstruction (depthFromRoot).",
+  "commit": "ca00cb8cb48f05877f77ab3e36175bb27ae6c2c6"
+}

@@ -1,0 +1,43 @@
+{
+  "pages": [
+    {
+      "page": 1,
+      "data": {
+        "repository": {
+          "forks": {
+            "totalCount": 88,
+            "pageInfo": {
+              "hasNextPage": true,
+              "endCursor": "cursor-page1"
+            },
+            "nodes": [
+              {"databaseId": 1001, "nameWithOwner": "alice/repo-fork-1", "name": "repo-fork-1", "forkCount": 3, "parent": {"nameWithOwner": "octo/root", "databaseId": 1000}, "pushedAt": "2025-06-01T00:00:00Z"},
+              {"databaseId": 1002, "nameWithOwner": "bob/repo-fork-2", "name": "repo-fork-2", "forkCount": 0, "parent": {"nameWithOwner": "octo/root", "databaseId": 1000}, "pushedAt": "2025-05-15T00:00:00Z"}
+            ]
+          },
+          "forkCount": 88,
+          "rateLimit": {"cost": 1}
+        }
+      }
+    },
+    {
+      "page": 2,
+      "data": {
+        "repository": {
+          "forks": {
+            "totalCount": 88,
+            "pageInfo": {
+              "hasNextPage": false,
+              "endCursor": null
+            },
+            "nodes": [
+              {"databaseId": 1003, "nameWithOwner": "carol/repo-fork-3", "name": "repo-fork-3", "forkCount": 1, "parent": {"nameWithOwner": "alice/repo-fork-1", "databaseId": 1001}, "pushedAt": "2025-04-20T00:00:00Z"}
+            ]
+          },
+          "forkCount": 88,
+          "rateLimit": {"cost": 1}
+        }
+      }
+    }
+  ]
+}

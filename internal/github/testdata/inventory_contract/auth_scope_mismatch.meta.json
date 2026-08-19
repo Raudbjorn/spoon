@@ -1,0 +1,6 @@
+{
+  "version": "2022-11-28",
+  "schema": "Cache scope semantics with auth scope ID mismatch",
+  "reason": "Defends scope-aware caching: a snapshot stored under scope A must not be served under scope B. AuthScopeID is part of the cache key.",
+  "commit": "ca00cb8cb48f05877f77ab3e36175bb27ae6c2c6"
+}

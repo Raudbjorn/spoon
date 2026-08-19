@@ -1,0 +1,6 @@
+{
+  "version": "2022-11-28",
+  "schema": "REST repository visibility (HTTP 404)",
+  "reason": "Defends visibility handling: a 404 on the REST forks endpoint means the repo is not visible to the current auth scope. The acquisition report records the failure without treating it as zero forks.",
+  "commit": "ca00cb8cb48f05877f77ab3e36175bb27ae6c2c6"
+}

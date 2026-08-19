@@ -1,0 +1,41 @@
+{
+  "data": {
+    "repository": {
+      "forkCount": 15,
+      "forks": {
+        "totalCount": 15,
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": null
+        },
+        "nodes": [
+          {
+            "databaseId": 4001,
+            "nameWithOwner": "alice/level1-fork",
+            "name": "level1-fork",
+            "forkCount": 3,
+            "parent": {"nameWithOwner": "octo/root-repo", "databaseId": 4000},
+            "pushedAt": "2025-08-01T00:00:00Z"
+          },
+          {
+            "databaseId": 4002,
+            "nameWithOwner": "bob/level2-fork",
+            "name": "level2-fork",
+            "forkCount": 1,
+            "parent": {"nameWithOwner": "alice/level1-fork", "databaseId": 4001},
+            "pushedAt": "2025-07-20T00:00:00Z"
+          },
+          {
+            "databaseId": 4003,
+            "nameWithOwner": "carol/level3-fork",
+            "name": "level3-fork",
+            "forkCount": 0,
+            "parent": {"nameWithOwner": "bob/level2-fork", "databaseId": 4002},
+            "pushedAt": "2025-07-10T00:00:00Z"
+          }
+        ]
+      },
+      "rateLimit": {"cost": 1}
+    }
+  }
+}
