@@ -69,6 +69,9 @@ func TestBoundedTraversalCapReason(t *testing.T) {
 	if len(forks) != 3 {
 		t.Fatalf("expected 3 forks, got %d", len(forks))
 	}
+	if report.Unresolved != 1 {
+		t.Fatalf("expected Unresolved=1 unvisited level-4 node, got %d", report.Unresolved)
+	}
 }
 
 // TestBoundedTraversalUnderCap verifies that when the network is smaller than
@@ -194,7 +197,10 @@ func (f *fakeBoundedForge) ListForksBounded(ctx context.Context, owner, repo str
 	go func() {
 		defer close(out)
 
-		type qentry struct{ owner, repo string; depth int }
+		type qentry struct {
+			owner, repo string
+			depth       int
+		}
 		queue := []qentry{{owner: owner, repo: repo, depth: 0}}
 		visited := map[string]bool{}
 		capFired := ""
@@ -217,20 +223,18 @@ func (f *fakeBoundedForge) ListForksBounded(ctx context.Context, owner, repo str
 			for _, e := range batch {
 				if e.depth >= opts.MaxDepth {
 					capFired = "max_depth"
+					queue = append(queue, e)
 					break
 				}
-
 				key := e.owner + "/" + e.repo
 				if visited[key] {
 					continue
 				}
 				visited[key] = true
-
 				node, ok := f.network[key]
 				if !ok {
 					continue
 				}
-
 				select {
 				case out <- forge.ForkMsg{Fork: forge.T1Data{
 					ID:            key,
@@ -245,7 +249,6 @@ func (f *fakeBoundedForge) ListForksBounded(ctx context.Context, owner, repo str
 				case <-ctx.Done():
 					return
 				}
-
 				for _, childKey := range node.Forks {
 					cp := strings.SplitN(childKey, "/", 2)
 					if len(cp) == 2 {
@@ -270,6 +273,7 @@ func (f *fakeBoundedForge) ListForksBounded(ctx context.Context, owner, repo str
 			MaxNodes:      opts.MaxNodes,
 			MaxDepth:      opts.MaxDepth,
 			CapReason:     capFired,
+			Unresolved:    len(queue),
 		}}:
 		case <-ctx.Done():
 		}

@@ -573,7 +573,7 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 						Coverage: Coverage{
 							DirectTotalCount:       s.fork.DirectTotalCount,
 							WholeNetworkForkCount: s.fork.WholeNetworkForkCount,
-							Unresolved:             max(s.fork.WholeNetworkForkCount-s.fork.DirectTotalCount, 0),
+							Unresolved:             coverageUnresolved(s.fork, opts.Report),
 						},
 					}
 
@@ -1160,6 +1160,13 @@ func buildLoneWolfInput(f forge.T1Data, now time.Time, t2 *forge.T2Data) heat.Lo
 		AheadBy:       t2.AheadCount,
 		DaysSincePush: now.Sub(f.PushedAt).Hours() / 24,
 	}
+}
+
+func coverageUnresolved(f forge.T1Data, report *forge.AcquisitionReport) int {
+	if report != nil && report.Scope == "all" && report.Unresolved > 0 {
+		return report.Unresolved
+	}
+	return max(f.WholeNetworkForkCount-f.DirectTotalCount, 0)
 }
 
 // scoreQuery computes Result.QueryScore for every collected fork in one

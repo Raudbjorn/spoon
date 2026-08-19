@@ -54,6 +54,7 @@ type AcquisitionReport struct {
 	MaxNodes     int    `json:"maxNodes"`
 	MaxDepth     int    `json:"maxDepth"`
 	CapReason    string `json:"capReason,omitempty"` // "max_nodes"|"max_depth"|"max_pages"|"max_elapsed"|""
+	Unresolved   int    `json:"unresolved,omitempty"` // discovered nodes not visited
 }
 
 // BoundedOptions controls a bounded whole-network traversal.

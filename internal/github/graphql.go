@@ -362,7 +362,9 @@ func (c *Client) FetchForksBounded(ctx context.Context, owner, repo string, onBa
 	var allExtras []T1Extra
 	totalPages := 0
 	cap := CapReasonNone
+	unresolved := 0
 	start := time.Now()
+
 
 	for len(queue) > 0 && cap == CapReasonNone {
 		if time.Since(start) > opts.MaxElapsed {
@@ -420,6 +422,8 @@ func (c *Client) FetchForksBounded(ctx context.Context, owner, repo string, onBa
 					if len(parts) == 2 {
 						queue = append(queue, queueEntry{owner: parts[0], repo: parts[1], depth: depth + 1})
 					}
+				} else if f.ForkCount > 0 {
+					unresolved++
 				}
 			}
 			if onBatch != nil && len(node.Forks.Nodes) > 0 {
@@ -445,6 +449,7 @@ func (c *Client) FetchForksBounded(ctx context.Context, owner, repo string, onBa
 		}
 	}
 
+	unresolved += len(queue)
 	unique := countSeen(seen)
 	report := &forge.AcquisitionReport{
 		Method:         "graphql",
@@ -462,8 +467,13 @@ func (c *Client) FetchForksBounded(ctx context.Context, owner, repo string, onBa
 		MaxNodes:       opts.MaxNodes,
 		MaxDepth:       opts.MaxDepth,
 		CapReason:      cap.String(),
+		Unresolved:     unresolved,
 	}
 	allExtras = annotateDepths(allForks, allExtras, owner+"/"+repo)
+	for i := range allExtras {
+		allExtras[i].DirectTotalCount = unique
+		allExtras[i].WholeNetworkForkCount = unique + unresolved
+	}
 	extrasMap := map[int64]T1Extra{}
 	for i, f := range allForks {
 		if i < len(allExtras) {
