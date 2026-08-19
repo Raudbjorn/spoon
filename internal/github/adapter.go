@@ -128,6 +128,8 @@ func (p *GHProvider) Parent(ctx context.Context, owner, repo string) (forge.Pare
 		URL:           info.HTMLURL,
 		Language:      info.Language,
 		Topics:        info.Topics,
+		SourceFullPath:       sourceFullPath(info),
+		DirectParentFullPath: directParentFullPath(info),
 	}, nil
 }
 
@@ -321,6 +323,25 @@ func (p *GHProvider) Contributors(ctx context.Context, fork forge.T1Data) (forge
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
+// sourceFullPath returns the network root for a repository.
+// For a non-fork, this is the repo's own FullName.
+// For a fork, this is its source's FullName (or own FullName if source unavailable).
+func sourceFullPath(info RepoInfo) string {
+	if info.Source != nil && info.Source.FullName != "" {
+		return info.Source.FullName
+	}
+	return info.FullName
+}
+
+// directParentFullPath returns the immediate parent's full name.
+// For a non-fork, this is empty.
+func directParentFullPath(info RepoInfo) string {
+	if info.Parent != nil && info.Parent.FullName != "" {
+		return info.Parent.FullName
+	}
+	return ""
+}
+
 func forkInfoToT1(f ForkInfo, extra *T1Extra, parentFullPath string) forge.T1Data {
 	pushed, _ := time.Parse(time.RFC3339, f.PushedAt)
 	created, _ := time.Parse(time.RFC3339, f.CreatedAt)
@@ -479,6 +500,7 @@ func isMergeOrSyncMsg(msg string) bool {
 	}
 	return false
 }
+
 
 // SearchTopicRepos implements the optional topics.TopicSearcher capability:
 // it returns repositories carrying the GitHub topic, mapped to forge types.

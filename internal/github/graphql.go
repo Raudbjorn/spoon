@@ -94,6 +94,7 @@ query($owner: String!, $name: String!, $cursor: String) {
             }
           }
         }
+        parent { nameWithOwner databaseId }
       }
     }
   }
@@ -157,6 +158,15 @@ type gqlForkNode struct {
 	Refs struct {
 		Nodes []gqlRefNode `json:"nodes"`
 	} `json:"refs"`
+
+	// Parent is the fork's direct parent repository. Populated via the
+	// forks query's parent { nameWithOwner databaseId } extension. Nil
+	// when the parent field is absent (legacy response, REST path, or
+	// the root repo itself).
+	Parent *struct {
+		NameWithOwner string `json:"nameWithOwner"`
+		DatabaseID    int64  `json:"databaseId"`
+	} `json:"parent"`
 }
 
 type gqlRefNode struct {
@@ -391,16 +401,90 @@ func gqlForkToForkInfo(node gqlForkNode, repoForkCount, directTotalCount int, au
 	branches := sortBranches(node.Refs.Nodes, defaultBranch)
 
 	extra := T1Extra{
-		OpenPRCount:      node.PullRequests.TotalCount,
-		ReleaseCount:     node.Releases.TotalCount,
-		TopBranches:      branches,
-		ForkCount:        node.ForkCount,
-		DirectTotalCount: directTotalCount,
-		AuthMode:         authMode,
-		APIVersion:       apiVersion,
+		OpenPRCount:          node.PullRequests.TotalCount,
+		ReleaseCount:         node.Releases.TotalCount,
+		TopBranches:          branches,
+		ForkCount:            node.ForkCount,
+		DirectTotalCount:     directTotalCount,
+		WholeNetworkForkCount: repoForkCount,
+		AuthMode:             authMode,
+		APIVersion:           apiVersion,
+	}
+
+	if node.Parent != nil {
+		extra.ParentFullPath = node.Parent.NameWithOwner
+		extra.ParentDatabaseID = node.Parent.DatabaseID
 	}
 
 	return fork, extra
+}
+
+// annotateDepths walks the parallel (forks, extras) slices and computes
+// DepthFromRoot, DirectParent, and DepthFromRoot for each fork, relative
+// to the requested network root.
+//
+// Algorithm:
+//  1. Direct children (ParentFullPath == root) get DirectParent=1, DepthFromRoot=1.
+//  2. Children of any fork whose depth is known get DepthFromRoot = parentDepth+1.
+//  3. We repeat step 2 until a full pass produces no changes (fixed-point).
+//     This handles out-of-order input: when a child arrives before its parent
+//     in the slice, the child is updated on a later iteration when the parent
+//     is reached.
+//  4. Cycles: if a node is its own ancestor, the fixed-point never assigns
+//     a finite depth to it (we only ever increase depths, and a cycle produces
+//     no strictly smaller value). It stays at 0 = unknown.
+//  5. Missing parent (parent not in the input set and not the root) leaves
+//     depth at 0.
+//
+// The fourth argument is reserved for future use (e.g., a pre-computed
+// parent map from a separate pass) and is currently unused.
+func annotateDepths(forks []ForkInfo, extras []T1Extra, root string, _ map[int64]int) []T1Extra {
+	if len(forks) == 0 || len(forks) != len(extras) {
+		return extras
+	}
+
+	// Step 1: direct children of root.
+	for i := range extras {
+		if extras[i].ParentFullPath == root {
+			extras[i].DirectParent = 1
+			extras[i].DepthFromRoot = 1
+		}
+	}
+
+	// Step 2: build databaseId → index map for the recursive propagation.
+	idToIdx := make(map[int64]int, len(forks))
+	for i, f := range forks {
+		if f.ID != 0 {
+			idToIdx[f.ID] = i
+		}
+	}
+
+	// Step 3: fixed-point propagation. For each node with a known depth,
+	// find any child whose ParentDatabaseID points at this node and set the
+	// child's depth to extras[i].DepthFromRoot + 1.
+	for changed := true; changed; {
+		changed = false
+		for i := range forks {
+			if extras[i].DepthFromRoot == 0 {
+				continue // unknown depth; cannot propagate
+			}
+			myID := forks[i].ID
+			if myID == 0 {
+				continue
+			}
+			for j := range extras {
+				if extras[j].ParentDatabaseID == myID {
+					candidate := extras[i].DepthFromRoot + 1
+					if extras[j].DepthFromRoot == 0 || extras[j].DepthFromRoot > candidate {
+						extras[j].DepthFromRoot = candidate
+						changed = true
+					}
+				}
+			}
+		}
+	}
+
+	return extras
 }
 
 // extractTopicNames flattens a `repositoryTopics.nodes` payload into a

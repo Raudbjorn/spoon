@@ -95,6 +95,11 @@ type ParentData struct {
 	URL           string
 	Language      string
 	Topics        []string
+
+	// SourceFullPath is the network root — same as FullName for non-forks.
+	SourceFullPath string
+	// DirectParentFullPath is the immediate parent's full name. Empty for non-forks.
+	DirectParentFullPath string
 }
 
 // T1Data is the surface data available immediately after fork discovery,

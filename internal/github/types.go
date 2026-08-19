@@ -3,6 +3,8 @@ package github
 import "time"
 
 // RepoInfo represents a GitHub repository (used for the parent repo).
+// Source and Parent are populated only for forks (GitHub REST returns them
+// only when Fork=true). For non-fork roots both are zero/nil.
 type RepoInfo struct {
 	ID            int64    `json:"id"`
 	FullName      string   `json:"full_name"`
@@ -23,6 +25,21 @@ type RepoInfo struct {
 	Fork          bool     `json:"fork"`
 
 	Owner OwnerInfo `json:"owner"`
+
+	// Source is the ultimate upstream of a fork chain (REST `source`).
+	// Nil for non-forks and for forks missing the field.
+	Source *RepoRef `json:"source,omitempty"`
+
+	// Parent is the immediate parent of a fork (REST `parent`).
+	// Nil for non-forks and for forks missing the field.
+	Parent *RepoRef `json:"parent,omitempty"`
+}
+
+// RepoRef is the slim reference returned by GitHub REST for `source` and
+// `parent` payloads: id + full_name only.
+type RepoRef struct {
+	ID       int64  `json:"id"`
+	FullName string `json:"full_name"`
 }
 
 // ForkInfo represents a fork from the forks list endpoint.
@@ -195,6 +212,26 @@ type T1Extra struct {
 	// the GraphQL root). It is identical across every fork in a single run,
 	// so it doubles as a "true total" sanity check against the streamed list.
 	DirectTotalCount int `json:"DirectTotalCount,omitempty"`
+
+	// WholeNetworkForkCount is the root repository's forkCount from
+	// GraphQL — the whole-network count, not just direct children.
+	WholeNetworkForkCount int `json:"WholeNetworkForkCount,omitempty"`
+
+	// ParentFullPath is the direct parent's "owner/name". Empty when the
+	// parent is unknown (REST path, missing parent payload, or root).
+	ParentFullPath string `json:"ParentFullPath,omitempty"`
+
+	// ParentDatabaseID is the direct parent's databaseId. Zero when unknown.
+	ParentDatabaseID int64 `json:"ParentDatabaseID,omitempty"`
+
+	// DirectParent is 1 when this fork's direct parent is the requested
+	// root (depth 1), 0 otherwise. Zero is also the "unknown" value
+	// (REST path, missing parent, cycle).
+	DirectParent int `json:"DirectParent,omitempty"`
+
+	// DepthFromRoot is the edge count from the requested root: 1=direct
+	// child, 2=child of a fork, etc. Zero is the "unknown" value.
+	DepthFromRoot int `json:"DepthFromRoot,omitempty"`
 
 	// AuthMode is "authenticated" or "anonymous" for the run that produced
 	// this record. Populated only on the GraphQL path.
