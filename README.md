@@ -4,7 +4,21 @@ Find useful forks of a Git repository.
 
 `spoon` enumerates the forks of a GitHub or GitLab repo, enriches each with signals about activity and divergence (recency, stars, sub-forks, releases, ahead/behind counts, contributor mix), and ranks them so the interesting ones surface first. It works either as an interactive TUI or as JSON/CSV output for scripting.
 
-## Build
+## At a glance
+
+- **Find differentiated forks:** combine recency, popularity, divergence, contributor, release, and change-shape signals instead of sorting by stars alone.
+- **Choose the interface:** browse interactively with `spoon`, or stream deterministic JSON, NDJSON, and CSV from `spn`.
+- **Search by intent:** rank forks against a query, apply curated path/language/owner priors, or search the persistent semantic index.
+- **Work across forges:** GitHub, GitLab, self-hosted GitLab/GHES, and Gitea adapters share one evaluation pipeline.
+- **Stay local by default:** lexical clustering needs no service; FastEmbed adds local semantic indexing when ONNX Runtime is available; Voyage is optional and additive.
+- **Review pull requests:** inspect, reply to, apply suggestions from, and resolve GitHub review threads from the TUI or agent CLI.
+
+| Binary | Use it for | Output |
+| --- | --- | --- |
+| `spoon` | Interactive fork discovery, topic picking, settings, and PR-thread review | Bubbletea TUI |
+| `spn` | Agents, scripts, batch evaluation, semantic search, and machine-readable errors | JSON, NDJSON, or CSV |
+
+## Build and quick start
 
 Two binaries: `spoon` (interactive TUI) and `spn` (the agent-shaped
 JSON/NDJSON CLI). Build both from a clone:
@@ -71,21 +85,28 @@ Run `spoon --help` for the full flag list.
 
 ### TUI keybindings
 
-| Key | Action |
+The table below covers the main fork browser. The executable source of truth is
+`internal/tui/keymap`; see [`docs/keymap.md`](docs/keymap.md) for every
+context, prompt, settings action, and review-thread binding.
+
+| Keys | Action |
 | --- | --- |
-| `↑`/`↓`, `j`/`k` | Navigate |
-| `Enter` | Fork details |
-| `o` | Open fork in browser |
-| `c` | Compare fork vs upstream |
-| `y` | Yank clone command |
-| `/` | Filter |
-| `n` | New repository |
-| `s` | Cycle sort column |
-| `r` | Refresh (bypass cache) |
-| `Space` | Mark/unmark |
-| `e` / `E` | Export marked / all forks |
-| `?` | Help |
-| `q` | Quit |
+| `↑`/`↓`, `j`/`k`, `PgUp`/`PgDn`, `Home`, `End`/`G` | Move or page through visible forks |
+| `Enter` | Open fork details |
+| `n` | Search a new repository |
+| `/`, `Esc` | Apply a substring filter / clear the active filter |
+| `R` | Rank forks by a free-text intent |
+| `g` | Toggle cluster grouping |
+| `s`, `S` | Cycle the sort column / reverse sort order |
+| `o`, `d` | Open the selected fork / open its upstream comparison |
+| `c` | Cycle the enrichment ceiling |
+| `t`, `f` | Toggle the theme / hide or restore table chrome |
+| `Space` | Mark or unmark a fork |
+| `e`, `E` | Export marked / all forks |
+| `i`, `I` | Embed marked / all forks |
+| `,` | Open settings |
+| `y`, `r` | Copy the clone command / refresh without cache |
+| `?`, `q` | Open help / quit |
 
 ### PR review threads
 
@@ -133,25 +154,30 @@ for `--json` / `--next` so stdout stays pure JSON. Suppress with
 TUI, no color, structured error envelope with remediation hints, NDJSON
 streaming for long-running queries.
 
-`spn` is the second binary from [Build](#build) above.
+`spn` is the second binary from [Build and quick start](#build-and-quick-start) above.
 
 Verbs:
 
 ```sh
-spn threads list <pr-ref> [--all]
+spn threads list <pr-ref> [--all] [--filter MODE]
 spn threads next <pr-ref>
 spn threads reply <pr-ref> <id> --body T
-spn threads resolve <pr-ref> <id> [--body T]
-spn threads resolve-all <pr-ref>     # skips human-raised threads (returned in `skipped`)
-spn threads unresolve-all <pr-ref>
+spn threads resolve <pr-ref> <id> [--body T] [--dry-run]
+spn threads resolve-all <pr-ref> [--outdated] [--dry-run]
+spn threads unresolve-all <pr-ref> [--dry-run]
+spn threads apply-suggestion <pr-ref> <id> [--suggestion-index N] [--dry-run]
+spn threads list-prs <owner/repo> [--limit N] [--state open]
 spn pr status <pr-ref>
-spn forks list <repo> [--tier N] [--top N] [--budget N] [--shortlist N] [--query "T"] [--priors PATH] [...]
-    [--rpm N] [--files] [--commits] [--commit-files] [--commit-file-budget N] [--web-diff]   # NDJSON
-spn forks list topic:zig [--topic-repos 5] [...]                        # whole-topic prospecting
-spn search "oauth rate limiting" [--repo owner/repo] [--top N]          # persistent semantic search
-spn forks eval <repo> --judgments FILE                                  # score ranking vs a labeled set -> JSON report
-spn repo centrality <owner/repo>                                        # upstream module/dir centrality
+spn forks list <repo> [--tier N] [--top N] [--budget N] [--shortlist N]
+    [--query "T"] [--priors PATH] [--files] [--commits] [--commit-files]
+    [--cluster-top N] [--no-cluster] [--no-embed] [--csv] [...]
+spn forks list topic:zig [--topic-repos 5] [...]
+spn search "oauth rate limiting" [--repo owner/repo] [--top N] [--voyage]
+spn forks eval <repo> --judgments FILE
+spn repo centrality <owner/repo>
 ```
+
+Run `spn --help` for the complete flag surface and mutation policy.
 
 `spn forks list` writes every emitted fork snapshot to the global store at
 `$XDG_CONFIG_HOME/spoon/spoon.db` (default `~/.config/spoon/spoon.db`;
@@ -352,6 +378,23 @@ spn search "oauth refresh" --no-rerank  # retrieval only
 Full detail, including cost control and the degradation rules, is in
 [docs/embedders.md](docs/embedders.md).
 
+
+## Development
+
+The normal local verification path builds both command entry points and runs
+every package test:
+
+```sh
+go test ./...
+go vet ./...
+go build ./cmd/...
+```
+
+Tests live beside the package they exercise. Integration tests use the same
+layout and keep external credentials, paid services, and native runtimes
+opt-in. Long-form operational references live under `docs/`; development
+designs and plans live under `docs/superpowers/`.
+
 ## Project layout
 
 The repo is laid out as a small set of command entry points under `cmd/` and a
@@ -396,115 +439,49 @@ vendor/             Vendored Go dependencies (matches go.mod / go.sum)
 
 ### Structural summary
 
-The runtime shape is the same whether you launch `spoon` or `spn`: configuration
-is bootstrapped, a forge client is built, forks are enumerated and enriched,
-each fork is scored and ranked, and the result is either rendered (TUI) or
-serialised (JSON/NDJSON). The two binaries are deliberately thin — every
-behavioural decision lives in `internal/`.
-
-The first diagram covers entry, bootstrap, source adapters, and the core
-enrichment/scoring layer. The second covers embedding, persistence, and the
-two output surfaces. Both render legibly at README width.
-
-#### Entry → bootstrap → sources → core
+Both binaries are thin entry points around the same pipeline. This intentionally
+coarse map is the navigation aid; the directory tree above and the two flow
+diagrams below provide the package-level detail.
 
 ```mermaid
 flowchart TB
-  spoon["cmd/spoon"]
-  spn["cmd/spn"]
-  config["internal/config"]
-  setupcheck["internal/setupcheck"]
-  forge["internal/forge"]
-  github["internal/github"]
-  gitlab["internal/gitlab"]
-  gitea["internal/gitea"]
-  forksops["internal/forksops"]
-  heat["internal/heat"]
-  priors["internal/priors"]
-  mdg["internal/mdg"]
-  cluster["internal/cluster"]
+  Commands["cmd/spoon and cmd/spn"]
+  Bootstrap["Configuration and setup<br/>internal/config, internal/setupcheck"]
+  Forges["Forge adapters<br/>internal/forge, github, gitlab, gitea"]
+  Pipeline["Fork evaluation<br/>internal/forksops"]
+  Analysis["Scoring and analysis<br/>heat, priors, mdg, cluster"]
+  Data["Persistence and semantic data<br/>embed, semantic, store"]
+  Surfaces["Interaction and output<br/>tui, threadsops, agentio, topics"]
 
-  spoon --> config
-  spn --> config
-  config --> setupcheck
-  spoon --> forge
-  spn --> forge
-  forge --> github
-  forge --> gitlab
-  forge --> gitea
-  forksops --> heat
-  forksops --> priors
-  forksops --> mdg
-  forksops --> cluster
-```
-
-#### Embed → persist → surface
-
-```mermaid
-flowchart LR
-  subgraph Embed
-    embed["internal/embed"]
-    voyage["Voyage API"]
-    semantic["internal/semantic"]
-    store["internal/store"]
-  end
-
-  subgraph Surface
-    tui["internal/tui"]
-    agentio["internal/agentio"]
-    topics["internal/topics"]
-    threads["internal/threadsops"]
-  end
-
-  embed --> semantic
-  semantic --> store
-  store -. opt-in .-> voyage
-
-  cluster --> embed
-  cluster --> topics
-
-  spoon["cmd/spoon"] --> tui
-  spoon --> threads
-  spn["cmd/spn"] --> threads
-  spn --> agentio
+  Commands --> Bootstrap
+  Commands --> Forges
+  Commands --> Pipeline
+  Pipeline --> Analysis
+  Pipeline --> Data
+  Pipeline --> Surfaces
 ```
 
 ### Data flow for one `spn forks list` run
 
-The agent CLI is the cleanest expression of the data flow: enumerate,
-enrich, score, embed, persist, emit. Each step is independently cacheable so a
-repeated run skips work the store already covers.
+The agent CLI follows a fixed, cache-aware pipeline. The store preserves
+snapshots and vectors, so a repeated run skips comparisons and embeddings it
+already covers.
 
 ```mermaid
-sequenceDiagram
-  autonumber
-  participant U as User
-  participant CLI as spn forks list
-  participant F as forge (GitHub/GitLab/Gitea)
-  participant OPS as forksops
-  participant H as heat
-  participant S as store (libsql)
-  participant E as embed (FastEmbed / lexical)
-  participant V as Voyage (optional)
+flowchart TB
+  Request["spn forks list owner/repo"]
+  Forge["Detect forge and build client"]
+  Enrich["Enumerate forks and enrich comparisons"]
+  Score["Score, rank, and apply priors"]
+  Snapshot["Persist fork snapshots and compare cache"]
+  Embed["Embed new or changed documents"]
+  Index["Persist local semantic index"]
+  Voyage["Optional additive Voyage index"]
+  Output["Emit ranked NDJSON or CSV"]
 
-  U->>CLI: spn forks list owner/repo [...]
-  CLI->>F: detect host, build client
-  CLI->>OPS: enumerate forks
-  OPS->>F: list forks + per-fork compare<br/>(branches, contributors, files)
-  F-->>OPS: fork metadata + diffs
-  OPS->>H: score each fork (T1/T2/T3)
-  H-->>OPS: heat score, tier, filters
-  OPS->>S: upsert snapshots, read cached compares
-  OPS->>E: embed new/changed documents
-  E-->>OPS: vectors (or lexical fallback)
-  OPS->>S: persist vectors
-  alt Voyage key present
-    OPS->>V: embed same documents (additive index)
-    V-->>OPS: voyage vectors
-    OPS->>S: persist voyage index
-  end
-  OPS-->>CLI: ranked, embedded forks
-  CLI-->>U: NDJSON to stdout
+  Request --> Forge --> Enrich --> Score --> Snapshot --> Embed --> Index --> Output
+  Embed -. key configured .-> Voyage
+  Voyage --> Output
 ```
 
 ### TUI composition
@@ -542,13 +519,5 @@ flowchart LR
 
 Every package ships its own `*_test.go` files alongside the production
 sources; integration tests live next to the package they exercise
-(`fastembed_integration_test.go`, `threads_integration_test.go`, etc.). See
-[Development](#development) below for the canonical commands.
-
-## Development
-
-```sh
-go test ./...
-go vet ./...
-go build ./...
-```
+(`fastembed_integration_test.go`, `threads_integration_test.go`, etc.). The
+canonical commands live in the [Development](#development) section above.
