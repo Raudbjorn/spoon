@@ -196,11 +196,15 @@ func (m *Model) startEmbedRunWith(all, useFast, useVoyage bool) tea.Cmd {
 	m.embedRunTotal = len(work)
 	m.embedMsgs = progress
 	m.embedProgressCtx, m.embedProgressCancel = context.WithCancel(parentCtx)
+	runCtx := m.embedProgressCtx
 
 	return tea.Batch(
 		func() tea.Msg { return embedRunStartedMsg{forks: len(work), run: run} },
 		func() tea.Msg {
-			ctx := context.Background()
+			// runCtx, not context.Background(): the cancel button and the
+			// TUI shutdown must reach this goroutine, otherwise a cancelled
+			// Voyage run keeps billing after the user walks away.
+			ctx := runCtx
 
 			// Documents first. A fork the TUI has never persisted a document
 			// for has nothing to embed, and until recently that was every fork
