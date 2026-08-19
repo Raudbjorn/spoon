@@ -69,8 +69,9 @@ type AuthInfo struct {
 	Concurrency int    // recommended worker pool size.
 	RateLimit   int    // max requests per RateUnit.
 	RateUnit    string // "hour" (GitHub) or "minute" (GitLab).
-	// APIVersion carries the pinned REST API version (e.g. "2022-11-28"). Empty
-	// for forges that do not expose this.
+	// APIVersion carries the storage-prefixed pinned REST API version (e.g. "github/2022-11-28").
+	// Empty for forges that do not expose this. NOT a wire value — HTTP headers must use
+	// the unprefixed version (see internal/github.defaultRESTVersion).
 	APIVersion string
 	// AuthMode is "authenticated" or "anonymous" at the time of this run.
 	AuthMode string

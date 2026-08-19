@@ -188,7 +188,7 @@ type AuthStatus struct {
 	RateLimit           RateLimit
 	DuplicateIdentities int // configured tokens collapsed because they resolve to the same login
 	AuthScopeID      string // non-reversible scope fingerprint (first 16 hex of SHA-256)
-	APIVersion       string // pinned REST API version (e.g. "2022-11-28")
+	APIVersion       string // pinned REST API version for storage (github/<date>). HTTP wire uses defaultRESTVersion.
 	AuthMode         string // "authenticated" or "anonymous"
 }
 
