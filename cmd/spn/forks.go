@@ -543,11 +543,6 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 		opts.NetworkMaxElapsed = 2 * time.Minute
 	}
 
-	// Validate --network-scope=all requires MaxDepth > 0 after defaulting
-	if opts.NetworkScope == "all" && opts.NetworkMaxDepth == 0 {
-		return agentio.NewError(agentio.CodeBadInput, "--network-scope=all requires --network-max-depth > 0", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
-	}
-
 	// fastembed is the only embedder and runs by default: it powers
 	// persistence, the semantic index, and — when available — clustering plus
 	// zero-shot categories. --no-embed (or SPOON_NO_EMBED=1) opts out. If
