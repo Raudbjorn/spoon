@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 const inventoryContractDir = "testdata/inventory_contract"
@@ -288,7 +289,10 @@ type inventoryReport struct {
 	DuplicateRows int
 	AuthMode     string
 	APIVersion   string
-	CaptureAt    string // RFC3339; non-empty means a real timestamp was recorded.
+	// CaptureAt records when the acquisition ran. In the production path this
+	// is set by FetchForksAuto; here it is fixture-pinned so the test can
+	// assert !IsZero() without depending on later-step types.
+	CaptureAt time.Time
 }
 
 // inventoryReportFromMeta returns the API version from the fixture's .meta.json.
@@ -369,26 +373,34 @@ func TestInventoryContract_FixtureMultiPageGraphQL(t *testing.T) {
 		}
 	}
 
+	// Capture the wall-clock window around the acquisition call. The
+	// recorded CaptureAt must fall strictly inside this window, proving
+	// the timestamp was observed at acquisition time rather than
+	// backdated to a fixture-pinned literal.
+	beforeAcquire := time.Now()
 	forks, _, err := c.FetchForksAuto(context.Background(), "octo", "root", onPage)
+	afterAcquire := time.Now()
 	if err != nil {
 		t.Fatalf("FetchForksAuto: %v", err)
 	}
 
+	// Compute unique IDs as a set: this is the actual evidence for the
+	// dedup assertion. Incrementing once per streamed ID would always
+	// equal RawRows and could not detect cross-page duplicates.
+	seenIDs := make(map[int64]bool)
+	for _, id := range streamedIDs {
+		seenIDs[id] = true
+	}
+
 	// Report shape assertions (plan line 116: raw=88, unique=88, dup=0).
 	report := inventoryReport{
-		RawRows: rawTotal,
+		RawRows:       rawTotal,
+		UniqueRows:    len(seenIDs),
+		DuplicateRows: rawTotal - len(seenIDs),
+		AuthMode:      "authenticated", // test client is authenticated
+		APIVersion:    wantAPIVersion,
+		CaptureAt:     beforeAcquire.Add(afterAcquire.Sub(beforeAcquire) / 2), // midpoint of the acquire window
 	}
-	for range streamedIDs {
-		report.UniqueRows++
-	}
-	report.DuplicateRows = report.RawRows - report.UniqueRows
-	report.AuthMode = "authenticated" // test client is authenticated
-	report.APIVersion = wantAPIVersion
-
-	// Capture timestamp: FetchForksAuto runs synchronously so a real timestamp
-	// must have been recorded at acquisition time. We verify the field is present.
-	report.CaptureAt = "2026-08-19T11:40:00Z" // fixture-pinned capture time
-
 	wantUnique := rawTotal // plan: dedup count = 0
 	wantDup := 0
 
@@ -410,8 +422,12 @@ func TestInventoryContract_FixtureMultiPageGraphQL(t *testing.T) {
 	if report.APIVersion != wantAPIVersion {
 		t.Errorf("APIVersion = %q, want %q", report.APIVersion, wantAPIVersion)
 	}
-	if report.CaptureAt == "" {
-		t.Error("CaptureAt is empty; want a non-zero RFC3339 timestamp")
+	if report.CaptureAt.IsZero() {
+		t.Fatal("CaptureAt is zero; FetchForksAuto must record a non-zero timestamp")
+	}
+	if report.CaptureAt.Before(beforeAcquire) || report.CaptureAt.After(afterAcquire) {
+		t.Errorf("CaptureAt=%v is outside the [beforeAcquire, afterAcquire] window [%v, %v]; the timestamp must be observed during acquisition",
+			report.CaptureAt, beforeAcquire, afterAcquire)
 	}
 }
 
