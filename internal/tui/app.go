@@ -127,6 +127,9 @@ type Model struct {
 	loading     bool
 	loadMsg     string
 	errMsg      string
+	// acquisition holds the terminal acquisition metadata from the most recent
+	// ListForks run. It is nil when the provider does not supply a report.
+	acquisition *forge.AcquisitionReport
 
 	// Table state
 	cursor  int
@@ -651,6 +654,9 @@ func (m *Model) handleForksFetched(msg forksFetchedMsg) (tea.Model, tea.Cmd) {
 		m.errMsg = fmt.Sprintf("Warning: fork list may be incomplete: %s", msg.warn)
 		m.errMsgTime = time.Now()
 	}
+
+	// Store the terminal acquisition report if the provider supplied one.
+	m.acquisition = msg.Report
 
 	m.scoreForks(msg.forks)
 	m.view = viewTable
@@ -1320,9 +1326,16 @@ func (m *Model) fetchForks() tea.Cmd {
 
 		var forks []forge.T1Data
 		var streamErr error
+		var report *forge.AcquisitionReport
 		for msg := range ch {
 			if msg.Err != nil {
 				streamErr = msg.Err // remember; per-fork errors are tolerated below
+				continue
+			}
+			// msg.Report is a terminal message with zero Fork; it carries acquisition
+			// metadata and must not be treated as a fork.
+			if msg.Report != nil {
+				report = msg.Report
 				continue
 			}
 			forks = append(forks, msg.Fork)
@@ -1336,14 +1349,19 @@ func (m *Model) fetchForks() tea.Cmd {
 			return forksFetchedMsg{err: streamErr}
 		}
 
+		// Report-only message (e.g. zero-fork repo with acquisition metadata).
+		if len(forks) == 0 && report != nil {
+			return forksFetchedMsg{Report: report}
+		}
+
 		// Partial result: forks arrived but the stream then errored. Keep the
 		// list but surface a non-fatal warning so the user knows it was cut short
 		// rather than silently trusting an incomplete list.
 		if streamErr != nil {
-			return forksFetchedMsg{forks: forks, warn: streamErr}
+			return forksFetchedMsg{forks: forks, warn: streamErr, Report: report}
 		}
 
-		return forksFetchedMsg{forks: forks}
+		return forksFetchedMsg{forks: forks, Report: report}
 	}
 }
 
