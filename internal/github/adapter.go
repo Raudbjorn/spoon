@@ -138,8 +138,18 @@ func (p *GHProvider) ListForks(ctx context.Context, owner, repo string) (<-chan 
 	go func() {
 		defer close(out)
 
-		forks, extrasMap, err := p.client.FetchForksAuto(ctx, owner, repo, nil)
+		forks, extrasMap, report, err := p.client.FetchForksAuto(ctx, owner, repo, nil)
 		if err != nil {
+			// On fatal acquisition failure, send the terminal report (when
+			// the provider managed to build one) before any error ForkMsg so
+			// observers can see what we attempted before the failure.
+			if report != nil {
+				select {
+				case out <- forge.ForkMsg{Report: report}:
+				case <-ctx.Done():
+					return
+				}
+			}
 			select {
 			case out <- forge.ForkMsg{Err: err}:
 			case <-ctx.Done():
@@ -159,6 +169,14 @@ func (p *GHProvider) ListForks(ctx context.Context, owner, repo string) (<-chan 
 			case out <- forge.ForkMsg{Fork: t1}:
 			case <-ctx.Done():
 				return
+			}
+		}
+
+		// Terminal acquisition report: always last on the channel.
+		if report != nil {
+			select {
+			case out <- forge.ForkMsg{Report: report}:
+			case <-ctx.Done():
 			}
 		}
 	}()

@@ -123,6 +123,13 @@ type Options struct {
 	// authoritative: it skips the Compare API call and the rate-reserve gate.
 	// Left nil on --refresh.
 	CachedT2 func(forge.T1Data) *forge.T2Data
+
+	// Report receives the terminal acquisition metadata after the fork channel
+	// closes. The pointer is caller-owned; Stream copies the provider's report
+	// into it after the channel closes. Nil means the caller does not want the
+	// report. The report is also emitted on the ForkMsg channel so callers that
+	// do not use Stream() can still observe it.
+	Report *forge.AcquisitionReport
 }
 
 // ownerProfileDefaultCap is the per-run cap on the number of distinct
@@ -328,6 +335,7 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 		defer close(out)
 
 		var t1Forks []forge.T1Data
+		var providerReport *forge.AcquisitionReport
 	drain:
 		for {
 			select {
@@ -337,6 +345,13 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 				if !ok {
 					break drain
 				}
+				if msg.Report != nil {
+					// Terminal acquisition metadata: capture the last one
+					// (providers may emit at most one) and do NOT add it to
+					// the fork list. It is intentionally never a Result.
+					providerReport = msg.Report
+					continue
+				}
 				if msg.Err != nil {
 					continue
 				}
@@ -345,6 +360,13 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 				}
 				t1Forks = append(t1Forks, msg.Fork)
 			}
+		}
+
+		// After the channel closes, copy the provider's terminal report into
+		// the caller-owned report target so the caller can inspect it without
+		// draining the ForkMsg channel itself.
+		if opts.Report != nil && providerReport != nil {
+			*opts.Report = *providerReport
 		}
 
 		now := time.Now()

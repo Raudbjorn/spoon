@@ -32,6 +32,24 @@ func (p Provider) String() string {
 	}
 }
 
+// AcquisitionReport summarizes the acquisition metadata for a fork list run.
+// It is emitted as a terminal message on the ForkMsg channel and copied to
+// the caller-owned Report field in forksops.Options after the channel closes.
+type AcquisitionReport struct {
+	Method        string    `json:"method"`                  // "graphql" | "graphql+rest" | "rest"
+	Scope         string    `json:"scope"`                   // "direct" in step 2
+	APIVersion    string    `json:"apiVersion"`              // pinned REST version e.g. "2022-11-28"
+	AuthMode      string    `json:"authMode"`                // "authenticated" | "anonymous"
+	FallbackChain []string  `json:"fallbackChain"`            // e.g. ["graphql"] or ["graphql","rest"]
+	Pages         int       `json:"pages"`                   // upstream page callbacks (raw count)
+	RawRows       int       `json:"rawRows"`                 // total fork records before dedup
+	UniqueRows    int       `json:"uniqueRows"`              // unique database IDs
+	DuplicateRows int       `json:"duplicateRows"`           // raw - unique
+	CaptureAt     time.Time `json:"captureAt"`               // when the report was generated
+	AuthScopeID   string    `json:"authScopeId"`             // non-reversible; never logged with tokens
+	Error         string    `json:"error,omitempty"`         // set when REST fallback fails
+}
+
 // AuthTier describes the capability level of the detected credentials.
 type AuthTier int
 
@@ -218,9 +236,13 @@ type T3Data struct {
 }
 
 // ForkMsg is a result item on the channel returned by ListForks.
+// Fork is populated for fork records. Err is populated for errors.
+// Report is the terminal acquisition metadata; it is the last item sent
+// on the channel (when the provider supplies one) and is never nil when set.
 type ForkMsg struct {
-	Fork T1Data
-	Err  error // non-nil means this item is an error; Fork is zero.
+	Fork   T1Data
+	Err    error             // non-nil means this item is an error; Fork is zero.
+	Report *AcquisitionReport // terminal acquisition metadata (last item on channel)
 }
 
 // Forge is the interface both GitHub and GitLab packages implement.

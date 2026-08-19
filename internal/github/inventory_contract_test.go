@@ -378,7 +378,7 @@ func TestInventoryContract_FixtureMultiPageGraphQL(t *testing.T) {
 	// the timestamp was observed at acquisition time rather than
 	// backdated to a fixture-pinned literal.
 	beforeAcquire := time.Now()
-	forks, _, err := c.FetchForksAuto(context.Background(), "octo", "root", onPage)
+	forks, _, _, err := c.FetchForksAuto(context.Background(), "octo", "root", onPage)
 	afterAcquire := time.Now()
 	if err != nil {
 		t.Fatalf("FetchForksAuto: %v", err)

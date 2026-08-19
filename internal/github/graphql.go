@@ -11,6 +11,7 @@ import (
 	"time"
 
 	ghAPI "github.com/cli/go-gh/v2/pkg/api"
+	"github.com/svnbjrn/spoon/internal/forge"
 )
 
 // defaultBranchTipQuery is a one-off GraphQL query used to fetch the
@@ -63,7 +64,9 @@ func (c *Client) defaultBranchTipSHA(ctx context.Context, owner, repo string) (s
 const forksGraphQLQuery = `
 query($owner: String!, $name: String!, $cursor: String) {
   repository(owner: $owner, name: $name) {
+    forkCount
     forks(first: 50, after: $cursor, orderBy: {field: STARGAZERS, direction: DESC}) {
+      totalCount
       pageInfo { hasNextPage endCursor }
       nodes {
         databaseId
@@ -101,7 +104,9 @@ query($owner: String!, $name: String!, $cursor: String) {
 // gqlResponse maps the GraphQL JSON response.
 type gqlResponse struct {
 	Repository struct {
-		Forks struct {
+		ForkCount int `json:"forkCount"`
+		Forks     struct {
+			TotalCount int `json:"totalCount"`
 			PageInfo struct {
 				HasNextPage bool   `json:"hasNextPage"`
 				EndCursor   string `json:"endCursor"`
@@ -162,17 +167,27 @@ type gqlRefNode struct {
 }
 
 // FetchForksGraphQL fetches forks using the batched GraphQL query.
-// Returns ForkInfo (REST-compatible) and T1Extra for each fork.
+// Returns ForkInfo (REST-compatible), T1Extra for each fork, and an
+// AcquisitionReport describing the GraphQL acquisition. The repoForkCount and
+// directTotalCount in the report are captured from the very first page so they
+// remain populated even if a later page fails and we partial-fall back to REST.
 // onPage is called with each batch for progressive display.
-func (c *Client) FetchForksGraphQL(ctx context.Context, owner, repo string, onPage func(forks []ForkInfo, extras []T1Extra, page int)) ([]ForkInfo, []T1Extra, error) {
+func (c *Client) FetchForksGraphQL(ctx context.Context, owner, repo string, onPage func(forks []ForkInfo, extras []T1Extra, page int)) ([]ForkInfo, []T1Extra, *forge.AcquisitionReport, error) {
 	if !c.HasGraphQL() {
-		return nil, nil, fmt.Errorf("GraphQL client not available")
+		return nil, nil, nil, fmt.Errorf("GraphQL client not available")
+	}
+
+	authMode := "authenticated"
+	if !c.IsAuthenticated() {
+		authMode = "anonymous"
 	}
 
 	var allForks []ForkInfo
 	var allExtras []T1Extra
 	var cursor *string
 	page := 0
+	var repoForkCount, directTotalCount int
+	seen := make(map[int64]struct{}, 256)
 
 	for {
 		variables := map[string]interface{}{
@@ -186,7 +201,27 @@ func (c *Client) FetchForksGraphQL(ctx context.Context, owner, repo string, onPa
 		var resp gqlResponse
 		err := c.doGraphQLWithRetry(ctx, forksGraphQLQuery, variables, &resp)
 		if err != nil {
-			return allForks, allExtras, fmt.Errorf("GraphQL query: %w", err)
+			report := &forge.AcquisitionReport{
+				Method:        "graphql",
+				Scope:         "direct",
+				APIVersion:    defaultRESTVersion,
+				AuthMode:      authMode,
+				FallbackChain: []string{"graphql"},
+				Pages:         page,
+				RawRows:       len(allForks),
+				UniqueRows:    countSeen(seen),
+				DuplicateRows: len(allForks) - countSeen(seen),
+				CaptureAt:     time.Now(),
+				AuthScopeID:   c.AuthScopeID(),
+			}
+			return allForks, allExtras, report, fmt.Errorf("GraphQL query: %w", err)
+		}
+
+		// Capture root repo metadata from the very first page so a later failure
+		// can still produce a report with the true totals.
+		if page == 0 {
+			repoForkCount = resp.Repository.ForkCount
+			directTotalCount = resp.Repository.Forks.TotalCount
 		}
 
 		page++
@@ -194,7 +229,8 @@ func (c *Client) FetchForksGraphQL(ctx context.Context, owner, repo string, onPa
 		var pageExtras []T1Extra
 
 		for _, node := range resp.Repository.Forks.Nodes {
-			fork, extra := gqlForkToForkInfo(node)
+			fork, extra := gqlForkToForkInfo(node, repoForkCount, directTotalCount, authMode, defaultRESTVersion)
+			seen[fork.ID] = struct{}{}
 			pageForks = append(pageForks, fork)
 			pageExtras = append(pageExtras, extra)
 		}
@@ -213,7 +249,29 @@ func (c *Client) FetchForksGraphQL(ctx context.Context, owner, repo string, onPa
 		cursor = &endCursor
 	}
 
-	return allForks, allExtras, nil
+	unique := countSeen(seen)
+	report := &forge.AcquisitionReport{
+		Method:        "graphql",
+		Scope:         "direct",
+		APIVersion:    defaultRESTVersion,
+		AuthMode:      authMode,
+		FallbackChain: []string{"graphql"},
+		Pages:         page,
+		RawRows:       len(allForks),
+		UniqueRows:    unique,
+		DuplicateRows: len(allForks) - unique,
+		CaptureAt:     time.Now(),
+		AuthScopeID:   c.AuthScopeID(),
+	}
+	return allForks, allExtras, report, nil
+}
+
+func countSeen(seen map[int64]struct{}) int {
+	n := 0
+	for range seen {
+		n++
+	}
+	return n
 }
 
 // gqlMaxAttempts bounds retries for transient GraphQL failures. GitHub returns
@@ -280,7 +338,11 @@ func isTransientServerError(err error) bool {
 }
 
 // gqlForkToForkInfo converts a GraphQL fork node to ForkInfo + T1Extra.
-func gqlForkToForkInfo(node gqlForkNode) (ForkInfo, T1Extra) {
+// repoForkCount and directTotalCount are taken from the parent repository
+// root (forkCount and forks.totalCount respectively); they are identical
+// for every fork in a single run. authMode and apiVersion describe the
+// acquisition that produced this record.
+func gqlForkToForkInfo(node gqlForkNode, repoForkCount, directTotalCount int, authMode, apiVersion string) (ForkInfo, T1Extra) {
 	defaultBranch := "main"
 	if node.DefaultBranchRef != nil {
 		defaultBranch = node.DefaultBranchRef.Name
@@ -324,9 +386,13 @@ func gqlForkToForkInfo(node gqlForkNode) (ForkInfo, T1Extra) {
 	branches := sortBranches(node.Refs.Nodes, defaultBranch)
 
 	extra := T1Extra{
-		OpenPRCount:  node.PullRequests.TotalCount,
-		ReleaseCount: node.Releases.TotalCount,
-		TopBranches:  branches,
+		OpenPRCount:      node.PullRequests.TotalCount,
+		ReleaseCount:     node.Releases.TotalCount,
+		TopBranches:      branches,
+		ForkCount:        node.ForkCount,
+		DirectTotalCount: directTotalCount,
+		AuthMode:         authMode,
+		APIVersion:       apiVersion,
 	}
 
 	return fork, extra
@@ -388,10 +454,20 @@ func sortBranches(refs []gqlRefNode, defaultBranch string) []BranchInfo {
 }
 
 // FetchForksAuto uses GraphQL if authenticated, REST fallback otherwise.
-// Returns forks and T1Extras (nil for REST path).
-func (c *Client) FetchForksAuto(ctx context.Context, owner, repo string, onPage func(forks []ForkInfo, page int)) ([]ForkInfo, map[int64]T1Extra, error) {
+// Returns forks, T1Extras (nil for REST path), and an AcquisitionReport
+// summarizing the acquisition. The report is always populated; on a pure
+// REST success it reports Method="rest" with no chain, and on a
+// GraphQL→REST partial fallback it reports Method="graphql+rest" with the
+// error string set to "rest_fallback_failed" only when the REST fallback
+// itself also failed.
+func (c *Client) FetchForksAuto(ctx context.Context, owner, repo string, onPage func(forks []ForkInfo, page int)) ([]ForkInfo, map[int64]T1Extra, *forge.AcquisitionReport, error) {
+	authMode := "authenticated"
+	if !c.IsAuthenticated() {
+		authMode = "anonymous"
+	}
+
 	if c.HasGraphQL() {
-		forks, extras, err := c.FetchForksGraphQL(ctx, owner, repo, func(forks []ForkInfo, extras []T1Extra, page int) {
+		forks, extras, gqlReport, err := c.FetchForksGraphQL(ctx, owner, repo, func(forks []ForkInfo, extras []T1Extra, page int) {
 			if onPage != nil {
 				onPage(forks, page)
 			}
@@ -432,11 +508,54 @@ func (c *Client) FetchForksAuto(ctx context.Context, owner, repo string, onPage 
 					}
 				}
 			}
-			forks, restErr := c.FetchForks(ctx, owner, repo, dedupOnPage)
+			restForks, restErr := c.FetchForks(ctx, owner, repo, dedupOnPage)
 			if restErr != nil {
-				return nil, nil, fmt.Errorf("graphql failed (%v); rest fallback failed: %w", err, restErr)
+				// REST fallback failed too: surface a partial report with the
+				// graphql chain and the failure marker, alongside the error.
+				if gqlReport != nil {
+					gqlReport.Method = "graphql+rest"
+					gqlReport.FallbackChain = []string{"graphql", "rest"}
+					gqlReport.Error = "rest_fallback_failed"
+				}
+				return nil, nil, gqlReport, fmt.Errorf("graphql failed (%v); rest fallback failed: %w", err, restErr)
 			}
-			return forks, nil, nil
+			// REST fallback succeeded: dedup the REST result against the GraphQL
+			// partial list, compute the combined report, and return the merged
+			// fork set with no extras (REST has no T1 extras).
+			merged := restForks
+			if len(streamed) > 0 {
+				filtered := make([]ForkInfo, 0, len(restForks))
+				for _, f := range restForks {
+					if _, seen := streamed[f.ID]; seen {
+						continue
+					}
+					filtered = append(filtered, f)
+				}
+				merged = append(forks, filtered...)
+			}
+			report := gqlReport
+			if report == nil {
+				report = &forge.AcquisitionReport{
+					Method:        "graphql+rest",
+					Scope:         "direct",
+					APIVersion:    defaultRESTVersion,
+					AuthMode:      authMode,
+					FallbackChain: []string{"graphql", "rest"},
+					AuthScopeID:   c.AuthScopeID(),
+					CaptureAt:     time.Now(),
+				}
+			} else {
+				report.Method = "graphql+rest"
+				report.FallbackChain = []string{"graphql", "rest"}
+				report.RawRows += len(restForks)
+			}
+			seen := make(map[int64]struct{}, len(merged))
+			for _, f := range merged {
+				seen[f.ID] = struct{}{}
+			}
+			report.UniqueRows = countSeen(seen)
+			report.DuplicateRows = report.RawRows - report.UniqueRows
+			return merged, nil, report, nil
 		}
 
 		// Build extras map
@@ -446,12 +565,44 @@ func (c *Client) FetchForksAuto(ctx context.Context, owner, repo string, onPage 
 				extrasMap[f.ID] = extras[i]
 			}
 		}
-		return forks, extrasMap, nil
+		return forks, extrasMap, gqlReport, nil
 	}
 
 	// REST fallback — no extras
-	forks, err := c.FetchForks(ctx, owner, repo, onPage)
-	return forks, nil, err
+	restForks, restErr := c.FetchForks(ctx, owner, repo, onPage)
+	if restErr != nil {
+		// Pure REST failure: still surface a report so callers know what we
+		// tried. Method stays "rest" and Error marks the failure.
+		report := &forge.AcquisitionReport{
+			Method:        "rest",
+			Scope:         "direct",
+			APIVersion:    defaultRESTVersion,
+			AuthMode:      authMode,
+			FallbackChain: []string{"rest"},
+			AuthScopeID:   c.AuthScopeID(),
+			CaptureAt:     time.Now(),
+			Error:         "rest_failed",
+		}
+		return nil, nil, report, restErr
+	}
+	seen := make(map[int64]struct{}, len(restForks))
+	for _, f := range restForks {
+		seen[f.ID] = struct{}{}
+	}
+	report := &forge.AcquisitionReport{
+		Method:        "rest",
+		Scope:         "direct",
+		APIVersion:    defaultRESTVersion,
+		AuthMode:      authMode,
+		FallbackChain: []string{"rest"},
+		Pages:         0, // REST page count is not exposed to this layer
+		RawRows:       len(restForks),
+		UniqueRows:    countSeen(seen),
+		DuplicateRows: len(restForks) - countSeen(seen),
+		CaptureAt:     time.Now(),
+		AuthScopeID:   c.AuthScopeID(),
+	}
+	return restForks, nil, report, nil
 }
 
 // ParseGitHubURL extracts owner/repo from a GitHub URL or owner/repo string.

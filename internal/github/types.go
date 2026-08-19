@@ -170,6 +170,7 @@ type AuthStatus struct {
 	Scopes              []string // OAuth scopes attached to the token (empty if unauthenticated)
 	RateLimit           RateLimit
 	DuplicateIdentities int // configured tokens collapsed because they resolve to the same login
+	AuthScopeID      string // non-reversible scope fingerprint (first 16 hex of SHA-256)
 }
 
 // T1Extra holds additional data from the GraphQL T1 query not in the REST ForkInfo.
@@ -185,6 +186,23 @@ type T1Extra struct {
 	// BranchFingerprint identifies the fork's divergent work by its branch tip
 	// OIDs; two forks sharing one carry identical work.
 	BranchFingerprint string `json:"BranchFingerprint,omitempty"`
+
+	// ForkCount is this fork's own fork count (a property of the node itself,
+	// not the parent repository). Populated only on the GraphQL path.
+	ForkCount int `json:"ForkCount,omitempty"`
+
+	// DirectTotalCount is the parent's total fork count (forks.totalCount in
+	// the GraphQL root). It is identical across every fork in a single run,
+	// so it doubles as a "true total" sanity check against the streamed list.
+	DirectTotalCount int `json:"DirectTotalCount,omitempty"`
+
+	// AuthMode is "authenticated" or "anonymous" for the run that produced
+	// this record. Populated only on the GraphQL path.
+	AuthMode string `json:"AuthMode,omitempty"`
+
+	// APIVersion is the pinned REST version that backs this client. It is
+	// informational only; the GraphQL endpoint does not negotiate versions.
+	APIVersion string `json:"APIVersion,omitempty"`
 }
 
 // BranchInfo describes a branch with its last commit timestamp.

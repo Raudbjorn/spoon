@@ -143,7 +143,9 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 	// REST/GraphQL-only branch scan doesn't have. REST stays the default.
 	localBranchScanEnabled := os.Getenv("SPOON_LOCAL_BRANCH_SCAN") == "1"
 	csvMode := false
+	var acquisitionReport forge.AcquisitionReport
 	opts := forksops.Options{
+		Report: &acquisitionReport,
 		Now: deps.now,
 		// Default: clustering enabled — the built-in embedder is always
 		// available, so this never blocks on external services.
@@ -763,6 +765,20 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 			"code":        "degraded_rate_reserve",
 			"message":     fmt.Sprintf("%d/%d forks left un-enriched at the rate-limit reserve; their divergence is absent, not zero", degraded, total),
 			"remediation": "Re-run after the rate window resets to backfill (cached compares resume), or set SPOON_NO_RESERVE=1 to drain the full budget.",
+		}})
+	}
+	// Emit the acquisition report envelope exactly once, after the fork channel closes.
+	// stdout remains fork-only NDJSON; the report goes to stderr only.
+	if opts.Report != nil && opts.Report.Method != "" {
+		report := opts.Report
+		acquisitionReport = *report
+		summary := fmt.Sprintf("%s acquisition via %s; %d unique forks across %d pages",
+			report.Method, strings.Join(report.FallbackChain, "/"),
+			report.UniqueRows, report.Pages)
+		_ = agentio.WriteNDJSON(stderr, map[string]any{"info": map[string]any{
+			"code":    "acquisition_report",
+			"message": summary,
+			"details": report,
 		}})
 	}
 	emitSemanticIndexWarning(ctx, db, searchEmbedders, stderr)

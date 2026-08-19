@@ -51,8 +51,7 @@ func CheckAuthWithOptions(opts ClientOptions) (*Client, AuthStatus, error) {
 	} else {
 		client.probeDefaultBackend(context.Background(), &status)
 	}
-	client.duplicateIdentities = status.DuplicateIdentities
-	status.RateLimit = client.GetRateLimit()
+	status.AuthScopeID = client.authScopeID
 	return client, status, nil
 }
 

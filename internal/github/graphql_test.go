@@ -68,7 +68,7 @@ func newTestClientGQL(t *testing.T, srv *httptest.Server) *Client {
 	if err != nil {
 		t.Fatalf("NewGraphQLClient: %v", err)
 	}
-	return &Client{rest: rest, gql: gql, authenticated: true}
+	return &Client{rest: rest, gql: gql, authenticated: true, authScopeID: computeAuthScopeID("github", "github.com", []string{"test-token"})}
 }
 
 // TestFetchForksAuto_FallbackDedup covers the GraphQL→REST fallback path: the
@@ -114,7 +114,7 @@ func TestFetchForksAuto_FallbackDedup(t *testing.T) {
 		}
 	}
 
-	forks, extras, err := c.FetchForksAuto(context.Background(), "foo", "bar", onPage)
+	forks, extras, _, err := c.FetchForksAuto(context.Background(), "foo", "bar", onPage)
 	if err != nil {
 		t.Fatalf("FetchForksAuto: %v", err)
 	}
@@ -186,7 +186,7 @@ func TestGqlForkToForkInfo_TopicsAndForkFlag(t *testing.T) {
 		},
 	}
 
-	fork, _ := gqlForkToForkInfo(node)
+	fork, _ := gqlForkToForkInfo(node, 0, 0, "authenticated", "2022-11-28")
 
 	if !fork.Fork {
 		t.Errorf("Fork flag: got %v, want true (forks query rows are forks)", fork.Fork)
@@ -207,7 +207,7 @@ func TestGqlForkToForkInfo_NoTopicsNilSlice(t *testing.T) {
 		NameWithOwner: "bob/bar",
 		Name:          "bar",
 	}
-	fork, _ := gqlForkToForkInfo(node)
+	fork, _ := gqlForkToForkInfo(node, 0, 0, "authenticated", "2022-11-28")
 	if fork.Topics != nil {
 		t.Errorf("Topics: got %v, want nil (no repositoryTopics payload)", fork.Topics)
 	}
