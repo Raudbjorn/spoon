@@ -71,6 +71,25 @@ func TestAutoIndexTreatsGarbageAsTheSafeDefault(t *testing.T) {
 	}
 }
 
+// TestAutoIndexInvalidFastEmbedEnvironmentDefersToFile keeps a malformed
+// process override from silently undoing the user's explicit local opt-out.
+// Voyage deliberately remains fail-closed on malformed input: it must not turn
+// a broken environment value into permission to spend.
+func TestAutoIndexInvalidFastEmbedEnvironmentDefersToFile(t *testing.T) {
+	off := false
+	cfg := &config.Config{Embedder: config.EmbedderConfig{AutoIndex: &off}}
+	config.RecordFieldValue(cfg, "embedder.autoIndex", "false")
+
+	m := autoIndexModel(t, cfg, map[string]string{"SPOON_AUTO_INDEX": "yes-please"})
+	fast, voyage := m.autoIndexProviders()
+	if fast {
+		t.Fatal("malformed SPOON_AUTO_INDEX re-enabled explicitly disabled FastEmbed")
+	}
+	if voyage {
+		t.Fatal("malformed FastEmbed override enabled Voyage")
+	}
+}
+
 // TestAutoIndexRunsOncePerForkList: raising the tier ceiling re-enriches and
 // produces a second completion message. That must not start a second pass,
 // which under Voyage would be a second bill.
