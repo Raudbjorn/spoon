@@ -354,24 +354,204 @@ Full detail, including cost control and the degradation rules, is in
 
 ## Project layout
 
+The repo is laid out as a small set of command entry points under `cmd/` and a
+flat layer of cohesive packages under `internal/`. Every package owns its own
+tests and is reusable from both the interactive `spoon` binary and the
+JSON-shaped `spn` agent CLI — the two never fork behaviour, only shape.
+
 ```
-cmd/spoon/         Interactive CLI entry point
-cmd/spn/           Agent-shaped CLI (JSON/NDJSON)
-internal/forge/    Provider abstraction (GitHub + GitLab + Gitea)
-internal/config/   Zero-config bootstrap + validated config file
-internal/github/   GitHub REST/GraphQL dispatcher, token/proxy pools, web-diff adapter
-internal/gitlab/   GitLab client
-internal/heat/     Scoring, percentiles, filters
-internal/mdg/      Module Dependency Graph centrality backend (opt-in via --full-mdg)
-internal/threadsops/ PR thread ops shared by `spoon threads` and `spn threads`
-internal/agentio/  Structured error envelope + JSON writers for `spn`
-internal/embed/    Fixed FastEmbed embedder + built-in lexical fallback
-internal/semantic/ Deterministic documents, vector codec, incremental indexing
-internal/store/    Global libsql store: repo/fork/compare cache + embeddings
-internal/cluster/  Clustering, novelty, heuristic labels
-internal/forksops/ Streaming fork enumeration/enrichment
-internal/tui/      Bubbletea TUI
+cmd/
+  spoon/           Interactive CLI entry point (TUI driver, `setup`, `threads`)
+  spn/              Agent-shaped CLI (JSON/NDJSON only, no TUI, no color)
+
+internal/
+  forge/            Host abstraction (GitHub + GitLab + Gitea), detection, factory
+  config/           Zero-config bootstrap, validated config file, env resolution
+  github/           GitHub REST/GraphQL dispatcher, token/proxy pools, web-diff fallback
+  gitlab/           GitLab REST client (forks, compare, contributors, auth)
+  gitea/            Gitea client (auth, compare, contributors, provider)
+  heat/             0-100 heat score, percentiles, filters, owner penalty, novelty
+  mdg/              Module Dependency Graph centrality backend (opt-in, --full-mdg)
+  priors/           JSON interest specs (--priors) computed from already-fetched data
+  forksops/         Streaming fork enumeration, enrichment, ranking, secretary, profiles
+  threadsops/       PR thread ops shared by `spoon threads` and `spn threads`
+  agentio/          Structured error envelope + JSON writers for `spn`
+  embed/            Fixed FastEmbed embedder, lexical fallback, Voyage adapter, status
+  semantic/         Deterministic documents, vector codec, incremental indexing
+  store/            Global libsql store: repo/fork/compare cache + embeddings
+  cluster/          Clustering, novelty, heuristic labels, sibling search
+  topics/           Topic-mode selection (best-of-topic scoring, picker UI)
+  setupcheck/       Pre-flight detection (gh/glab CLIs, ONNX runtime, model cache)
+  repo/             Shared repo-key derivation + cache helpers
+  eval/             Embedding evaluation harnesses (HCA, momentum, schema)
+  tui/              Bubbletea TUI (model, view, embed run, edit overlay, keymap)
+
+docs/               Long-form reference (embedders.md, keymap.md, tui-components.md)
+docs/superpowers/   Specs, plans, and skill metadata for the development workflow
+scripts/            Build / packaging helpers
+packaging/          Distribution recipes (Arch PKGBUILD, etc.)
+experiments/        Scratchpads and abandoned branches kept for archaeology
+vendor/             Vendored Go dependencies (matches go.mod / go.sum)
 ```
+
+### Structural summary
+
+The runtime shape is the same whether you launch `spoon` or `spn`: configuration
+is bootstrapped, a forge client is built, forks are enumerated and enriched,
+each fork is scored and ranked, and the result is either rendered (TUI) or
+serialised (JSON/NDJSON). The two binaries are deliberately thin — every
+behavioural decision lives in `internal/`.
+
+```mermaid
+flowchart TB
+  subgraph Entry["Entry points"]
+    spoon["cmd/spoon<br/>interactive TUI"]
+    spn["cmd/spn<br/>JSON/NDJSON CLI"]
+  end
+
+  subgraph Boot["Bootstrap"]
+    config["internal/config<br/>zero-config bootstrap<br/>effective config"]
+    forge["internal/forge<br/>host detection + factory"]
+    setupcheck["internal/setupcheck<br/>pre-flight (gh, ONNX, cache)"]
+    setup["internal/setupcheck<br/>+ cmd/spoon setup"]
+  end
+
+  subgraph Sources["Source adapters"]
+    github["internal/github<br/>REST + GraphQL<br/>token/proxy pools"]
+    gitlab["internal/gitlab<br/>REST client"]
+    gitea["internal/gitea<br/>REST client"]
+  end
+
+  subgraph Core["Core"]
+    forksops["internal/forksops<br/>enumeration + enrichment<br/>ranking + profiles"]
+    heat["internal/heat<br/>0-100 score<br/>percentiles + filters"]
+    priors["internal/priors<br/>interest-spec scoring"]
+    mdg["internal/mdg<br/>centrality (opt-in)"]
+    cluster["internal/cluster<br/>clustering + labels"]
+  end
+
+  subgraph Embed["Embedding"]
+    embed["internal/embed<br/>FastEmbed + lexical fallback"]
+    voyage["Voyage API<br/>(optional, additive)"]
+    semantic["internal/semantic<br/>documents + vector codec"]
+    store["internal/store<br/>libsql cache + embeddings"]
+  end
+
+  subgraph Surface["Surface"]
+    tui["internal/tui<br/>Bubbletea model/view"]
+    agentio["internal/agentio<br/>error envelope + JSON writers"]
+    topics["internal/topics<br/>topic-mode picker"]
+    threads["internal/threadsops<br/>PR thread ops<br/>(spoon threads, spn threads)"]
+  end
+
+  spoon --> config
+  spoon --> forge
+  spoon --> setup
+  spoon --> tui
+  spoon --> threads
+
+  spn --> config
+  spn --> forge
+  spn --> threads
+  spn --> agentio
+
+  config --> setupcheck
+  forge --> github
+  forge --> gitlab
+  forge --> gitea
+
+  forksops --> heat
+  forksops --> priors
+  forksops --> mdg
+  forksops --> cluster
+  forksops --> store
+  forksops --> topics
+
+  cluster --> embed
+  cluster --> semantic
+  embed --> semantic
+  semantic --> store
+  store -. opt-in .-> voyage
+
+  forksops --> tui
+  forksops --> agentio
+```
+
+### Data flow for one `spn forks list` run
+
+The agent CLI is the cleanest expression of the data flow: enumerate,
+enrich, score, embed, persist, emit. Each step is independently cacheable so a
+repeated run skips work the store already covers.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant U as User
+  participant CLI as spn forks list
+  participant F as forge (GitHub/GitLab/Gitea)
+  participant OPS as forksops
+  participant H as heat
+  participant S as store (libsql)
+  participant E as embed (FastEmbed / lexical)
+  participant V as Voyage (optional)
+
+  U->>CLI: spn forks list owner/repo [...]
+  CLI->>F: detect host, build client
+  CLI->>OPS: enumerate forks
+  OPS->>F: list forks + per-fork compare<br/>(branches, contributors, files)
+  F-->>OPS: fork metadata + diffs
+  OPS->>H: score each fork (T1/T2/T3)
+  H-->>OPS: heat score, tier, filters
+  OPS->>S: upsert snapshots, read cached compares
+  OPS->>E: embed new/changed documents
+  E-->>OPS: vectors (or lexical fallback)
+  OPS->>S: persist vectors
+  alt Voyage key present
+    OPS->>V: embed same documents (additive index)
+    V-->>OPS: voyage vectors
+    OPS->>S: persist voyage index
+  end
+  OPS-->>CLI: ranked, embedded forks
+  CLI-->>U: NDJSON to stdout
+```
+
+### TUI composition
+
+The Bubbletea model is intentionally a single `Update` loop; chrome,
+paging, embed column, and detail overlay are computed by helper functions
+that the same model calls. Embed and clustering data reach the view through
+cache bridges that read from the store rather than holding in-memory copies
+of the whole fork set.
+
+```mermaid
+flowchart LR
+  Model["Model<br/>(internal/tui/app.go)"]
+  Window["WindowSizeMsg"]
+  Keys["tea.KeyMsg"]
+  Embed["embedRun goroutine<br/>(embedrun.go)"]
+  Store["store (libsql)"]
+  CacheBridge["cache_bridge /<br/>cluster_bridge"]
+  View["View()<br/>viewport, embed column,<br/>detail, help, settings"]
+  Status["status bar<br/>embed footer"]
+
+  Window --> Model
+  Keys --> Model
+  Model -->|startEmbedRun| Embed
+  Embed -->|progress msg| Model
+  Embed --> Store
+  Model --> CacheBridge
+  CacheBridge --> Store
+  CacheBridge --> Model
+  Model --> View
+  Model --> Status
+```
+
+### Test surface
+
+Every package ships its own `*_test.go` files alongside the production
+sources; integration tests live next to the package they exercise
+(`fastembed_integration_test.go`, `threads_integration_test.go`, etc.). See
+[Development](#development) below for the canonical commands.
 
 ## Development
 
