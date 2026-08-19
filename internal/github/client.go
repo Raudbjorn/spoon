@@ -1,3 +1,12 @@
+// Package github is the GitHub forge backend.
+//
+// Acquisition contract (see docs/research/2026-08-19-spoon-endpoint-networking.md):
+// REST clients pin X-GitHub-Api-Version to 2022-11-28; GraphQL does not send
+// that header. Default fork inventory is direct children. Whole-network
+// discovery is opt-in and bounded. Fork-list cache keys include API version,
+// auth mode, and a non-reversible AuthScopeID. Undocumented /network/meta,
+// /network/chunk, /network_meta, /network_data_chunk, and /networks/.../events
+// routes are rejected.
 package github
 
 import (

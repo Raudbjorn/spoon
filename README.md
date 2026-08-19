@@ -49,6 +49,11 @@ Windows). `CGO_ENABLED=1` is the Go default; do not unset it.
 
 Unauthenticated requests work but hit much lower rate limits.
 
+### Acquisition contract
+
+GitHub REST calls pin `X-GitHub-Api-Version: 2022-11-28`. Fork lists are **direct children** by default; `--network-scope=all` is an opt-in bounded walk of the wider network. Cached fork lists are scoped to API version and credential identity so a broader login cannot be replayed as a narrower one. Private `/network/meta` and related undocumented routes are not used — see [docs/research/2026-08-19-spoon-endpoint-networking.md](docs/research/2026-08-19-spoon-endpoint-networking.md).
+
+
 Optionally, set `VOYAGE_AI_API_KEY` to add [Voyage AI](https://docs.voyageai.com)
 code embeddings and reranking on top of the local models — see
 [Embedding, clustering & semantic search](#embedding-clustering--semantic-search).
