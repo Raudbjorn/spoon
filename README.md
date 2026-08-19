@@ -402,79 +402,71 @@ each fork is scored and ranked, and the result is either rendered (TUI) or
 serialised (JSON/NDJSON). The two binaries are deliberately thin — every
 behavioural decision lives in `internal/`.
 
+The first diagram covers entry, bootstrap, source adapters, and the core
+enrichment/scoring layer. The second covers embedding, persistence, and the
+two output surfaces. Both render legibly at README width.
+
+#### Entry → bootstrap → sources → core
+
 ```mermaid
 flowchart TB
-  subgraph Entry["Entry points"]
-    spoon["cmd/spoon<br/>interactive TUI"]
-    spn["cmd/spn<br/>JSON/NDJSON CLI"]
-  end
-
-  subgraph Boot["Bootstrap"]
-    config["internal/config<br/>zero-config bootstrap<br/>effective config"]
-    forge["internal/forge<br/>host detection + factory"]
-    setupcheck["internal/setupcheck<br/>pre-flight (gh, ONNX, cache)"]
-    setup["internal/setupcheck<br/>+ cmd/spoon setup"]
-  end
-
-  subgraph Sources["Source adapters"]
-    github["internal/github<br/>REST + GraphQL<br/>token/proxy pools"]
-    gitlab["internal/gitlab<br/>REST client"]
-    gitea["internal/gitea<br/>REST client"]
-  end
-
-  subgraph Core["Core"]
-    forksops["internal/forksops<br/>enumeration + enrichment<br/>ranking + profiles"]
-    heat["internal/heat<br/>0-100 score<br/>percentiles + filters"]
-    priors["internal/priors<br/>interest-spec scoring"]
-    mdg["internal/mdg<br/>centrality (opt-in)"]
-    cluster["internal/cluster<br/>clustering + labels"]
-  end
-
-  subgraph Embed["Embedding"]
-    embed["internal/embed<br/>FastEmbed + lexical fallback"]
-    voyage["Voyage API<br/>(optional, additive)"]
-    semantic["internal/semantic<br/>documents + vector codec"]
-    store["internal/store<br/>libsql cache + embeddings"]
-  end
-
-  subgraph Surface["Surface"]
-    tui["internal/tui<br/>Bubbletea model/view"]
-    agentio["internal/agentio<br/>error envelope + JSON writers"]
-    topics["internal/topics<br/>topic-mode picker"]
-    threads["internal/threadsops<br/>PR thread ops<br/>(spoon threads, spn threads)"]
-  end
+  spoon["cmd/spoon"]
+  spn["cmd/spn"]
+  config["internal/config"]
+  setupcheck["internal/setupcheck"]
+  forge["internal/forge"]
+  github["internal/github"]
+  gitlab["internal/gitlab"]
+  gitea["internal/gitea"]
+  forksops["internal/forksops"]
+  heat["internal/heat"]
+  priors["internal/priors"]
+  mdg["internal/mdg"]
+  cluster["internal/cluster"]
 
   spoon --> config
-  spoon --> forge
-  spoon --> setup
-  spoon --> tui
-  spoon --> threads
-
   spn --> config
-  spn --> forge
-  spn --> threads
-  spn --> agentio
-
   config --> setupcheck
+  spoon --> forge
+  spn --> forge
   forge --> github
   forge --> gitlab
   forge --> gitea
-
   forksops --> heat
   forksops --> priors
   forksops --> mdg
   forksops --> cluster
-  forksops --> store
-  forksops --> topics
+```
 
-  cluster --> embed
-  cluster --> semantic
+#### Embed → persist → surface
+
+```mermaid
+flowchart LR
+  subgraph Embed
+    embed["internal/embed"]
+    voyage["Voyage API"]
+    semantic["internal/semantic"]
+    store["internal/store"]
+  end
+
+  subgraph Surface
+    tui["internal/tui"]
+    agentio["internal/agentio"]
+    topics["internal/topics"]
+    threads["internal/threadsops"]
+  end
+
   embed --> semantic
   semantic --> store
   store -. opt-in .-> voyage
 
-  forksops --> tui
-  forksops --> agentio
+  cluster --> embed
+  cluster --> topics
+
+  spoon["cmd/spoon"] --> tui
+  spoon --> threads
+  spn["cmd/spn"] --> threads
+  spn --> agentio
 ```
 
 ### Data flow for one `spn forks list` run
