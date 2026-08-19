@@ -694,6 +694,9 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 	opts.CachedT2 = storeCachedT2(ctx, db, auth, owner, name, opts.Refresh)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	if opts.Report != nil {
+		*opts.Report = forge.AcquisitionReport{}
+	}
 	ch, streamErr := forksops.Stream(ctx, provider, owner, name, opts)
 	if streamErr != nil {
 		var rejected *gh.AllBackendsRejectedError
@@ -719,6 +722,7 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 	if csvMode {
 		code := emitForksCSV(ctx, db, auth, owner, name, semanticModelID, stdout, stderr, ch)
 		if code == 0 {
+			emitAcquisitionReport(stderr, opts.Report)
 			// CSV scans persist documents too; index them like the NDJSON path.
 			emitSemanticIndexWarning(ctx, db, searchEmbedders, stderr)
 		}
@@ -767,20 +771,7 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 			"remediation": "Re-run after the rate window resets to backfill (cached compares resume), or set SPOON_NO_RESERVE=1 to drain the full budget.",
 		}})
 	}
-	// Emit the acquisition report envelope exactly once, after the fork channel closes.
-	// stdout remains fork-only NDJSON; the report goes to stderr only.
-	if opts.Report != nil && opts.Report.Method != "" {
-		report := opts.Report
-		acquisitionReport = *report
-		summary := fmt.Sprintf("%s acquisition via %s; %d unique forks across %d pages",
-			report.Method, strings.Join(report.FallbackChain, "/"),
-			report.UniqueRows, report.Pages)
-		_ = agentio.WriteNDJSON(stderr, map[string]any{"info": map[string]any{
-			"code":    "acquisition_report",
-			"message": summary,
-			"details": report,
-		}})
-	}
+	emitAcquisitionReport(stderr, opts.Report)
 	emitSemanticIndexWarning(ctx, db, searchEmbedders, stderr)
 	return 0
 }
@@ -1418,6 +1409,22 @@ func emitStageSkipWarning(stderr io.Writer, skip *forksops.StageSkip) {
 	_ = agentio.WriteNDJSON(stderr, envelope)
 }
 
+// emitAcquisitionReport writes one terminal metadata envelope after a Stream
+// channel has closed. It never writes to stdout and silently ignores providers
+// that omit the optional terminal report.
+func emitAcquisitionReport(stderr io.Writer, report *forge.AcquisitionReport) {
+	if report == nil || report.Method == "" {
+		return
+	}
+	summary := fmt.Sprintf("%s acquisition via %s; %d unique forks across %d pages",
+		report.Method, strings.Join(report.FallbackChain, "/"), report.UniqueRows, report.Pages)
+	_ = agentio.WriteNDJSON(stderr, map[string]any{"info": map[string]any{
+		"code":    "acquisition_report",
+		"message": summary,
+		"details": report,
+	}})
+}
+
 // emitClusterWarning writes a structured warning to stderr (one JSON object
 // per line) describing why the cluster pipeline was skipped. The shape is
 // intentionally distinct from agentio.Error: this is non-fatal information,
@@ -1473,6 +1480,9 @@ func streamAndEmit(ctx context.Context, db *store.Store, auth forge.AuthInfo, pr
 	// draining ch (e.g. a stdout write failure below).
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	if opts.Report != nil {
+		*opts.Report = forge.AcquisitionReport{}
+	}
 	ch, streamErr := forksops.Stream(ctx, provider, owner, name, opts)
 	if streamErr != nil {
 		var rejected *gh.AllBackendsRejectedError
@@ -1543,6 +1553,7 @@ func streamAndEmit(ctx context.Context, db *store.Store, auth forge.AuthInfo, pr
 			},
 		})
 	}
+	emitAcquisitionReport(stderr, opts.Report)
 	return 0
 }
 

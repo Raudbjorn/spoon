@@ -12,6 +12,7 @@ import (
 
 	"github.com/svnbjrn/spoon/internal/agentio"
 	"github.com/svnbjrn/spoon/internal/forge"
+	"github.com/svnbjrn/spoon/internal/forksops"
 )
 
 // fakeForgeWithReport mirrors fakeForge but additionally sends a terminal
@@ -28,6 +29,23 @@ func (f *fakeForgeWithReport) ListForks(_ context.Context, _, _ string) (<-chan 
 	}
 	if f.report != nil {
 		ch <- forge.ForkMsg{Report: f.report}
+	}
+	close(ch)
+	return ch, nil
+}
+
+type topicReportsForge struct {
+	fakeForge
+	reports map[string]*forge.AcquisitionReport
+}
+
+func (f *topicReportsForge) ListForks(_ context.Context, _, name string) (<-chan forge.ForkMsg, error) {
+	ch := make(chan forge.ForkMsg, len(f.forks)+1)
+	for _, fk := range f.forks {
+		ch <- forge.ForkMsg{Fork: fk}
+	}
+	if report := f.reports[name]; report != nil {
+		ch <- forge.ForkMsg{Report: report}
 	}
 	close(ch)
 	return ch, nil
@@ -185,3 +203,95 @@ func TestSpnForksList_NoAcquisitionReportWhenProviderOmits(t *testing.T) {
 
 // _ ensures io is referenced if other helpers are added later.
 var _ = io.EOF
+
+func acquisitionReportDetails(t *testing.T, stderr string) []map[string]any {
+	t.Helper()
+	var details []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(stderr), "\n") {
+		if line == "" {
+			continue
+		}
+		var envelope map[string]any
+		if err := json.Unmarshal([]byte(line), &envelope); err != nil {
+			t.Fatalf("stderr contains invalid JSON %q: %v", line, err)
+		}
+		info, ok := envelope["info"].(map[string]any)
+		if !ok || info["code"] != "acquisition_report" {
+			continue
+		}
+		detail, ok := info["details"].(map[string]any)
+		if !ok {
+			t.Fatalf("acquisition report details = %T, want object", info["details"])
+		}
+		details = append(details, detail)
+	}
+	return details
+}
+
+func TestSpnForksList_CSVEmitsAcquisitionReport(t *testing.T) {
+	isolateSpoonRun(t)
+	prev := providerFactory
+	defer func() { providerFactory = prev }()
+	providerFactory = func(_ context.Context, _, _, _ string) (forge.Forge, string, *agentio.Error) {
+		return &fakeForgeWithReport{
+			fakeForge: fakeForge{
+				parent: forge.ParentData{DefaultBranch: "main", PushedAt: time.Now()},
+				forks:  []forge.T1Data{{ID: "o/a", Owner: "o", Name: "a", PushedAt: time.Now()}},
+			},
+			report: &forge.AcquisitionReport{Method: "rest", Scope: "direct", APIVersion: "2022-11-28", AuthMode: "anonymous", FallbackChain: []string{"rest"}, UniqueRows: 1, RawRows: 1},
+		}, "o/r", nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	if exit := runForksWith([]string{"list", "o/r", "--tier", "1", "--no-cluster", "--csv"}, &stdout, &stderr); exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+	}
+	if !strings.HasPrefix(stdout.String(), "id,owner,") {
+		t.Fatalf("stdout = %q, want CSV header", stdout.String())
+	}
+	if strings.Contains(stdout.String(), "acquisition_report") {
+		t.Fatalf("stdout contains acquisition report: %s", stdout.String())
+	}
+	if reports := acquisitionReportDetails(t, stderr.String()); len(reports) != 1 {
+		t.Fatalf("CSV acquisition reports = %d, want 1: %s", len(reports), stderr.String())
+	}
+}
+
+func TestStreamAndEmit_AcquisitionReportPerRepoAndNoStaleReuse(t *testing.T) {
+	reports := map[string]*forge.AcquisitionReport{
+		"first":  {Method: "graphql", Scope: "direct", APIVersion: "2022-11-28", FallbackChain: []string{"graphql"}, UniqueRows: 1},
+		"second": {Method: "rest", Scope: "direct", APIVersion: "2022-11-28", FallbackChain: []string{"rest"}, UniqueRows: 2},
+	}
+	provider := &topicReportsForge{
+		fakeForge: fakeForge{
+			parent: forge.ParentData{DefaultBranch: "main", PushedAt: time.Now()},
+			forks:  []forge.T1Data{{ID: "o/a", Owner: "o", Name: "a", PushedAt: time.Now()}},
+		},
+		reports: reports,
+	}
+	var report forge.AcquisitionReport
+	opts := forksops.Options{Tier: 1, Report: &report, Cluster: forksops.ClusterOptions{Enabled: false}}
+	var stdout, stderr bytes.Buffer
+	for _, name := range []string{"first", "second"} {
+		if exit := streamAndEmit(context.Background(), nil, forge.AuthInfo{}, provider, "o", name, "o/"+name, opts, detailOptions{}, "", &stdout, &stderr); exit != 0 {
+			t.Fatalf("streamAndEmit(%s) exit=%d stderr=%s", name, exit, stderr.String())
+		}
+	}
+	got := acquisitionReportDetails(t, stderr.String())
+	if len(got) != 2 {
+		t.Fatalf("topic acquisition reports = %d, want 2: %s", len(got), stderr.String())
+	}
+	for i, want := range []string{"graphql", "rest"} {
+		if got[i]["method"] != want {
+			t.Errorf("report %d method = %v, want %q", i, got[i]["method"], want)
+		}
+	}
+
+	provider.reports["third"] = nil
+	if exit := streamAndEmit(context.Background(), nil, forge.AuthInfo{}, provider, "o", "third", "o/third", opts, detailOptions{}, "", &stdout, &stderr); exit != 0 {
+		t.Fatalf("streamAndEmit(third) exit=%d stderr=%s", exit, stderr.String())
+	}
+	if got := acquisitionReportDetails(t, stderr.String()); len(got) != 2 {
+		t.Fatalf("provider omission re-emitted stale report: got %d reports, want 2: %s", len(got), stderr.String())
+	}
+}
