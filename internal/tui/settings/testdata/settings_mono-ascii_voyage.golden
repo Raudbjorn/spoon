@@ -5,7 +5,7 @@ Layer: user  Path: /settings-golden/config.json
 | Voyage                                                                       |
 +------------------------------------------------------------------------------+
 | > Auto-embed with Voyage: false [DEFAULT]                                    |
-| Sends every listed fork to a per-token billed service without asking. Off by |
+| Sends every listed fork to a per-token billed service. Off by default.       |
 |   Voyage disabled: false [DEFAULT]                                           |
 |   Voyage API key file: ************ [FILE]                                   |
 |   Embed model: voyage-code-3 [DEFAULT]                                       |

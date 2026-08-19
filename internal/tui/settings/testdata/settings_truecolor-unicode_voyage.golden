@@ -5,7 +5,7 @@
 │ [1;4;38;2;245;245;245;4mV[0m[1;4;38;2;245;245;245;4mo[0m[1;4;38;2;245;245;245;4my[0m[1;4;38;2;245;245;245;4ma[0m[1;4;38;2;245;245;245;4mg[0m[1;4;38;2;245;245;245;4me[0m                                                                       │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │ [1;38;2;211;211;211m> [7mA[0muto-embed with Voyage: false [DEFAULT][0m                                    │
-│ [2;38;2;154;154;154mSends every listed fork to a per-token billed service without asking. Off by[0m │
+│ [2;38;2;154;154;154mSends every listed fork to a per-token billed service. Off by default.[0m       │
 │ [38;2;211;211;211m  Voyage disabled: false [DEFAULT][0m                                           │
 │ [38;2;211;211;211m  Voyage API key file: ************ [FILE][0m                                   │
 │ [38;2;211;211;211m  Embed model: voyage-code-3 [DEFAULT][0m                                       │
