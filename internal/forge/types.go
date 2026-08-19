@@ -48,6 +48,26 @@ type AcquisitionReport struct {
 	CaptureAt     time.Time `json:"captureAt"`               // when the report was generated
 	AuthScopeID   string    `json:"authScopeId"`             // non-reversible; never logged with tokens
 	Error         string    `json:"error,omitempty"`         // set when REST fallback fails
+
+	// VisitedNodes is the number of distinct repos the bounded traversal visited.
+	VisitedNodes int    `json:"visitedNodes"`
+	MaxNodes     int    `json:"maxNodes"`
+	MaxDepth     int    `json:"maxDepth"`
+	CapReason    string `json:"capReason,omitempty"` // "max_nodes"|"max_depth"|"max_pages"|"max_elapsed"|""
+}
+
+// BoundedOptions controls a bounded whole-network traversal.
+type BoundedOptions struct {
+	MaxNodes   int
+	MaxDepth   int
+	MaxPages   int
+	MaxElapsed time.Duration
+}
+
+// ListForksBoundedProvider is an optional provider capability for bounded whole-network
+// fork discovery. Providers that do not implement it remain valid Forge values.
+type ListForksBoundedProvider interface {
+	ListForksBounded(ctx context.Context, owner, repo string, opts BoundedOptions) (<-chan ForkMsg, error)
 }
 
 // AuthTier describes the capability level of the detected credentials.

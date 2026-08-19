@@ -409,7 +409,61 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 			}
 			opts.OwnerCacheTTL = d
 			ownerCacheTTLSet = true
+		case "--network-scope":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--network-scope requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			switch args[i] {
+			case "direct":
+				opts.NetworkScope = "direct"
+			case "all":
+				opts.NetworkScope = "all"
+			default:
+				return agentio.NewError(agentio.CodeBadInput, "--network-scope must be \"direct\" or \"all\"", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+		case "--network-max-nodes":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--network-max-nodes requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n <= 0 {
+				return agentio.NewError(agentio.CodeBadInput, "--network-max-nodes must be a positive integer", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			opts.NetworkMaxNodes = n
+		case "--network-max-depth":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--network-max-depth requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			d, err := strconv.Atoi(args[i])
+			if err != nil || d < 0 {
+				return agentio.NewError(agentio.CodeBadInput, "--network-max-depth must be a non-negative integer", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			opts.NetworkMaxDepth = d
+		case "--network-max-pages":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--network-max-pages requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			p, err := strconv.Atoi(args[i])
+			if err != nil || p <= 0 {
+				return agentio.NewError(agentio.CodeBadInput, "--network-max-pages must be a positive integer", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			opts.NetworkMaxPages = p
+		case "--network-max-elapsed":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--network-max-elapsed requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			e, err := time.ParseDuration(args[i])
+			if err != nil || e < 0 {
+				return agentio.NewError(agentio.CodeBadInput, "--network-max-elapsed must be a valid Go duration (e.g. 2m, 5m)", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			opts.NetworkMaxElapsed = e
 		case "--":
+
 			// POSIX flag/positional separator: everything after is positional.
 			if i+1 >= len(args) {
 				return agentio.NewError(agentio.CodeBadInput, "missing repository argument after --", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
@@ -472,6 +526,11 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 	// refresh path stays intact.
 	if !ownerCacheTTLSet && !opts.Refresh {
 		opts.OwnerCacheTTL = 24 * time.Hour
+	}
+
+	// Validate --network-scope=all requires MaxDepth > 0
+	if opts.NetworkScope == "all" && opts.NetworkMaxDepth == 0 {
+		return agentio.NewError(agentio.CodeBadInput, "--network-scope=all requires --network-max-depth > 0", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
 	}
 
 	// fastembed is the only embedder and runs by default: it powers

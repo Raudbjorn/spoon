@@ -296,6 +296,219 @@ func countSeen(seen map[int64]struct{}) int {
 	return n
 }
 
+// BoundedOptions controls a bounded whole-network traversal.
+type BoundedOptions struct {
+	MaxNodes   int
+	MaxDepth   int
+	MaxPages   int
+	MaxElapsed time.Duration
+}
+
+type CapReason int
+
+const (
+	CapReasonNone     CapReason = 0
+	CapReasonMaxNodes CapReason = iota
+	CapReasonMaxDepth
+	CapReasonMaxPages
+	CapReasonMaxElapsed
+)
+
+func (c CapReason) String() string {
+	switch c {
+	case CapReasonMaxNodes:
+		return "max_nodes"
+	case CapReasonMaxDepth:
+		return "max_depth"
+	case CapReasonMaxPages:
+		return "max_pages"
+	case CapReasonMaxElapsed:
+		return "max_elapsed"
+	default:
+		return ""
+	}
+}
+
+func (c *Client) FetchForksBounded(ctx context.Context, owner, repo string, onBatch func(forks []ForkInfo, extras []T1Extra, depth int), opts BoundedOptions) ([]ForkInfo, map[int64]T1Extra, *forge.AcquisitionReport, error) {
+	if !c.HasGraphQL() {
+		return nil, nil, nil, fmt.Errorf("GraphQL client not available")
+	}
+	if opts.MaxNodes <= 0 {
+		opts.MaxNodes = 5000
+	}
+	if opts.MaxDepth <= 0 {
+		opts.MaxDepth = 3
+	}
+	if opts.MaxPages <= 0 {
+		opts.MaxPages = 200
+	}
+	if opts.MaxElapsed <= 0 {
+		opts.MaxElapsed = 2 * time.Minute
+	}
+	authMode := "authenticated"
+	if !c.IsAuthenticated() {
+		authMode = "anonymous"
+	}
+
+	type queueEntry struct {
+		owner string
+		repo  string
+		depth int
+	}
+	queue := []queueEntry{{owner: owner, repo: repo, depth: 0}}
+	visited := map[int64]int{0: -1}
+	seen := map[int64]struct{}{}
+	var allForks []ForkInfo
+	var allExtras []T1Extra
+	totalPages := 0
+	cap := CapReasonNone
+	start := time.Now()
+
+	for len(queue) > 0 && cap == CapReasonNone {
+		if time.Since(start) > opts.MaxElapsed {
+			cap = CapReasonMaxElapsed
+			break
+		}
+		if len(visited) >= opts.MaxNodes {
+			cap = CapReasonMaxNodes
+			break
+		}
+
+		batch := queue
+		if len(batch) > 4 {
+			batch = batch[:4]
+		}
+		queue = queue[len(batch):]
+
+		totalPages++
+		if totalPages > opts.MaxPages {
+			cap = CapReasonMaxPages
+			break
+		}
+
+		aliases := make([]string, len(batch))
+		vars := make(map[string]interface{})
+		for j, e := range batch {
+			aliases[j] = fmt.Sprintf("r%d", j)
+			vars[fmt.Sprintf("owner%d", j)] = e.owner
+			vars[fmt.Sprintf("name%d", j)] = e.repo
+		}
+
+		query := buildBatchedForksQuery(aliases)
+		var resp gqlBatchedResponse
+		if err := c.doGraphQLWithRetry(ctx, query, vars, &resp); err != nil {
+			return allForks, nil, nil, err
+		}
+
+		for j, alias := range aliases {
+			node, ok := resp.Repositories[alias]
+			if !ok {
+				continue
+			}
+			depth := batch[j].depth
+			for _, f := range node.Forks.Nodes {
+				if _, dup := visited[f.DatabaseID]; dup {
+					continue
+				}
+				visited[f.DatabaseID] = depth + 1
+				fork, extra := gqlForkToForkInfo(f, 0, 0, authMode, defaultRESTVersion)
+				seen[fork.ID] = struct{}{}
+				allForks = append(allForks, fork)
+				allExtras = append(allExtras, extra)
+				if f.ForkCount > 0 && depth+1 < opts.MaxDepth {
+					parts := strings.SplitN(fork.FullName, "/", 2)
+					if len(parts) == 2 {
+						queue = append(queue, queueEntry{owner: parts[0], repo: parts[1], depth: depth + 1})
+					}
+				}
+			}
+			if onBatch != nil && len(node.Forks.Nodes) > 0 {
+				var bf []ForkInfo
+				var be []T1Extra
+				for _, n := range node.Forks.Nodes {
+					for k, af := range allForks {
+						if af.ID == n.DatabaseID {
+							bf = append(bf, af)
+							if k < len(allExtras) {
+								be = append(be, allExtras[k])
+							}
+							break
+						}
+					}
+				}
+				onBatch(bf, be, depth+1)
+			}
+		}
+
+		if len(batch) > 0 && batch[0].depth >= opts.MaxDepth {
+			cap = CapReasonMaxDepth
+		}
+	}
+
+	unique := countSeen(seen)
+	report := &forge.AcquisitionReport{
+		Method:         "graphql",
+		Scope:          "all",
+		APIVersion:     defaultRESTVersion,
+		AuthMode:       authMode,
+		FallbackChain:  []string{"graphql"},
+		Pages:          totalPages,
+		RawRows:        len(allForks),
+		UniqueRows:     unique,
+		DuplicateRows:  len(allForks) - unique,
+		CaptureAt:      time.Now(),
+		AuthScopeID:    c.AuthScopeID(),
+		VisitedNodes:   len(visited),
+		MaxNodes:       opts.MaxNodes,
+		MaxDepth:       opts.MaxDepth,
+		CapReason:      cap.String(),
+	}
+	allExtras = annotateDepths(allForks, allExtras, owner+"/"+repo)
+	extrasMap := map[int64]T1Extra{}
+	for i, f := range allForks {
+		if i < len(allExtras) {
+			extrasMap[f.ID] = allExtras[i]
+		}
+	}
+	return allForks, extrasMap, report, nil
+}
+
+type gqlBatchedResponse struct {
+	Repositories map[string]struct {
+		ForkCount int `json:"forkCount"`
+		Forks     struct {
+			TotalCount int          `json:"totalCount"`
+			Nodes     []gqlForkNode `json:"nodes"`
+		} `json:"forks"`
+	} `json:"-"`
+}
+
+func buildBatchedForksQuery(aliases []string) string {
+	var sb strings.Builder
+	sb.WriteString("query(")
+	args := make([]string, 0, len(aliases)*2)
+	for i := range aliases {
+		args = append(args, fmt.Sprintf("$owner%d: String!", i), fmt.Sprintf("$name%d: String!", i))
+	}
+	sb.WriteString(strings.Join(args, ", "))
+	sb.WriteString(`) {`)
+	forkFrag := `forkCount forks(first:50)` +
+		`{totalCount nodes{databaseId nameWithOwner name description stargazerCount` +
+		` pushedAt createdAt isArchived isDisabled forkCount diskUsage` +
+		` primaryLanguage{name} defaultBranchRef{name} owner{login avatarUrl}` +
+		` pullRequests(states:OPEN,first:1){totalCount}` +
+		` releases(first:1){totalCount}` +
+		` repositoryTopics(first:20){nodes{topic{name}}}` +
+		` refs(refPrefix:"refs/heads/",first:10,orderBy:{field:ALPHABETICAL,direction:ASC})` +
+		`{nodes{name target{... on Commit{committedDate}}}}` +
+		` parent{nameWithOwner databaseId}}}`
+	for i := range aliases {
+		sb.WriteString(fmt.Sprintf(` r%d: repository(owner: $owner%d, name: $name%d) {%s}`, i, i, i, forkFrag))
+	}
+	sb.WriteString(` rateLimit{limit remaining used resetAt cost}}`)
+	return sb.String()
+}
+
 // gqlMaxAttempts bounds retries for transient GraphQL failures. GitHub returns
 // HTTP 502/503/504 intermittently for the expensive batched forks query when a
 // repository has a very large fork network (tens of thousands of forks).

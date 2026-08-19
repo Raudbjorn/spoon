@@ -189,6 +189,56 @@ func (p *GHProvider) ListForks(ctx context.Context, owner, repo string) (<-chan 
 	return out, nil
 }
 
+// ListForksBounded implements forge.ListForksBoundedProvider.
+func (p *GHProvider) ListForksBounded(ctx context.Context, owner, repo string, opts forge.BoundedOptions) (<-chan forge.ForkMsg, error) {
+	out := make(chan forge.ForkMsg, 64)
+	go func() {
+		defer close(out)
+		boundedOpts := BoundedOptions{
+			MaxNodes:   opts.MaxNodes,
+			MaxDepth:   opts.MaxDepth,
+			MaxPages:   opts.MaxPages,
+			MaxElapsed: opts.MaxElapsed,
+		}
+		forks, extrasMap, report, err := p.client.FetchForksBounded(ctx, owner, repo, nil, boundedOpts)
+		if err != nil {
+			if report != nil {
+				select {
+				case out <- forge.ForkMsg{Report: report}:
+				case <-ctx.Done():
+					return
+				}
+			}
+			select {
+			case out <- forge.ForkMsg{Err: err}:
+			case <-ctx.Done():
+			}
+			return
+		}
+		for _, f := range forks {
+			var extra *T1Extra
+			if extrasMap != nil {
+				if e, ok := extrasMap[f.ID]; ok {
+					extra = &e
+				}
+			}
+			t1 := forkInfoToT1(f, extra, owner+"/"+repo)
+			select {
+			case out <- forge.ForkMsg{Fork: t1}:
+			case <-ctx.Done():
+				return
+			}
+		}
+		if report != nil {
+			select {
+			case out <- forge.ForkMsg{Report: report}:
+			case <-ctx.Done():
+			}
+		}
+	}()
+	return out, nil
+}
+
 // Branches implements forge.Forge.
 func (p *GHProvider) Branches(_ context.Context, fork forge.T1Data, n int) ([]forge.BranchRef, error) {
 	if len(fork.Branches) > 0 {

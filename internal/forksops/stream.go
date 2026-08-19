@@ -130,6 +130,18 @@ type Options struct {
 	// report. The report is also emitted on the ForkMsg channel so callers that
 	// do not use Stream() can still observe it.
 	Report *forge.AcquisitionReport
+
+	// NetworkScope controls fork-list breadth: "direct" (default) or "all".
+	// When "all", ListForksBounded is used if the provider implements it.
+	NetworkScope string
+	// NetworkMaxNodes caps distinct repos visited. 0 → 5000.
+	NetworkMaxNodes int
+	// NetworkMaxDepth caps traversal depth from root. 0 → 3.
+	NetworkMaxDepth int
+	// NetworkMaxPages caps GraphQL pages. 0 → 200.
+	NetworkMaxPages int
+	// NetworkMaxElapsed caps wall-clock time. 0 → 2 minutes.
+	NetworkMaxElapsed time.Duration
 }
 
 // ownerProfileDefaultCap is the per-run cap on the number of distinct
@@ -335,14 +347,46 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 		}
 		return nil, fmt.Errorf("fetch parent: %w", err)
 	}
-	t1ch, err := provider.ListForks(ctx, owner, repo)
-	if err != nil {
-		var rl *gh.RateLimitError
-		if errors.As(err, &rl) {
-			return nil, fmt.Errorf("rate_limited: reset_at=%s retry_after_seconds=%d: %w",
-				rl.ResetAt.UTC().Format(time.RFC3339), rl.RetryAfterSeconds(), err)
+	// Bounded whole-network dispatch: use ListForksBounded when scope is "all"
+	// and the provider implements it; fall back to ListForks for all other cases.
+	var t1ch <-chan forge.ForkMsg
+	var listErr error
+	if opts.NetworkScope == "all" {
+		if bounded, ok := provider.(forge.ListForksBoundedProvider); ok {
+			boundedOpts := forge.BoundedOptions{
+				MaxNodes:   opts.NetworkMaxNodes,
+				MaxDepth:   opts.NetworkMaxDepth,
+				MaxPages:   opts.NetworkMaxPages,
+				MaxElapsed: opts.NetworkMaxElapsed,
+			}
+			// Default caps
+			if boundedOpts.MaxNodes <= 0 {
+				boundedOpts.MaxNodes = 5000
+			}
+			if boundedOpts.MaxDepth <= 0 {
+				boundedOpts.MaxDepth = 3
+			}
+			if boundedOpts.MaxPages <= 0 {
+				boundedOpts.MaxPages = 200
+			}
+			if boundedOpts.MaxElapsed <= 0 {
+				boundedOpts.MaxElapsed = 2 * time.Minute
+			}
+			t1ch, listErr = bounded.ListForksBounded(ctx, owner, repo, boundedOpts)
+		} else {
+			// Provider doesn't implement bounded; fall back to ListForks
+			t1ch, listErr = provider.ListForks(ctx, owner, repo)
 		}
-		return nil, fmt.Errorf("list forks: %w", err)
+	} else {
+		t1ch, listErr = provider.ListForks(ctx, owner, repo)
+	}
+	if listErr != nil {
+		var rl *gh.RateLimitError
+		if errors.As(listErr, &rl) {
+			return nil, fmt.Errorf("rate_limited: reset_at=%s retry_after_seconds=%d: %w",
+				rl.ResetAt.UTC().Format(time.RFC3339), rl.RetryAfterSeconds(), listErr)
+		}
+		return nil, fmt.Errorf("list forks: %w", listErr)
 	}
 
 	logger := opts.Logger
