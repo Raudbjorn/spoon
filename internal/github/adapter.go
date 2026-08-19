@@ -47,13 +47,16 @@ func (p *GHProvider) Auth(_ context.Context) (forge.AuthInfo, error) {
 		rl = 5000
 	}
 	return forge.AuthInfo{
-		Provider:    forge.ProviderGitHub,
-		Tier:        tier,
-		Host:        p.status.Host,
-		Username:    "",
-		Concurrency: conc,
-		RateLimit:   rl,
-		RateUnit:    "hour",
+		Provider:         forge.ProviderGitHub,
+		Tier:             tier,
+		Host:             p.status.Host,
+		Username:         "",
+		Concurrency:      conc,
+		RateLimit:        rl,
+		RateUnit:         "hour",
+		APIVersion:       p.status.APIVersion,
+		AuthMode:         p.status.AuthMode,
+		AuthScopeID:      p.status.AuthScopeID,
 	}, nil
 }
 

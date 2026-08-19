@@ -41,6 +41,12 @@ type RepoRecord struct {
 	// no push to any cached fork), unlike per-fork compare validity which is
 	// keyed on pushed_at.
 	ForksSyncedAt time.Time
+	// APIVersion is the pinned REST API version used to acquire this snapshot.
+	APIVersion string
+	// AcquisitionMethod records how the snapshot was fetched: "graphql", "rest", etc.
+	AcquisitionMethod string
+	// AuthScopeID is the non-reversible fingerprint of the credential set used.
+	AuthScopeID string
 }
 
 type ForkRecord struct {
@@ -96,8 +102,11 @@ type Snapshot struct {
 // RepoSnapshot is the read-side view of one upstream and its cached forks.
 type RepoSnapshot struct {
 	Parent        *forge.ParentData
-	ForksSyncedAt time.Time
-	Forks         []CachedFork
+	ForksSyncedAt      time.Time
+	APIVersion         string
+	AcquisitionMethod  string
+	AuthScopeID        string
+	Forks              []CachedFork
 
 	// byID indexes Forks by forge ID, built once by LoadRepoSnapshot so
 	// per-fork lookups are O(1) — callers do one lookup per live fork, and a
@@ -567,6 +576,7 @@ var migrations = []struct {
 	{version: 1, stmts: schemaV1},
 	{version: 2, stmts: schemaV2},
 	{version: 3, stmts: schemaV3},
+	{version: 4, stmts: schemaV4},
 }
 
 // createdTable and addedColumn match the exact shapes every step in the
@@ -794,6 +804,14 @@ func RepoKey(provider, host, owner, name string) string {
 	return provider + ":" + strings.ToLower(host) + ":" + strings.ToLower(owner+"/"+name)
 }
 
+// CacheScopeKey extends RepoKey with acquisition-scope fields. A cache hit
+// requires matching apiVersion, authMode, and authScopeID — so a snapshot created
+// under a different credential set or version is a miss, not a collision.
+func CacheScopeKey(provider, host, owner, name, apiVersion, authMode, authScopeID string) string {
+	return provider + ":" + strings.ToLower(host) + ":" + strings.ToLower(owner+"/"+name) +
+		":v=" + apiVersion + ":m=" + authMode + ":s=" + authScopeID
+}
+
 func ForkKey(repoKey, forgeID string) string { return repoKey + ":" + forgeID }
 func DocumentID(forkKey string) string       { return "fork:" + forkKey }
 
@@ -845,8 +863,16 @@ func upsertSnapshotTx(ctx context.Context, tx *wtx, snap Snapshot) error {
 	if err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO repos(repo_key,provider,host,owner,name,first_seen,last_seen) VALUES(?,?,?,?,?,?,?)
-		ON CONFLICT(repo_key) DO UPDATE SET last_seen=excluded.last_seen`, repoKey, snap.Repo.Provider, strings.ToLower(snap.Repo.Host), snap.Repo.Owner, snap.Repo.Name, ts(snap.Repo.FirstSeen), ts(snap.Repo.LastSeen)); err != nil {
+	// If the row already exists with a non-empty authScopeID and the incoming scope is also non-empty
+	// but different, refuse the write. This prevents a misconfigured or credential-rotated run from
+	// silently overwriting a snapshot acquired under a different identity.
+	var existingScopeID string
+	_ = tx.QueryRowContext(ctx, `SELECT auth_scope_id FROM repos WHERE repo_key=?`, repoKey).Scan(&existingScopeID)
+	if existingScopeID != "" && snap.Repo.AuthScopeID != "" && snap.Repo.AuthScopeID != existingScopeID {
+		return fmt.Errorf("auth scope mismatch: cannot overwrite snapshot acquired under scope %q with scope %q (both non-empty)", existingScopeID, snap.Repo.AuthScopeID)
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO repos(repo_key,provider,host,owner,name,first_seen,last_seen,api_version,acquisition_method,auth_scope_id) VALUES(?,?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(repo_key) DO UPDATE SET last_seen=excluded.last_seen,api_version=excluded.api_version,acquisition_method=excluded.acquisition_method,auth_scope_id=excluded.auth_scope_id`, repoKey, snap.Repo.Provider, strings.ToLower(snap.Repo.Host), snap.Repo.Owner, snap.Repo.Name, ts(snap.Repo.FirstSeen), ts(snap.Repo.LastSeen), snap.Repo.APIVersion, snap.Repo.AcquisitionMethod, snap.Repo.AuthScopeID); err != nil {
 		return fmt.Errorf("upsert repo: %w", err)
 	}
 	// Parent and sync-time updates are separate conditional statements so a
@@ -864,6 +890,13 @@ func upsertSnapshotTx(ctx context.Context, tx *wtx, snap Snapshot) error {
 	if !snap.Repo.ForksSyncedAt.IsZero() {
 		if _, err = tx.ExecContext(ctx, `UPDATE repos SET forks_synced_at=? WHERE repo_key=?`, ts(snap.Repo.ForksSyncedAt), repoKey); err != nil {
 			return fmt.Errorf("update repo sync time: %w", err)
+		}
+	}
+	// run's acquisition context. A snapshot with empty scope (pre-schemaV4) is
+	// readable but not Exact-served under a non-empty scope.
+	if snap.Repo.APIVersion != "" || snap.Repo.AcquisitionMethod != "" || snap.Repo.AuthScopeID != "" {
+		if _, err = tx.ExecContext(ctx, `UPDATE repos SET api_version=?,acquisition_method=?,auth_scope_id=? WHERE repo_key=?`, snap.Repo.APIVersion, snap.Repo.AcquisitionMethod, snap.Repo.AuthScopeID, repoKey); err != nil {
+			return fmt.Errorf("update repo scope: %w", err)
 		}
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO forks(fork_key,repo_key,forge_id,owner,name,url,description,language,topics_json,stars,pushed_at,heat,tier,updated_at)
@@ -1028,7 +1061,8 @@ func headSHA(t2 *forge.T2Data) string {
 func (s *Store) LoadRepoSnapshot(ctx context.Context, provider, host, owner, name string) (*RepoSnapshot, error) {
 	repoKey := RepoKey(provider, host, owner, name)
 	var parentJSON, syncedAt string
-	err := s.db.QueryRowContext(ctx, `SELECT parent_json, forks_synced_at FROM repos WHERE repo_key=?`, repoKey).Scan(&parentJSON, &syncedAt)
+	var apiVersion, acquisitionMethod, authScopeID string
+	err := s.db.QueryRowContext(ctx, `SELECT parent_json, forks_synced_at, api_version, acquisition_method, auth_scope_id FROM repos WHERE repo_key=?`, repoKey).Scan(&parentJSON, &syncedAt, &apiVersion, &acquisitionMethod, &authScopeID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -1045,6 +1079,9 @@ func (s *Store) LoadRepoSnapshot(ctx context.Context, provider, host, owner, nam
 	if syncedAt != "" {
 		snap.ForksSyncedAt, _ = time.Parse(time.RFC3339Nano, syncedAt)
 	}
+	snap.APIVersion = apiVersion
+	snap.AcquisitionMethod = acquisitionMethod
+	snap.AuthScopeID = authScopeID
 
 	rows, err := s.db.QueryContext(ctx, `SELECT fork_key, t1_json, t2_json, t2_fetched_at, heat, tier FROM forks WHERE repo_key=? AND t1_json<>'' ORDER BY fork_key`, repoKey)
 	if err != nil {
@@ -1159,6 +1196,41 @@ func (s *Store) LoadRepoSnapshot(ctx context.Context, provider, host, owner, nam
 	}
 	return snap, nil
 }
+
+// LoadRepoSnapshotExact matches on the full acquisition scope. It is the
+// correct read path when the caller's run has a known scope (which T2
+// enrichment always does). A snapshot with no scope metadata (pre-schemaV4)
+// is a miss for any non-empty scope, preserving the invariant that a
+// legacy row never satisfies a scoped request.
+func (s *Store) LoadRepoSnapshotExact(ctx context.Context, provider, host, owner, name, apiVersion, authMode, authScopeID string) (*RepoSnapshot, error) {
+	if apiVersion == "" && authMode == "" && authScopeID == "" {
+		return s.LoadRepoSnapshot(ctx, provider, host, owner, name)
+	}
+	repoKey := RepoKey(provider, host, owner, name)
+	var parentJSON, syncedAt string
+	var storedAPIVersion, storedMethod, storedScopeID string
+	err := s.db.QueryRowContext(ctx, `SELECT parent_json, forks_synced_at, api_version, acquisition_method, auth_scope_id FROM repos WHERE repo_key=?`, repoKey).Scan(&parentJSON, &syncedAt, &storedAPIVersion, &storedMethod, &storedScopeID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load repo %s: %w", repoKey, err)
+	}
+	// Legacy unscoped rows have empty scope fields: they are never served to a
+	// scoped request.
+	if storedAPIVersion == "" && storedMethod == "" && storedScopeID == "" {
+		return nil, nil
+	}
+	// Scope mismatch is a cache miss, not an error.
+	if storedAPIVersion != apiVersion || storedMethod != authMode || storedScopeID != authScopeID {
+		return nil, nil
+	}
+	// Scope matches: delegate to the full read path. We already loaded the
+	// scope columns; LoadRepoSnapshot will re-read them (harmless duplication
+	// on a single row).
+	return s.LoadRepoSnapshot(ctx, provider, host, owner, name)
+}
+
 
 func (s *Store) PendingDocuments(ctx context.Context, model string) ([]PendingDocument, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT d.document_id,d.fork_key,d.content_hash,d.body FROM documents d
@@ -1458,6 +1530,12 @@ var schemaV1 = []string{
 // same answer, so a request that has been paid for once is never worth paying
 // for again. Entries are keyed by a content hash of everything that affects the
 // response — see internal/embed/voyagecache.go for the key derivation.
+var schemaV4 = []string{
+	`ALTER TABLE repos ADD COLUMN api_version TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE repos ADD COLUMN acquisition_method TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE repos ADD COLUMN auth_scope_id TEXT NOT NULL DEFAULT ''`,
+}
+
 var schemaV3 = []string{
 	`CREATE TABLE IF NOT EXISTS voyage_cache (cache_key TEXT PRIMARY KEY, kind TEXT NOT NULL, model TEXT NOT NULL, value BLOB NOT NULL, created_at TEXT NOT NULL)`,
 	`CREATE INDEX IF NOT EXISTS voyage_cache_created_idx ON voyage_cache(created_at)`,
@@ -1472,3 +1550,4 @@ var schemaV2 = []string{
 	`ALTER TABLE forks ADD COLUMN t2_json TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE forks ADD COLUMN t2_fetched_at TEXT NOT NULL DEFAULT ''`,
 }
+

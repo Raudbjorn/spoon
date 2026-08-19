@@ -188,6 +188,8 @@ type AuthStatus struct {
 	RateLimit           RateLimit
 	DuplicateIdentities int // configured tokens collapsed because they resolve to the same login
 	AuthScopeID      string // non-reversible scope fingerprint (first 16 hex of SHA-256)
+	APIVersion       string // pinned REST API version (e.g. "2022-11-28")
+	AuthMode         string // "authenticated" or "anonymous"
 }
 
 // T1Extra holds additional data from the GraphQL T1 query not in the REST ForkInfo.

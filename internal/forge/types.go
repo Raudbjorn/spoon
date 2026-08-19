@@ -69,6 +69,14 @@ type AuthInfo struct {
 	Concurrency int    // recommended worker pool size.
 	RateLimit   int    // max requests per RateUnit.
 	RateUnit    string // "hour" (GitHub) or "minute" (GitLab).
+	// APIVersion carries the pinned REST API version (e.g. "2022-11-28"). Empty
+	// for forges that do not expose this.
+	APIVersion string
+	// AuthMode is "authenticated" or "anonymous" at the time of this run.
+	AuthMode string
+	// AuthScopeID is a non-reversible fingerprint of the credential set. Empty
+	// when acquisition method does not support it. Safe to store and log.
+	AuthScopeID string
 }
 
 // Authenticated returns true if the user has any credentials.

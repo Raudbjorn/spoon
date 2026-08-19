@@ -789,7 +789,8 @@ func storeCachedT2(ctx context.Context, db *store.Store, auth forge.AuthInfo, ow
 	if host == "" {
 		host = forge.DefaultHost(auth.Provider)
 	}
-	snap, err := db.LoadRepoSnapshot(ctx, auth.Provider.String(), host, owner, name)
+	snap, err := db.LoadRepoSnapshotExact(ctx, auth.Provider.String(), host, owner, name,
+		auth.APIVersion, auth.AuthMode, auth.AuthScopeID)
 	if err != nil || snap == nil {
 		return nil
 	}
@@ -810,8 +811,15 @@ func persistForkSnapshot(ctx context.Context, db *store.Store, auth forge.AuthIn
 	}
 	snapshot := store.Snapshot{
 		Repo: store.RepoRecord{
-			Provider: auth.Provider.String(), Host: host, Owner: owner, Name: name,
-			FirstSeen: firstSeen, LastSeen: now,
+			Provider:           auth.Provider.String(),
+			Host:               host,
+			Owner:              owner,
+			Name:               name,
+			FirstSeen:          firstSeen,
+			LastSeen:           now,
+			APIVersion:         auth.APIVersion,
+			AcquisitionMethod:   auth.AuthMode,
+			AuthScopeID:        auth.AuthScopeID,
 		},
 		Fork: store.ForkRecord{
 			ForgeID: r.Fork.ID, Owner: r.Fork.Owner, Name: r.Fork.Name, URL: r.Fork.URL,

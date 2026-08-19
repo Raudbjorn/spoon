@@ -2,10 +2,13 @@ package github
 
 import ghAPI "github.com/cli/go-gh/v2/pkg/api"
 
-// defaultRESTVersion is the pinned GitHub REST API version sent on every outbound
-// REST request. This freezes the wire contract so the response schema is stable
-// and predictable across runs. 2022-11-28 is the current effective default.
+// defaultRESTVersion is the wire value sent to the GitHub REST API.
 const defaultRESTVersion = "2022-11-28"
+
+// StoredAPIVersion is what is persisted to the database. It is prefixed with
+// "github/" to prevent SQLite/go-libsql date affinity from coercing
+// "2022-11-28" into "2022-11-28T00:00:00Z" at insert time.
+const StoredAPIVersion = "github/2022-11-28"
 
 // restVersionHeader is the HTTP header name for the API version.
 const restVersionHeader = "X-GitHub-Api-Version"
