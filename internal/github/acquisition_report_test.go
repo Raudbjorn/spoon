@@ -155,8 +155,8 @@ func TestFetchForksAuto_ZeroResults(t *testing.T) {
 	if report.RawRows != 0 || report.UniqueRows != 0 || report.DuplicateRows != 0 {
 		t.Errorf("report counts not zero: %+v", report)
 	}
-	if report.Pages != 1 {
-		t.Errorf("zero-results Pages = %d, want 1 (the GraphQL call still happened)", report.Pages)
+	if report.Pages != 0 {
+		t.Errorf("zero-results Pages = %d, want 0", report.Pages)
 	}
 }
 
@@ -201,6 +201,12 @@ func TestFetchForksAuto_AnonymousREST(t *testing.T) {
 	}
 	if report.Error != "" {
 		t.Errorf("report.Error = %q, want empty", report.Error)
+	}
+	if report.Pages != 1 {
+		t.Errorf("report.Pages = %d, want 1 non-empty REST callback", report.Pages)
+	}
+	if report.RawRows != 2 {
+		t.Errorf("report.RawRows = %d, want 2", report.RawRows)
 	}
 }
 
@@ -284,12 +290,18 @@ func TestFetchForksAuto_PartialGraphQL_RESTSuccess(t *testing.T) {
 	if report.DuplicateRows != 1 {
 		t.Errorf("report.DuplicateRows = %d, want 1", report.DuplicateRows)
 	}
+	if report.Pages != 2 {
+		t.Errorf("report.Pages = %d, want 2 (one GraphQL + one REST page)", report.Pages)
+	}
+	if report.RawRows != 3 {
+		t.Errorf("report.RawRows = %d, want 3 (one GraphQL + two REST rows)", report.RawRows)
+	}
 }
 
 // TestFetchForksAuto_PartialGraphQL_RESTFailed covers the case where GraphQL
-// fails AND the REST fallback also fails. The report must carry
-// Method="graphql+rest", Error="rest_fallback_failed", and the error
-// returned by FetchForksAuto is non-nil.
+// fails AND the REST fallback also fails. The report remains the partial
+// GraphQL snapshot: Method="graphql", FallbackChain=["graphql"], and
+// Error="rest_fallback_failed".
 func TestFetchForksAuto_PartialGraphQL_RESTFailed(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -304,14 +316,14 @@ func TestFetchForksAuto_PartialGraphQL_RESTFailed(t *testing.T) {
 	if report == nil {
 		t.Fatal("report is nil")
 	}
-	if report.Method != "graphql+rest" {
-		t.Errorf("report.Method = %q, want %q", report.Method, "graphql+rest")
+	if report.Method != "graphql" {
+		t.Errorf("report.Method = %q, want %q", report.Method, "graphql")
 	}
 	if report.Error != "rest_fallback_failed" {
 		t.Errorf("report.Error = %q, want %q", report.Error, "rest_fallback_failed")
 	}
-	if got := report.FallbackChain; len(got) != 2 || got[0] != "graphql" || got[1] != "rest" {
-		t.Errorf("report.FallbackChain = %v, want [graphql rest]", got)
+	if got := report.FallbackChain; len(got) != 1 || got[0] != "graphql" {
+		t.Errorf("report.FallbackChain = %v, want [graphql]", got)
 	}
 }
 

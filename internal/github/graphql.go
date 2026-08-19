@@ -186,6 +186,7 @@ func (c *Client) FetchForksGraphQL(ctx context.Context, owner, repo string, onPa
 	var allExtras []T1Extra
 	var cursor *string
 	page := 0
+	firstResponse := true
 	var repoForkCount, directTotalCount int
 	seen := make(map[int64]struct{}, 256)
 
@@ -217,14 +218,15 @@ func (c *Client) FetchForksGraphQL(ctx context.Context, owner, repo string, onPa
 			return allForks, allExtras, report, fmt.Errorf("GraphQL query: %w", err)
 		}
 
-		// Capture root repo metadata from the very first page so a later failure
-		// can still produce a report with the true totals.
-		if page == 0 {
+		// Capture root repo metadata from the first response so a later failure
+		// can still produce a report with the true totals. Page counts represent
+		// non-empty fork batches, not merely successful HTTP responses.
+		if firstResponse {
 			repoForkCount = resp.Repository.ForkCount
 			directTotalCount = resp.Repository.Forks.TotalCount
+			firstResponse = false
 		}
 
-		page++
 		var pageForks []ForkInfo
 		var pageExtras []T1Extra
 
@@ -238,8 +240,11 @@ func (c *Client) FetchForksGraphQL(ctx context.Context, owner, repo string, onPa
 		allForks = append(allForks, pageForks...)
 		allExtras = append(allExtras, pageExtras...)
 
-		if onPage != nil {
-			onPage(pageForks, pageExtras, page)
+		if len(pageForks) > 0 {
+			page++
+			if onPage != nil {
+				onPage(pageForks, pageExtras, page)
+			}
 		}
 
 		if !resp.Repository.Forks.PageInfo.HasNextPage {
@@ -454,12 +459,12 @@ func sortBranches(refs []gqlRefNode, defaultBranch string) []BranchInfo {
 }
 
 // FetchForksAuto uses GraphQL if authenticated, REST fallback otherwise.
-// Returns forks, T1Extras (nil for REST path), and an AcquisitionReport
-// summarizing the acquisition. The report is always populated; on a pure
-// REST success it reports Method="rest" with no chain, and on a
-// GraphQL→REST partial fallback it reports Method="graphql+rest" with the
-// error string set to "rest_fallback_failed" only when the REST fallback
-// itself also failed.
+// Returns forks, T1Extras (nil for REST path), and an AcquisitionReport.
+// Successful reports count raw identities and non-empty upstream batches. Pure
+// REST uses Method="rest"/["rest"]; a successful partial fallback uses
+// Method="graphql+rest"/["graphql","rest"]. If that REST fallback fails, the
+// returned report remains the partial GraphQL snapshot with
+// Method="graphql"/["graphql"] and Error="rest_fallback_failed".
 func (c *Client) FetchForksAuto(ctx context.Context, owner, repo string, onPage func(forks []ForkInfo, page int)) ([]ForkInfo, map[int64]T1Extra, *forge.AcquisitionReport, error) {
 	authMode := "authenticated"
 	if !c.IsAuthenticated() {
@@ -508,15 +513,25 @@ func (c *Client) FetchForksAuto(ctx context.Context, owner, repo string, onPage 
 					}
 				}
 			}
-			restForks, restErr := c.FetchForks(ctx, owner, repo, dedupOnPage)
-			if restErr != nil {
-				// REST fallback failed too: surface a partial report with the
-				// graphql chain and the failure marker, alongside the error.
-				if gqlReport != nil {
-					gqlReport.Method = "graphql+rest"
-					gqlReport.FallbackChain = []string{"graphql", "rest"}
-					gqlReport.Error = "rest_fallback_failed"
+			restPages, restRawRows := 0, 0
+			restOnPage := func(pageForks []ForkInfo, page int) {
+				if len(pageForks) > 0 {
+					restPages++
+					restRawRows += len(pageForks)
 				}
+				if dedupOnPage != nil {
+					dedupOnPage(pageForks, page)
+				}
+			}
+			restForks, restErr := c.FetchForks(ctx, owner, repo, restOnPage)
+			if restErr != nil {
+				// REST fallback failed too: retain the partial GraphQL snapshot.
+				if gqlReport == nil {
+					gqlReport = &forge.AcquisitionReport{Method: "graphql", Scope: "direct", APIVersion: defaultRESTVersion, AuthMode: authMode, FallbackChain: []string{"graphql"}, AuthScopeID: c.AuthScopeID(), CaptureAt: time.Now()}
+				}
+				gqlReport.Method = "graphql"
+				gqlReport.FallbackChain = []string{"graphql"}
+				gqlReport.Error = "rest_fallback_failed"
 				return nil, nil, gqlReport, fmt.Errorf("graphql failed (%v); rest fallback failed: %w", err, restErr)
 			}
 			// REST fallback succeeded: dedup the REST result against the GraphQL
@@ -543,11 +558,14 @@ func (c *Client) FetchForksAuto(ctx context.Context, owner, repo string, onPage 
 					FallbackChain: []string{"graphql", "rest"},
 					AuthScopeID:   c.AuthScopeID(),
 					CaptureAt:     time.Now(),
+					Pages:         restPages,
+					RawRows:       restRawRows,
 				}
 			} else {
 				report.Method = "graphql+rest"
 				report.FallbackChain = []string{"graphql", "rest"}
-				report.RawRows += len(restForks)
+				report.Pages += restPages
+				report.RawRows += restRawRows
 			}
 			seen := make(map[int64]struct{}, len(merged))
 			for _, f := range merged {
@@ -568,8 +586,19 @@ func (c *Client) FetchForksAuto(ctx context.Context, owner, repo string, onPage 
 		return forks, extrasMap, gqlReport, nil
 	}
 
-	// REST fallback — no extras
-	restForks, restErr := c.FetchForks(ctx, owner, repo, onPage)
+	// REST fallback — no extras. Count raw, non-empty REST batches before
+	// any outward callback so report accounting never depends on dedup/display.
+	restPages, restRawRows := 0, 0
+	restOnPage := func(pageForks []ForkInfo, page int) {
+		if len(pageForks) > 0 {
+			restPages++
+			restRawRows += len(pageForks)
+		}
+		if onPage != nil {
+			onPage(pageForks, page)
+		}
+	}
+	restForks, restErr := c.FetchForks(ctx, owner, repo, restOnPage)
 	if restErr != nil {
 		// Pure REST failure: still surface a report so callers know what we
 		// tried. Method stays "rest" and Error marks the failure.
@@ -595,8 +624,8 @@ func (c *Client) FetchForksAuto(ctx context.Context, owner, repo string, onPage 
 		APIVersion:    defaultRESTVersion,
 		AuthMode:      authMode,
 		FallbackChain: []string{"rest"},
-		Pages:         0, // REST page count is not exposed to this layer
-		RawRows:       len(restForks),
+		Pages:         restPages,
+		RawRows:       restRawRows,
 		UniqueRows:    countSeen(seen),
 		DuplicateRows: len(restForks) - countSeen(seen),
 		CaptureAt:     time.Now(),
