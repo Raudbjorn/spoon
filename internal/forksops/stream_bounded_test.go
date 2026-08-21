@@ -176,13 +176,13 @@ type fakeBoundedForge struct {
 
 type boundedNode struct {
 	ForkCount int
-	Forks    []string
+	Forks     []string
 }
 
 func (f *fakeBoundedForge) Auth(context.Context) (forge.AuthInfo, error) {
 	return forge.AuthInfo{Tier: forge.AuthCLI, Concurrency: 2}, nil
 }
-func (f *fakeBoundedForge) Headroom() float64                          { return 0.5 }
+func (f *fakeBoundedForge) Headroom() float64 { return 0.5 }
 func (f *fakeBoundedForge) Parent(context.Context, string, string) (forge.ParentData, error) {
 	return forge.ParentData{}, nil
 }

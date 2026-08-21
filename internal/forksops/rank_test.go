@@ -2,6 +2,7 @@ package forksops
 
 import (
 	"math"
+	"math/rand"
 	"testing"
 )
 
@@ -62,5 +63,217 @@ func TestRankSigma_MonotoneInConfidence(t *testing.T) {
 	}
 	if rankSigma(1.0) <= 0 {
 		t.Error("sigma must stay positive even at full confidence")
+	}
+}
+
+// --- PR1: P-score + Poisson-binomial rank distribution ---
+
+func randPool(rng *rand.Rand, n int) (mu, sigma []float64) {
+	mu = make([]float64, n)
+	sigma = make([]float64, n)
+	for i := range mu {
+		mu[i] = rng.Float64() * 60
+		sigma[i] = rankSigma([]float64{0.3, 0.7, 0.9}[rng.Intn(3)])
+	}
+	return mu, sigma
+}
+
+func TestWinProbs_Complementary(t *testing.T) {
+	rng := rand.New(rand.NewSource(1))
+	mu, sigma := randPool(rng, 12)
+	p := winProbs(mu, sigma)
+	for i := range p {
+		if p[i][i] != 0 {
+			t.Fatalf("p[%d][%d]=%v want 0", i, i, p[i][i])
+		}
+		for j := range p {
+			if i == j {
+				continue
+			}
+			if s := p[i][j] + p[j][i]; math.Abs(s-1) > 1e-12 {
+				t.Fatalf("p[%d][%d]+p[%d][%d]=%v want 1", i, j, j, i, s)
+			}
+		}
+	}
+}
+
+func TestExpectedRanksFrom_MatchesExpectedRanks(t *testing.T) {
+	rng := rand.New(rand.NewSource(2))
+	for trial := 0; trial < 50; trial++ {
+		mu, sigma := randPool(rng, 1+rng.Intn(40))
+		want := expectedRanks(mu, sigma)
+		got := expectedRanksFrom(winProbs(mu, sigma))
+		for i := range want {
+			if math.Abs(want[i]-got[i]) > 1e-9 {
+				t.Fatalf("trial %d i=%d: %v vs %v", trial, i, want[i], got[i])
+			}
+		}
+	}
+}
+
+func TestRankDistribution_SumsToOneAndMeanIsExpectedRank(t *testing.T) {
+	rng := rand.New(rand.NewSource(3))
+	for trial := 0; trial < 50; trial++ {
+		mu, sigma := randPool(rng, 1+rng.Intn(50))
+		p := winProbs(mu, sigma)
+		er := expectedRanksFrom(p)
+		for i := range mu {
+			d := rankDistribution(p, i)
+			if len(d) != len(mu) {
+				t.Fatalf("len(dist)=%d want %d", len(d), len(mu))
+			}
+			sum, mean := 0.0, 0.0
+			for k, pk := range d {
+				if pk < 0 {
+					t.Fatalf("negative probability %v at rank %d", pk, k+1)
+				}
+				sum += pk
+				mean += float64(k+1) * pk
+			}
+			if math.Abs(sum-1) > 1e-12 {
+				t.Fatalf("sum=%v want 1", sum)
+			}
+			if math.Abs(mean-er[i]) > 1e-9 {
+				t.Fatalf("DP mean %v != expected rank %v", mean, er[i])
+			}
+		}
+	}
+}
+
+func TestRankInterval_CoversMass(t *testing.T) {
+	// Point mass at rank 3 → [3,3]. Uniform over 4 → 95% interval is [1,4].
+	if lo, hi := rankInterval([]float64{0, 0, 1, 0}, 0.95); lo != 3 || hi != 3 {
+		t.Errorf("point mass: got [%d,%d] want [3,3]", lo, hi)
+	}
+	if lo, hi := rankInterval([]float64{0.25, 0.25, 0.25, 0.25}, 0.95); lo != 1 || hi != 4 {
+		t.Errorf("uniform: got [%d,%d] want [1,4]", lo, hi)
+	}
+	// Mass concentrated in the middle: tails of 1% each are excluded at 95%.
+	if lo, hi := rankInterval([]float64{0.01, 0.49, 0.49, 0.01}, 0.95); lo != 2 || hi != 3 {
+		t.Errorf("central: got [%d,%d] want [2,3]", lo, hi)
+	}
+}
+
+func TestRankInterval_ContainsRoundedExpectedRank(t *testing.T) {
+	rng := rand.New(rand.NewSource(4))
+	trials, hits := 0, 0
+	for trial := 0; trial < 100; trial++ {
+		mu, sigma := randPool(rng, 2+rng.Intn(30))
+		p := winProbs(mu, sigma)
+		er := expectedRanksFrom(p)
+		for i := range mu {
+			lo, hi := rankInterval(rankDistribution(p, i), 0.95)
+			r := int(math.Round(er[i]))
+			trials++
+			if r >= lo && r <= hi {
+				hits++
+			}
+		}
+	}
+	if float64(hits)/float64(trials) < 0.95 {
+		t.Errorf("rounded expected rank inside 95%% interval only %d/%d", hits, trials)
+	}
+}
+
+func TestComputeRankStats_PScoreIdentityAndBounds(t *testing.T) {
+	rng := rand.New(rand.NewSource(5))
+	for trial := 0; trial < 30; trial++ {
+		mu, sigma := randPool(rng, 2+rng.Intn(40))
+		n := len(mu)
+		k := 1 + rng.Intn(n)
+		rs := computeRankStats(mu, sigma, k)
+		if len(rs) != n {
+			t.Fatalf("len=%d want %d", len(rs), n)
+		}
+		for i, r := range rs {
+			wantP := (float64(n) - r.ExpectedRank) / float64(n-1)
+			if math.Abs(r.PScore-wantP) > 1e-12 {
+				t.Fatalf("PScore %v != (n-E)/(n-1)=%v", r.PScore, wantP)
+			}
+			if r.PScore < 0 || r.PScore > 1 || r.PTopK < 0 || r.PTopK > 1 || r.PFirst < 0 || r.PFirst > 1 {
+				t.Fatalf("probability out of [0,1]: %+v", r)
+			}
+			if r.Lo < 1 || r.Hi > n || r.Lo > r.Hi {
+				t.Fatalf("bad interval [%d,%d] n=%d", r.Lo, r.Hi, n)
+			}
+			if r.PTopK < r.PFirst-1e-12 {
+				t.Fatalf("P(rank<=k) %v < P(rank=1) %v", r.PTopK, r.PFirst)
+			}
+			_ = i
+		}
+		// k == n: every fork is certainly in the top n.
+		all := computeRankStats(mu, sigma, n)
+		for _, r := range all {
+			if math.Abs(r.PTopK-1) > 1e-9 {
+				t.Fatalf("PTopK with k=n is %v want 1", r.PTopK)
+			}
+		}
+	}
+}
+
+func TestComputeRankStats_DominantForkAndSingleton(t *testing.T) {
+	rs := computeRankStats([]float64{90, 10, 5}, []float64{1, 1, 1}, 1)
+	if rs[0].PScore < 0.999 || rs[0].PFirst < 0.999 || rs[0].Lo != 1 || rs[0].Hi != 1 {
+		t.Errorf("dominant fork: %+v", rs[0])
+	}
+	one := computeRankStats([]float64{5}, []float64{1}, 1)
+	if one[0].PScore != 1 || one[0].PTopK != 1 || one[0].PFirst != 1 || one[0].Lo != 1 || one[0].Hi != 1 {
+		t.Errorf("singleton: %+v", one[0])
+	}
+}
+
+// --- PR2: shortlist selection rule ---
+
+func TestSelectShortlist_ExpectedRuleIsTopKByExpectedRank(t *testing.T) {
+	rs := []RankStats{
+		{ExpectedRank: 2.0, PTopK: 0.9},
+		{ExpectedRank: 1.2, PTopK: 0.95},
+		{ExpectedRank: 3.5, PTopK: 0.2},
+		{ExpectedRank: 1.9, PTopK: 0.6},
+	}
+	got := selectShortlist(rs, ShortlistRuleExpected, 2)
+	if len(got) != 2 || got[0] != 1 || got[1] != 3 {
+		t.Errorf("expected rule: got %v want [1 3]", got)
+	}
+}
+
+func TestSelectShortlist_MembershipRuleSelectsByPTopKOrdersByExpectedRank(t *testing.T) {
+	// Fork 0 has the better expected rank but a lower membership probability
+	// than fork 2 (a wide-sigma fork can have a low E_rank yet low P(rank<=k)
+	// — or, as here, the reverse). Membership rule must pick 2 over 0.
+	rs := []RankStats{
+		{ExpectedRank: 1.8, PTopK: 0.55},
+		{ExpectedRank: 1.5, PTopK: 0.90},
+		{ExpectedRank: 2.2, PTopK: 0.70},
+		{ExpectedRank: 4.0, PTopK: 0.05},
+	}
+	got := selectShortlist(rs, ShortlistRuleMembership, 2)
+	if len(got) != 2 || got[0] != 1 || got[1] != 2 {
+		t.Errorf("membership rule: got %v want [1 2] (ordered by expected rank)", got)
+	}
+	if exp := selectShortlist(rs, ShortlistRuleExpected, 2); len(exp) != 2 || exp[0] != 1 || exp[1] != 0 {
+		t.Errorf("expected rule should differ here: got %v want [1 0]", exp)
+	}
+}
+
+func TestSelectShortlist_TiesBreakOnExpectedRankThenIndex(t *testing.T) {
+	rs := []RankStats{
+		{ExpectedRank: 2.0, PTopK: 0.5},
+		{ExpectedRank: 1.0, PTopK: 0.5},
+		{ExpectedRank: 1.0, PTopK: 0.5},
+	}
+	got := selectShortlist(rs, ShortlistRuleMembership, 2)
+	if len(got) != 2 || got[0] != 1 || got[1] != 2 {
+		t.Errorf("ties: got %v want [1 2]", got)
+	}
+}
+
+func TestSelectShortlist_KLargerThanPoolReturnsAllOrdered(t *testing.T) {
+	rs := []RankStats{{ExpectedRank: 2}, {ExpectedRank: 1}}
+	for _, rule := range []string{ShortlistRuleExpected, ShortlistRuleMembership} {
+		got := selectShortlist(rs, rule, 10)
+		if len(got) != 2 || got[0] != 1 || got[1] != 0 {
+			t.Errorf("%s: got %v want [1 0]", rule, got)
+		}
 	}
 }

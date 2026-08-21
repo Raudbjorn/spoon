@@ -149,7 +149,7 @@ Nouns and verbs:
             the fetch + policy gates run, but no GraphQL resolveReviewThread
             (or unresolveReviewThread) is issued. Output is marked dryRun=true.
   pr status <pr-ref>
-  forks list <repo|topic:NAME> [--tier 1|2|3] [--top N] [--budget N] [--shortlist N] [--bot-allowlist L] [--refresh|--no-cache] [--csv] [--forge github|gitlab] [--forge-host H]
+  forks list <repo|topic:NAME> [--tier 1|2|3] [--top N] [--budget N] [--shortlist N] [--shortlist-rule expected|membership] [--bot-allowlist L] [--refresh|--no-cache] [--csv] [--forge github|gitlab] [--forge-host H]
                     [--rpm N] [--files] [--commits] [--commit-files]
                     [--commit-file-budget N] [--web-diff]
                     [--no-cluster] [--cluster-top N] [--cluster-epsilon F] [--cluster-min-size N]
@@ -160,7 +160,12 @@ Nouns and verbs:
         --budget N caps the expensive per-fork compare/contributors calls to N.
         --top N instead deep-scans the top N by surface score.
         --shortlist N emits only the top N forks by Robbins expected rank (lower
-        = more likely best), adding expectedRank + rankConfidence to each.
+        = more likely best), adding expectedRank + rankConfidence plus the rank
+        summary pScore (= SUCRA, 1 best), pTopK (P(rank <= N)), pFirst
+        (P(rank = 1)) and rankLo/rankHi (95% rank interval) to each.
+        --shortlist-rule membership picks the N forks with the highest pTopK
+        (P(rank <= N)) instead of the lowest expected rank, then orders them
+        by expected rank; it only differs near the cut. Default: expected.
         Flags go AFTER 'forks list <repo>'. The fastembed embedder powers
         persistence + semantic indexing (and 'spn search') by default; it
         needs onnxruntime (set ONNX_PATH to libonnxruntime.so, run 'spoon

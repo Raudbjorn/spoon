@@ -60,6 +60,23 @@ Detection works on REST API paths. GitHub's GraphQL endpoint (used by the forks-
 
 `spn search "<query>"` is a different operation: vector retrieval over the persistent index built by `forks list`, rather than scoring an already-enumerated set. With a Voyage key it also reranks its candidates, adding `rerankScore`/`rerankModel` while `score` stays the retrieval cosine; `--voyage` ranks against the Voyage index instead of the fastembed one. `--voyage` or `--rerank` without a key exits 2 rather than silently answering from the other index.
 
+## Shortlist with rank uncertainty
+
+`spn forks list <repo> --shortlist N` buffers the run, ranks the strongest 200 forks by heat under a Gaussian utility model (mu = heat score, sigma from tier confidence), and emits the top N by Robbins expected rank. Each record gains:
+
+| Field | Meaning |
+|---|---|
+| `expectedRank` | Robbins expected rank over the pool; lower = more likely best |
+| `rankConfidence` | tier confidence (0.3 / 0.7 / 0.9) used for sigma |
+| `pScore` | `(n − expectedRank)/(n − 1)` = SUCRA; 1 = certainly best, 0.5 = coin flip |
+| `pTopK` | P(rank ≤ N): probability the fork genuinely belongs in the shortlist |
+| `pFirst` | P(rank = 1) |
+| `rankLo` / `rankHi` | 95% central rank interval (1-based) |
+
+Read `pTopK` before trusting position: a tier-1 (unenriched) fork has wide sigma, so it can sit at rank 3 with `pTopK` 0.4. All probabilities are relative to the 200-fork pool, not the whole network.
+
+`--shortlist-rule membership` selects the N forks by `pTopK` instead of expected rank (then orders by expected rank). Use it when the shortlist is a decision set ("which N do I open?"); keep the default `expected` when you want the full-ordering view.
+
 ## Common Mistakes
 
 | Mistake | What to do instead |
