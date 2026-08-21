@@ -23,6 +23,18 @@ type RepoInfo struct {
 	Fork          bool     `json:"fork"`
 
 	Owner OwnerInfo `json:"owner"`
+	// Parent is the immediate forked-from repo. Nil when this repo is not a fork
+	// or the API omitted the object.
+	Parent *RepoRef `json:"parent,omitempty"`
+	// Source is the ultimate network root. Nil when this repo is not a fork
+	// or the API omitted the object.
+	Source *RepoRef `json:"source,omitempty"`
+}
+
+// RepoRef is the nested repository object on GET /repos parent/source.
+type RepoRef struct {
+	FullName      string `json:"full_name"`
+	DefaultBranch string `json:"default_branch"`
 }
 
 // ForkInfo represents a fork from the forks list endpoint.

@@ -77,6 +77,11 @@ type ParentData struct {
 	URL           string
 	Language      string
 	Topics        []string
+	// SourceFullPath is the network-root owner/repo Compare must use when the
+	// named seed is a mid-chain fork. Empty means “same as FullName / unknown”.
+	SourceFullPath string
+	// SourceDefaultBranch is that root’s default branch. Empty means use DefaultBranch.
+	SourceDefaultBranch string
 }
 
 // T1Data is the surface data available immediately after fork discovery,
