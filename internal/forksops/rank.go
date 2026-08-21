@@ -183,7 +183,31 @@ type RankReport struct {
 	ShortlistRule string  `json:"shortlistRule"` // expected | membership
 	POTH          float64 `json:"poth"`          // hierarchy precision over the pool, [0,1]
 	CPOTHk        float64 `json:"cpothK"`        // POTH recomputed within the shortlist
+	// Empirical-Bayes fields; zero/empty unless Options.EB.
+	EBRegime   string  `json:"ebRegime,omitempty"`   // insufficient | pooled | heterogeneous | clamped
+	EBPool     int     `json:"ebPool,omitempty"`     // forks entering the fit (heat > 0)
+	TauHat     float64 `json:"tauHat,omitempty"`     // between-fork sd estimate
+	EBMean     float64 `json:"ebMean,omitempty"`     // pooled mean m
+	PriorScale float64 `json:"priorScale,omitempty"` // half-normal scale on τ actually used
+	DBarOverK  float64 `json:"dBarOverK,omitempty"`  // posterior-mean deviance per fork, ≈ 1 when the model fits
+	PD         float64 `json:"pD,omitempty"`         // effective parameters = Σ leverage
 }
+
+// EBStats is the per-fork empirical-Bayes summary (Result.EB), set only for
+// forks with heat > 0 when Options.EB is on and the fit applied.
+type EBStats struct {
+	Theta     float64 // shrunken score, replaces heat as mu in the ranking
+	PostSigma float64 // posterior sd, replaces the tier sigma
+	Residual  float64 // standardised residual (y − θ̂)/σ at the fit
+	Leverage  float64 // B = τ²/(τ²+σ²); Σ = pD
+	// Flag marks residual² + leverage > ebFlagContour: a fork the model does
+	// not explain (TSD2 leverage-plot rule, contour c = 3).
+	Flag bool
+}
+
+// ebFlagContour is the TSD2 leverage-plot contour outside which a point is
+// flagged as poorly fit / over-influential.
+const ebFlagContour = 3.0
 
 // rankIntervalLevel is the credible level of RankStats.Lo/Hi.
 const rankIntervalLevel = 0.95
