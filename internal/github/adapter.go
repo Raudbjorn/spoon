@@ -201,20 +201,12 @@ func (p *GHProvider) ListForksBounded(ctx context.Context, owner, repo string, o
 			MaxElapsed: opts.MaxElapsed,
 		}
 		forks, extrasMap, report, err := p.client.FetchForksBounded(ctx, owner, repo, nil, boundedOpts)
-		if err != nil {
-			if report != nil {
-				select {
-				case out <- forge.ForkMsg{Report: report}:
-				case <-ctx.Done():
-					return
-				}
-			}
-			select {
-			case out <- forge.ForkMsg{Err: err}:
-			case <-ctx.Done():
-			}
-			return
-		}
+		// Emit partial forks first even on error. FetchForksBounded returns
+		// whatever it had already accepted when an in-flight GraphQL call
+		// fails; discarding that inventory here would mean forksops.Stream
+		// sees an empty result set and exits with success while the upstream
+		// failure goes unreported. Stream filters ForkMsg.Err after consuming
+		// Fork and Report, so the right order is forks -> report -> err.
 		for _, f := range forks {
 			var extra *T1Extra
 			if extrasMap != nil {
@@ -233,6 +225,14 @@ func (p *GHProvider) ListForksBounded(ctx context.Context, owner, repo string, o
 			select {
 			case out <- forge.ForkMsg{Report: report}:
 			case <-ctx.Done():
+				return
+			}
+		}
+		if err != nil {
+			select {
+			case out <- forge.ForkMsg{Err: err}:
+			case <-ctx.Done():
+				return
 			}
 		}
 	}()

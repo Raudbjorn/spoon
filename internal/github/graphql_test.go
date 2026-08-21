@@ -12,6 +12,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	ghAPI "github.com/cli/go-gh/v2/pkg/api"
 )
@@ -840,5 +841,130 @@ func TestFetchForksBounded_ReportsCompleteCoverage(t *testing.T) {
 				t.Errorf("Error = %q, want graphql_failed", report.Error)
 			}
 		})
+	}
+}
+
+func TestFetchForksBounded_ContinuesQueuedBranchesAfterMaxDepth(t *testing.T) {
+	// Regression for the P1 review: setting cap = CapReasonMaxDepth inside
+	// the fork-processing loop terminates the outer loop prematurely.
+	// The fix records depthCap without breaking the queue drain.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/graphql") {
+			http.NotFound(w, r)
+			return
+		}
+		// Root has two depth-1 forks; alice/alpha has forkCount=1 so its
+		// (would-be-depth-2) children would hit the boundary. bob/beta has
+		// forkCount=0 and is a leaf. Both must be visited.
+		_, _ = w.Write([]byte(`{"data":{"r0":{"forkCount":3,"forks":{"totalCount":2,"nodes":[` +
+			`{"databaseId":4001,"nameWithOwner":"alice/alpha","name":"alpha","forkCount":1,"parent":{"nameWithOwner":"octo/root","databaseId":4000},"pushedAt":"2025-08-01T00:00:00Z"},` +
+			`{"databaseId":4002,"nameWithOwner":"bob/beta","name":"beta","forkCount":0,"parent":{"nameWithOwner":"octo/root","databaseId":4000},"pushedAt":"2025-08-01T00:00:00Z"}` +
+			`]}},"rateLimit":{"limit":5000,"remaining":4999,"used":1,"cost":1}}}`))
+	}))
+	defer srv.Close()
+	forks, _, report, err := newTestClientGQL(t, srv).FetchForksBounded(
+		context.Background(), "octo", "root", nil,
+		BoundedOptions{MaxDepth: 1, MaxNodes: 50, MaxPages: 20},
+	)
+	if err != nil {
+		t.Fatalf("FetchForksBounded: %v", err)
+	}
+	if len(forks) != 2 {
+		t.Errorf("forks = %d, want 2 (alpha + beta)", len(forks))
+	}
+	if report == nil {
+		t.Fatal("report is nil")
+	}
+	if report.CapReason != "max_depth" {
+		t.Errorf("CapReason = %q, want max_depth", report.CapReason)
+	}
+}
+
+
+func TestFetchForksBounded_BoundedContextCancelsMidCall(t *testing.T) {
+	// Regression for the P2 review: the elapsed limit was checked only
+	// between batches; a slow request (with retries) could blow past
+	// MaxElapsed. The fix derives a per-call deadline from MaxElapsed so
+	// in-flight work is bounded too. This test sets MaxElapsed to 50ms
+	// and makes the server slow (300ms); the deadline cancel should fire
+	// inside doGraphQLWithRetry before the full HTTP timeout.
+	start := time.Now()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(300 * time.Millisecond)
+		_, _ = w.Write([]byte(`{"data":{"r0":{"forkCount":1,"forks":{"totalCount":1,"nodes":[{"databaseId":4001,"nameWithOwner":"a/b","name":"b","forkCount":0,"parent":{"nameWithOwner":"octo/r","databaseId":4000},"pushedAt":"2025-08-01T00:00:00Z"}]}}},"rateLimit":{"limit":5000,"remaining":4999,"used":1,"cost":1}}`))
+	}))
+	defer srv.Close()
+	forks, _, report, err := newTestClientGQL(t, srv).FetchForksBounded(
+		context.Background(), "octo", "r", nil,
+		BoundedOptions{MaxDepth: 3, MaxNodes: 50, MaxPages: 20, MaxElapsed: 50 * time.Millisecond},
+	)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatalf("expected deadline error, got nil (forks=%d)", len(forks))
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("elapsed = %v, want < 2s", elapsed)
+	}
+	if report == nil || report.Error != "graphql_failed" {
+		t.Errorf("report.Error = %q, want graphql_failed", report.Error)
+	}
+}
+
+func TestFetchForksBounded_PropagatesPartialForksOnError(t *testing.T) {
+	// Regression for the P1 review (adapter side): when an in-flight
+	// GraphQL batch fails after earlier batches succeeded, the partial
+	// fork list must not be discarded.
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			// First batch: alpha has forkCount=1 (queues a second batch),
+			// beta has forkCount=0 (leaf).
+			_, _ = w.Write([]byte(`{"data":{"r0":{"forkCount":3,"forks":{"totalCount":2,"nodes":[{"databaseId":4001,"nameWithOwner":"alice/alpha","name":"alpha","forkCount":1,"parent":{"nameWithOwner":"octo/r","databaseId":4000},"pushedAt":"2025-08-01T00:00:00Z"},{"databaseId":4002,"nameWithOwner":"bob/beta","name":"beta","forkCount":0,"parent":{"nameWithOwner":"octo/r","databaseId":4000},"pushedAt":"2025-08-01T00:00:00Z"}]}}},"rateLimit":{"limit":5000,"remaining":4999,"used":1,"cost":1}}`))
+			return
+		}
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+	forks, _, report, err := newTestClientGQL(t, srv).FetchForksBounded(
+		context.Background(), "octo", "r", nil,
+		BoundedOptions{MaxDepth: 3, MaxNodes: 50, MaxPages: 20},
+	)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if len(forks) != 2 {
+		t.Errorf("forks = %d, want 2 (partial inventory must not be discarded)", len(forks))
+	}
+	if report == nil || report.Error != "graphql_failed" {
+		t.Errorf("report.Error = %q, want graphql_failed", report.Error)
+	}
+}
+
+func TestFetchForksBounded_DirectTotalCountIsRootForksTotalCount(t *testing.T) {
+	// Regression for the P2 review: DirectTotalCount was len(seen), the
+	// whole-network discovered count, instead of the depth-zero alias's
+	// forks.totalCount. Capture forks.totalCount from the depth-0 alias
+	// and use it as DirectTotalCount for every fork's T1Extra.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":{"r0":{"forkCount":128,"forks":{"totalCount":118,"nodes":[{"databaseId":5001,"nameWithOwner":"a/b","name":"b","forkCount":0,"parent":{"nameWithOwner":"octo/r","databaseId":4000},"pushedAt":"2025-08-01T00:00:00Z"}]}}},"rateLimit":{"limit":5000,"remaining":4999,"used":1,"cost":1}}`))
+	}))
+	defer srv.Close()
+	forks, extras, _, err := newTestClientGQL(t, srv).FetchForksBounded(
+		context.Background(), "octo", "r", nil,
+		BoundedOptions{MaxDepth: 3, MaxNodes: 50, MaxPages: 20},
+	)
+	if err != nil {
+		t.Fatalf("FetchForksBounded: %v", err)
+	}
+	if len(forks) != 1 {
+		t.Fatalf("forks = %d, want 1", len(forks))
+	}
+	extra := extras[forks[0].ID]
+	if extra.DirectTotalCount != 118 {
+		t.Errorf("DirectTotalCount = %d, want 118 (root forks.totalCount)", extra.DirectTotalCount)
+	}
+	if extra.WholeNetworkForkCount != 128 {
+		t.Errorf("WholeNetworkForkCount = %d, want 128 (root forkCount)", extra.WholeNetworkForkCount)
 	}
 }

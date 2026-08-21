@@ -322,6 +322,21 @@ func (c CapReason) String() string {
 	}
 }
 
+// capReason returns the report's CapReason, preferring the explicit outer
+// cap when set and falling back to the depth-boundary flag. depthCap fires
+// inside the fork-processing loop while the queue may still hold shallower
+// entries, so it must NOT terminate the outer loop (that would truncate the
+// network prematurely); it is surfaced here for the report only.
+func capReason(outer CapReason, depthCap bool) string {
+	if outer != CapReasonNone {
+		return outer.String()
+	}
+	if depthCap {
+		return CapReasonMaxDepth.String()
+	}
+	return ""
+}
+
 func (c *Client) FetchForksBounded(ctx context.Context, owner, repo string, onBatch func(forks []ForkInfo, extras []T1Extra, depth int), opts BoundedOptions) ([]ForkInfo, map[int64]T1Extra, *forge.AcquisitionReport, error) {
 	if !c.HasGraphQL() {
 		return nil, nil, nil, fmt.Errorf("GraphQL client not available")
@@ -354,8 +369,24 @@ func (c *Client) FetchForksBounded(ctx context.Context, owner, repo string, onBa
 	var allExtras []T1Extra
 	totalPages := 0
 	cap := CapReasonNone
+	// depthCap records that the traversal refused to queue children of a
+	// fork at the MaxDepth boundary. It is independent of `cap` so the
+	// outer loop can continue draining shallower queue entries instead of
+	// terminating after the current batch.
+	var depthCap bool
 	rootForkCount := 0
+	// rootDirectTotal is the root repo's forks.totalCount (direct child count),
+	// captured from the depth-zero alias's first response. It is the value
+	// every fork's T1Extra.DirectTotalCount must carry, independent of how
+	// many forks the traversal actually discovered (which can be capped by
+	// MaxNodes / MaxPages / MaxDepth / MaxElapsed).
+	rootDirectTotal := 0
 	start := time.Now()
+	// deadline is the absolute wall-clock instant at which MaxElapsed is hit.
+	// The outer loop and every in-flight GraphQL call derive their per-call
+	// context from this so a slow request (with retries) cannot blow past
+	// the user's MaxElapsed.
+	deadline := start.Add(opts.MaxElapsed)
 
 	makeReport := func(errCode string) *forge.AcquisitionReport {
 		unique := len(seen)
@@ -374,7 +405,7 @@ func (c *Client) FetchForksBounded(ctx context.Context, owner, repo string, onBa
 			VisitedNodes:  unique,
 			MaxNodes:      opts.MaxNodes,
 			MaxDepth:      opts.MaxDepth,
-			CapReason:     cap.String(),
+			CapReason:     capReason(cap, depthCap),
 			Unresolved:    max(rootForkCount-unique, 0),
 			Error:         errCode,
 		}
@@ -407,8 +438,15 @@ func (c *Client) FetchForksBounded(ctx context.Context, owner, repo string, onBa
 
 		query := buildBatchedForksQuery(aliases)
 		var resp gqlAliasBatch
-		if err := c.doGraphQLWithRetry(ctx, query, vars, &resp); err != nil {
-			return allForks, nil, makeReport("graphql_failed"), fmt.Errorf("graphql query: %w", err)
+		// Pass a context bounded by the traversal deadline so an in-flight
+		// GraphQL request that times out (and retries) cannot run past
+		// MaxElapsed. Without this, a 60-second HTTP timeout retried up to
+		// three times can blow a 30-second user limit by ~3x.
+		callCtx, cancel := context.WithDeadline(ctx, deadline)
+		callErr := c.doGraphQLWithRetry(callCtx, query, vars, &resp)
+		cancel()
+		if callErr != nil {
+			return allForks, nil, makeReport("graphql_failed"), fmt.Errorf("graphql query: %w", callErr)
 		}
 
 		for j, alias := range aliases {
@@ -429,6 +467,7 @@ func (c *Client) FetchForksBounded(ctx context.Context, owner, repo string, onBa
 			depth := batch[j].depth
 			if depth == 0 {
 				rootForkCount = node.ForkCount
+				rootDirectTotal = node.Forks.TotalCount
 			}
 			var pageForks []ForkInfo
 			var pageExtras []T1Extra
@@ -454,7 +493,12 @@ func (c *Client) FetchForksBounded(ctx context.Context, owner, repo string, onBa
 						}
 					}
 				} else if f.ForkCount > 0 {
-					cap = CapReasonMaxDepth
+					// depth+1 >= opts.MaxDepth: do not queue this fork's children,
+					// but DO NOT terminate the outer loop. The queue may still
+					// hold entries at shallower depths whose descendants are
+					// within MaxDepth. Flag the depth truncation in the report
+					// without stopping work that is already enqueued.
+					depthCap = true
 				}
 			}
 			if onBatch != nil && len(pageForks) > 0 {
@@ -466,8 +510,12 @@ func (c *Client) FetchForksBounded(ctx context.Context, owner, repo string, onBa
 	report := makeReport("")
 	allExtras = annotateDepths(allForks, allExtras, owner+"/"+repo)
 	for i := range allExtras {
-		allExtras[i].DirectTotalCount = len(seen)
+		// WholeNetworkForkCount is the root repo's forkCount (GraphQL
+		// repository.forkCount) -- the whole-network total. DirectTotalCount
+		// is the root repo's forks.totalCount -- the number of direct children.
+		// They are independent GraphQL fields and must not be conflated.
 		allExtras[i].WholeNetworkForkCount = rootForkCount
+		allExtras[i].DirectTotalCount = rootDirectTotal
 	}
 	extrasMap := make(map[int64]T1Extra, len(allForks))
 	for i, f := range allForks {
