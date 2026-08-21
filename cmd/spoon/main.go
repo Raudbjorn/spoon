@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -229,6 +230,22 @@ func main() {
 	// unusable store means silently uncached, unpersisted sessions — fail
 	// loudly instead.
 	db, err := store.OpenDefault()
+	if err != nil && errors.Is(err, store.ErrSchemaNewerThanSupported) && store.SupportsDowngrade() {
+		if path, perr := store.DefaultPath(); perr == nil {
+			fmt.Fprintf(os.Stderr, "spoon store at %s is one schema step ahead of this binary; downgrading in place (newer columns preserved in repos_v4backup)...\n", path)
+		if raw, oerr := store.OpenForDowngrade(path); oerr == nil {
+				if derr := raw.Downgrade(context.Background()); derr == nil {
+					raw.Close()
+					db, err = store.OpenDefault()
+				} else {
+					raw.Close()
+					err = derr
+				}
+			} else {
+				err = oerr
+			}
+		}
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: cannot open spoon store: %v\n", err)
 		os.Exit(1)
