@@ -71,6 +71,14 @@ type ForkRecord struct {
 	Heat                                             float64
 	Tier                                             int
 	UpdatedAt                                        time.Time
+	// MergeCommits and MergeCommitTruncated mirror the corresponding
+	// derived T1 fields. Persisted on the forks row alongside the
+// relational merge_commit_history so the LIN column renders without a
+// recompute on the next run. LinearHistory itself is not stored here:
+	// it is derived from MergeCommits (linear ⇔ MergeCommits == 0) on
+// read, and from the live provider sweep otherwise.
+	MergeCommits        int
+	MergeCommitTruncated bool
 }
 
 type CommitRecord struct {
@@ -177,7 +185,15 @@ type CachedFork struct {
 	T2          *forge.T2Data
 	T2FetchedAt time.Time
 	Heat        float64
+
 	Tier        int
+	// MergeCommits and MergeCommitTruncated are the linear-history
+	// scalars lifted from the forks row so the TUI can read the value
+	// with a column lookup rather than a t1_json unmarshal. Empty on
+	// a pre-v5 row; compare scripts that need an authoritative
+	// signal must read t1_json instead.
+	MergeCommits        int
+	MergeCommitTruncated bool
 }
 
 type PendingDocument struct {
@@ -661,6 +677,7 @@ var migrations = []struct {
 	{version: 2, stmts: schemaV2},
 	{version: 3, stmts: schemaV3},
 	{version: 4, stmts: schemaV4},
+	{version: 5, stmts: schemaV5},
 }
 
 // createdTable and addedColumn match the exact shapes every step in the
@@ -983,13 +1000,20 @@ func upsertSnapshotTx(ctx context.Context, tx *wtx, snap Snapshot) error {
 			return fmt.Errorf("update repo scope: %w", err)
 		}
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO forks(fork_key,repo_key,forge_id,owner,name,url,description,language,topics_json,stars,pushed_at,heat,tier,updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(fork_key) DO UPDATE SET owner=excluded.owner,name=excluded.name,url=excluded.url,description=excluded.description,language=excluded.language,topics_json=excluded.topics_json,stars=excluded.stars,pushed_at=excluded.pushed_at,heat=excluded.heat,tier=excluded.tier,updated_at=excluded.updated_at`,
-		forkKey, repoKey, snap.Fork.ForgeID, snap.Fork.Owner, snap.Fork.Name, snap.Fork.URL, snap.Fork.Description, snap.Fork.Language, string(topicsJSON), snap.Fork.Stars, ts(snap.Fork.PushedAt), snap.Fork.Heat, snap.Fork.Tier, ts(snap.Fork.UpdatedAt)); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO forks(fork_key,repo_key,forge_id,owner,name,url,description,language,topics_json,stars,pushed_at,heat,tier,updated_at,merge_commits,merge_commit_truncated)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(fork_key) DO UPDATE SET owner=excluded.owner,name=excluded.name,url=excluded.url,description=excluded.description,language=excluded.language,topics_json=excluded.topics_json,stars=excluded.stars,pushed_at=excluded.pushed_at,heat=excluded.heat,tier=excluded.tier,updated_at=excluded.updated_at,merge_commits=excluded.merge_commits,merge_commit_truncated=excluded.merge_commit_truncated`,
+		forkKey, repoKey, snap.Fork.ForgeID, snap.Fork.Owner, snap.Fork.Name, snap.Fork.URL, snap.Fork.Description, snap.Fork.Language, string(topicsJSON), snap.Fork.Stars, ts(snap.Fork.PushedAt), snap.Fork.Heat, snap.Fork.Tier, ts(snap.Fork.UpdatedAt), snap.Fork.MergeCommits, boolToInt(snap.Fork.MergeCommitTruncated)); err != nil {
 		return fmt.Errorf("upsert fork: %w", err)
 	}
 	if snap.T1 != nil {
-		t1JSON, err := json.Marshal(snap.T1)
+		// Mirror the plan: raw MergeCommitHistory vector lives only in the
+		// relational merge_commit_history table. The scalar MergeCommits and
+		// MergeCommitTruncated still ride into t1_json, downstream tools
+		// use the JSON for the boolean, and the relational table for the
+		// per-commit signal without having to parse JSON.
+		t1Copy := *snap.T1
+		t1Copy.MergeCommitHistory = nil
+		t1JSON, err := json.Marshal(t1Copy)
 		if err != nil {
 			return err
 		}
@@ -1038,6 +1062,25 @@ func upsertSnapshotTx(ctx context.Context, tx *wtx, snap Snapshot) error {
 			}
 		}
 	}
+
+// Persist the relational merge_commit_history rows from the T1 vector. The
+// scalar MergeCommits count and the truncation flag ride into the forks row
+// via the upsert above; the per-commit parents vector rides here so
+// downstream tools can read it without parsing t1_json. A fork with no
+// vector (snap.T1 nil, or T1.MergeCommitHistory nil) means unknown and
+// must leave prior rows in place.
+if snap.T1 != nil && snap.T1.MergeCommitHistory != nil {
+	if _, err = tx.ExecContext(ctx, `DELETE FROM merge_commit_history WHERE fork_key=?`, forkKey); err != nil {
+		return fmt.Errorf("clear merge_commit_history: %w", err)
+	}
+	for i, p := range snap.T1.MergeCommitHistory {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO merge_commit_history(fork_key,idx,parents) VALUES(?,?,?)`,
+			forkKey, i, p); err != nil {
+			return fmt.Errorf("insert merge_commit_history: %w", err)
+		}
+	}
+}
+
 	if snap.Document.DocumentID != "" {
 		if _, err = tx.ExecContext(ctx, `INSERT INTO documents(document_id,fork_key,content_hash,body,updated_at) VALUES(?,?,?,?,?)
 			ON CONFLICT(document_id) DO UPDATE SET content_hash=excluded.content_hash,body=excluded.body,updated_at=excluded.updated_at`, snap.Document.DocumentID, forkKey, snap.Document.ContentHash, snap.Document.Body, ts(snap.Document.UpdatedAt)); err != nil {
@@ -1057,6 +1100,13 @@ func SnapshotFromForge(repo RepoRecord, t1 forge.T1Data, t2 *forge.T2Data, heat 
 			ForgeID: t1.ID, Owner: t1.Owner, Name: t1.Name, URL: t1.URL,
 			Description: t1.Description, Language: t1.Language, Topics: t1.Topics,
 			Stars: t1.Stars, PushedAt: t1.PushedAt, Heat: heat, Tier: tier, UpdatedAt: now,
+			// Linear-history scalars lift off the T1 fork so the column in
+			// the forks-row reads the right value without a t1_json
+			// unmarshal on every cache hit. The raw vector rides via the
+			// relational table, written from snap.T1.MergeCommitHistory
+			// in upsertSnapshotTx above.
+			MergeCommits:         t1.MergeCommits,
+			MergeCommitTruncated: t1.MergeCommitTruncated,
 		},
 		T1: &t1,
 	}
@@ -1166,20 +1216,22 @@ func (s *Store) LoadRepoSnapshot(ctx context.Context, provider, host, owner, nam
 	snap.APIVersion = apiVersion
 	snap.AcquisitionMethod = acquisitionMethod
 	snap.AuthScopeID = authScopeID
-
-	rows, err := s.db.QueryContext(ctx, `SELECT fork_key, t1_json, t2_json, t2_fetched_at, heat, tier FROM forks WHERE repo_key=? AND t1_json<>'' ORDER BY fork_key`, repoKey)
+	rows, err := s.db.QueryContext(ctx, `SELECT fork_key, t1_json, t2_json, t2_fetched_at, heat, tier, merge_commits, merge_commit_truncated FROM forks WHERE repo_key=? AND t1_json<>'' ORDER BY fork_key`, repoKey)
 	if err != nil {
 		return nil, fmt.Errorf("load forks for %s: %w", repoKey, err)
 	}
 	defer rows.Close()
 	type pendingT2 struct{ idx int }
 	byKey := map[string]pendingT2{}
+	var forkKeyByIndex []string
 	for rows.Next() {
 		var forkKey, t1JSON, t2JSON, fetchedAt string
 		var cf CachedFork
-		if err := rows.Scan(&forkKey, &t1JSON, &t2JSON, &fetchedAt, &cf.Heat, &cf.Tier); err != nil {
+		var truncated int
+		if err := rows.Scan(&forkKey, &t1JSON, &t2JSON, &fetchedAt, &cf.Heat, &cf.Tier, &cf.MergeCommits, &truncated); err != nil {
 			return nil, err
 		}
+		cf.MergeCommitTruncated = truncated != 0
 		if err := json.Unmarshal([]byte(t1JSON), &cf.T1); err != nil {
 			return nil, fmt.Errorf("decode fork %s: %w", forkKey, err)
 		}
@@ -1192,11 +1244,17 @@ func (s *Store) LoadRepoSnapshot(ctx context.Context, provider, host, owner, nam
 			byKey[forkKey] = pendingT2{idx: len(snap.Forks)}
 		}
 		snap.Forks = append(snap.Forks, cf)
+		forkKeyByIndex = append(forkKeyByIndex, forkKey)
+
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	snap.byID = make(map[string]int, len(snap.Forks))
+	if err := s.loadMergeCommitHistory(ctx, repoKey, forkKeyByIndex, &snap.Forks); err != nil {
+		return nil, err
+	}
+
 	for i := range snap.Forks {
 		snap.byID[snap.Forks[i].T1.ID] = i
 	}
@@ -1585,11 +1643,57 @@ func ValidateVector(values []float32, dim int) error {
 	return nil
 }
 
+
+// loadMergeCommitHistory reads the relational merge_commit_history table and
+// assigns each fork's parents-totalCount vector onto snap.Forks[i].T1.
+// MergeCommitHistory. The lookup is by fork_key (the forks row primary
+// key), so callers must pass the parallel fork_key slice built alongside
+// snap.Forks during the SELECT.
+func (s *Store) loadMergeCommitHistory(ctx context.Context, repoKey string, forkKeyByIndex []string, forks *[]CachedFork) error {
+	if len(forkKeyByIndex) == 0 {
+		return nil
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT fork_key, idx, parents FROM merge_commit_history
+		WHERE fork_key IN (SELECT fork_key FROM forks WHERE repo_key=?) ORDER BY fork_key, idx`, repoKey)
+	if err != nil {
+		return fmt.Errorf("query merge_commit_history: %w", err)
+	}
+	defer rows.Close()
+	byKey := map[string][]int{}
+	for rows.Next() {
+		var forkKey string
+		var idx, parents int
+		if err := rows.Scan(&forkKey, &idx, &parents); err != nil {
+			return fmt.Errorf("scan merge_commit_history: %w", err)
+		}
+		byKey[forkKey] = append(byKey[forkKey], parents)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate merge_commit_history: %w", err)
+	}
+	for i, key := range forkKeyByIndex {
+		if v, ok := byKey[key]; ok {
+			(*forks)[i].T1.MergeCommitHistory = v
+		}
+	}
+	return nil
+}
+
 func ts(t time.Time) string {
 	if t.IsZero() {
 		return time.Unix(0, 0).UTC().Format(time.RFC3339Nano)
 	}
 	return t.UTC().Format(time.RFC3339Nano)
+}
+
+// boolToInt encodes a Go bool for storage in an INTEGER column. Mirrors
+// the implicit Go bool-as-int convention already used elsewhere in the
+// schema; one helper keeps it consistent.
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 var schemaV1 = []string{
@@ -1623,6 +1727,19 @@ var schemaV4 = []string{
 	`ALTER TABLE repos ADD COLUMN api_version TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE repos ADD COLUMN acquisition_method TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE repos ADD COLUMN auth_scope_id TEXT NOT NULL DEFAULT ''`,
+}
+
+// schemaV5 adds the linear-history signal: two scalar columns on the forks
+// row (merge_commits, merge_commit_truncated) and a relational table for the
+// raw parents.totalCount vector per fork. The scalar columns drive the LIN
+// column in the TUI and the boolean field in the JSON export; the relational
+// table lets downstream tools query the per-commit history without parsing
+// the cached t1_json.
+var schemaV5 = []string{
+	`ALTER TABLE forks ADD COLUMN merge_commits INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE forks ADD COLUMN merge_commit_truncated INTEGER NOT NULL DEFAULT 0`,
+	`CREATE TABLE IF NOT EXISTS merge_commit_history (fork_key TEXT NOT NULL REFERENCES forks(fork_key) ON DELETE CASCADE, idx INTEGER NOT NULL, parents INTEGER NOT NULL, PRIMARY KEY(fork_key, idx))`,
+	`CREATE INDEX IF NOT EXISTS merge_commit_history_fork_idx ON merge_commit_history(fork_key)`,
 }
 
 // downgradeStep rolls a store that is one schema step ahead of

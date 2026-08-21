@@ -1209,11 +1209,27 @@ func forkToJSONDetailed(r forksops.Result, details detailOptions) map[string]any
 			"depthFromRoot": r.Lineage.DepthFromRoot,
 		}
 	}
-	// Coverage reports how completely the fork list covers the network.
-	// Emit when either count is known (non-zero from GraphQL); a known
-	// zero unresolved gap (e.g. direct=whole=5) is still emitted. The
-	// REST path leaves both at zero and produces no entry.
+
+
+	// Linear-history fields. linearHistory itself stays nil when the
+	// provider never computed it (the three-state semantics matter for
+	// downstream tools). The truncate flag is emitted unconditionally
+	// so a downstream consumer can always read "we tried, here's what we
+	// got" with a deterministic false default. The scalar count and the
+	// raw vector ride only when known.
+	if r.Fork.LinearHistory != nil {
+		out["linearHistory"] = *r.Fork.LinearHistory
+		out["mergeCommits"] = r.Fork.MergeCommits
+		if r.Fork.MergeCommitHistory != nil {
+			out["mergeCommitHistory"] = r.Fork.MergeCommitHistory
+		}
+	}
+	out["mergeCommitTruncated"] = r.Fork.MergeCommitTruncated
+
 	if r.Coverage.DirectTotalCount > 0 || r.Coverage.WholeNetworkForkCount > 0 {
+		// Emit when either count is known (non-zero from GraphQL); a known
+		// zero unresolved gap (e.g. direct=whole=5) is still emitted. The
+		// REST path leaves both at zero and produces no entry.
 		out["coverage"] = map[string]any{
 			"directTotalCount":       r.Coverage.DirectTotalCount,
 			"wholeNetworkForkCount": r.Coverage.WholeNetworkForkCount,

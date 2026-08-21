@@ -192,6 +192,27 @@ type T1Data struct {
 	// pipeline after a GitHub owner-history fetch (capped at 30 distinct
 	// owners per run). Nil means "no signal" — see OwnerProfile's doc.
 	OwnerProfile *OwnerProfile
+	// LinearHistory is true when the fork's tip is reachable from upstream's
+	// tip without crossing a merge commit. False (or nil) when the fork has
+	// at least one merge commit on top of its upstream baseline. Nil means
+	// unknown -- the provider did not compute it for this fork.
+	LinearHistory *bool
+	// MergeCommits is the raw count of merge commits on the fork's default
+	// branch up to the upstream tip. A negative value means unknown. Drives
+	// the LinearHistory boolean and is exposed in the JSON export for
+	// downstream tools that want a numeric signal.
+	MergeCommits int
+	// MergeCommitHistory is the raw parents-totalCount vector for every
+	// commit on the fork's default branch up to the upstream tip. Kept so
+	// downstream analyses (e.g. "how many forks rebased vs merged") do not
+	// have to refetch. Persisted in the merge_commit_history table; nil on
+	// T1Data in memory means unknown.
+	MergeCommitHistory []int
+	// MergeCommitTruncated is true when the MergeCommitHistory vector was
+	// capped at the provider's page limit and is therefore a prefix, not
+	// the full ahead-of-upstream history. The derived MergeCommits and
+	// LinearHistory are lower bounds when this is true.
+	MergeCommitTruncated bool
 }
 
 // OwnerProfile is the owner-farmer signal (P3). Populated by the fork
@@ -329,6 +350,24 @@ type BranchDivergenceProvider interface {
 	// full, so their counts (and any fingerprint derived from them) are lower
 	// bounds rather than exact.
 	DivergentBranchCounts(ctx context.Context, forks []T1Data) (counts map[string]int, fingerprints map[string]string, truncated []string, err error)
+}
+
+// LinearHistoryProvider is an optional provider capability that classifies,
+// per fork, whether the fork's tip is reachable from the upstream's tip
+// without crossing a merge commit. The provider returns the raw signal
+// (parents.totalCount per commit on the fork's default branch ahead of the
+// merge base); the consumer derives the boolean LinearHistory and the scalar
+// MergeCommits in one place, so the derivation logic lives in forge rather
+// than duplicated in every backend.
+type LinearHistoryProvider interface {
+	// MergeCommitHistory returns, per fork ID, the raw parents-totalCount
+	// vector for every commit on the fork's default branch that lies ahead
+	// of upstream. callers derive the boolean LinearHistory and the scalar
+	// MergeCommits from the vector themselves. Forks absent from the map
+	// were not resolved, which is distinct from a present empty vector
+	// (linear). truncated lists IDs whose history was capped at the request
+	// limit; the slice for those forks is a prefix, not the full history.
+	MergeCommitHistory(ctx context.Context, forks []T1Data) (histories map[string][]int, truncated []string, err error)
 }
 
 // CompareBaselineSetter is an optional provider capability for restoring the

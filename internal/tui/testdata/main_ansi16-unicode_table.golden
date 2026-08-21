@@ -1,9 +1,9 @@
 [40m [0m[37;40m[37mspoon │ owner/repo │ 4 forks │ [1;93m⚠ Unauthenticated[0m[0m[0m[40m [0m[40m                                                                      [0m
-[1;97m HEAT      REPOSITORY                        ★     ⑂  BRANCH   PUSHED      [0m
-[1;97;40m ▸ [91m███░[0m[91m90[0m  alice/tool                         1     0       -  1h ago      [0m
-[37m   [91m███░[0m[91m80[0m  bob/tool                           1     0       -  1h ago      [0m
-[37m   [93m██░░[0m[93m70[0m  carol/widget                       1     0       -  1h ago      [0m
-[37m   [93m██░░[0m[93m60[0m  dave/widget                        1     0       -  1h ago      [0m
+[1;97m HEAT      REPOSITORY                        ★     ⑂  BRANCH  LIN PUSHED      [0m
+[1;97;40m ▸ [91m███░[0m[91m90[0m  alice/tool                         1     0       -  -  1h ago      [0m
+[37m   [91m███░[0m[91m80[0m  bob/tool                           1     0       -  -  1h ago      [0m
+[37m   [93m██░░[0m[93m70[0m  carol/widget                       1     0       -  -  1h ago      [0m
+[37m   [93m██░░[0m[93m60[0m  dave/widget                        1     0       -  -  1h ago      [0m
 
 [37;40m[Enter][0m [3;2;90mView fork details[0m [37;40m[/][0m [3;2;90mFilter forks[0m [37;40m[s][0m [3;2;90mCycle sort column[0m [37;40m[Space][0m [3;2;90mMark or unmark fork[0m [37;40m[e][0m [3;2;90mExport marked forks[0m
 [37;40m[i][0m [3;2;90mEmbed marked forks[0m [37;40m[r][0m [3;2;90mRefresh[0m [37;40m[,][0m [3;2;90mOpen settings[0m [37;40m[?][0m [3;2;90mOpen help[0m [37;40m[q][0m [3;2;90mQuit[0m

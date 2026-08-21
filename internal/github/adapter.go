@@ -47,16 +47,16 @@ func (p *GHProvider) Auth(_ context.Context) (forge.AuthInfo, error) {
 		rl = 5000
 	}
 	return forge.AuthInfo{
-		Provider:         forge.ProviderGitHub,
-		Tier:             tier,
-		Host:             p.status.Host,
-		Username:         "",
-		Concurrency:      conc,
-		RateLimit:        rl,
-		RateUnit:         "hour",
-		APIVersion:       p.status.APIVersion,
-		AuthMode:         p.status.AuthMode,
-		AuthScopeID:      p.status.AuthScopeID,
+		Provider:    forge.ProviderGitHub,
+		Tier:        tier,
+		Host:        p.status.Host,
+		Username:    "",
+		Concurrency: conc,
+		RateLimit:   rl,
+		RateUnit:    "hour",
+		APIVersion:  p.status.APIVersion,
+		AuthMode:    p.status.AuthMode,
+		AuthScopeID: p.status.AuthScopeID,
 	}, nil
 }
 
@@ -90,6 +90,28 @@ func (p *GHProvider) DivergentBranchCounts(ctx context.Context, forks []forge.T1
 
 var _ forge.BranchDivergenceProvider = (*GHProvider)(nil)
 
+// MergeCommitHistory implements forge.LinearHistoryProvider. The whole batch
+// costs one GraphQL compare query per linearHistoryBatchSize forks; the
+// returned vector is the raw parents.totalCount per commit, capped at
+// linearHistoryCommitLimit per fork. Forks with deeper histories land in
+// Truncated and the consumer renders the lower-bound signal.
+func (p *GHProvider) MergeCommitHistory(ctx context.Context, forks []forge.T1Data) (map[string][]int, []string, error) {
+	targets := make([]forge.T1Data, 0, len(forks))
+	for _, f := range forks {
+		if f.Owner == "" || f.Name == "" {
+			continue
+		}
+		targets = append(targets, f)
+	}
+	hist, err := p.client.FetchMergeCommitHistory(ctx, p.sourceOwner, p.sourceRepo, p.sourceDefaultBranch, targets)
+	if err != nil {
+		return nil, nil, err
+	}
+	return hist.Histories, hist.Truncated, nil
+}
+
+var _ forge.LinearHistoryProvider = (*GHProvider)(nil)
+
 // SetCompareBaseline implements forge.CompareBaselineSetter. Parent() calls it
 // on the live path; a caller that serves the fork list from a local cache must
 // call it explicitly, or every Compare that follows has no upstream to compare
@@ -120,17 +142,17 @@ func (p *GHProvider) Parent(ctx context.Context, owner, repo string) (forge.Pare
 	headSHA, _ := p.client.defaultBranchTipSHA(ctx, owner, repo)
 
 	return forge.ParentData{
-		FullName:      info.FullName,
-		Description:   info.Description,
-		DefaultBranch: info.DefaultBranch,
-		HeadSHA:       headSHA,
-		Stars:         info.Stars,
-		Forks:         info.Forks,
-		Size:          info.Size,
-		PushedAt:      pushed,
-		URL:           info.HTMLURL,
-		Language:      info.Language,
-		Topics:        info.Topics,
+		FullName:             info.FullName,
+		Description:          info.Description,
+		DefaultBranch:        info.DefaultBranch,
+		HeadSHA:              headSHA,
+		Stars:                info.Stars,
+		Forks:                info.Forks,
+		Size:                 info.Size,
+		PushedAt:             pushed,
+		URL:                  info.HTMLURL,
+		Language:             info.Language,
+		Topics:               info.Topics,
 		SourceFullPath:       sourceFullPath(info),
 		DirectParentFullPath: directParentFullPath(info),
 	}, nil
@@ -562,7 +584,6 @@ func isMergeOrSyncMsg(msg string) bool {
 	}
 	return false
 }
-
 
 // SearchTopicRepos implements the optional topics.TopicSearcher capability:
 // it returns repositories carrying the GitHub topic, mapped to forge types.

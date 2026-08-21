@@ -123,3 +123,119 @@ func splitFullName(full string) (owner, name string, ok bool) {
 	}
 	return parts[0], parts[1], true
 }
+
+// needsLinearHistorySweep reports whether a fork's linear-history data is
+// still missing and the sweep should include it. LinearHistory being set
+// already implies the vector was computed once, so re-sweeping would be
+// pure network waste. The MergeCommitHistory nil check is belt-and-braces:
+// a fork whose vector was populated but the boolean never derived should
+// re-derive rather than re-fetch, but that path is rare enough to skip.
+func needsLinearHistorySweep(f forge.T1Data) bool {
+	return f.LinearHistory == nil && f.MergeCommitHistory == nil
+}
+
+// linearHistoryMsg is the result of a linear-history sweep.
+type linearHistoryMsg struct {
+	histories map[string][]int
+	truncated []string
+	err       error
+}
+
+// startLinearHistorySweep fetches, for every loaded fork, the raw parents.
+// totalCount vector for the fork's ahead-of-upstream history. Costs one
+// GraphQL compare query per linearHistoryBatchSize forks, so no per-fork
+// budget gate is needed.
+//
+// Returns nil when the provider cannot answer (GitLab, Gitea) or when every
+// fork already carries a derived LinearHistory boolean.
+func (m *Model) startLinearHistorySweep() tea.Cmd {
+	prov, ok := m.provider.(forge.LinearHistoryProvider)
+	if !ok || len(m.forks) == 0 {
+		return nil
+	}
+
+	// Only sweep forks whose data is still missing. A cache hit is usually
+	// every fork, so a second run costs nothing.
+	pending := make([]forge.T1Data, 0, len(m.forks))
+	for _, sf := range m.forks {
+		if needsLinearHistorySweep(sf.Fork) {
+			pending = append(pending, sf.Fork)
+		}
+	}
+	if len(pending) == 0 {
+		return nil
+	}
+
+	ctx := m.lifecycleCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	return func() tea.Msg {
+		histories, truncated, err := prov.MergeCommitHistory(ctx, pending)
+		return linearHistoryMsg{histories: histories, truncated: truncated, err: err}
+	}
+}
+
+// handleLinearHistory applies sweep results, derives MergeCommits and
+// LinearHistory per fork, and re-persists so the relational history table
+// and the forks-row columns survive into the next run.
+func (m *Model) handleLinearHistory(msg linearHistoryMsg) (tea.Model, tea.Cmd) {
+	if msg.err != nil {
+		// Non-fatal: the column renders "-" and everything else proceeds. The
+		// boolean is a convenience, not core data.
+		return m, nil
+	}
+
+	truncatedSet := make(map[string]bool, len(msg.truncated))
+	for _, id := range msg.truncated {
+		truncatedSet[id] = true
+	}
+
+	applied := false
+	for i := range m.forks {
+		id := m.forks[i].Fork.ID
+		hist, ok := msg.histories[id]
+		if !ok {
+			continue
+		}
+		m.forks[i].Fork.MergeCommitHistory = hist
+		count := 0
+		for _, p := range hist {
+			if p >= 2 {
+				count++
+			}
+		}
+		m.forks[i].Fork.MergeCommits = count
+		linear := count == 0
+		m.forks[i].Fork.LinearHistory = &linear
+		if truncatedSet[id] {
+			m.forks[i].Fork.MergeCommitTruncated = true
+		}
+		applied = true
+	}
+
+	if !applied {
+		return m, nil
+	}
+
+	// Sort order may have shifted: linear forks land first when sorted by
+	// the LIN column, and a refresh that re-sorts now keeps the table in
+	// sync with the new data without a redraw race. Capture the cursor
+	// under the row so the re-sort doesn't move the user's selection.
+	var selectedID string
+	if m.cursor >= 0 && m.cursor < len(m.forks) {
+		selectedID = m.forks[m.cursor].Fork.ID
+	}
+	m.reapplySort()
+	m.restoreCursorByID(selectedID)
+
+	if len(msg.truncated) > 0 {
+		m.errMsg = fmt.Sprintf("%d fork(s) have a longer merge history than could be fetched; LIN counts are lower bounds", len(msg.truncated))
+		m.errMsgTime = time.Now()
+	}
+	// Re-persist so the relational merge_commit_history table and the
+	// forks-row columns survive across sessions. The persistence layer
+	// decides what to write; here we just signal "fork list changed".
+	return m, m.persistForkList()
+}
