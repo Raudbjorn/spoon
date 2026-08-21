@@ -266,6 +266,17 @@ listed before unmatched ones (heat order within each lane). Priors never hide a
 fork or touch heat; a denied owner scores 0 but is still emitted, carrying its
 `owner_deny` reason.
 
+### Shortlist rank in the TUI
+
+The `spoon` table carries the same model: the `P` column is each fork's
+P-score as a percentage (`99` = beats almost every other fork, `50` = coin
+flip), with a `~` prefix when the row is statistically tied with its
+neighbour; `s` cycles to sort by it. The status bar shows `POTH` (precision
+of the whole ordering) and `top10` (precision within the top ten); the detail
+view lists expected rank, P-score, P(top 10) and the 95% rank interval; exports
+carry a `rank` block per fork and a `rank_report`. Numbers are relative to the
+strongest 200 forks and use the tier sigma (no `--eb` in the TUI).
+
 ### Shortlist rank summary
 
 `--shortlist N` ranks the strongest 200 forks under a Gaussian utility model

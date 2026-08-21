@@ -77,6 +77,21 @@ func (m Model) detailBody() string {
 	writeLine(ui.StatCard(ctx, "heat "+m.renderHeatBar(sf.Heat.Score), scoreStr, true, boxWidth-4))
 	divider()
 
+	// Shortlist rank: where this fork sits under uncertainty, relative to the
+	// ranked pool (docs/ranking.md). P-score is the probability of beating a
+	// random other fork; P(top k) says whether it belongs in a shortlist of
+	// that size; the interval is the 95% range of its true rank.
+	if r := sf.Rank; r != nil {
+		writeLine(styles.warn.Render(fmt.Sprintf("Rank (of %d ranked):", m.shortlistPoolSize())))
+		writeLine(fmt.Sprintf(" expected rank %.1f   P-score %.0f%%   P(top %d) %.0f%%", r.ExpectedRank, r.PScore*100, m.shortlistTopK(), r.PTopK*100))
+		band := ""
+		if r.TieBand {
+			band = "   tied with a neighbour"
+		}
+		writeLine(fmt.Sprintf(" 95%% rank interval %d-%d%s", r.Lo, r.Hi, band))
+		divider()
+	}
+
 	// The former width-two fire pictograph becomes a text label in both glyph
 	// profiles, so string composition can never leave an unrecoverable cell.
 	writeLine(styles.warn.Render("Why it is hot:"))
