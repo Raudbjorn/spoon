@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -446,7 +447,27 @@ func (c *Client) FetchForksBounded(ctx context.Context, owner, repo string, onBa
 		callErr := c.doGraphQLWithRetry(callCtx, query, vars, &resp)
 		cancel()
 		if callErr != nil {
-			return allForks, nil, makeReport("graphql_failed"), fmt.Errorf("graphql query: %w", callErr)
+			// The bounded call bailed mid-walk. Build the same extras map
+			// the happy path produces so callers that iterate the partial
+			// forks can still recover lineage and coverage. Distinguish a
+			// user-configured time limit (deadline expired mid-request) from
+			// an upstream GraphQL outage: the former is a cap, not an error.
+			allExtras = annotateDepths(allForks, allExtras, owner+"/"+repo)
+			for i := range allExtras {
+				allExtras[i].WholeNetworkForkCount = rootForkCount
+				allExtras[i].DirectTotalCount = rootDirectTotal
+			}
+			extrasMap := make(map[int64]T1Extra, len(allForks))
+			for i, f := range allForks {
+				if i < len(allExtras) {
+					extrasMap[f.ID] = allExtras[i]
+				}
+			}
+			if errors.Is(callErr, context.DeadlineExceeded) {
+				cap = CapReasonMaxElapsed
+				return allForks, extrasMap, makeReport(""), callErr
+			}
+			return allForks, extrasMap, makeReport("graphql_failed"), fmt.Errorf("graphql query: %w", callErr)
 		}
 
 		for j, alias := range aliases {

@@ -905,8 +905,18 @@ func TestFetchForksBounded_BoundedContextCancelsMidCall(t *testing.T) {
 	if elapsed > 2*time.Second {
 		t.Errorf("elapsed = %v, want < 2s", elapsed)
 	}
-	if report == nil || report.Error != "graphql_failed" {
-		t.Errorf("report.Error = %q, want graphql_failed", report.Error)
+	// The bounded context fires when MaxElapsed elapses mid-request. That is
+	// a user-configured time limit, not an upstream GraphQL outage, so the
+	// report's CapReason should be "max_elapsed" and Error should be empty.
+	// The error itself is still surfaced so callers know the run was cut short.
+	if report == nil {
+		t.Fatalf("report is nil")
+	}
+	if report.CapReason != "max_elapsed" {
+		t.Errorf("report.CapReason = %q, want max_elapsed", report.CapReason)
+	}
+	if report.Error != "" {
+		t.Errorf("report.Error = %q, want empty (deadline is a cap, not an error)", report.Error)
 	}
 }
 
@@ -966,5 +976,72 @@ func TestFetchForksBounded_DirectTotalCountIsRootForksTotalCount(t *testing.T) {
 	}
 	if extra.WholeNetworkForkCount != 128 {
 		t.Errorf("WholeNetworkForkCount = %d, want 128 (root forkCount)", extra.WholeNetworkForkCount)
+	}
+}
+
+func TestFetchForksBounded_PartialForksRetainExtrasOnError(t *testing.T) {
+	// Cursor follow-up: when the bounded call fails mid-walk, the partial
+	// fork list must come with a populated extras map so callers can
+	// recover lineage (parent paths, DirectTotalCount, WholeNetworkForkCount).
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			_, _ = w.Write([]byte(`{"data":{"r0":{"forkCount":128,"forks":{"totalCount":118,"nodes":[{"databaseId":5001,"nameWithOwner":"alice/alpha","name":"alpha","forkCount":1,"parent":{"nameWithOwner":"octo/r","databaseId":4000},"pushedAt":"2025-08-01T00:00:00Z"}]}}},"rateLimit":{"limit":5000,"remaining":4999,"used":1,"cost":1}}`))
+			return
+		}
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+	forks, extras, _, err := newTestClientGQL(t, srv).FetchForksBounded(
+		context.Background(), "octo", "r", nil,
+		BoundedOptions{MaxDepth: 3, MaxNodes: 50, MaxPages: 20},
+	)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if len(forks) != 1 {
+		t.Fatalf("forks = %d, want 1", len(forks))
+	}
+	extra, ok := extras[forks[0].ID]
+	if !ok {
+		t.Fatalf("extras missing entry for fork %d (got %d entries)", forks[0].ID, len(extras))
+	}
+	if extra.ParentFullPath != "octo/r" {
+		t.Errorf("ParentFullPath = %q, want octo/r (lineage lost on partial failure)", extra.ParentFullPath)
+	}
+	if extra.DirectTotalCount != 118 {
+		t.Errorf("DirectTotalCount = %d, want 118 (root forks.totalCount)", extra.DirectTotalCount)
+	}
+	if extra.WholeNetworkForkCount != 128 {
+		t.Errorf("WholeNetworkForkCount = %d, want 128 (root forkCount)", extra.WholeNetworkForkCount)
+	}
+}
+
+func TestFetchForksBounded_DeadlineExpiryReportsMaxElapsed(t *testing.T) {
+	// Cursor follow-up: when the bounded context fires because MaxElapsed
+	// elapses mid-request, the report's CapReason must be "max_elapsed" and
+	// Error must be empty. A user-configured time limit is a cap, not an
+	// upstream GraphQL outage.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(300 * time.Millisecond)
+		_, _ = w.Write([]byte(`{"data":{"r0":{"forkCount":1,"forks":{"totalCount":1,"nodes":[{"databaseId":5001,"nameWithOwner":"a/b","name":"b","forkCount":0,"parent":{"nameWithOwner":"octo/r","databaseId":4000},"pushedAt":"2025-08-01T00:00:00Z"}]}}},"rateLimit":{"limit":5000,"remaining":4999,"used":1,"cost":1}}`))
+	}))
+	defer srv.Close()
+	_, _, report, err := newTestClientGQL(t, srv).FetchForksBounded(
+		context.Background(), "octo", "r", nil,
+		BoundedOptions{MaxDepth: 3, MaxNodes: 50, MaxPages: 20, MaxElapsed: 50 * time.Millisecond},
+	)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if report == nil {
+		t.Fatal("report is nil")
+	}
+	if report.CapReason != "max_elapsed" {
+		t.Errorf("CapReason = %q, want max_elapsed", report.CapReason)
+	}
+	if report.Error != "" {
+		t.Errorf("Error = %q, want empty (deadline is a cap, not an error)", report.Error)
 	}
 }
