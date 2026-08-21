@@ -1231,3 +1231,86 @@ func TestStream_shortlistRuleMembership_selectsByPTopK(t *testing.T) {
 		}
 	}
 }
+
+func TestStream_shortlistFillsRankReportAndDiagnostics(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	now := time.Now()
+	ff := &fakeForge{
+		parent: forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
+		forks: []forge.T1Data{
+			{ID: "o/a", Owner: "o", Name: "a", DefaultBranch: "main", PushedAt: now},
+			{ID: "o/b", Owner: "o", Name: "b", DefaultBranch: "main", PushedAt: now},
+			{ID: "o/c", Owner: "o", Name: "c", DefaultBranch: "main", PushedAt: now},
+			{ID: "o/d", Owner: "o", Name: "d", DefaultBranch: "main", PushedAt: now},
+		},
+		t2: map[string]forge.T2Data{
+			"o/a": {AheadCount: 1, MNA: 500, Diffs: []forge.FileDiff{{Path: "a.go", Additions: 500}}},
+			"o/b": {AheadCount: 1, MNA: 5},
+			"o/c": {AheadCount: 1, MNA: 50},
+			"o/d": {AheadCount: 1, MNA: 1},
+		},
+	}
+	var report RankReport
+	ch, err := Stream(context.Background(), ff, "o", "r", Options{
+		Tier: 2, ShortlistN: 3, RankReport: &report, RankDiagnostics: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []Result
+	for r := range ch {
+		got = append(got, r)
+	}
+	if len(got) != 3 {
+		t.Fatalf("shortlist should emit 3, got %d", len(got))
+	}
+	if report.PoolSize != 4 || report.ShortlistN != 3 || report.ShortlistRule != ShortlistRuleExpected {
+		t.Errorf("report header fields: %+v", report)
+	}
+	if report.POTH < 0 || report.POTH > 1 || math.IsNaN(report.POTH) {
+		t.Errorf("POTH %v not in [0,1]", report.POTH)
+	}
+	if report.CPOTHk < 0 || report.CPOTHk > 1 || math.IsNaN(report.CPOTHk) {
+		t.Errorf("cPOTH_k %v not in [0,1] for k=3", report.CPOTHk)
+	}
+	for i, r := range got {
+		if r.Rank == nil || r.Rank.PothResidual == nil {
+			t.Errorf("result %d missing pothResidual under RankDiagnostics", i)
+		}
+	}
+}
+
+func TestStream_shortlistWithoutDiagnosticsOmitsResidual(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	now := time.Now()
+	ff := &fakeForge{
+		parent: forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
+		forks: []forge.T1Data{
+			{ID: "o/a", Owner: "o", Name: "a", DefaultBranch: "main", PushedAt: now},
+			{ID: "o/b", Owner: "o", Name: "b", DefaultBranch: "main", PushedAt: now},
+			{ID: "o/c", Owner: "o", Name: "c", DefaultBranch: "main", PushedAt: now},
+		},
+		t2: map[string]forge.T2Data{
+			"o/a": {AheadCount: 1, MNA: 500},
+			"o/b": {AheadCount: 1, MNA: 5},
+			"o/c": {AheadCount: 1, MNA: 50},
+		},
+	}
+	var report RankReport
+	ch, err := Stream(context.Background(), ff, "o", "r", Options{Tier: 2, ShortlistN: 2, RankReport: &report})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for r := range ch {
+		if r.Rank != nil && r.Rank.PothResidual != nil {
+			t.Errorf("pothResidual should be nil without RankDiagnostics")
+		}
+	}
+	// k=2 is below the POTH pool minimum: cPOTH_k must be NaN, POTH (n=3) finite.
+	if !math.IsNaN(report.CPOTHk) {
+		t.Errorf("cPOTH_2 should be NaN, got %v", report.CPOTHk)
+	}
+	if math.IsNaN(report.POTH) {
+		t.Errorf("POTH for n=3 should be finite")
+	}
+}
