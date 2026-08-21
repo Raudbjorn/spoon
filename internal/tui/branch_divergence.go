@@ -239,3 +239,31 @@ func (m *Model) handleLinearHistory(msg linearHistoryMsg) (tea.Model, tea.Cmd) {
 	// decides what to write; here we just signal "fork list changed".
 	return m, m.persistForkList()
 }
+
+// deriveLinearHistoryFromCached walks the loaded forks and, for any fork
+// that has a MergeCommitHistory vector but no LinearHistory boolean,
+// computes the boolean locally without a network call. This handles the
+// cache-hit path where the relational vector was loaded but the boolean
+// was never derived (e.g. a TUI run that never completed a sweep).
+func (m *Model) deriveLinearHistoryFromCached() {
+	applied := false
+	for i := range m.forks {
+		f := &m.forks[i].Fork
+		if f.LinearHistory != nil || f.MergeCommitHistory == nil {
+			continue
+		}
+		count := 0
+		for _, p := range f.MergeCommitHistory {
+			if p >= 2 {
+				count++
+			}
+		}
+		f.MergeCommits = count
+		linear := count == 0
+		f.LinearHistory = &linear
+		applied = true
+	}
+	if applied {
+		m.reapplySort()
+	}
+}

@@ -38,8 +38,8 @@ func TestForkToJSON_EmitsLinearHistory_True(t *testing.T) {
 }
 
 // When LinearHistory is nil (unknown), the boolean + scalar + vector
-// must be omitted, but the truncate flag must still emit its default
-// false. Downstream consumers need a deterministic key on every row.
+// AND the truncate flag must be omitted — no signal means we cannot
+// meaningfully say whether truncation occurred.
 func TestForkToJSON_OmitsLinearHistory_WhenUnknown(t *testing.T) {
 	r := forksops.Result{
 		Fork: forge.T1Data{ID: "alice/repo", Owner: "alice", Name: "repo"},
@@ -52,8 +52,8 @@ func TestForkToJSON_OmitsLinearHistory_WhenUnknown(t *testing.T) {
 	if _, ok := out["mergeCommits"]; ok {
 		t.Errorf("mergeCommits should be omitted when no signal, got %v", out["mergeCommits"])
 	}
-	if v, ok := out["mergeCommitTruncated"].(bool); !ok || v != false {
-		t.Errorf("mergeCommitTruncated = %v, want false default", out["mergeCommitTruncated"])
+	if _, ok := out["mergeCommitTruncated"]; ok {
+		t.Errorf("mergeCommitTruncated should be omitted when nil, got %v", out["mergeCommitTruncated"])
 	}
 }
 

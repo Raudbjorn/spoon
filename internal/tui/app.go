@@ -598,6 +598,16 @@ func (m *Model) handleCachedLoad(msg cachedLoadMsg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, bc)
 	}
 
+	// Local derivation: if a cached fork carries a MergeCommitHistory vector
+	// but no LinearHistory boolean, derive it now without a network call.
+	m.deriveLinearHistoryFromCached()
+
+	// If the provider supports linear-history, schedule a sweep for forks
+	// that still have no data at all (both vector and boolean missing).
+	if lh := m.startLinearHistorySweep(); lh != nil {
+		cmds = append(cmds, lh)
+	}
+
 	cmd := m.startEnrichment()
 	if cmd == nil {
 		// No T2 enrichment scheduled (e.g. rate-limited). Still try

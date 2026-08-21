@@ -895,6 +895,10 @@ func persistForkSnapshot(ctx context.Context, db *store.Store, auth forge.AuthIn
 			Description: r.Fork.Description, Language: r.Fork.Language, Topics: r.Fork.Topics,
 			Stars: r.Fork.Stars, PushedAt: r.Fork.PushedAt, Heat: r.Heat.Score,
 			Tier: r.Heat.Tier, UpdatedAt: now,
+			// Linear-history scalars lifted from r.Fork so the CLI upsert
+			// writes the same columns the TUI sweep produces.
+			MergeCommits:        r.Fork.MergeCommits,
+			MergeCommitTruncated: r.Fork.MergeCommitTruncated,
 		},
 		// Full-fidelity halves: T1 makes the fork reusable as a listing entry
 		// (t1_json), T2 preserves the triage scalars alongside the relational
@@ -1213,18 +1217,17 @@ func forkToJSONDetailed(r forksops.Result, details detailOptions) map[string]any
 
 	// Linear-history fields. linearHistory itself stays nil when the
 	// provider never computed it (the three-state semantics matter for
-	// downstream tools). The truncate flag is emitted unconditionally
-	// so a downstream consumer can always read "we tried, here's what we
-	// got" with a deterministic false default. The scalar count and the
-	// raw vector ride only when known.
+	// downstream tools). The scalar count and the raw vector ride only
+	// when known; the truncate flag is meaningful only when we have a
+	// boolean result, so it rides the same conditional.
 	if r.Fork.LinearHistory != nil {
 		out["linearHistory"] = *r.Fork.LinearHistory
 		out["mergeCommits"] = r.Fork.MergeCommits
 		if r.Fork.MergeCommitHistory != nil {
 			out["mergeCommitHistory"] = r.Fork.MergeCommitHistory
 		}
+		out["mergeCommitTruncated"] = r.Fork.MergeCommitTruncated
 	}
-	out["mergeCommitTruncated"] = r.Fork.MergeCommitTruncated
 
 	if r.Coverage.DirectTotalCount > 0 || r.Coverage.WholeNetworkForkCount > 0 {
 		// Emit when either count is known (non-zero from GraphQL); a known
