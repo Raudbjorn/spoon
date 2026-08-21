@@ -178,7 +178,7 @@ spn forks list <repo> [--tier N] [--top N] [--budget N] [--shortlist N]
     [--cluster-top N] [--no-cluster] [--no-embed] [--csv] [...]
 spn forks list topic:zig [--topic-repos 5] [...]
 spn search "oauth rate limiting" [--repo owner/repo] [--top N] [--voyage]
-spn forks eval <repo> --judgments FILE
+spn forks eval <repo> --judgments FILE [--from-export EXPORT --rank-variant V]
 spn repo centrality <owner/repo>
 ```
 
@@ -306,6 +306,22 @@ model fits) and `pD`. `--prior-scale F` caps τ̂ at 2F (a half-normal prior on
 τ with ≈5% mass above the cap); the default F is 1.4826 × MAD of the scores
 and is printed in the report. Zero-heat forks are never shrunk. Off by
 default until offline evaluation confirms it does not regress nDCG.
+
+To compare ranking variants without network access, evaluate an export:
+
+```bash
+spn forks eval stablyai/orca --from-export spoon-export.json \
+  --judgments judgments.json --rank-variant eb --shortlist 10
+```
+
+`--rank-variant` is one of `heat` (raw score), `erank` (expected rank, the
+`--shortlist` default), `pscore`, `membership` (`--shortlist-rule membership`),
+`eb` (`--eb`). Every variant is scored over the same top-200-by-heat rows, so
+nDCG/AUC are comparable; the report carries `rankReport` and the ordered
+`ranked` list with each fork's key. A seed judgment file for `stablyai/orca`
+lives in `internal/eval/testdata/judgments_stablyai-orca_seed.json`; on it all
+five variants tie (nDCG 0.967, AUC 0.85) because its labels were themselves
+derived from a heat-ranked review — it proves non-regression, not gain.
 
 Path matching is deliberately simple: a wildcard-free entry matches by exact
 file or **directory prefix** (`internal/auth` covers everything beneath it),

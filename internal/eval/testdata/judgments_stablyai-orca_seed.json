@@ -1,0 +1,165 @@
+{
+  "_provenance": "Seed judgments derived from reports/spoon-stablyai-orca-evaluation-2026-08-21.md (verdicts grounded in live gh compare on 2026-08-21). Not independent human labels; 'novel' = the report's TL;DR integration-worthy set, 'established' = its explicit skip/starved lists. Unlabelled forks are absent, not established.",
+  "forks": [
+    {
+      "id": "DarwinWDEWEN/rx-cli",
+      "novelty": "novel"
+    },
+    {
+      "id": "JCodesMore/orca",
+      "novelty": "novel"
+    },
+    {
+      "id": "brennoaf/orca",
+      "novelty": "novel"
+    },
+    {
+      "id": "andrewyatesai/orca-alab",
+      "novelty": "novel"
+    },
+    {
+      "id": "inlineapps/orca",
+      "novelty": "novel"
+    },
+    {
+      "id": "paidaxingyo666/Manta",
+      "novelty": "novel"
+    },
+    {
+      "id": "cyrus123456/orca",
+      "novelty": "novel"
+    },
+    {
+      "id": "zpyoung/orca",
+      "novelty": "novel"
+    },
+    {
+      "id": "Oxeegen/OxeeUI",
+      "novelty": "established"
+    },
+    {
+      "id": "treeman99/orca",
+      "novelty": "established"
+    },
+    {
+      "id": "DevZonayed/orca",
+      "novelty": "established"
+    },
+    {
+      "id": "machamy/orca",
+      "novelty": "established"
+    },
+    {
+      "id": "lifefloating/orca",
+      "novelty": "established"
+    },
+    {
+      "id": "nwparker/orca",
+      "novelty": "established"
+    },
+    {
+      "id": "mvanhorn/orca",
+      "novelty": "established"
+    },
+    {
+      "id": "tmchow/orca",
+      "novelty": "established"
+    },
+    {
+      "id": "rohitg00/orca",
+      "novelty": "established"
+    },
+    {
+      "id": "wintergl/orca",
+      "novelty": "established"
+    },
+    {
+      "id": "jborkowski/orca",
+      "novelty": "established"
+    },
+    {
+      "id": "646826/orca",
+      "novelty": "established"
+    },
+    {
+      "id": "GhostFlying/orca",
+      "novelty": "established"
+    },
+    {
+      "id": "jae-heo/orca",
+      "novelty": "established"
+    },
+    {
+      "id": "WYK15/orca",
+      "novelty": "established"
+    },
+    {
+      "id": "ohmygaugh-crypto/orca",
+      "novelty": "established"
+    },
+    {
+      "id": "Nathishwar-prog/orca",
+      "novelty": "established"
+    },
+    {
+      "id": "ginjaninja78/orca",
+      "novelty": "established"
+    },
+    {
+      "id": "kent666/orca",
+      "novelty": "established"
+    },
+    {
+      "id": "soaded/orca",
+      "novelty": "established"
+    },
+    {
+      "id": "vkn129/orca",
+      "novelty": "established"
+    },
+    {
+      "id": "optrader8/orca",
+      "novelty": "established"
+    },
+    {
+      "id": "manuelapetsi/orca",
+      "novelty": "established"
+    },
+    {
+      "id": "ais1175/orca",
+      "novelty": "established"
+    },
+    {
+      "id": "tgmarinho/orca",
+      "novelty": "established"
+    },
+    {
+      "id": "chindris-mihai-alexandru/orca-fork",
+      "novelty": "established"
+    },
+    {
+      "id": "Bennyoooo/orca",
+      "novelty": "established"
+    },
+    {
+      "id": "MaTriXy/orca",
+      "novelty": "established"
+    },
+    {
+      "id": "cresl1/orca",
+      "novelty": "established"
+    },
+    {
+      "id": "wolfiesch/orca",
+      "novelty": "established"
+    },
+    {
+      "id": "arndvs/orca",
+      "novelty": "established"
+    },
+    {
+      "id": "bennewell35/orca",
+      "novelty": "established"
+    }
+  ]
+}
