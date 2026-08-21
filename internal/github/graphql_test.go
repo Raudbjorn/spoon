@@ -237,16 +237,16 @@ func TestGqlForkToForkInfo_LineageFields(t *testing.T) {
 	parentName := "octo/root-repo"
 	parentDB := int64(1001)
 	node := gqlForkNode{
-		DatabaseID:    2001,
-		NameWithOwner: "alice/fork-of-root",
-		Name:          "fork-of-root",
+		DatabaseID:     2001,
+		NameWithOwner:  "alice/fork-of-root",
+		Name:           "fork-of-root",
 		StargazerCount: 5,
-		PushedAt:     "2025-08-01T00:00:00Z",
-		CreatedAt:    "2025-07-01T00:00:00Z",
-		ForkCount:    3,
+		PushedAt:       "2025-08-01T00:00:00Z",
+		CreatedAt:      "2025-07-01T00:00:00Z",
+		ForkCount:      3,
 		Parent: &struct {
 			NameWithOwner string `json:"nameWithOwner"`
-			DatabaseID   int64  `json:"databaseId"`
+			DatabaseID    int64  `json:"databaseId"`
 		}{NameWithOwner: parentName, DatabaseID: parentDB},
 	}
 
@@ -273,10 +273,10 @@ func TestGqlForkToForkInfo_WholeNetworkForkCount(t *testing.T) {
 		DatabaseID:    3001,
 		NameWithOwner: "bob/my-fork",
 		Name:          "my-fork",
-		ForkCount:    7, // this node has 7 children
+		ForkCount:     7, // this node has 7 children
 		Parent: &struct {
 			NameWithOwner string `json:"nameWithOwner"`
-			DatabaseID   int64  `json:"databaseId"`
+			DatabaseID    int64  `json:"databaseId"`
 		}{NameWithOwner: "octo/root", DatabaseID: 3000},
 	}
 
@@ -319,7 +319,6 @@ func TestGqlForkToForkInfo_WholeNetworkForkCount(t *testing.T) {
 func TestFixtureParentChain_DecodeAndAnnotate(t *testing.T) {
 	const fixturePath = "testdata/inventory_contract/parent_chain.json"
 	resp := loadGQLFixture(t, fixturePath)
-
 
 	root := "octo/root-repo"
 	nodes := resp.Repository.Forks.Nodes
@@ -422,7 +421,6 @@ func TestFixtureDirectWholeCountGap_Coverage(t *testing.T) {
 	const fixturePath = "testdata/inventory_contract/direct_whole_count_gap.json"
 	resp := loadGQLFixture(t, fixturePath)
 
-
 	if resp.Repository.ForkCount != 128 {
 		t.Errorf("repository.forkCount=%d, want 128", resp.Repository.ForkCount)
 	}
@@ -467,7 +465,6 @@ func TestFixtureDirectWholeCountGap_AnnotateDepths(t *testing.T) {
 	const fixturePath = "testdata/inventory_contract/direct_whole_count_gap.json"
 	resp := loadGQLFixture(t, fixturePath)
 
-
 	root := "chunkhound/chunkhound"
 	nodes := resp.Repository.Forks.Nodes
 	forks := make([]ForkInfo, 0, len(nodes))
@@ -511,8 +508,8 @@ func TestAnnotateDepths_ParentChain(t *testing.T) {
 	}
 	// Deliberately out of order to test algorithm.
 	extras := []T1Extra{
-		{ParentFullPath: "bob/level2-fork", ParentDatabaseID: 4002}, // level3
-		{ParentFullPath: "octo/root-repo", ParentDatabaseID: 4000}, // level1
+		{ParentFullPath: "bob/level2-fork", ParentDatabaseID: 4002},   // level3
+		{ParentFullPath: "octo/root-repo", ParentDatabaseID: 4000},    // level1
 		{ParentFullPath: "alice/level1-fork", ParentDatabaseID: 4001}, // level2
 	}
 
@@ -788,3 +785,60 @@ func TestFetchForksBounded_DecodesAliasedBatch(t *testing.T) {
 	}
 }
 
+func TestFetchForksBounded_ReportsCompleteCoverage(t *testing.T) {
+	tests := []struct {
+		name           string
+		opts           BoundedOptions
+		failAfterRoot  bool
+		wantForks      int
+		wantVisited    int
+		wantUnresolved int
+		wantCap        string
+		wantErr        bool
+	}{
+		{"max nodes", BoundedOptions{MaxNodes: 1, MaxDepth: 3, MaxPages: 20}, false, 1, 1, 2, "max_nodes", false},
+		{"max pages", BoundedOptions{MaxNodes: 50, MaxDepth: 3, MaxPages: 1}, false, 2, 2, 1, "max_pages", false},
+		{"max depth", BoundedOptions{MaxNodes: 50, MaxDepth: 1, MaxPages: 20}, false, 2, 2, 1, "max_depth", false},
+		{"query failure", BoundedOptions{MaxNodes: 50, MaxDepth: 3, MaxPages: 20}, true, 2, 2, 1, "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				if calls > 1 && tt.failAfterRoot {
+					http.Error(w, "unavailable", http.StatusServiceUnavailable)
+					return
+				}
+				if calls == 1 {
+					_, _ = w.Write([]byte(`{"data":{"r0":{"forkCount":3,"forks":{"totalCount":2,"nodes":[{"databaseId":4001,"nameWithOwner":"alice/level1-fork","name":"level1-fork","forkCount":1,"parent":{"nameWithOwner":"octo/root-repo","databaseId":4000},"pushedAt":"2025-08-01T00:00:00Z"},{"databaseId":4002,"nameWithOwner":"bob/level1-fork","name":"level1-fork","forkCount":0,"parent":{"nameWithOwner":"octo/root-repo","databaseId":4000},"pushedAt":"2025-08-01T00:00:00Z"}]}}},"rateLimit":{"limit":5000,"remaining":4999,"used":1,"cost":1}}`))
+					return
+				}
+				_, _ = w.Write([]byte(`{"data":{"r0":{"forkCount":1,"forks":{"totalCount":0,"nodes":[]}}},"rateLimit":{"limit":5000,"remaining":4999,"used":1,"cost":1}}`))
+			}))
+			defer srv.Close()
+			forks, _, report, err := newTestClientGQL(t, srv).FetchForksBounded(context.Background(), "octo", "root-repo", nil, tt.opts)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err = %v, wantErr = %v", err, tt.wantErr)
+			}
+			if len(forks) != tt.wantForks {
+				t.Errorf("forks = %d, want %d", len(forks), tt.wantForks)
+			}
+			if report == nil {
+				t.Fatal("report is nil")
+			}
+			if report.VisitedNodes != tt.wantVisited {
+				t.Errorf("VisitedNodes = %d, want %d", report.VisitedNodes, tt.wantVisited)
+			}
+			if report.Unresolved != tt.wantUnresolved {
+				t.Errorf("Unresolved = %d, want %d", report.Unresolved, tt.wantUnresolved)
+			}
+			if report.CapReason != tt.wantCap {
+				t.Errorf("CapReason = %q, want %q", report.CapReason, tt.wantCap)
+			}
+			if tt.wantErr && report.Error != "graphql_failed" {
+				t.Errorf("Error = %q, want graphql_failed", report.Error)
+			}
+		})
+	}
+}

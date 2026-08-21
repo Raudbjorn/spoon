@@ -109,7 +109,7 @@ type gqlResponse struct {
 		ForkCount int `json:"forkCount"`
 		Forks     struct {
 			TotalCount int `json:"totalCount"`
-			PageInfo struct {
+			PageInfo   struct {
 				HasNextPage bool   `json:"hasNextPage"`
 				EndCursor   string `json:"endCursor"`
 			} `json:"pageInfo"`
@@ -221,8 +221,8 @@ func (c *Client) FetchForksGraphQL(ctx context.Context, owner, repo string, onPa
 				FallbackChain: []string{"graphql"},
 				Pages:         page,
 				RawRows:       len(allForks),
-				UniqueRows:    countSeen(seen),
-				DuplicateRows: len(allForks) - countSeen(seen),
+				UniqueRows:    len(seen),
+				DuplicateRows: len(allForks) - len(seen),
 				CaptureAt:     time.Now(),
 				AuthScopeID:   c.AuthScopeID(),
 			}
@@ -268,7 +268,7 @@ func (c *Client) FetchForksGraphQL(ctx context.Context, owner, repo string, onPa
 		cursor = &endCursor
 	}
 
-	unique := countSeen(seen)
+	unique := len(seen)
 	report := &forge.AcquisitionReport{
 		Method:        "graphql",
 		Scope:         "direct",
@@ -287,14 +287,6 @@ func (c *Client) FetchForksGraphQL(ctx context.Context, owner, repo string, onPa
 	allExtras = annotateDepths(allForks, allExtras, owner+"/"+repo)
 
 	return allForks, allExtras, report, nil
-}
-
-func countSeen(seen map[int64]struct{}) int {
-	n := 0
-	for range seen {
-		n++
-	}
-	return n
 }
 
 // BoundedOptions controls a bounded whole-network traversal.
@@ -356,24 +348,45 @@ func (c *Client) FetchForksBounded(ctx context.Context, owner, repo string, onBa
 		repo  string
 		depth int
 	}
-	queue := []queueEntry{{owner: owner, repo: repo, depth: 0}}
-	visited := map[int64]int{0: -1}
-	seen := map[int64]struct{}{}
+	queue := []queueEntry{{owner: owner, repo: repo}}
+	seen := make(map[int64]struct{})
 	var allForks []ForkInfo
 	var allExtras []T1Extra
 	totalPages := 0
 	cap := CapReasonNone
-	unresolved := 0
+	rootForkCount := 0
 	start := time.Now()
 
+	makeReport := func(errCode string) *forge.AcquisitionReport {
+		unique := len(seen)
+		return &forge.AcquisitionReport{
+			Method:        "graphql",
+			Scope:         "all",
+			APIVersion:    defaultRESTVersion,
+			AuthMode:      authMode,
+			FallbackChain: []string{"graphql"},
+			Pages:         totalPages,
+			RawRows:       len(allForks),
+			UniqueRows:    unique,
+			DuplicateRows: len(allForks) - unique,
+			CaptureAt:     time.Now(),
+			AuthScopeID:   c.AuthScopeID(),
+			VisitedNodes:  unique,
+			MaxNodes:      opts.MaxNodes,
+			MaxDepth:      opts.MaxDepth,
+			CapReason:     cap.String(),
+			Unresolved:    max(rootForkCount-unique, 0),
+			Error:         errCode,
+		}
+	}
 
 	for len(queue) > 0 && cap == CapReasonNone {
 		if time.Since(start) > opts.MaxElapsed {
 			cap = CapReasonMaxElapsed
 			break
 		}
-		if len(visited) >= opts.MaxNodes {
-			cap = CapReasonMaxNodes
+		if totalPages >= opts.MaxPages {
+			cap = CapReasonMaxPages
 			break
 		}
 
@@ -382,12 +395,7 @@ func (c *Client) FetchForksBounded(ctx context.Context, owner, repo string, onBa
 			batch = batch[:4]
 		}
 		queue = queue[len(batch):]
-
 		totalPages++
-		if totalPages > opts.MaxPages {
-			cap = CapReasonMaxPages
-			break
-		}
 
 		aliases := make([]string, len(batch))
 		vars := make(map[string]interface{})
@@ -400,7 +408,7 @@ func (c *Client) FetchForksBounded(ctx context.Context, owner, repo string, onBa
 		query := buildBatchedForksQuery(aliases)
 		var resp gqlAliasBatch
 		if err := c.doGraphQLWithRetry(ctx, query, vars, &resp); err != nil {
-			return allForks, nil, nil, err
+			return allForks, nil, makeReport("graphql_failed"), fmt.Errorf("graphql query: %w", err)
 		}
 
 		for j, alias := range aliases {
@@ -411,7 +419,7 @@ func (c *Client) FetchForksBounded(ctx context.Context, owner, repo string, onBa
 			var node struct {
 				ForkCount int `json:"forkCount"`
 				Forks     struct {
-					TotalCount int          `json:"totalCount"`
+					TotalCount int           `json:"totalCount"`
 					Nodes      []gqlForkNode `json:"nodes"`
 				} `json:"forks"`
 			}
@@ -419,15 +427,25 @@ func (c *Client) FetchForksBounded(ctx context.Context, owner, repo string, onBa
 				continue
 			}
 			depth := batch[j].depth
+			if depth == 0 {
+				rootForkCount = node.ForkCount
+			}
+			var pageForks []ForkInfo
+			var pageExtras []T1Extra
 			for _, f := range node.Forks.Nodes {
-				if _, dup := visited[f.DatabaseID]; dup {
+				if _, duplicate := seen[f.DatabaseID]; duplicate {
 					continue
 				}
-				visited[f.DatabaseID] = depth + 1
+				if len(seen) >= opts.MaxNodes {
+					cap = CapReasonMaxNodes
+					continue
+				}
 				fork, extra := gqlForkToForkInfo(f, 0, 0, authMode, defaultRESTVersion)
 				seen[fork.ID] = struct{}{}
 				allForks = append(allForks, fork)
 				allExtras = append(allExtras, extra)
+				pageForks = append(pageForks, fork)
+				pageExtras = append(pageExtras, extra)
 				if depth+1 < opts.MaxDepth {
 					if f.ForkCount > 0 {
 						parts := strings.SplitN(fork.FullName, "/", 2)
@@ -435,60 +453,23 @@ func (c *Client) FetchForksBounded(ctx context.Context, owner, repo string, onBa
 							queue = append(queue, queueEntry{owner: parts[0], repo: parts[1], depth: depth + 1})
 						}
 					}
-				} else {
+				} else if f.ForkCount > 0 {
 					cap = CapReasonMaxDepth
-					unresolved++
 				}
 			}
-			if onBatch != nil && len(node.Forks.Nodes) > 0 {
-				var bf []ForkInfo
-				var be []T1Extra
-				for _, n := range node.Forks.Nodes {
-					for k, af := range allForks {
-						if af.ID == n.DatabaseID {
-							bf = append(bf, af)
-							if k < len(allExtras) {
-								be = append(be, allExtras[k])
-							}
-							break
-						}
-					}
-				}
-				onBatch(bf, be, depth+1)
+			if onBatch != nil && len(pageForks) > 0 {
+				onBatch(pageForks, pageExtras, depth+1)
 			}
-		}
-
-		if len(batch) > 0 && batch[0].depth >= opts.MaxDepth {
-			cap = CapReasonMaxDepth
 		}
 	}
 
-	unresolved += len(queue)
-	unique := countSeen(seen)
-	report := &forge.AcquisitionReport{
-		Method:         "graphql",
-		Scope:          "all",
-		APIVersion:     defaultRESTVersion,
-		AuthMode:       authMode,
-		FallbackChain:  []string{"graphql"},
-		Pages:          totalPages,
-		RawRows:        len(allForks),
-		UniqueRows:     unique,
-		DuplicateRows:  len(allForks) - unique,
-		CaptureAt:      time.Now(),
-		AuthScopeID:    c.AuthScopeID(),
-		VisitedNodes:   len(visited),
-		MaxNodes:       opts.MaxNodes,
-		MaxDepth:       opts.MaxDepth,
-		CapReason:      cap.String(),
-		Unresolved:     unresolved,
-	}
+	report := makeReport("")
 	allExtras = annotateDepths(allForks, allExtras, owner+"/"+repo)
 	for i := range allExtras {
-		allExtras[i].DirectTotalCount = unique
-		allExtras[i].WholeNetworkForkCount = unique + unresolved
+		allExtras[i].DirectTotalCount = len(seen)
+		allExtras[i].WholeNetworkForkCount = rootForkCount
 	}
-	extrasMap := map[int64]T1Extra{}
+	extrasMap := make(map[int64]T1Extra, len(allForks))
 	for i, f := range allForks {
 		if i < len(allExtras) {
 			extrasMap[f.ID] = allExtras[i]
@@ -496,8 +477,6 @@ func (c *Client) FetchForksBounded(ctx context.Context, owner, repo string, onBa
 	}
 	return allForks, extrasMap, report, nil
 }
-
-
 
 func buildBatchedForksQuery(aliases []string) string {
 	var sb strings.Builder
@@ -637,14 +616,14 @@ func gqlForkToForkInfo(node gqlForkNode, repoForkCount, directTotalCount int, au
 	branches := sortBranches(node.Refs.Nodes, defaultBranch)
 
 	extra := T1Extra{
-		OpenPRCount:          node.PullRequests.TotalCount,
-		ReleaseCount:         node.Releases.TotalCount,
-		TopBranches:          branches,
-		ForkCount:            node.ForkCount,
-		DirectTotalCount:     directTotalCount,
+		OpenPRCount:           node.PullRequests.TotalCount,
+		ReleaseCount:          node.Releases.TotalCount,
+		TopBranches:           branches,
+		ForkCount:             node.ForkCount,
+		DirectTotalCount:      directTotalCount,
 		WholeNetworkForkCount: repoForkCount,
-		AuthMode:             authMode,
-		APIVersion:           apiVersion,
+		AuthMode:              authMode,
+		APIVersion:            apiVersion,
 	}
 
 	if node.Parent != nil {
@@ -656,24 +635,10 @@ func gqlForkToForkInfo(node gqlForkNode, repoForkCount, directTotalCount int, au
 }
 
 // annotateDepths walks the parallel (forks, extras) slices and computes
-// DepthFromRoot, DirectParent, and DepthFromRoot for each fork, relative
-// to the requested network root.
-//
-// Algorithm:
-//  1. Direct children (ParentFullPath == root) get DirectParent=1, DepthFromRoot=1.
-//  2. Children of any fork whose depth is known get DepthFromRoot = parentDepth+1.
-//  3. We repeat step 2 until a full pass produces no changes (fixed-point).
-//     This handles out-of-order input: when a child arrives before its parent
-//     in the slice, the child is updated on a later iteration when the parent
-//     is reached.
-//  4. Cycles: if a node is its own ancestor, the fixed-point never assigns
-//     a finite depth to it (we only ever increase depths, and a cycle produces
-//     no strictly smaller value). It stays at 0 = unknown.
-//  5. Missing parent (parent not in the input set and not the root) leaves
-//     depth at 0.
-//
-// The fourth argument is reserved for future use (e.g., a pre-computed
-// parent map from a separate pass) and is currently unused.
+// DepthFromRoot and DirectParent relative to the requested network root.
+// It builds a parent-to-children index, then breadth-first propagates depth from
+// direct children. Cycles and missing parents are never reached, so stay at the
+// zero value (unknown).
 func annotateDepths(forks []ForkInfo, extras []T1Extra, root string) []T1Extra {
 	if len(forks) == 0 {
 		return nil
@@ -682,53 +647,36 @@ func annotateDepths(forks []ForkInfo, extras []T1Extra, root string) []T1Extra {
 		return extras
 	}
 
-	// Step 1: direct children of root.
+	children := make(map[int64][]int, len(forks))
+	queue := make([]int, 0, len(forks))
 	for i := range extras {
 		if extras[i].ParentFullPath == root {
 			extras[i].DirectParent = 1
 			extras[i].DepthFromRoot = 1
+			queue = append(queue, i)
+		}
+		if extras[i].ParentDatabaseID != 0 {
+			children[extras[i].ParentDatabaseID] = append(children[extras[i].ParentDatabaseID], i)
 		}
 	}
 
-	// Step 2: build databaseId → index map for the recursive propagation.
-	idToIdx := make(map[int64]int, len(forks))
-	for i, f := range forks {
-		if f.ID != 0 {
-			idToIdx[f.ID] = i
+	for len(queue) > 0 {
+		i := queue[0]
+		queue = queue[1:]
+		if forks[i].ID == 0 {
+			continue
 		}
-	}
-
-	// Step 3: fixed-point propagation. For each node with a known depth,
-	// find any child whose ParentDatabaseID points at this node and set the
-	// child's depth to extras[i].DepthFromRoot + 1.
-	for changed := true; changed; {
-		changed = false
-		for i := range forks {
-			if extras[i].DepthFromRoot == 0 {
-				continue // unknown depth; cannot propagate
-			}
-			myID := forks[i].ID
-			if myID == 0 {
-				continue
-			}
-			for j := range extras {
-				if extras[j].ParentDatabaseID == myID {
-					candidate := extras[i].DepthFromRoot + 1
-					if extras[j].DepthFromRoot == 0 || extras[j].DepthFromRoot > candidate {
-						extras[j].DepthFromRoot = candidate
-						changed = true
-					}
-				}
+		for _, child := range children[forks[i].ID] {
+			candidate := extras[i].DepthFromRoot + 1
+			if extras[child].DepthFromRoot == 0 || extras[child].DepthFromRoot > candidate {
+				extras[child].DepthFromRoot = candidate
+				queue = append(queue, child)
 			}
 		}
 	}
-
 	return extras
 }
 
-// extractTopicNames flattens a `repositoryTopics.nodes` payload into a
-// []string. Returns nil when the input is empty so JSON output stays
-// idiomatic ("topics": null) rather than carrying a zero-length slice.
 func extractTopicNames(nodes []struct {
 	Topic struct {
 		Name string `json:"name"`
@@ -894,7 +842,7 @@ func (c *Client) FetchForksAuto(ctx context.Context, owner, repo string, onPage 
 			for _, f := range merged {
 				seen[f.ID] = struct{}{}
 			}
-			report.UniqueRows = countSeen(seen)
+			report.UniqueRows = len(seen)
 			report.DuplicateRows = report.RawRows - report.UniqueRows
 			return merged, nil, report, nil
 		}
@@ -949,8 +897,8 @@ func (c *Client) FetchForksAuto(ctx context.Context, owner, repo string, onPage 
 		FallbackChain: []string{"rest"},
 		Pages:         restPages,
 		RawRows:       restRawRows,
-		UniqueRows:    countSeen(seen),
-		DuplicateRows: len(restForks) - countSeen(seen),
+		UniqueRows:    len(seen),
+		DuplicateRows: len(restForks) - len(seen),
 		CaptureAt:     time.Now(),
 		AuthScopeID:   c.AuthScopeID(),
 	}
