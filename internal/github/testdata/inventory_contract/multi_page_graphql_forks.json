@@ -1,0 +1,1012 @@
+{
+  "pages": [
+    {
+      "page": 1,
+      "data": {
+        "repository": {
+          "forks": {
+            "totalCount": 88,
+            "pageInfo": {
+              "hasNextPage": true,
+              "endCursor": "cursor-page1"
+            },
+            "nodes": [
+              {
+                "databaseId": 1001,
+                "nameWithOwner": "user01/repo-fork-01",
+                "name": "repo-fork-01",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1002,
+                "nameWithOwner": "user02/repo-fork-02",
+                "name": "repo-fork-02",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1003,
+                "nameWithOwner": "user03/repo-fork-03",
+                "name": "repo-fork-03",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1004,
+                "nameWithOwner": "user04/repo-fork-04",
+                "name": "repo-fork-04",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1005,
+                "nameWithOwner": "user05/repo-fork-05",
+                "name": "repo-fork-05",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1006,
+                "nameWithOwner": "user06/repo-fork-06",
+                "name": "repo-fork-06",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1007,
+                "nameWithOwner": "user07/repo-fork-07",
+                "name": "repo-fork-07",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1008,
+                "nameWithOwner": "user08/repo-fork-08",
+                "name": "repo-fork-08",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1009,
+                "nameWithOwner": "user09/repo-fork-09",
+                "name": "repo-fork-09",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1010,
+                "nameWithOwner": "user10/repo-fork-10",
+                "name": "repo-fork-10",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1011,
+                "nameWithOwner": "user11/repo-fork-11",
+                "name": "repo-fork-11",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1012,
+                "nameWithOwner": "user12/repo-fork-12",
+                "name": "repo-fork-12",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1013,
+                "nameWithOwner": "user13/repo-fork-13",
+                "name": "repo-fork-13",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1014,
+                "nameWithOwner": "user14/repo-fork-14",
+                "name": "repo-fork-14",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1015,
+                "nameWithOwner": "user15/repo-fork-15",
+                "name": "repo-fork-15",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1016,
+                "nameWithOwner": "user16/repo-fork-16",
+                "name": "repo-fork-16",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1017,
+                "nameWithOwner": "user17/repo-fork-17",
+                "name": "repo-fork-17",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1018,
+                "nameWithOwner": "user18/repo-fork-18",
+                "name": "repo-fork-18",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1019,
+                "nameWithOwner": "user19/repo-fork-19",
+                "name": "repo-fork-19",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1020,
+                "nameWithOwner": "user20/repo-fork-20",
+                "name": "repo-fork-20",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1021,
+                "nameWithOwner": "user21/repo-fork-21",
+                "name": "repo-fork-21",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1022,
+                "nameWithOwner": "user22/repo-fork-22",
+                "name": "repo-fork-22",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1023,
+                "nameWithOwner": "user23/repo-fork-23",
+                "name": "repo-fork-23",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1024,
+                "nameWithOwner": "user24/repo-fork-24",
+                "name": "repo-fork-24",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1025,
+                "nameWithOwner": "user25/repo-fork-25",
+                "name": "repo-fork-25",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1026,
+                "nameWithOwner": "user26/repo-fork-26",
+                "name": "repo-fork-26",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1027,
+                "nameWithOwner": "user27/repo-fork-27",
+                "name": "repo-fork-27",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1028,
+                "nameWithOwner": "user28/repo-fork-28",
+                "name": "repo-fork-28",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1029,
+                "nameWithOwner": "user29/repo-fork-29",
+                "name": "repo-fork-29",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1030,
+                "nameWithOwner": "user30/repo-fork-30",
+                "name": "repo-fork-30",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1031,
+                "nameWithOwner": "user31/repo-fork-31",
+                "name": "repo-fork-31",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1032,
+                "nameWithOwner": "user32/repo-fork-32",
+                "name": "repo-fork-32",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1033,
+                "nameWithOwner": "user33/repo-fork-33",
+                "name": "repo-fork-33",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1034,
+                "nameWithOwner": "user34/repo-fork-34",
+                "name": "repo-fork-34",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1035,
+                "nameWithOwner": "user35/repo-fork-35",
+                "name": "repo-fork-35",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1036,
+                "nameWithOwner": "user36/repo-fork-36",
+                "name": "repo-fork-36",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1037,
+                "nameWithOwner": "user37/repo-fork-37",
+                "name": "repo-fork-37",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1038,
+                "nameWithOwner": "user38/repo-fork-38",
+                "name": "repo-fork-38",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1039,
+                "nameWithOwner": "user39/repo-fork-39",
+                "name": "repo-fork-39",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1040,
+                "nameWithOwner": "user40/repo-fork-40",
+                "name": "repo-fork-40",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1041,
+                "nameWithOwner": "user41/repo-fork-41",
+                "name": "repo-fork-41",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1042,
+                "nameWithOwner": "user42/repo-fork-42",
+                "name": "repo-fork-42",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1043,
+                "nameWithOwner": "user43/repo-fork-43",
+                "name": "repo-fork-43",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1044,
+                "nameWithOwner": "user44/repo-fork-44",
+                "name": "repo-fork-44",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1045,
+                "nameWithOwner": "user45/repo-fork-45",
+                "name": "repo-fork-45",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1046,
+                "nameWithOwner": "user46/repo-fork-46",
+                "name": "repo-fork-46",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1047,
+                "nameWithOwner": "user47/repo-fork-47",
+                "name": "repo-fork-47",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1048,
+                "nameWithOwner": "user48/repo-fork-48",
+                "name": "repo-fork-48",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1049,
+                "nameWithOwner": "user49/repo-fork-49",
+                "name": "repo-fork-49",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              },
+              {
+                "databaseId": 1050,
+                "nameWithOwner": "user50/repo-fork-50",
+                "name": "repo-fork-50",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-06-01T00:00:00Z"
+              }
+            ]
+          },
+          "forkCount": 88,
+          "rateLimit": {
+            "cost": 1
+          }
+        }
+      }
+    },
+    {
+      "page": 2,
+      "data": {
+        "repository": {
+          "forks": {
+            "totalCount": 88,
+            "pageInfo": {
+              "hasNextPage": false,
+              "endCursor": null
+            },
+            "nodes": [
+              {
+                "databaseId": 1051,
+                "nameWithOwner": "user51/repo-fork-51",
+                "name": "repo-fork-51",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-05-15T00:00:00Z"
+              },
+              {
+                "databaseId": 1052,
+                "nameWithOwner": "user52/repo-fork-52",
+                "name": "repo-fork-52",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-05-15T00:00:00Z"
+              },
+              {
+                "databaseId": 1053,
+                "nameWithOwner": "user53/repo-fork-53",
+                "name": "repo-fork-53",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-05-15T00:00:00Z"
+              },
+              {
+                "databaseId": 1054,
+                "nameWithOwner": "user54/repo-fork-54",
+                "name": "repo-fork-54",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-05-15T00:00:00Z"
+              },
+              {
+                "databaseId": 1055,
+                "nameWithOwner": "user55/repo-fork-55",
+                "name": "repo-fork-55",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-05-15T00:00:00Z"
+              },
+              {
+                "databaseId": 1056,
+                "nameWithOwner": "user56/repo-fork-56",
+                "name": "repo-fork-56",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-05-15T00:00:00Z"
+              },
+              {
+                "databaseId": 1057,
+                "nameWithOwner": "user57/repo-fork-57",
+                "name": "repo-fork-57",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-05-15T00:00:00Z"
+              },
+              {
+                "databaseId": 1058,
+                "nameWithOwner": "user58/repo-fork-58",
+                "name": "repo-fork-58",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-05-15T00:00:00Z"
+              },
+              {
+                "databaseId": 1059,
+                "nameWithOwner": "user59/repo-fork-59",
+                "name": "repo-fork-59",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-05-15T00:00:00Z"
+              },
+              {
+                "databaseId": 1060,
+                "nameWithOwner": "user60/repo-fork-60",
+                "name": "repo-fork-60",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-05-15T00:00:00Z"
+              },
+              {
+                "databaseId": 1061,
+                "nameWithOwner": "user61/repo-fork-61",
+                "name": "repo-fork-61",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-05-15T00:00:00Z"
+              },
+              {
+                "databaseId": 1062,
+                "nameWithOwner": "user62/repo-fork-62",
+                "name": "repo-fork-62",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-05-15T00:00:00Z"
+              },
+              {
+                "databaseId": 1063,
+                "nameWithOwner": "user63/repo-fork-63",
+                "name": "repo-fork-63",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-05-15T00:00:00Z"
+              },
+              {
+                "databaseId": 1064,
+                "nameWithOwner": "user64/repo-fork-64",
+                "name": "repo-fork-64",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-05-15T00:00:00Z"
+              },
+              {
+                "databaseId": 1065,
+                "nameWithOwner": "user65/repo-fork-65",
+                "name": "repo-fork-65",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-05-15T00:00:00Z"
+              },
+              {
+                "databaseId": 1066,
+                "nameWithOwner": "user66/repo-fork-66",
+                "name": "repo-fork-66",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-05-15T00:00:00Z"
+              },
+              {
+                "databaseId": 1067,
+                "nameWithOwner": "user67/repo-fork-67",
+                "name": "repo-fork-67",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-05-15T00:00:00Z"
+              },
+              {
+                "databaseId": 1068,
+                "nameWithOwner": "user68/repo-fork-68",
+                "name": "repo-fork-68",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-05-15T00:00:00Z"
+              },
+              {
+                "databaseId": 1069,
+                "nameWithOwner": "user69/repo-fork-69",
+                "name": "repo-fork-69",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-05-15T00:00:00Z"
+              },
+              {
+                "databaseId": 1070,
+                "nameWithOwner": "user70/repo-fork-70",
+                "name": "repo-fork-70",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-05-15T00:00:00Z"
+              },
+              {
+                "databaseId": 1071,
+                "nameWithOwner": "user71/repo-fork-71",
+                "name": "repo-fork-71",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-05-15T00:00:00Z"
+              },
+              {
+                "databaseId": 1072,
+                "nameWithOwner": "user72/repo-fork-72",
+                "name": "repo-fork-72",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-05-15T00:00:00Z"
+              },
+              {
+                "databaseId": 1073,
+                "nameWithOwner": "user73/repo-fork-73",
+                "name": "repo-fork-73",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-05-15T00:00:00Z"
+              },
+              {
+                "databaseId": 1074,
+                "nameWithOwner": "user74/repo-fork-74",
+                "name": "repo-fork-74",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-05-15T00:00:00Z"
+              },
+              {
+                "databaseId": 1075,
+                "nameWithOwner": "user75/repo-fork-75",
+                "name": "repo-fork-75",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-05-15T00:00:00Z"
+              },
+              {
+                "databaseId": 1076,
+                "nameWithOwner": "user76/repo-fork-76",
+                "name": "repo-fork-76",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-05-15T00:00:00Z"
+              },
+              {
+                "databaseId": 1077,
+                "nameWithOwner": "user77/repo-fork-77",
+                "name": "repo-fork-77",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-05-15T00:00:00Z"
+              },
+              {
+                "databaseId": 1078,
+                "nameWithOwner": "user78/repo-fork-78",
+                "name": "repo-fork-78",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-05-15T00:00:00Z"
+              },
+              {
+                "databaseId": 1079,
+                "nameWithOwner": "user79/repo-fork-79",
+                "name": "repo-fork-79",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-05-15T00:00:00Z"
+              },
+              {
+                "databaseId": 1080,
+                "nameWithOwner": "user80/repo-fork-80",
+                "name": "repo-fork-80",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-05-15T00:00:00Z"
+              },
+              {
+                "databaseId": 1081,
+                "nameWithOwner": "user81/repo-fork-81",
+                "name": "repo-fork-81",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-05-15T00:00:00Z"
+              },
+              {
+                "databaseId": 1082,
+                "nameWithOwner": "user82/repo-fork-82",
+                "name": "repo-fork-82",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-05-15T00:00:00Z"
+              },
+              {
+                "databaseId": 1083,
+                "nameWithOwner": "user83/repo-fork-83",
+                "name": "repo-fork-83",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-05-15T00:00:00Z"
+              },
+              {
+                "databaseId": 1084,
+                "nameWithOwner": "user84/repo-fork-84",
+                "name": "repo-fork-84",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-05-15T00:00:00Z"
+              },
+              {
+                "databaseId": 1085,
+                "nameWithOwner": "user85/repo-fork-85",
+                "name": "repo-fork-85",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-05-15T00:00:00Z"
+              },
+              {
+                "databaseId": 1086,
+                "nameWithOwner": "user86/repo-fork-86",
+                "name": "repo-fork-86",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-05-15T00:00:00Z"
+              },
+              {
+                "databaseId": 1087,
+                "nameWithOwner": "user87/repo-fork-87",
+                "name": "repo-fork-87",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-05-15T00:00:00Z"
+              },
+              {
+                "databaseId": 1088,
+                "nameWithOwner": "user88/repo-fork-88",
+                "name": "repo-fork-88",
+                "forkCount": 0,
+                "parent": {
+                  "nameWithOwner": "octo/root",
+                  "databaseId": 1000
+                },
+                "pushedAt": "2025-05-15T00:00:00Z"
+              }
+            ]
+          },
+          "forkCount": 88,
+          "rateLimit": {
+            "cost": 1
+          }
+        }
+      }
+    }
+  ]
+}

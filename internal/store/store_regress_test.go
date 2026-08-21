@@ -396,3 +396,156 @@ func TestStoreDSN(t *testing.T) {
 		t.Fatalf("windows DSN path = %q, want /C:/Users/u/spoon.db (from %q)", u.Path, got)
 	}
 }
+
+// v4Store builds a store at user_version=4 with the v4-only repos columns
+// and one row carrying values in every column. It simulates the state left
+// behind by a binary that knows schemaV4 but cannot be re-run on a host
+// that only ships an older binary (e.g. main). The test then exercises the
+// Store.Downgrade path and asserts the user-visible data is preserved.
+func v4Store(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "spoon.db")
+	// Open brings the store to SchemaVersion (4 on this branch), so we cannot
+	// add the v4 columns from schemaV4 again. Instead simulate "one step
+	// ahead" by adding a single fake column and stamping user_version one
+	// past SchemaVersion, mimicking a binary that knows one more step.
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if _, err := s.db.ExecContext(context.Background(),
+		`ALTER TABLE repos ADD COLUMN future_v5_col TEXT NOT NULL DEFAULT ''`); err != nil {
+		s.Close()
+		t.Fatalf("add future column: %v", err)
+	}
+	if _, err := s.db.ExecContext(context.Background(),
+		fmt.Sprintf("PRAGMA user_version=%d", SchemaVersion+1)); err != nil {
+		s.Close()
+		t.Fatalf("stamp future: %v", err)
+	}
+	if _, err := s.db.ExecContext(context.Background(),
+		`INSERT INTO repos(provider, host, owner, name, first_seen, last_seen,
+			parent_json, forks_synced_at, future_v5_col)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"github", "github.com", "stablyai", "orca",
+		"2026-01-01T00:00:00Z", "2026-02-01T00:00:00Z",
+		"", "", "future-v5-value"); err != nil {
+		s.Close()
+		t.Fatalf("insert row: %v", err)
+	}
+	s.Close()
+	return path
+}
+
+// TestDowngradeV4ToV3PreservesData is the contract: an older binary opens
+// a v4 store, detects the schema mismatch, runs Downgrade, and the original
+// repo row is still readable. The v4-only columns must end up in
+// repos_v4backup, not destroyed.
+func TestDowngradeV4ToV3PreservesData(t *testing.T) {
+	if !SupportsDowngrade() {
+		t.Skip("binary does not carry a downgrade recipe")
+	}
+	path := v4Store(t)
+
+	// Reopen as if a v3-only binary: initialize sees user_version=4 > 3
+	// and must return ErrSchemaNewerThanSupported wrapped around the
+	// existing message.
+	_, err := Open(path)
+	if err == nil {
+		t.Fatal("expected schema-newer error from Open, got nil")
+	}
+	if !errors.Is(err, ErrSchemaNewerThanSupported) {
+		t.Fatalf("err is not ErrSchemaNewerThanSupported: %v", err)
+	}
+
+	// Open refuses a v5 store, so the CLI opens via OpenForDowngrade and
+	// runs the recipe before the normal Open path takes over.
+	s, err := OpenForDowngrade(path)
+	if err != nil {
+		t.Fatalf("OpenForDowngrade: %v", err)
+	}
+	if err := s.Downgrade(context.Background()); err != nil {
+		s.Close()
+		t.Fatalf("Downgrade: %v", err)
+	}
+	s.Close()
+
+	// After downgrade the store must reopen cleanly with no error.
+	s, err = Open(path)
+	if err != nil {
+		t.Fatalf("reopen after downgrade: %v", err)
+	}
+	defer s.Close()
+
+	// user_version must now be SchemaVersion.
+	var v int
+	if err := s.db.QueryRowContext(context.Background(), "PRAGMA user_version").Scan(&v); err != nil {
+		t.Fatalf("read user_version: %v", err)
+	}
+	if v != SchemaVersion {
+		t.Errorf("user_version = %d, want %d", v, SchemaVersion)
+	}
+
+	// v4-only columns must be gone from the live table.
+	rows, err := s.db.QueryContext(context.Background(), "PRAGMA table_info(repos)")
+	if err != nil {
+		t.Fatalf("table_info: %v", err)
+	}
+	have := map[string]bool{}
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, dflt, pk *string
+		_ = rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk)
+		have[name] = true
+	}
+	rows.Close()
+	if have["future_v5_col"] {
+		t.Errorf("live repos table still has v4 column future_v5_col")
+	}
+
+	// The original repo row is still readable, and the dropped columns
+	// are preserved in repos_v4backup.
+	var provider, host, owner, name, apiVer string
+	if err := s.db.QueryRowContext(context.Background(),
+		"SELECT provider, host, owner, name FROM repos WHERE owner=? AND name=?",
+		"stablyai", "orca",
+	).Scan(&provider, &host, &owner, &name); err != nil {
+		t.Fatalf("read repos row: %v", err)
+	}
+	if provider != "github" || owner != "stablyai" || name != "orca" {
+		t.Errorf("repos row = %s/%s/%s/%s, want github/github.com/stablyai/orca",
+			provider, host, owner, name)
+	}
+	if err := s.db.QueryRowContext(context.Background(),
+		fmt.Sprintf("SELECT future_v5_col FROM repos_v%dbackup WHERE owner=? AND name=?", SchemaVersion+1),
+		"stablyai", "orca",
+	).Scan(&apiVer); err != nil {
+		t.Fatalf("read repos_v4backup: %v", err)
+	}
+	if apiVer != "future-v5-value" {
+		t.Errorf("v4backup future_v5_col = %q, want future-v5-value", apiVer)
+	}
+}
+
+// TestDowngradeIdempotent: re-running Downgrade on an already-downgraded
+// store is a no-op and must not error.
+func TestDowngradeIdempotent(t *testing.T) {
+	if !SupportsDowngrade() {
+		t.Skip("binary does not carry a downgrade recipe")
+	}
+	path := v4Store(t)
+	s, err := OpenForDowngrade(path)
+	if err != nil {
+		t.Fatalf("OpenForDowngrade: %v", err)
+	}
+	if err := s.Downgrade(context.Background()); err != nil {
+		s.Close()
+		t.Fatalf("first Downgrade: %v", err)
+	}
+	if err := s.Downgrade(context.Background()); err != nil {
+		s.Close()
+		t.Fatalf("second Downgrade: %v", err)
+	}
+	s.Close()
+}

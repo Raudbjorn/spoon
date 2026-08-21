@@ -3,6 +3,8 @@ package github
 import "time"
 
 // RepoInfo represents a GitHub repository (used for the parent repo).
+// Source and Parent are populated only for forks (GitHub REST returns them
+// only when Fork=true). For non-fork roots both are zero/nil.
 type RepoInfo struct {
 	ID            int64    `json:"id"`
 	FullName      string   `json:"full_name"`
@@ -33,6 +35,7 @@ type RepoInfo struct {
 
 // RepoRef is the nested repository object on GET /repos parent/source.
 type RepoRef struct {
+	ID            int64  `json:"id"`
 	FullName      string `json:"full_name"`
 	DefaultBranch string `json:"default_branch"`
 }
@@ -181,7 +184,10 @@ type AuthStatus struct {
 	TokenSource         string   // "gh", "env", "none"
 	Scopes              []string // OAuth scopes attached to the token (empty if unauthenticated)
 	RateLimit           RateLimit
-	DuplicateIdentities int // configured tokens collapsed because they resolve to the same login
+	DuplicateIdentities int    // configured tokens collapsed because they resolve to the same login
+	AuthScopeID         string // non-reversible scope fingerprint (first 16 hex of SHA-256)
+	APIVersion          string // pinned REST API version for storage (github/<date>). HTTP wire uses defaultRESTVersion.
+	AuthMode            string // "authenticated" or "anonymous"
 }
 
 // T1Extra holds additional data from the GraphQL T1 query not in the REST ForkInfo.
@@ -197,6 +203,43 @@ type T1Extra struct {
 	// BranchFingerprint identifies the fork's divergent work by its branch tip
 	// OIDs; two forks sharing one carry identical work.
 	BranchFingerprint string `json:"BranchFingerprint,omitempty"`
+
+	// ForkCount is this fork's own fork count (a property of the node itself,
+	// not the parent repository). Populated only on the GraphQL path.
+	ForkCount int `json:"ForkCount,omitempty"`
+
+	// DirectTotalCount is the parent's total fork count (forks.totalCount in
+	// the GraphQL root). It is identical across every fork in a single run,
+	// so it doubles as a "true total" sanity check against the streamed list.
+	DirectTotalCount int `json:"DirectTotalCount,omitempty"`
+
+	// WholeNetworkForkCount is the root repository's forkCount from
+	// GraphQL — the whole-network count, not just direct children.
+	WholeNetworkForkCount int `json:"WholeNetworkForkCount,omitempty"`
+
+	// ParentFullPath is the direct parent's "owner/name". Empty when the
+	// parent is unknown (REST path, missing parent payload, or root).
+	ParentFullPath string `json:"ParentFullPath,omitempty"`
+
+	// ParentDatabaseID is the direct parent's databaseId. Zero when unknown.
+	ParentDatabaseID int64 `json:"ParentDatabaseID,omitempty"`
+
+	// DirectParent is 1 when this fork's direct parent is the requested
+	// root (depth 1), 0 otherwise. Zero is also the "unknown" value
+	// (REST path, missing parent, cycle).
+	DirectParent int `json:"DirectParent,omitempty"`
+
+	// DepthFromRoot is the edge count from the requested root: 1=direct
+	// child, 2=child of a fork, etc. Zero is the "unknown" value.
+	DepthFromRoot int `json:"DepthFromRoot,omitempty"`
+
+	// AuthMode is "authenticated" or "anonymous" for the run that produced
+	// this record. Populated only on the GraphQL path.
+	AuthMode string `json:"AuthMode,omitempty"`
+
+	// APIVersion is the pinned REST version that backs this client. It is
+	// informational only; the GraphQL endpoint does not negotiate versions.
+	APIVersion string `json:"APIVersion,omitempty"`
 }
 
 // BranchInfo describes a branch with its last commit timestamp.

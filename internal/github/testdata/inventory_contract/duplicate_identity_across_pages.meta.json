@@ -1,0 +1,6 @@
+{
+  "version": "2022-11-28",
+  "schema": "Repository.forks pagination deduplication",
+  "reason": "Defends cross-page identity deduplication: the same databaseId must appear only once across paginated results, even if the API returns duplicates.",
+  "commit": "ca00cb8cb48f05877f77ab3e36175bb27ae6c2c6"
+}

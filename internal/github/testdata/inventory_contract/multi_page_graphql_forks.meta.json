@@ -1,0 +1,6 @@
+{
+  "version": "2022-11-28",
+  "schema": "Repository.forks pagination",
+  "reason": "Defends multi-page GraphQL fork enumeration with hasNextPage cursor pagination and correct page counting.",
+  "commit": "ca00cb8cb48f05877f77ab3e36175bb27ae6c2c6"
+}

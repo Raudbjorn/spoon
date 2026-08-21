@@ -50,6 +50,7 @@ func (f *fakeForge) ListForks(_ context.Context, _, _ string) (<-chan forge.Fork
 	close(ch)
 	return ch, nil
 }
+
 func (f *fakeForge) Branches(_ context.Context, fk forge.T1Data, _ int) ([]forge.BranchRef, error) {
 	return []forge.BranchRef{{Name: fk.DefaultBranch}}, nil
 }
@@ -1062,4 +1063,90 @@ func firstID(rs []Result) string {
 		return ""
 	}
 	return rs[0].Fork.ID
+}
+
+// TestStreamEmitsLineageAndCoverage verifies that Result.Lineage and
+// Result.Coverage are populated from T1Data fields at the Result construction
+// site in Stream(). Uses fixture values: direct=118, whole=128, unresolved=10,
+// and parent="chunkhound/chunkhound" (depth=1, direct child).
+func TestStreamEmitsLineageAndCoverage(t *testing.T) {
+	// fakeForge already implements ListForks; populate T1Data with fixture values
+	// so Stream() populates Result.Lineage/Coverage from them.
+	fake := &fakeForge{
+		parent: forge.ParentData{
+			FullName:      "chunkhound/chunkhound",
+			DefaultBranch: "main",
+			PushedAt:      time.Now(),
+		},
+		forks: []forge.T1Data{
+			{
+				ID:                   "alice/chunkhound-fork-1",
+				Owner:                "alice",
+				Name:                 "chunkhound-fork-1",
+				URL:                  "https://github.com/alice/chunkhound-fork-1",
+				DefaultBranch:        "main",
+				Stars:                10,
+				PushedAt:             time.Now(),
+				SourceFullPath:       "chunkhound/chunkhound",
+				ParentFullPath:       "chunkhound/chunkhound",
+				DepthFromRoot:        1,
+				DirectTotalCount:     118,
+				WholeNetworkForkCount: 128,
+				SubForkCount:         5,
+			},
+			{
+				ID:                   "bob/chunkhound-fork-2",
+				Owner:                "bob",
+				Name:                 "chunkhound-fork-2",
+				URL:                  "https://github.com/bob/chunkhound-fork-2",
+				DefaultBranch:        "main",
+				Stars:                5,
+				PushedAt:             time.Now(),
+				SourceFullPath:       "chunkhound/chunkhound",
+				ParentFullPath:       "chunkhound/chunkhound",
+				DepthFromRoot:        1,
+				DirectTotalCount:     118,
+				WholeNetworkForkCount: 128,
+				SubForkCount:         0,
+			},
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ch, err := Stream(ctx, fake, "chunkhound", "chunkhound", Options{})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	var results []Result
+	for r := range ch {
+		results = append(results, r)
+	}
+
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+
+	for _, r := range results {
+		if r.Lineage.NetworkRoot != "chunkhound/chunkhound" {
+			t.Errorf("Lineage.NetworkRoot: got %q, want %q", r.Lineage.NetworkRoot, "chunkhound/chunkhound")
+		}
+		if r.Lineage.DirectParent != "chunkhound/chunkhound" {
+			t.Errorf("Lineage.DirectParent: got %q, want %q", r.Lineage.DirectParent, "chunkhound/chunkhound")
+		}
+		if r.Lineage.DepthFromRoot != 1 {
+			t.Errorf("Lineage.DepthFromRoot: got %d, want 1 (direct child)", r.Lineage.DepthFromRoot)
+		}
+		if r.Coverage.DirectTotalCount != 118 {
+			t.Errorf("Coverage.DirectTotalCount: got %d, want 118", r.Coverage.DirectTotalCount)
+		}
+		if r.Coverage.WholeNetworkForkCount != 128 {
+			t.Errorf("Coverage.WholeNetworkForkCount: got %d, want 128", r.Coverage.WholeNetworkForkCount)
+		}
+		if r.Coverage.Unresolved != 10 {
+			t.Errorf("Coverage.Unresolved: got %d, want 10", r.Coverage.Unresolved)
+		}
+	}
 }

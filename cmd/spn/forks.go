@@ -143,7 +143,9 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 	// REST/GraphQL-only branch scan doesn't have. REST stays the default.
 	localBranchScanEnabled := os.Getenv("SPOON_LOCAL_BRANCH_SCAN") == "1"
 	csvMode := false
+	var acquisitionReport forge.AcquisitionReport
 	opts := forksops.Options{
+		Report: &acquisitionReport,
 		Now: deps.now,
 		// Default: clustering enabled — the built-in embedder is always
 		// available, so this never blocks on external services.
@@ -407,7 +409,61 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 			}
 			opts.OwnerCacheTTL = d
 			ownerCacheTTLSet = true
+		case "--network-scope":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--network-scope requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			switch args[i] {
+			case "direct":
+				opts.NetworkScope = "direct"
+			case "all":
+				opts.NetworkScope = "all"
+			default:
+				return agentio.NewError(agentio.CodeBadInput, "--network-scope must be \"direct\" or \"all\"", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+		case "--network-max-nodes":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--network-max-nodes requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n <= 0 {
+				return agentio.NewError(agentio.CodeBadInput, "--network-max-nodes must be a positive integer", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			opts.NetworkMaxNodes = n
+		case "--network-max-depth":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--network-max-depth requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			d, err := strconv.Atoi(args[i])
+			if err != nil || d < 0 {
+				return agentio.NewError(agentio.CodeBadInput, "--network-max-depth must be a non-negative integer", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			opts.NetworkMaxDepth = d
+		case "--network-max-pages":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--network-max-pages requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			p, err := strconv.Atoi(args[i])
+			if err != nil || p <= 0 {
+				return agentio.NewError(agentio.CodeBadInput, "--network-max-pages must be a positive integer", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			opts.NetworkMaxPages = p
+		case "--network-max-elapsed":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--network-max-elapsed requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			e, err := time.ParseDuration(args[i])
+			if err != nil || e < 0 {
+				return agentio.NewError(agentio.CodeBadInput, "--network-max-elapsed must be a valid Go duration (e.g. 2m, 5m)", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			opts.NetworkMaxElapsed = e
 		case "--":
+
 			// POSIX flag/positional separator: everything after is positional.
 			if i+1 >= len(args) {
 				return agentio.NewError(agentio.CodeBadInput, "missing repository argument after --", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
@@ -470,6 +526,21 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 	// refresh path stays intact.
 	if !ownerCacheTTLSet && !opts.Refresh {
 		opts.OwnerCacheTTL = 24 * time.Hour
+	}
+
+	// Default the network traversal caps to their planned values when not explicitly set.
+	// The zero-value check covers both "never mentioned" and "set to 0 explicitly".
+	if opts.NetworkMaxNodes == 0 {
+		opts.NetworkMaxNodes = 5000
+	}
+	if opts.NetworkMaxDepth == 0 {
+		opts.NetworkMaxDepth = 3
+	}
+	if opts.NetworkMaxPages == 0 {
+		opts.NetworkMaxPages = 200
+	}
+	if opts.NetworkMaxElapsed == 0 {
+		opts.NetworkMaxElapsed = 2 * time.Minute
 	}
 
 	// fastembed is the only embedder and runs by default: it powers
@@ -692,6 +763,9 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 	opts.CachedT2 = storeCachedT2(ctx, db, auth, owner, name, opts.Refresh)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	if opts.Report != nil {
+		*opts.Report = forge.AcquisitionReport{}
+	}
 	ch, streamErr := forksops.Stream(ctx, provider, owner, name, opts)
 	if streamErr != nil {
 		var rejected *gh.AllBackendsRejectedError
@@ -717,6 +791,7 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 	if csvMode {
 		code := emitForksCSV(ctx, db, auth, owner, name, semanticModelID, stdout, stderr, ch)
 		if code == 0 {
+			emitAcquisitionReport(stderr, opts.Report)
 			// CSV scans persist documents too; index them like the NDJSON path.
 			emitSemanticIndexWarning(ctx, db, searchEmbedders, stderr)
 		}
@@ -765,6 +840,7 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 			"remediation": "Re-run after the rate window resets to backfill (cached compares resume), or set SPOON_NO_RESERVE=1 to drain the full budget.",
 		}})
 	}
+	emitAcquisitionReport(stderr, opts.Report)
 	emitSemanticIndexWarning(ctx, db, searchEmbedders, stderr)
 	return 0
 }
@@ -782,7 +858,8 @@ func storeCachedT2(ctx context.Context, db *store.Store, auth forge.AuthInfo, ow
 	if host == "" {
 		host = forge.DefaultHost(auth.Provider)
 	}
-	snap, err := db.LoadRepoSnapshot(ctx, auth.Provider.String(), host, owner, name)
+	snap, err := db.LoadRepoSnapshotExact(ctx, auth.Provider.String(), host, owner, name,
+		auth.APIVersion, auth.AuthMode, auth.AuthScopeID)
 	if err != nil || snap == nil {
 		return nil
 	}
@@ -803,14 +880,25 @@ func persistForkSnapshot(ctx context.Context, db *store.Store, auth forge.AuthIn
 	}
 	snapshot := store.Snapshot{
 		Repo: store.RepoRecord{
-			Provider: auth.Provider.String(), Host: host, Owner: owner, Name: name,
-			FirstSeen: firstSeen, LastSeen: now,
+			Provider:           auth.Provider.String(),
+			Host:               host,
+			Owner:              owner,
+			Name:               name,
+			FirstSeen:          firstSeen,
+			LastSeen:           now,
+			APIVersion:         auth.APIVersion,
+			AcquisitionMethod:   auth.AuthMode,
+			AuthScopeID:        auth.AuthScopeID,
 		},
 		Fork: store.ForkRecord{
 			ForgeID: r.Fork.ID, Owner: r.Fork.Owner, Name: r.Fork.Name, URL: r.Fork.URL,
 			Description: r.Fork.Description, Language: r.Fork.Language, Topics: r.Fork.Topics,
 			Stars: r.Fork.Stars, PushedAt: r.Fork.PushedAt, Heat: r.Heat.Score,
 			Tier: r.Heat.Tier, UpdatedAt: now,
+			// Linear-history scalars lifted from r.Fork so the CLI upsert
+			// writes the same columns the TUI sweep produces.
+			MergeCommits:        r.Fork.MergeCommits,
+			MergeCommitTruncated: r.Fork.MergeCommitTruncated,
 		},
 		// Full-fidelity halves: T1 makes the fork reusable as a listing entry
 		// (t1_json), T2 preserves the triage scalars alongside the relational
@@ -1113,6 +1201,44 @@ func forkToJSONDetailed(r forksops.Result, details detailOptions) map[string]any
 		out["queryScore"] = r.QueryScore
 		out["queryMethod"] = r.QueryMethod
 	}
+	// Lineage describes the fork's position in the fork network tree.
+	// Emit when any lineage field is known: depth>0 (a known hop from the
+	// root) or any of the path strings set. Omit-when-unknown avoids
+	// fabricating fields the provider did not return (REST has no parent
+	// data and must not emit guessed values).
+	if r.Lineage.DepthFromRoot > 0 || r.Lineage.NetworkRoot != "" || r.Lineage.DirectParent != "" {
+		out["lineage"] = map[string]any{
+			"networkRoot":   r.Lineage.NetworkRoot,
+			"directParent":  r.Lineage.DirectParent,
+			"depthFromRoot": r.Lineage.DepthFromRoot,
+		}
+	}
+
+
+	// Linear-history fields. linearHistory itself stays nil when the
+	// provider never computed it (the three-state semantics matter for
+	// downstream tools). The scalar count and the raw vector ride only
+	// when known; the truncate flag is meaningful only when we have a
+	// boolean result, so it rides the same conditional.
+	if r.Fork.LinearHistory != nil {
+		out["linearHistory"] = *r.Fork.LinearHistory
+		out["mergeCommits"] = r.Fork.MergeCommits
+		if r.Fork.MergeCommitHistory != nil {
+			out["mergeCommitHistory"] = r.Fork.MergeCommitHistory
+		}
+		out["mergeCommitTruncated"] = r.Fork.MergeCommitTruncated
+	}
+
+	if r.Coverage.DirectTotalCount > 0 || r.Coverage.WholeNetworkForkCount > 0 {
+		// Emit when either count is known (non-zero from GraphQL); a known
+		// zero unresolved gap (e.g. direct=whole=5) is still emitted. The
+		// REST path leaves both at zero and produces no entry.
+		out["coverage"] = map[string]any{
+			"directTotalCount":       r.Coverage.DirectTotalCount,
+			"wholeNetworkForkCount": r.Coverage.WholeNetworkForkCount,
+			"unresolved":             r.Coverage.Unresolved,
+		}
+	}
 	// priorScore/priorReasons are emitted only when --priors ran (a match
 	// scored > 0, or a deny-only match left reasons). NDJSON-only, like
 	// visibility/momentum/networkRank; CSV is intentionally unchanged.
@@ -1402,6 +1528,22 @@ func emitStageSkipWarning(stderr io.Writer, skip *forksops.StageSkip) {
 	_ = agentio.WriteNDJSON(stderr, envelope)
 }
 
+// emitAcquisitionReport writes one terminal metadata envelope after a Stream
+// channel has closed. It never writes to stdout and silently ignores providers
+// that omit the optional terminal report.
+func emitAcquisitionReport(stderr io.Writer, report *forge.AcquisitionReport) {
+	if report == nil || report.Method == "" {
+		return
+	}
+	summary := fmt.Sprintf("%s acquisition via %s; %d unique forks across %d pages",
+		report.Method, strings.Join(report.FallbackChain, "/"), report.UniqueRows, report.Pages)
+	_ = agentio.WriteNDJSON(stderr, map[string]any{"info": map[string]any{
+		"code":    "acquisition_report",
+		"message": summary,
+		"details": report,
+	}})
+}
+
 // emitClusterWarning writes a structured warning to stderr (one JSON object
 // per line) describing why the cluster pipeline was skipped. The shape is
 // intentionally distinct from agentio.Error: this is non-fatal information,
@@ -1457,6 +1599,9 @@ func streamAndEmit(ctx context.Context, db *store.Store, auth forge.AuthInfo, pr
 	// draining ch (e.g. a stdout write failure below).
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	if opts.Report != nil {
+		*opts.Report = forge.AcquisitionReport{}
+	}
 	ch, streamErr := forksops.Stream(ctx, provider, owner, name, opts)
 	if streamErr != nil {
 		var rejected *gh.AllBackendsRejectedError
@@ -1527,6 +1672,7 @@ func streamAndEmit(ctx context.Context, db *store.Store, auth forge.AuthInfo, pr
 			},
 		})
 	}
+	emitAcquisitionReport(stderr, opts.Report)
 	return 0
 }
 

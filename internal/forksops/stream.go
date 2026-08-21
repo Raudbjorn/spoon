@@ -123,6 +123,25 @@ type Options struct {
 	// authoritative: it skips the Compare API call and the rate-reserve gate.
 	// Left nil on --refresh.
 	CachedT2 func(forge.T1Data) *forge.T2Data
+
+	// Report receives the terminal acquisition metadata after the fork channel
+	// closes. The pointer is caller-owned; Stream copies the provider's report
+	// into it after the channel closes. Nil means the caller does not want the
+	// report. The report is also emitted on the ForkMsg channel so callers that
+	// do not use Stream() can still observe it.
+	Report *forge.AcquisitionReport
+
+	// NetworkScope controls fork-list breadth: "direct" (default) or "all".
+	// When "all", ListForksBounded is used if the provider implements it.
+	NetworkScope string
+	// NetworkMaxNodes caps distinct repos visited. 0 → 5000.
+	NetworkMaxNodes int
+	// NetworkMaxDepth caps traversal depth from root. 0 → 3.
+	NetworkMaxDepth int
+	// NetworkMaxPages caps GraphQL pages. 0 → 200.
+	NetworkMaxPages int
+	// NetworkMaxElapsed caps wall-clock time. 0 → 2 minutes.
+	NetworkMaxElapsed time.Duration
 }
 
 // ownerProfileDefaultCap is the per-run cap on the number of distinct
@@ -185,6 +204,20 @@ type ClusterOptions struct {
 
 // SetEmbedderForTest installs an embedder stub on ClusterOptions for tests.
 func (o *ClusterOptions) SetEmbedderForTest(e embed.Embedder) { o.Embedder = e }
+
+// Lineage describes a fork's position in the fork network tree.
+type Lineage struct {
+	NetworkRoot   string // network root owner/repo
+	DirectParent string // direct parent owner/repo
+	DepthFromRoot int    // edges from root: 1=direct child, 0=unknown
+}
+
+// Coverage reports how completely the fork list covers the network.
+type Coverage struct {
+	DirectTotalCount       int // forks.totalCount from GraphQL root (direct children)
+	WholeNetworkForkCount int // repository.forkCount from GraphQL root (whole network)
+	Unresolved             int // whole - direct; negative clamped to 0
+}
 
 // Result is a single fork's outcome. Fork is always populated; Err and the
 // T2/T3 pointers may be nil depending on tier and per-fork errors.
@@ -260,6 +293,12 @@ type Result struct {
 	SiblingSimSkip      *StageSkip
 	CommitFilesComplete bool
 	CommitFilesSkip     *StageSkip
+
+	// Lineage describes the fork's position in the fork network tree.
+	Lineage Lineage
+
+	// Coverage reports the direct vs whole-network fork counts.
+	Coverage Coverage
 }
 
 // StageSkip describes a non-fatal, per-fork enrichment skip. Unlike Error it
@@ -308,14 +347,46 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 		}
 		return nil, fmt.Errorf("fetch parent: %w", err)
 	}
-	t1ch, err := provider.ListForks(ctx, owner, repo)
-	if err != nil {
-		var rl *gh.RateLimitError
-		if errors.As(err, &rl) {
-			return nil, fmt.Errorf("rate_limited: reset_at=%s retry_after_seconds=%d: %w",
-				rl.ResetAt.UTC().Format(time.RFC3339), rl.RetryAfterSeconds(), err)
+	// Bounded whole-network dispatch: use ListForksBounded when scope is "all"
+	// and the provider implements it; fall back to ListForks for all other cases.
+	var t1ch <-chan forge.ForkMsg
+	var listErr error
+	if opts.NetworkScope == "all" {
+		if bounded, ok := provider.(forge.ListForksBoundedProvider); ok {
+			boundedOpts := forge.BoundedOptions{
+				MaxNodes:   opts.NetworkMaxNodes,
+				MaxDepth:   opts.NetworkMaxDepth,
+				MaxPages:   opts.NetworkMaxPages,
+				MaxElapsed: opts.NetworkMaxElapsed,
+			}
+			// Default caps
+			if boundedOpts.MaxNodes <= 0 {
+				boundedOpts.MaxNodes = 5000
+			}
+			if boundedOpts.MaxDepth <= 0 {
+				boundedOpts.MaxDepth = 3
+			}
+			if boundedOpts.MaxPages <= 0 {
+				boundedOpts.MaxPages = 200
+			}
+			if boundedOpts.MaxElapsed <= 0 {
+				boundedOpts.MaxElapsed = 2 * time.Minute
+			}
+			t1ch, listErr = bounded.ListForksBounded(ctx, owner, repo, boundedOpts)
+		} else {
+			// Provider doesn't implement bounded; fall back to ListForks
+			t1ch, listErr = provider.ListForks(ctx, owner, repo)
 		}
-		return nil, fmt.Errorf("list forks: %w", err)
+	} else {
+		t1ch, listErr = provider.ListForks(ctx, owner, repo)
+	}
+	if listErr != nil {
+		var rl *gh.RateLimitError
+		if errors.As(listErr, &rl) {
+			return nil, fmt.Errorf("rate_limited: reset_at=%s retry_after_seconds=%d: %w",
+				rl.ResetAt.UTC().Format(time.RFC3339), rl.RetryAfterSeconds(), listErr)
+		}
+		return nil, fmt.Errorf("list forks: %w", listErr)
 	}
 
 	logger := opts.Logger
@@ -328,6 +399,7 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 		defer close(out)
 
 		var t1Forks []forge.T1Data
+		var providerReport *forge.AcquisitionReport
 	drain:
 		for {
 			select {
@@ -337,6 +409,13 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 				if !ok {
 					break drain
 				}
+				if msg.Report != nil {
+					// Terminal acquisition metadata: capture the last one
+					// (providers may emit at most one) and do NOT add it to
+					// the fork list. It is intentionally never a Result.
+					providerReport = msg.Report
+					continue
+				}
 				if msg.Err != nil {
 					continue
 				}
@@ -345,6 +424,13 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 				}
 				t1Forks = append(t1Forks, msg.Fork)
 			}
+		}
+
+		// After the channel closes, copy the provider's terminal report into
+		// the caller-owned report target so the caller can inspect it without
+		// draining the ForkMsg channel itself.
+		if opts.Report != nil && providerReport != nil {
+			*opts.Report = *providerReport
 		}
 
 		now := time.Now()
@@ -475,7 +561,21 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 					}
 					i := dispatchOrder[pos]
 					s := all[i]
-					r := Result{Fork: s.fork, Heat: s.res, Momentum: momentumByID[s.fork.ID]}
+					r := Result{
+						Fork:      s.fork,
+						Heat:      s.res,
+						Momentum:  momentumByID[s.fork.ID],
+						Lineage: Lineage{
+							NetworkRoot:   s.fork.SourceFullPath,
+							DirectParent:  s.fork.ParentFullPath,
+							DepthFromRoot: s.fork.DepthFromRoot,
+						},
+						Coverage: Coverage{
+							DirectTotalCount:       s.fork.DirectTotalCount,
+							WholeNetworkForkCount: s.fork.WholeNetworkForkCount,
+							Unresolved:             coverageUnresolved(s.fork, opts.Report),
+						},
+					}
 
 					// Auto-budget: an eligible fork is enriched only while the
 					// rate-limit reserve holds. Because dispatch is best-first
@@ -1060,6 +1160,13 @@ func buildLoneWolfInput(f forge.T1Data, now time.Time, t2 *forge.T2Data) heat.Lo
 		AheadBy:       t2.AheadCount,
 		DaysSincePush: now.Sub(f.PushedAt).Hours() / 24,
 	}
+}
+
+func coverageUnresolved(f forge.T1Data, report *forge.AcquisitionReport) int {
+	if report != nil && report.Scope == "all" && report.Unresolved > 0 {
+		return report.Unresolved
+	}
+	return max(f.WholeNetworkForkCount-f.DirectTotalCount, 0)
 }
 
 // scoreQuery computes Result.QueryScore for every collected fork in one

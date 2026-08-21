@@ -32,6 +32,45 @@ func (p Provider) String() string {
 	}
 }
 
+// AcquisitionReport summarizes the acquisition metadata for a fork list run.
+// It is emitted as a terminal message on the ForkMsg channel and copied to
+// the caller-owned Report field in forksops.Options after the channel closes.
+type AcquisitionReport struct {
+	Method        string    `json:"method"`          // "graphql" | "graphql+rest" | "rest"
+	Scope         string    `json:"scope"`           // "direct" in step 2
+	APIVersion    string    `json:"apiVersion"`      // pinned REST version e.g. "2022-11-28"
+	AuthMode      string    `json:"authMode"`        // "authenticated" | "anonymous"
+	FallbackChain []string  `json:"fallbackChain"`   // e.g. ["graphql"] or ["graphql","rest"]
+	Pages         int       `json:"pages"`           // upstream page callbacks (raw count)
+	RawRows       int       `json:"rawRows"`         // total fork records before dedup
+	UniqueRows    int       `json:"uniqueRows"`      // unique database IDs
+	DuplicateRows int       `json:"duplicateRows"`   // raw - unique
+	CaptureAt     time.Time `json:"captureAt"`       // when the report was generated
+	AuthScopeID   string    `json:"authScopeId"`     // non-reversible; never logged with tokens
+	Error         string    `json:"error,omitempty"` // set when REST fallback fails
+
+	// VisitedNodes is the number of distinct repos the bounded traversal visited.
+	VisitedNodes int    `json:"visitedNodes"`
+	MaxNodes     int    `json:"maxNodes"`
+	MaxDepth     int    `json:"maxDepth"`
+	CapReason    string `json:"capReason,omitempty"`  // "max_nodes"|"max_depth"|"max_pages"|"max_elapsed"|""
+	Unresolved   int    `json:"unresolved,omitempty"` // discovered nodes not visited
+}
+
+// BoundedOptions controls a bounded whole-network traversal.
+type BoundedOptions struct {
+	MaxNodes   int
+	MaxDepth   int
+	MaxPages   int
+	MaxElapsed time.Duration
+}
+
+// ListForksBoundedProvider is an optional provider capability for bounded whole-network
+// fork discovery. Providers that do not implement it remain valid Forge values.
+type ListForksBoundedProvider interface {
+	ListForksBounded(ctx context.Context, owner, repo string, opts BoundedOptions) (<-chan ForkMsg, error)
+}
+
 // AuthTier describes the capability level of the detected credentials.
 type AuthTier int
 
@@ -51,6 +90,15 @@ type AuthInfo struct {
 	Concurrency int    // recommended worker pool size.
 	RateLimit   int    // max requests per RateUnit.
 	RateUnit    string // "hour" (GitHub) or "minute" (GitLab).
+	// APIVersion carries the storage-prefixed pinned REST API version (e.g. "github/2022-11-28").
+	// Empty for forges that do not expose this. NOT a wire value — HTTP headers must use
+	// the unprefixed version (see internal/github.defaultRESTVersion).
+	APIVersion string
+	// AuthMode is "authenticated" or "anonymous" at the time of this run.
+	AuthMode string
+	// AuthScopeID is a non-reversible fingerprint of the credential set. Empty
+	// when acquisition method does not support it. Safe to store and log.
+	AuthScopeID string
 }
 
 // Authenticated returns true if the user has any credentials.
@@ -78,10 +126,12 @@ type ParentData struct {
 	Language      string
 	Topics        []string
 	// SourceFullPath is the network-root owner/repo Compare must use when the
-	// named seed is a mid-chain fork. Empty means “same as FullName / unknown”.
+	// named seed is a mid-chain fork. Empty means "same as FullName / unknown".
 	SourceFullPath string
-	// SourceDefaultBranch is that root’s default branch. Empty means use DefaultBranch.
+	// SourceDefaultBranch is that root's default branch. Empty means use DefaultBranch.
 	SourceDefaultBranch string
+	// DirectParentFullPath is the immediate parent's full name. Empty for non-forks.
+	DirectParentFullPath string
 }
 
 // T1Data is the surface data available immediately after fork discovery,
@@ -127,9 +177,12 @@ type T1Data struct {
 	BranchFingerprint string
 
 	// Fork lineage
-	SourceFullPath string // network root used for compare baseline; never the direct parent.
-	ParentFullPath string // direct parent
-	IsForkOfFork   bool
+	SourceFullPath        string // network root used for compare baseline; never the direct parent.
+	ParentFullPath        string // direct parent
+	IsForkOfFork          bool
+	DepthFromRoot         int // edges from root: 1=direct child, 0=unknown
+	DirectTotalCount      int // root forks.totalCount (direct children only)
+	WholeNetworkForkCount int // root forkCount (whole network)
 
 	// Topics is the repository's topic set as returned by the provider.
 	// Empty/nil means "no signal" (e.g. provider lacks topic support, or
@@ -141,6 +194,27 @@ type T1Data struct {
 	// pipeline after a GitHub owner-history fetch (capped at 30 distinct
 	// owners per run). Nil means "no signal" — see OwnerProfile's doc.
 	OwnerProfile *OwnerProfile
+	// LinearHistory is true when the fork's tip is reachable from upstream's
+	// tip without crossing a merge commit. False (or nil) when the fork has
+	// at least one merge commit on top of its upstream baseline. Nil means
+	// unknown -- the provider did not compute it for this fork.
+	LinearHistory *bool
+	// MergeCommits is the raw count of merge commits on the fork's default
+	// branch up to the upstream tip. A negative value means unknown. Drives
+	// the LinearHistory boolean and is exposed in the JSON export for
+	// downstream tools that want a numeric signal.
+	MergeCommits int
+	// MergeCommitHistory is the raw parents-totalCount vector for every
+	// commit on the fork's default branch up to the upstream tip. Kept so
+	// downstream analyses (e.g. "how many forks rebased vs merged") do not
+	// have to refetch. Persisted in the merge_commit_history table; nil on
+	// T1Data in memory means unknown.
+	MergeCommitHistory []int
+	// MergeCommitTruncated is true when the MergeCommitHistory vector was
+	// capped at the provider's page limit and is therefore a prefix, not
+	// the full ahead-of-upstream history. The derived MergeCommits and
+	// LinearHistory are lower bounds when this is true.
+	MergeCommitTruncated bool
 }
 
 // OwnerProfile is the owner-farmer signal (P3). Populated by the fork
@@ -223,9 +297,13 @@ type T3Data struct {
 }
 
 // ForkMsg is a result item on the channel returned by ListForks.
+// Fork is populated for fork records. Err is populated for errors.
+// Report is the terminal acquisition metadata; it is the last item sent
+// on the channel (when the provider supplies one) and is never nil when set.
 type ForkMsg struct {
-	Fork T1Data
-	Err  error // non-nil means this item is an error; Fork is zero.
+	Fork   T1Data
+	Err    error              // non-nil means this item is an error; Fork is zero.
+	Report *AcquisitionReport // terminal acquisition metadata (last item on channel)
 }
 
 // Forge is the interface both GitHub and GitLab packages implement.
@@ -274,6 +352,24 @@ type BranchDivergenceProvider interface {
 	// full, so their counts (and any fingerprint derived from them) are lower
 	// bounds rather than exact.
 	DivergentBranchCounts(ctx context.Context, forks []T1Data) (counts map[string]int, fingerprints map[string]string, truncated []string, err error)
+}
+
+// LinearHistoryProvider is an optional provider capability that classifies,
+// per fork, whether the fork's tip is reachable from the upstream's tip
+// without crossing a merge commit. The provider returns the raw signal
+// (parents.totalCount per commit on the fork's default branch ahead of the
+// merge base); the consumer derives the boolean LinearHistory and the scalar
+// MergeCommits in one place, so the derivation logic lives in forge rather
+// than duplicated in every backend.
+type LinearHistoryProvider interface {
+	// MergeCommitHistory returns, per fork ID, the raw parents-totalCount
+	// vector for every commit on the fork's default branch that lies ahead
+	// of upstream. callers derive the boolean LinearHistory and the scalar
+	// MergeCommits from the vector themselves. Forks absent from the map
+	// were not resolved, which is distinct from a present empty vector
+	// (linear). truncated lists IDs whose history was capped at the request
+	// limit; the slice for those forks is a prefix, not the full history.
+	MergeCommitHistory(ctx context.Context, forks []T1Data) (histories map[string][]int, truncated []string, err error)
 }
 
 // CompareBaselineSetter is an optional provider capability for restoring the

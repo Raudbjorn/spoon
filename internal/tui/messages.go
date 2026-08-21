@@ -44,6 +44,10 @@ type forksFetchedMsg struct {
 	// e.g. the stream was cut short by an error after some forks arrived, so the
 	// displayed list is partial. Distinct from err, which suppresses the list.
 	warn error
+	// Report is the terminal acquisition metadata sent by ListForks. It is
+	// populated only on the last message when the provider supplies it; the fork
+	// slice is empty when Report is set.
+	Report *forge.AcquisitionReport
 }
 
 type tier2ResultMsg struct {
