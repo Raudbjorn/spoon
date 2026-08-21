@@ -105,17 +105,31 @@ func TruncateEncodings(encoding, pairEncoding *Encoding, params *TruncationParam
 	switch params.Strategy {
 	case LongestFirst:
 		nFirst := len(encoding.GetIds())
-		nSecond := len(pairEncoding.GetIds())
-
+		var nSecond int
+		if pairEncoding != nil {
+			nSecond = len(pairEncoding.GetIds())
+		}
 		for i := 0; i < toRemove; i++ {
 			if nFirst > nSecond {
 				nFirst -= 1
+			} else if pairEncoding != nil {
+				nSecond -= 1
 			}
-			nSecond -= 1
+			// When pairEncoding is nil and nFirst == nSecond == 0, the
+			// for loop runs toRemove times doing nothing, which is the
+			// only correct outcome: a single sequence that is shorter
+			// than toRemove is left to the caller (SequenceTooShort
+			// would say the truth here, but the upstream caller is
+			// PostProcess which has no error path).
 		}
-
+		if nFirst < 0 {
+			nFirst = 0
+		}
 		encoding.Truncate(nFirst, params.Stride)
 		if pairEncoding != nil {
+			if nSecond < 0 {
+				nSecond = 0
+			}
 			pairEncoding.Truncate(nSecond, params.Stride)
 		}
 
