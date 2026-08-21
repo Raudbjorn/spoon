@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/svnbjrn/spoon/internal/forge"
@@ -12,13 +13,13 @@ import (
 
 // Compile-time check that GHProvider implements forge.Forge.
 var _ forge.Forge = (*GHProvider)(nil)
-
 // GHProvider wraps the existing GitHub client to implement forge.Forge.
 type GHProvider struct {
 	client *Client
 	status AuthStatus
 
 	// Cached after Parent() call; used by Compare().
+	mu                 sync.RWMutex
 	sourceOwner         string
 	sourceRepo          string
 	sourceDefaultBranch string
@@ -78,7 +79,12 @@ func (p *GHProvider) DivergentBranchCounts(ctx context.Context, forks []forge.T1
 	for _, f := range forks {
 		targets = append(targets, ForkTarget{ID: f.ID, Owner: f.Owner, Name: f.Name})
 	}
-	counts, err := p.client.FetchDivergentBranchCounts(ctx, p.sourceOwner, p.sourceRepo, p.sourceDefaultBranch, targets)
+	p.mu.RLock()
+	sourceOwner := p.sourceOwner
+	sourceRepo := p.sourceRepo
+	sourceDefaultBranch := p.sourceDefaultBranch
+	p.mu.RUnlock()
+	counts, err := p.client.FetchDivergentBranchCounts(ctx, sourceOwner, sourceRepo, sourceDefaultBranch, targets)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -92,9 +98,11 @@ var _ forge.BranchDivergenceProvider = (*GHProvider)(nil)
 // call it explicitly, or every Compare that follows has no upstream to compare
 // against.
 func (p *GHProvider) SetCompareBaseline(owner, repo, defaultBranch string) {
+	p.mu.Lock()
 	p.sourceOwner = owner
 	p.sourceRepo = repo
 	p.sourceDefaultBranch = defaultBranch
+	p.mu.Unlock()
 }
 
 // Parent implements forge.Forge.
@@ -154,11 +162,13 @@ func (p *GHProvider) ListForks(ctx context.Context, owner, repo string) (<-chan 
 					extra = &e
 				}
 			}
-			sourcePath := owner + "/" + repo
-			if p.sourceOwner != "" && p.sourceRepo != "" {
-				sourcePath = p.sourceOwner + "/" + p.sourceRepo
-			}
-			t1 := forkInfoToT1(f, extra, owner+"/"+repo, sourcePath)
+		sourcePath := owner + "/" + repo
+		p.mu.RLock()
+		if p.sourceOwner != "" && p.sourceRepo != "" {
+			sourcePath = p.sourceOwner + "/" + p.sourceRepo
+		}
+		p.mu.RUnlock()
+		t1 := forkInfoToT1(f, extra, owner+"/"+repo, sourcePath)
 			select {
 			case out <- forge.ForkMsg{Fork: t1}:
 			case <-ctx.Done():
@@ -188,11 +198,16 @@ func (p *GHProvider) Compare(ctx context.Context, fork forge.T1Data, branch stri
 	// which 404s for every fork and — because a 404 is not a run-ending error —
 	// used to surface as a fork list where everything is 0 ahead / 0 behind.
 	// Fail loudly instead; the gitea provider already guards this the same way.
-	if p.sourceOwner == "" || p.sourceRepo == "" {
+	p.mu.RLock()
+	sourceOwner := p.sourceOwner
+	sourceRepo := p.sourceRepo
+	sourceDefaultBranch := p.sourceDefaultBranch
+	p.mu.RUnlock()
+	if sourceOwner == "" || sourceRepo == "" {
 		return forge.T2Data{}, fmt.Errorf("compare %s@%s: upstream not resolved (Parent not called)", fork.ID, branch)
 	}
 
-	parentBranch := p.sourceDefaultBranch
+	parentBranch := sourceDefaultBranch
 	if parentBranch == "" {
 		parentBranch = "HEAD"
 	}
@@ -214,7 +229,7 @@ func (p *GHProvider) Compare(ctx context.Context, fork forge.T1Data, branch stri
 	}
 
 	scan, err := p.client.FetchCompareWithBranchScan(
-		ctx, p.sourceOwner, p.sourceRepo, parentBranch,
+		ctx, sourceOwner, sourceRepo, parentBranch,
 		ghFork, ghBranches,
 	)
 	if err != nil {
@@ -242,7 +257,7 @@ func (p *GHProvider) Compare(ctx context.Context, fork forge.T1Data, branch stri
 			}
 			if base == "" || head == "" {
 				t2.PatchSkipReason = "web diff unavailable: compare response omitted base/head SHA"
-			} else if patches, truncated, webErr := p.client.webDiff.Fetch(ctx, p.sourceOwner, p.sourceRepo, base, head); webErr != nil {
+			} else if patches, truncated, webErr := p.client.webDiff.Fetch(ctx, sourceOwner, sourceRepo, base, head); webErr != nil {
 				t2.PatchSkipReason = webErr.Error()
 			} else if truncated {
 				// A later page failed to parse: the collected patches are

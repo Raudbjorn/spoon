@@ -1211,9 +1211,9 @@ func (m *Model) startFetch() tea.Cmd {
 			if src := snap.Parent.SourceFullPath; src != "" {
 				if o, n, ok := splitFullName(src); ok {
 					baseOwner, baseName = o, n
-				}
-				if snap.Parent.SourceDefaultBranch != "" {
-					baseBranch = snap.Parent.SourceDefaultBranch
+					if snap.Parent.SourceDefaultBranch != "" {
+						baseBranch = snap.Parent.SourceDefaultBranch
+					}
 				}
 			}
 			if setter, ok := provider.(forge.CompareBaselineSetter); ok {
