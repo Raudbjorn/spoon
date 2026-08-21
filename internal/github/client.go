@@ -1,7 +1,17 @@
+// Package github is the GitHub forge backend.
+//
+// Acquisition contract (see docs/research/2026-08-19-spoon-endpoint-networking.md):
+// REST clients pin X-GitHub-Api-Version to 2022-11-28; GraphQL does not send
+// that header. Default fork inventory is direct children. Whole-network
+// discovery is opt-in and bounded. Fork-list cache keys include API version,
+// auth mode, and a non-reversible AuthScopeID. Undocumented /network/meta,
+// /network/chunk, /network_meta, /network_data_chunk, and /networks/.../events
+// routes are rejected.
 package github
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,12 +20,14 @@ import (
 	"math"
 	"net/http"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	ghAPI "github.com/cli/go-gh/v2/pkg/api"
+	ghauth "github.com/cli/go-gh/v2/pkg/auth"
 	"github.com/svnbjrn/spoon/internal/github/webdiff"
 )
 
@@ -58,6 +70,28 @@ type apiResource uint8
 // defaultHost is the only GitHub host this provider talks to. It is also what
 // AuthStatus.Host reports, which callers interpolate into user-facing URLs.
 const defaultHost = "github.com"
+
+// computeAuthScopeID returns the first 16 lowercase hex chars of SHA-256 over
+// provider, normalized host, and the sorted trimmed credential token set joined
+// by NUL bytes. Anonymous clients receive the same treatment for an empty token
+// set — the scope ID is deterministic for (provider, host, no-credentials).
+func computeAuthScopeID(provider, host string, tokens []string) string {
+	// Sort tokens so the same credential set always produces the same ID regardless
+	// of config order.
+	sorted := make([]string, len(tokens))
+	copy(sorted, tokens)
+	sort.Strings(sorted)
+	h := sha256.New()
+	h.Write([]byte(provider))
+	h.Write([]byte{0})
+	h.Write([]byte(strings.ToLower(host)))
+	h.Write([]byte{0})
+	for _, tok := range sorted {
+		h.Write([]byte{0})
+		h.Write([]byte(strings.TrimSpace(tok)))
+	}
+	return fmt.Sprintf("%x", h.Sum(nil))[:16]
+}
 
 const (
 	resourceREST apiResource = iota
@@ -103,6 +137,7 @@ type Client struct {
 	rest                *ghAPI.RESTClient
 	gql                 *ghAPI.GraphQLClient
 	authenticated       bool
+	authScopeID        string // computed once; non-reversible scope fingerprint
 	duplicateIdentities int
 
 	currentUserLogin     string
@@ -180,6 +215,19 @@ func NewClientWithOptions(opts ClientOptions) (*Client, error) {
 	proxies, _ := bootstrapProxyPool(context.Background(), opts.Proxy)
 	rotating := newRotatingProxyTransport(proxies)
 	c := &Client{proxies: proxies, rotating: rotating, global: newLimiterRPM(rpm, globalBurst), authenticated: len(opts.Tokens) > 0}
+	// Compute the AuthScopeID once per Client lifetime. It is deterministic
+	// for (provider, host, sorted trimmed credential token set); anonymous
+	// clients get a stable scope ID for an empty token set.
+	host, _ := ghauth.DefaultHost()
+	if host == "" {
+		host = defaultHost
+	}
+	ghToken, _ := ghauth.TokenForHost(host)
+	tokens := append([]string(nil), opts.Tokens...)
+	if len(tokens) == 0 && ghToken != "" {
+		tokens = []string{ghToken}
+	}
+	c.authScopeID = computeAuthScopeID("github", host, tokens)
 
 	if len(opts.Tokens) == 0 {
 		// Proxy routing only attaches to explicit config-token backends (and the
@@ -194,8 +242,8 @@ func NewClientWithOptions(opts ClientOptions) (*Client, error) {
 		// option resolution (it keys off an empty Host), so host and token are
 		// read from the gh config exactly as before — this is the default path
 		// when no github.tokens are configured, so it must be bounded too.
-		defaultOpts := ghAPI.ClientOptions{Timeout: requestTimeout}
-		rest, err := ghAPI.NewRESTClient(defaultOpts)
+		defaultOpts := ghAPI.ClientOptions{Timeout: requestTimeout, Transport: rotating}
+		rest, err := newVersionedRESTClient(defaultOpts)
 		if err == nil {
 			b := &backend{Rest: rest, REST: newBudget(), GraphQLBudget: newBudget()}
 			if gql, gqlErr := ghAPI.NewGraphQLClient(defaultOpts); gqlErr == nil {
@@ -206,7 +254,7 @@ func NewClientWithOptions(opts ClientOptions) (*Client, error) {
 			c.initRateControls()
 			return c, nil
 		}
-		rest, err = ghAPI.NewRESTClient(ghAPI.ClientOptions{AuthToken: "x", Host: defaultHost, Transport: &unauthTransport{base: rotating}, Timeout: requestTimeout})
+		rest, err = newVersionedRESTClient(ghAPI.ClientOptions{AuthToken: "x", Host: defaultHost, Transport: &unauthTransport{base: rotating}, Timeout: requestTimeout})
 		if err != nil {
 			return nil, fmt.Errorf("creating unauthenticated client: %w", err)
 		}
@@ -222,8 +270,13 @@ func NewClientWithOptions(opts ClientOptions) (*Client, error) {
 		if token == "" {
 			return nil, fmt.Errorf("github token list contains an empty entry")
 		}
-		clientOpts := ghAPI.ClientOptions{AuthToken: token, Host: defaultHost, Transport: rotating, Timeout: requestTimeout}
-		rest, err := ghAPI.NewRESTClient(clientOpts)
+		clientOpts := ghAPI.ClientOptions{
+			AuthToken: token,
+			Host:      defaultHost,
+			Transport: rotating,
+			Timeout:   requestTimeout,
+		}
+		rest, err := newVersionedRESTClient(clientOpts)
 		if err != nil {
 			return nil, fmt.Errorf("creating GitHub REST backend: %w", err)
 		}
@@ -301,6 +354,21 @@ func (t *unauthTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 func (c *Client) IsAuthenticated() bool { return c.authenticated }
+
+// AuthScopeID returns the deterministic scope fingerprint computed once per
+// Client lifetime. It is a 16-character hex string derived from SHA-256 over
+// (provider, normalized host, sorted trimmed credential token set). It is safe
+// to log and to store; it is not a secret and cannot be reversed to recover
+// any token.
+func (c *Client) AuthScopeID() string { return c.authScopeID }
+
+// AuthMode returns "authenticated" when a real token is present, "anonymous" otherwise.
+func (c *Client) AuthMode() string {
+	if c.authenticated {
+		return "authenticated"
+	}
+	return "anonymous"
+}
 
 func (c *Client) DuplicateIdentities() int { return c.duplicateIdentities }
 

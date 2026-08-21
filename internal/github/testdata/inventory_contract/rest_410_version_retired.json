@@ -1,0 +1,12 @@
+{
+  "rest_response": {
+    "status": 410,
+    "body": {
+      "message": "This version of the API has been retired.",
+      "documentation_url": "https://docs.github.com/rest/overview/api-versions"
+    },
+    "headers": {
+      "X-GitHub-Api-Version": "2022-11-28"
+    }
+  }
+}

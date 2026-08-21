@@ -53,6 +53,9 @@ func CheckAuthWithOptions(opts ClientOptions) (*Client, AuthStatus, error) {
 	}
 	client.duplicateIdentities = status.DuplicateIdentities
 	status.RateLimit = client.GetRateLimit()
+	status.AuthScopeID = client.authScopeID
+	status.APIVersion = StoredAPIVersion
+	status.AuthMode = client.AuthMode()
 	return client, status, nil
 }
 

@@ -1,0 +1,6 @@
+{
+  "version": "2022-11-28",
+  "schema": "REST API version retirement (HTTP 410)",
+  "reason": "Defends API version pinning: when a pinned REST version is retired (410 Gone), the fallback chain and acquisition report must record the failure, not silently downgrade.",
+  "commit": "ca00cb8cb48f05877f77ab3e36175bb27ae6c2c6"
+}

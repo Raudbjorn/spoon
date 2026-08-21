@@ -127,6 +127,9 @@ type Model struct {
 	loading     bool
 	loadMsg     string
 	errMsg      string
+	// acquisition holds the terminal acquisition metadata from the most recent
+	// ListForks run. It is nil when the provider does not supply a report.
+	acquisition *forge.AcquisitionReport
 
 	// Table state
 	cursor  int
@@ -480,6 +483,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case branchDivergenceMsg:
 		return m.handleBranchDivergence(msg)
 
+	case linearHistoryMsg:
+		return m.handleLinearHistory(msg)
+
+
 	case enrichmentDoneMsg:
 		m.enriching = false
 		// Auto-indexing fires here rather than on load, and the difference is
@@ -591,6 +598,16 @@ func (m *Model) handleCachedLoad(msg cachedLoadMsg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, bc)
 	}
 
+	// Local derivation: if a cached fork carries a MergeCommitHistory vector
+	// but no LinearHistory boolean, derive it now without a network call.
+	m.deriveLinearHistoryFromCached()
+
+	// If the provider supports linear-history, schedule a sweep for forks
+	// that still have no data at all (both vector and boolean missing).
+	if lh := m.startLinearHistorySweep(); lh != nil {
+		cmds = append(cmds, lh)
+	}
+
 	cmd := m.startEnrichment()
 	if cmd == nil {
 		// No T2 enrichment scheduled (e.g. rate-limited). Still try
@@ -652,6 +669,9 @@ func (m *Model) handleForksFetched(msg forksFetchedMsg) (tea.Model, tea.Cmd) {
 		m.errMsgTime = time.Now()
 	}
 
+	// Store the terminal acquisition report if the provider supplied one.
+	m.acquisition = msg.Report
+
 	m.scoreForks(msg.forks)
 	m.view = viewTable
 	// Snap rather than assign 0: a filter carried across a refresh may hide
@@ -663,11 +683,31 @@ func (m *Model) handleForksFetched(msg forksFetchedMsg) (tea.Model, tea.Cmd) {
 	m.applyCachedCompares(m.cached)
 
 	cmds := []tea.Cmd{}
-	if persist := m.persistForkList(); persist != nil {
+	persist := m.persistForkList()
+	coverage := m.loadEmbedCoverage()
+	lh := m.startLinearHistorySweep()
+	if persist != nil {
 		// Sequenced, not batched: the coverage read has to see the documents
 		// the persist writes, or the EMB column reports nothing on first paint
 		// and only corrects itself after some later reload.
-		cmds = append(cmds, tea.Sequence(persist, m.loadEmbedCoverage()))
+		var tail tea.Cmd
+		switch {
+		case coverage != nil && lh != nil:
+			tail = tea.Batch(coverage, lh)
+		case coverage != nil:
+			tail = coverage
+		case lh != nil:
+			// Linear-history sweep sequenced after the persist itself so the
+			// relational merge_commit_history rows land in the second persist
+			// handleLinearHistory triggers. Folding it into the same
+			// sequence is the only way to avoid the race where the
+			// LinearHistory boolean is reported before its underlying
+			// vector rows hit the table.
+			tail = lh
+		}
+		cmds = append(cmds, tea.Sequence(persist, tail))
+	} else if lh != nil {
+		cmds = append(cmds, lh)
 	}
 	if bc := m.startBranchDivergenceSweep(); bc != nil {
 		cmds = append(cmds, bc)
@@ -1151,8 +1191,16 @@ func (m *Model) startFetch() tea.Cmd {
 	m.cancelEnrichment()
 	m.loading = true
 	m.errMsg = ""
-	m.forks = nil
-	m.parent = nil
+	// A refresh keeps the existing fork list visible during the network
+	// round-trip: the user pressed `r` to see what changed, not to stare at
+	// an empty table while the request is in flight. The new slices are
+	// swapped in by handleForksFetched on a successful response, and the
+	// existing list stays in place on error so the user is never told
+	// "no forks" mid-refresh.
+	if !m.refresh {
+		m.forks = nil
+		m.parent = nil
+	}
 	// A new fork list gets its own automatic pass. Latching per list rather
 	// than per session is what makes `r` and `n` behave like the first load.
 	m.autoIndexDone = false
@@ -1198,7 +1246,8 @@ func (m *Model) startFetch() tea.Cmd {
 		// entirely — both the fork list and the per-fork compare reuse.
 		var snap *store.RepoSnapshot
 		if !refresh && db != nil {
-			snap, _ = db.LoadRepoSnapshot(context.Background(), storeProvider, storeHost, owner, name)
+			snap, _ = db.LoadRepoSnapshotExact(context.Background(), storeProvider, storeHost, owner, name,
+			m.auth.APIVersion, m.auth.AuthMode, m.auth.AuthScopeID)
 		}
 		if snap != nil && snap.Parent != nil && len(snap.Forks) > 0 && time.Since(snap.ForksSyncedAt) < forkListTTL {
 			// This path returns without calling provider.Parent, which is
@@ -1248,8 +1297,16 @@ func (m *Model) storeRepoRecord(withParent bool, syncedAt time.Time) (store.Repo
 	providerName, host := m.storeIdentity()
 	now := time.Now().UTC()
 	rec := store.RepoRecord{
-		Provider: providerName, Host: host, Owner: parts[0], Name: parts[1],
-		FirstSeen: now, LastSeen: now, ForksSyncedAt: syncedAt,
+		Provider:           providerName,
+		Host:               host,
+		Owner:              parts[0],
+		Name:               parts[1],
+		FirstSeen:          now,
+		LastSeen:           now,
+		ForksSyncedAt:      syncedAt,
+		APIVersion:         m.auth.APIVersion,
+		AcquisitionMethod:   m.auth.AuthMode,
+		AuthScopeID:        m.auth.AuthScopeID,
 	}
 	if withParent {
 		p := *m.parent
@@ -1320,9 +1377,16 @@ func (m *Model) fetchForks() tea.Cmd {
 
 		var forks []forge.T1Data
 		var streamErr error
+		var report *forge.AcquisitionReport
 		for msg := range ch {
 			if msg.Err != nil {
 				streamErr = msg.Err // remember; per-fork errors are tolerated below
+				continue
+			}
+			// msg.Report is a terminal message with zero Fork; it carries acquisition
+			// metadata and must not be treated as a fork.
+			if msg.Report != nil {
+				report = msg.Report
 				continue
 			}
 			forks = append(forks, msg.Fork)
@@ -1336,25 +1400,30 @@ func (m *Model) fetchForks() tea.Cmd {
 			return forksFetchedMsg{err: streamErr}
 		}
 
+		// Report-only message (e.g. zero-fork repo with acquisition metadata).
+		if len(forks) == 0 && report != nil {
+			return forksFetchedMsg{Report: report}
+		}
+
 		// Partial result: forks arrived but the stream then errored. Keep the
 		// list but surface a non-fatal warning so the user knows it was cut short
 		// rather than silently trusting an incomplete list.
 		if streamErr != nil {
-			return forksFetchedMsg{forks: forks, warn: streamErr}
+			return forksFetchedMsg{forks: forks, warn: streamErr, Report: report}
 		}
 
-		return forksFetchedMsg{forks: forks}
+		return forksFetchedMsg{forks: forks, Report: report}
 	}
 }
 
 func (m *Model) doRefresh() tea.Cmd {
 	m.refresh = true
 	m.cancelEnrichment()
-	m.forks = nil
-	m.parent = nil
-	m.cached = nil
+	// m.forks and m.parent are NOT wiped here. startFetch is conditional on
+	// m.refresh and keeps the existing list visible during the round-trip;
+	// wiping here would race the wipe in startFetch and pull the rug out
+	// from under the user's table view before the new forks arrive.
 	m.enrichDone = 0
-	m.enrichTotal = 0
 
 	// Results buffered from the run cancelEnrichment just cancelled describe
 	// forks in the slice being thrown away. Keeping them would apply a dead

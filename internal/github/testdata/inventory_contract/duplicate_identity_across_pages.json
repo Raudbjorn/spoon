@@ -1,0 +1,37 @@
+{
+  "pages": [
+    {
+      "page": 1,
+      "data": {
+        "repository": {
+          "forks": {
+            "totalCount": 50,
+            "pageInfo": {"hasNextPage": true, "endCursor": "dup-cursor"},
+            "nodes": [
+              {"databaseId": 5001, "nameWithOwner": "same/repo", "name": "repo", "forkCount": 0, "parent": {"nameWithOwner": "root/repo", "databaseId": 5000}, "pushedAt": "2025-05-01T00:00:00Z"}
+            ]
+          },
+          "forkCount": 50,
+          "rateLimit": {"cost": 1}
+        }
+      }
+    },
+    {
+      "page": 2,
+      "data": {
+        "repository": {
+          "forks": {
+            "totalCount": 50,
+            "pageInfo": {"hasNextPage": false, "endCursor": null},
+            "nodes": [
+              {"databaseId": 5001, "nameWithOwner": "same/repo", "name": "repo", "forkCount": 0, "parent": {"nameWithOwner": "root/repo", "databaseId": 5000}, "pushedAt": "2025-05-01T00:00:00Z"},
+              {"databaseId": 5002, "nameWithOwner": "other/repo", "name": "repo", "forkCount": 0, "parent": {"nameWithOwner": "root/repo", "databaseId": 5000}, "pushedAt": "2025-04-28T00:00:00Z"}
+            ]
+          },
+          "forkCount": 50,
+          "rateLimit": {"cost": 1}
+        }
+      }
+    }
+  ]
+}

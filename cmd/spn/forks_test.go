@@ -100,6 +100,43 @@ func TestSpnForksList_emitsNDJSON(t *testing.T) {
 	}
 }
 
+// TestSpnForksList_NetworkScopeAllDefaultsMaxDepth locks the contract that
+// `spn forks list --network-scope=all` succeeds without an explicit
+// --network-max-depth, because cmd/spn/forks.go defaults NetworkMaxDepth to
+// 3 before validating the depth-must-be-positive constraint. Removing the
+// default would break every existing flag combination that relies on it.
+func TestSpnForksList_NetworkScopeAllDefaultsMaxDepth(t *testing.T) {
+	isolateSpoonRun(t)
+	prev := providerFactory
+	defer func() { providerFactory = prev }()
+	providerFactory = func(_ context.Context, _, _, _ string) (forge.Forge, string, *agentio.Error) {
+		return &fakeForge{
+			parent: forge.ParentData{DefaultBranch: "main", PushedAt: time.Now()},
+			forks: []forge.T1Data{
+				{ID: "o/a", Owner: "o", Name: "a", PushedAt: time.Now()},
+			},
+		}, "o/r", nil
+	}
+	var stdout, stderr bytes.Buffer
+	// No --network-max-depth. fakeForge does not implement ListForksBounded,
+	// so Stream falls back to ListForks — that's fine; the test only asserts
+	// the CLI accepts the flag combination.
+	exit := runForksWith([]string{
+		"list", "o/r", "--tier", "1", "--no-cluster",
+		"--network-scope", "all",
+	}, &stdout, &stderr)
+	if exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+	}
+	// No bad-input envelope should appear; the run must accept the
+	// --network-scope=all flag without an explicit --network-max-depth
+	// because cmd/spn/forks.go defaults NetworkMaxDepth to 3 before
+	// validating the depth-must-be-positive constraint.
+	if strings.Contains(stderr.String(), "\"error\":") {
+		t.Fatalf("unexpected error envelope in stderr:\n%s", stderr.String())
+	}
+}
+
 // stubEmbedder mirrors the one in internal/dump/cluster_pipeline_test.go.
 // First byte of each input text drives a deterministic axis.
 type stubEmbedder struct{ dim int }

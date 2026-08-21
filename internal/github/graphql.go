@@ -2,6 +2,8 @@ package github
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	ghAPI "github.com/cli/go-gh/v2/pkg/api"
+	"github.com/svnbjrn/spoon/internal/forge"
 )
 
 // defaultBranchTipQuery is a one-off GraphQL query used to fetch the
@@ -63,7 +66,9 @@ func (c *Client) defaultBranchTipSHA(ctx context.Context, owner, repo string) (s
 const forksGraphQLQuery = `
 query($owner: String!, $name: String!, $cursor: String) {
   repository(owner: $owner, name: $name) {
+    forkCount
     forks(first: 50, after: $cursor, orderBy: {field: STARGAZERS, direction: DESC}) {
+      totalCount
       pageInfo { hasNextPage endCursor }
       nodes {
         databaseId
@@ -91,6 +96,7 @@ query($owner: String!, $name: String!, $cursor: String) {
             }
           }
         }
+        parent { nameWithOwner databaseId }
       }
     }
   }
@@ -101,8 +107,10 @@ query($owner: String!, $name: String!, $cursor: String) {
 // gqlResponse maps the GraphQL JSON response.
 type gqlResponse struct {
 	Repository struct {
-		Forks struct {
-			PageInfo struct {
+		ForkCount int `json:"forkCount"`
+		Forks     struct {
+			TotalCount int `json:"totalCount"`
+			PageInfo   struct {
 				HasNextPage bool   `json:"hasNextPage"`
 				EndCursor   string `json:"endCursor"`
 			} `json:"pageInfo"`
@@ -152,6 +160,15 @@ type gqlForkNode struct {
 	Refs struct {
 		Nodes []gqlRefNode `json:"nodes"`
 	} `json:"refs"`
+
+	// Parent is the fork's direct parent repository. Populated via the
+	// forks query's parent { nameWithOwner databaseId } extension. Nil
+	// when the parent field is absent (legacy response, REST path, or
+	// the root repo itself).
+	Parent *struct {
+		NameWithOwner string `json:"nameWithOwner"`
+		DatabaseID    int64  `json:"databaseId"`
+	} `json:"parent"`
 }
 
 type gqlRefNode struct {
@@ -162,17 +179,28 @@ type gqlRefNode struct {
 }
 
 // FetchForksGraphQL fetches forks using the batched GraphQL query.
-// Returns ForkInfo (REST-compatible) and T1Extra for each fork.
+// Returns ForkInfo (REST-compatible), T1Extra for each fork, and an
+// AcquisitionReport describing the GraphQL acquisition. The repoForkCount and
+// directTotalCount in the report are captured from the very first page so they
+// remain populated even if a later page fails and we partial-fall back to REST.
 // onPage is called with each batch for progressive display.
-func (c *Client) FetchForksGraphQL(ctx context.Context, owner, repo string, onPage func(forks []ForkInfo, extras []T1Extra, page int)) ([]ForkInfo, []T1Extra, error) {
+func (c *Client) FetchForksGraphQL(ctx context.Context, owner, repo string, onPage func(forks []ForkInfo, extras []T1Extra, page int)) ([]ForkInfo, []T1Extra, *forge.AcquisitionReport, error) {
 	if !c.HasGraphQL() {
-		return nil, nil, fmt.Errorf("GraphQL client not available")
+		return nil, nil, nil, fmt.Errorf("GraphQL client not available")
+	}
+
+	authMode := "authenticated"
+	if !c.IsAuthenticated() {
+		authMode = "anonymous"
 	}
 
 	var allForks []ForkInfo
 	var allExtras []T1Extra
 	var cursor *string
 	page := 0
+	firstResponse := true
+	var repoForkCount, directTotalCount int
+	seen := make(map[int64]struct{}, 256)
 
 	for {
 		variables := map[string]interface{}{
@@ -186,15 +214,40 @@ func (c *Client) FetchForksGraphQL(ctx context.Context, owner, repo string, onPa
 		var resp gqlResponse
 		err := c.doGraphQLWithRetry(ctx, forksGraphQLQuery, variables, &resp)
 		if err != nil {
-			return allForks, allExtras, fmt.Errorf("GraphQL query: %w", err)
+			report := &forge.AcquisitionReport{
+				Method:        "graphql",
+				Scope:         "direct",
+				APIVersion:    defaultRESTVersion,
+				AuthMode:      authMode,
+				FallbackChain: []string{"graphql"},
+				Pages:         page,
+				RawRows:       len(allForks),
+				UniqueRows:    len(seen),
+				DuplicateRows: len(allForks) - len(seen),
+				CaptureAt:     time.Now(),
+				AuthScopeID:   c.AuthScopeID(),
+			}
+			// Annotate lineage on the partial data we have so far before returning.
+			// DirectParent/DepthFromRoot are unknown when parent data is missing.
+			allExtras = annotateDepths(allForks, allExtras, owner+"/"+repo)
+			return allForks, allExtras, report, fmt.Errorf("GraphQL query: %w", err)
 		}
 
-		page++
+		// Capture root repo metadata from the first response so a later failure
+		// can still produce a report with the true totals. Page counts represent
+		// non-empty fork batches, not merely successful HTTP responses.
+		if firstResponse {
+			repoForkCount = resp.Repository.ForkCount
+			directTotalCount = resp.Repository.Forks.TotalCount
+			firstResponse = false
+		}
+
 		var pageForks []ForkInfo
 		var pageExtras []T1Extra
 
 		for _, node := range resp.Repository.Forks.Nodes {
-			fork, extra := gqlForkToForkInfo(node)
+			fork, extra := gqlForkToForkInfo(node, repoForkCount, directTotalCount, authMode, defaultRESTVersion)
+			seen[fork.ID] = struct{}{}
 			pageForks = append(pageForks, fork)
 			pageExtras = append(pageExtras, extra)
 		}
@@ -202,8 +255,11 @@ func (c *Client) FetchForksGraphQL(ctx context.Context, owner, repo string, onPa
 		allForks = append(allForks, pageForks...)
 		allExtras = append(allExtras, pageExtras...)
 
-		if onPage != nil {
-			onPage(pageForks, pageExtras, page)
+		if len(pageForks) > 0 {
+			page++
+			if onPage != nil {
+				onPage(pageForks, pageExtras, page)
+			}
 		}
 
 		if !resp.Repository.Forks.PageInfo.HasNextPage {
@@ -213,7 +269,308 @@ func (c *Client) FetchForksGraphQL(ctx context.Context, owner, repo string, onPa
 		cursor = &endCursor
 	}
 
-	return allForks, allExtras, nil
+	unique := len(seen)
+	report := &forge.AcquisitionReport{
+		Method:        "graphql",
+		Scope:         "direct",
+		APIVersion:    defaultRESTVersion,
+		AuthMode:      authMode,
+		FallbackChain: []string{"graphql"},
+		Pages:         page,
+		RawRows:       len(allForks),
+		UniqueRows:    unique,
+		DuplicateRows: len(allForks) - unique,
+		CaptureAt:     time.Now(),
+		AuthScopeID:   c.AuthScopeID(),
+	}
+	// Annotate lineage on the full set. annotateDepths is cycle-safe and
+	// deterministic regardless of page order.
+	allExtras = annotateDepths(allForks, allExtras, owner+"/"+repo)
+
+	return allForks, allExtras, report, nil
+}
+
+// BoundedOptions controls a bounded whole-network traversal.
+type BoundedOptions struct {
+	MaxNodes   int
+	MaxDepth   int
+	MaxPages   int
+	MaxElapsed time.Duration
+}
+
+type CapReason int
+
+const (
+	CapReasonNone     CapReason = 0
+	CapReasonMaxNodes CapReason = iota
+	CapReasonMaxDepth
+	CapReasonMaxPages
+	CapReasonMaxElapsed
+)
+
+func (c CapReason) String() string {
+	switch c {
+	case CapReasonMaxNodes:
+		return "max_nodes"
+	case CapReasonMaxDepth:
+		return "max_depth"
+	case CapReasonMaxPages:
+		return "max_pages"
+	case CapReasonMaxElapsed:
+		return "max_elapsed"
+	default:
+		return ""
+	}
+}
+
+// capReason returns the report's CapReason, preferring the explicit outer
+// cap when set and falling back to the depth-boundary flag. depthCap fires
+// inside the fork-processing loop while the queue may still hold shallower
+// entries, so it must NOT terminate the outer loop (that would truncate the
+// network prematurely); it is surfaced here for the report only.
+func capReason(outer CapReason, depthCap bool) string {
+	if outer != CapReasonNone {
+		return outer.String()
+	}
+	if depthCap {
+		return CapReasonMaxDepth.String()
+	}
+	return ""
+}
+
+func (c *Client) FetchForksBounded(ctx context.Context, owner, repo string, onBatch func(forks []ForkInfo, extras []T1Extra, depth int), opts BoundedOptions) ([]ForkInfo, map[int64]T1Extra, *forge.AcquisitionReport, error) {
+	if !c.HasGraphQL() {
+		return nil, nil, nil, fmt.Errorf("GraphQL client not available")
+	}
+	if opts.MaxNodes <= 0 {
+		opts.MaxNodes = 5000
+	}
+	if opts.MaxDepth <= 0 {
+		opts.MaxDepth = 3
+	}
+	if opts.MaxPages <= 0 {
+		opts.MaxPages = 200
+	}
+	if opts.MaxElapsed <= 0 {
+		opts.MaxElapsed = 2 * time.Minute
+	}
+	authMode := "authenticated"
+	if !c.IsAuthenticated() {
+		authMode = "anonymous"
+	}
+
+	type queueEntry struct {
+		owner string
+		repo  string
+		depth int
+	}
+	queue := []queueEntry{{owner: owner, repo: repo}}
+	seen := make(map[int64]struct{})
+	var allForks []ForkInfo
+	var allExtras []T1Extra
+	totalPages := 0
+	cap := CapReasonNone
+	// depthCap records that the traversal refused to queue children of a
+	// fork at the MaxDepth boundary. It is independent of `cap` so the
+	// outer loop can continue draining shallower queue entries instead of
+	// terminating after the current batch.
+	var depthCap bool
+	rootForkCount := 0
+	// rootDirectTotal is the root repo's forks.totalCount (direct child count),
+	// captured from the depth-zero alias's first response. It is the value
+	// every fork's T1Extra.DirectTotalCount must carry, independent of how
+	// many forks the traversal actually discovered (which can be capped by
+	// MaxNodes / MaxPages / MaxDepth / MaxElapsed).
+	rootDirectTotal := 0
+	start := time.Now()
+	// deadline is the absolute wall-clock instant at which MaxElapsed is hit.
+	// The outer loop and every in-flight GraphQL call derive their per-call
+	// context from this so a slow request (with retries) cannot blow past
+	// the user's MaxElapsed.
+	deadline := start.Add(opts.MaxElapsed)
+
+	makeReport := func(errCode string) *forge.AcquisitionReport {
+		unique := len(seen)
+		return &forge.AcquisitionReport{
+			Method:        "graphql",
+			Scope:         "all",
+			APIVersion:    defaultRESTVersion,
+			AuthMode:      authMode,
+			FallbackChain: []string{"graphql"},
+			Pages:         totalPages,
+			RawRows:       len(allForks),
+			UniqueRows:    unique,
+			DuplicateRows: len(allForks) - unique,
+			CaptureAt:     time.Now(),
+			AuthScopeID:   c.AuthScopeID(),
+			VisitedNodes:  unique,
+			MaxNodes:      opts.MaxNodes,
+			MaxDepth:      opts.MaxDepth,
+			CapReason:     capReason(cap, depthCap),
+			Unresolved:    max(rootForkCount-unique, 0),
+			Error:         errCode,
+		}
+	}
+
+	for len(queue) > 0 && cap == CapReasonNone {
+		if time.Since(start) > opts.MaxElapsed {
+			cap = CapReasonMaxElapsed
+			break
+		}
+		if totalPages >= opts.MaxPages {
+			cap = CapReasonMaxPages
+			break
+		}
+
+		batch := queue
+		if len(batch) > 4 {
+			batch = batch[:4]
+		}
+		queue = queue[len(batch):]
+		totalPages++
+
+		aliases := make([]string, len(batch))
+		vars := make(map[string]interface{})
+		for j, e := range batch {
+			aliases[j] = fmt.Sprintf("r%d", j)
+			vars[fmt.Sprintf("owner%d", j)] = e.owner
+			vars[fmt.Sprintf("name%d", j)] = e.repo
+		}
+
+		query := buildBatchedForksQuery(aliases)
+		var resp gqlAliasBatch
+		// Pass a context bounded by the traversal deadline so an in-flight
+		// GraphQL request that times out (and retries) cannot run past
+		// MaxElapsed. Without this, a 60-second HTTP timeout retried up to
+		// three times can blow a 30-second user limit by ~3x.
+		callCtx, cancel := context.WithDeadline(ctx, deadline)
+		callErr := c.doGraphQLWithRetry(callCtx, query, vars, &resp)
+		cancel()
+		if callErr != nil {
+			// The bounded call bailed mid-walk. Build the same extras map
+			// the happy path produces so callers that iterate the partial
+			// forks can still recover lineage and coverage. Distinguish a
+			// user-configured time limit (deadline expired mid-request) from
+			// an upstream GraphQL outage: the former is a cap, not an error.
+			allExtras = annotateDepths(allForks, allExtras, owner+"/"+repo)
+			for i := range allExtras {
+				allExtras[i].WholeNetworkForkCount = rootForkCount
+				allExtras[i].DirectTotalCount = rootDirectTotal
+			}
+			extrasMap := make(map[int64]T1Extra, len(allForks))
+			for i, f := range allForks {
+				if i < len(allExtras) {
+					extrasMap[f.ID] = allExtras[i]
+				}
+			}
+			if errors.Is(callErr, context.DeadlineExceeded) {
+				cap = CapReasonMaxElapsed
+				return allForks, extrasMap, makeReport(""), callErr
+			}
+			return allForks, extrasMap, makeReport("graphql_failed"), fmt.Errorf("graphql query: %w", callErr)
+		}
+
+		for j, alias := range aliases {
+			raw, ok := resp.Aliases[alias]
+			if !ok {
+				continue
+			}
+			var node struct {
+				ForkCount int `json:"forkCount"`
+				Forks     struct {
+					TotalCount int           `json:"totalCount"`
+					Nodes      []gqlForkNode `json:"nodes"`
+				} `json:"forks"`
+			}
+			if err := json.Unmarshal(raw, &node); err != nil {
+				continue
+			}
+			depth := batch[j].depth
+			if depth == 0 {
+				rootForkCount = node.ForkCount
+				rootDirectTotal = node.Forks.TotalCount
+			}
+			var pageForks []ForkInfo
+			var pageExtras []T1Extra
+			for _, f := range node.Forks.Nodes {
+				if _, duplicate := seen[f.DatabaseID]; duplicate {
+					continue
+				}
+				if len(seen) >= opts.MaxNodes {
+					cap = CapReasonMaxNodes
+					continue
+				}
+				fork, extra := gqlForkToForkInfo(f, 0, 0, authMode, defaultRESTVersion)
+				seen[fork.ID] = struct{}{}
+				allForks = append(allForks, fork)
+				allExtras = append(allExtras, extra)
+				pageForks = append(pageForks, fork)
+				pageExtras = append(pageExtras, extra)
+				if depth+1 < opts.MaxDepth {
+					if f.ForkCount > 0 {
+						parts := strings.SplitN(fork.FullName, "/", 2)
+						if len(parts) == 2 {
+							queue = append(queue, queueEntry{owner: parts[0], repo: parts[1], depth: depth + 1})
+						}
+					}
+				} else if f.ForkCount > 0 {
+					// depth+1 >= opts.MaxDepth: do not queue this fork's children,
+					// but DO NOT terminate the outer loop. The queue may still
+					// hold entries at shallower depths whose descendants are
+					// within MaxDepth. Flag the depth truncation in the report
+					// without stopping work that is already enqueued.
+					depthCap = true
+				}
+			}
+			if onBatch != nil && len(pageForks) > 0 {
+				onBatch(pageForks, pageExtras, depth+1)
+			}
+		}
+	}
+
+	report := makeReport("")
+	allExtras = annotateDepths(allForks, allExtras, owner+"/"+repo)
+	for i := range allExtras {
+		// WholeNetworkForkCount is the root repo's forkCount (GraphQL
+		// repository.forkCount) -- the whole-network total. DirectTotalCount
+		// is the root repo's forks.totalCount -- the number of direct children.
+		// They are independent GraphQL fields and must not be conflated.
+		allExtras[i].WholeNetworkForkCount = rootForkCount
+		allExtras[i].DirectTotalCount = rootDirectTotal
+	}
+	extrasMap := make(map[int64]T1Extra, len(allForks))
+	for i, f := range allForks {
+		if i < len(allExtras) {
+			extrasMap[f.ID] = allExtras[i]
+		}
+	}
+	return allForks, extrasMap, report, nil
+}
+
+func buildBatchedForksQuery(aliases []string) string {
+	var sb strings.Builder
+	sb.WriteString("query(")
+	args := make([]string, 0, len(aliases)*2)
+	for i := range aliases {
+		args = append(args, fmt.Sprintf("$owner%d: String!", i), fmt.Sprintf("$name%d: String!", i))
+	}
+	sb.WriteString(strings.Join(args, ", "))
+	sb.WriteString(`) {`)
+	forkFrag := `forkCount forks(first:50)` +
+		`{totalCount nodes{databaseId nameWithOwner name description stargazerCount` +
+		` pushedAt createdAt isArchived isDisabled forkCount diskUsage` +
+		` primaryLanguage{name} defaultBranchRef{name} owner{login avatarUrl}` +
+		` pullRequests(states:OPEN,first:1){totalCount}` +
+		` releases(first:1){totalCount}` +
+		` repositoryTopics(first:20){nodes{topic{name}}}` +
+		` refs(refPrefix:"refs/heads/",first:10,orderBy:{field:ALPHABETICAL,direction:ASC})` +
+		`{nodes{name target{... on Commit{committedDate}}}}` +
+		` parent{nameWithOwner databaseId}}}`
+	for i := range aliases {
+		sb.WriteString(fmt.Sprintf(` r%d: repository(owner: $owner%d, name: $name%d) {%s}`, i, i, i, forkFrag))
+	}
+	sb.WriteString(` rateLimit{limit remaining used resetAt cost}}`)
+	return sb.String()
 }
 
 // gqlMaxAttempts bounds retries for transient GraphQL failures. GitHub returns
@@ -280,7 +637,11 @@ func isTransientServerError(err error) bool {
 }
 
 // gqlForkToForkInfo converts a GraphQL fork node to ForkInfo + T1Extra.
-func gqlForkToForkInfo(node gqlForkNode) (ForkInfo, T1Extra) {
+// repoForkCount and directTotalCount are taken from the parent repository
+// root (forkCount and forks.totalCount respectively); they are identical
+// for every fork in a single run. authMode and apiVersion describe the
+// acquisition that produced this record.
+func gqlForkToForkInfo(node gqlForkNode, repoForkCount, directTotalCount int, authMode, apiVersion string) (ForkInfo, T1Extra) {
 	defaultBranch := "main"
 	if node.DefaultBranchRef != nil {
 		defaultBranch = node.DefaultBranchRef.Name
@@ -324,17 +685,67 @@ func gqlForkToForkInfo(node gqlForkNode) (ForkInfo, T1Extra) {
 	branches := sortBranches(node.Refs.Nodes, defaultBranch)
 
 	extra := T1Extra{
-		OpenPRCount:  node.PullRequests.TotalCount,
-		ReleaseCount: node.Releases.TotalCount,
-		TopBranches:  branches,
+		OpenPRCount:           node.PullRequests.TotalCount,
+		ReleaseCount:          node.Releases.TotalCount,
+		TopBranches:           branches,
+		ForkCount:             node.ForkCount,
+		DirectTotalCount:      directTotalCount,
+		WholeNetworkForkCount: repoForkCount,
+		AuthMode:              authMode,
+		APIVersion:            apiVersion,
+	}
+
+	if node.Parent != nil {
+		extra.ParentFullPath = node.Parent.NameWithOwner
+		extra.ParentDatabaseID = node.Parent.DatabaseID
 	}
 
 	return fork, extra
 }
 
-// extractTopicNames flattens a `repositoryTopics.nodes` payload into a
-// []string. Returns nil when the input is empty so JSON output stays
-// idiomatic ("topics": null) rather than carrying a zero-length slice.
+// annotateDepths walks the parallel (forks, extras) slices and computes
+// DepthFromRoot and DirectParent relative to the requested network root.
+// It builds a parent-to-children index, then breadth-first propagates depth from
+// direct children. Cycles and missing parents are never reached, so stay at the
+// zero value (unknown).
+func annotateDepths(forks []ForkInfo, extras []T1Extra, root string) []T1Extra {
+	if len(forks) == 0 {
+		return nil
+	}
+	if len(forks) != len(extras) {
+		return extras
+	}
+
+	children := make(map[int64][]int, len(forks))
+	queue := make([]int, 0, len(forks))
+	for i := range extras {
+		if extras[i].ParentFullPath == root {
+			extras[i].DirectParent = 1
+			extras[i].DepthFromRoot = 1
+			queue = append(queue, i)
+		}
+		if extras[i].ParentDatabaseID != 0 {
+			children[extras[i].ParentDatabaseID] = append(children[extras[i].ParentDatabaseID], i)
+		}
+	}
+
+	for len(queue) > 0 {
+		i := queue[0]
+		queue = queue[1:]
+		if forks[i].ID == 0 {
+			continue
+		}
+		for _, child := range children[forks[i].ID] {
+			candidate := extras[i].DepthFromRoot + 1
+			if extras[child].DepthFromRoot == 0 || extras[child].DepthFromRoot > candidate {
+				extras[child].DepthFromRoot = candidate
+				queue = append(queue, child)
+			}
+		}
+	}
+	return extras
+}
+
 func extractTopicNames(nodes []struct {
 	Topic struct {
 		Name string `json:"name"`
@@ -388,10 +799,20 @@ func sortBranches(refs []gqlRefNode, defaultBranch string) []BranchInfo {
 }
 
 // FetchForksAuto uses GraphQL if authenticated, REST fallback otherwise.
-// Returns forks and T1Extras (nil for REST path).
-func (c *Client) FetchForksAuto(ctx context.Context, owner, repo string, onPage func(forks []ForkInfo, page int)) ([]ForkInfo, map[int64]T1Extra, error) {
+// Returns forks, T1Extras (nil for REST path), and an AcquisitionReport.
+// Successful reports count raw identities and non-empty upstream batches. Pure
+// REST uses Method="rest"/["rest"]; a successful partial fallback uses
+// Method="graphql+rest"/["graphql","rest"]. If that REST fallback fails, the
+// returned report remains the partial GraphQL snapshot with
+// Method="graphql"/["graphql"] and Error="rest_fallback_failed".
+func (c *Client) FetchForksAuto(ctx context.Context, owner, repo string, onPage func(forks []ForkInfo, page int)) ([]ForkInfo, map[int64]T1Extra, *forge.AcquisitionReport, error) {
+	authMode := "authenticated"
+	if !c.IsAuthenticated() {
+		authMode = "anonymous"
+	}
+
 	if c.HasGraphQL() {
-		forks, extras, err := c.FetchForksGraphQL(ctx, owner, repo, func(forks []ForkInfo, extras []T1Extra, page int) {
+		forks, extras, gqlReport, err := c.FetchForksGraphQL(ctx, owner, repo, func(forks []ForkInfo, extras []T1Extra, page int) {
 			if onPage != nil {
 				onPage(forks, page)
 			}
@@ -432,11 +853,67 @@ func (c *Client) FetchForksAuto(ctx context.Context, owner, repo string, onPage 
 					}
 				}
 			}
-			forks, restErr := c.FetchForks(ctx, owner, repo, dedupOnPage)
-			if restErr != nil {
-				return nil, nil, fmt.Errorf("graphql failed (%v); rest fallback failed: %w", err, restErr)
+			restPages, restRawRows := 0, 0
+			restOnPage := func(pageForks []ForkInfo, page int) {
+				if len(pageForks) > 0 {
+					restPages++
+					restRawRows += len(pageForks)
+				}
+				if dedupOnPage != nil {
+					dedupOnPage(pageForks, page)
+				}
 			}
-			return forks, nil, nil
+			restForks, restErr := c.FetchForks(ctx, owner, repo, restOnPage)
+			if restErr != nil {
+				// REST fallback failed too: retain the partial GraphQL snapshot.
+				if gqlReport == nil {
+					gqlReport = &forge.AcquisitionReport{Method: "graphql", Scope: "direct", APIVersion: defaultRESTVersion, AuthMode: authMode, FallbackChain: []string{"graphql"}, AuthScopeID: c.AuthScopeID(), CaptureAt: time.Now()}
+				}
+				gqlReport.Method = "graphql"
+				gqlReport.FallbackChain = []string{"graphql"}
+				gqlReport.Error = "rest_fallback_failed"
+				return nil, nil, gqlReport, fmt.Errorf("graphql failed (%v); rest fallback failed: %w", err, restErr)
+			}
+			// REST fallback succeeded: dedup the REST result against the GraphQL
+			// partial list, compute the combined report, and return the merged
+			// fork set with no extras (REST has no T1 extras).
+			merged := restForks
+			if len(streamed) > 0 {
+				filtered := make([]ForkInfo, 0, len(restForks))
+				for _, f := range restForks {
+					if _, seen := streamed[f.ID]; seen {
+						continue
+					}
+					filtered = append(filtered, f)
+				}
+				merged = append(forks, filtered...)
+			}
+			report := gqlReport
+			if report == nil {
+				report = &forge.AcquisitionReport{
+					Method:        "graphql+rest",
+					Scope:         "direct",
+					APIVersion:    defaultRESTVersion,
+					AuthMode:      authMode,
+					FallbackChain: []string{"graphql", "rest"},
+					AuthScopeID:   c.AuthScopeID(),
+					CaptureAt:     time.Now(),
+					Pages:         restPages,
+					RawRows:       restRawRows,
+				}
+			} else {
+				report.Method = "graphql+rest"
+				report.FallbackChain = []string{"graphql", "rest"}
+				report.Pages += restPages
+				report.RawRows += restRawRows
+			}
+			seen := make(map[int64]struct{}, len(merged))
+			for _, f := range merged {
+				seen[f.ID] = struct{}{}
+			}
+			report.UniqueRows = len(seen)
+			report.DuplicateRows = report.RawRows - report.UniqueRows
+			return merged, nil, report, nil
 		}
 
 		// Build extras map
@@ -446,12 +923,55 @@ func (c *Client) FetchForksAuto(ctx context.Context, owner, repo string, onPage 
 				extrasMap[f.ID] = extras[i]
 			}
 		}
-		return forks, extrasMap, nil
+		return forks, extrasMap, gqlReport, nil
 	}
 
-	// REST fallback — no extras
-	forks, err := c.FetchForks(ctx, owner, repo, onPage)
-	return forks, nil, err
+	// REST fallback — no extras. Count raw, non-empty REST batches before
+	// any outward callback so report accounting never depends on dedup/display.
+	restPages, restRawRows := 0, 0
+	restOnPage := func(pageForks []ForkInfo, page int) {
+		if len(pageForks) > 0 {
+			restPages++
+			restRawRows += len(pageForks)
+		}
+		if onPage != nil {
+			onPage(pageForks, page)
+		}
+	}
+	restForks, restErr := c.FetchForks(ctx, owner, repo, restOnPage)
+	if restErr != nil {
+		// Pure REST failure: still surface a report so callers know what we
+		// tried. Method stays "rest" and Error marks the failure.
+		report := &forge.AcquisitionReport{
+			Method:        "rest",
+			Scope:         "direct",
+			APIVersion:    defaultRESTVersion,
+			AuthMode:      authMode,
+			FallbackChain: []string{"rest"},
+			AuthScopeID:   c.AuthScopeID(),
+			CaptureAt:     time.Now(),
+			Error:         "rest_failed",
+		}
+		return nil, nil, report, restErr
+	}
+	seen := make(map[int64]struct{}, len(restForks))
+	for _, f := range restForks {
+		seen[f.ID] = struct{}{}
+	}
+	report := &forge.AcquisitionReport{
+		Method:        "rest",
+		Scope:         "direct",
+		APIVersion:    defaultRESTVersion,
+		AuthMode:      authMode,
+		FallbackChain: []string{"rest"},
+		Pages:         restPages,
+		RawRows:       restRawRows,
+		UniqueRows:    len(seen),
+		DuplicateRows: len(restForks) - len(seen),
+		CaptureAt:     time.Now(),
+		AuthScopeID:   c.AuthScopeID(),
+	}
+	return restForks, nil, report, nil
 }
 
 // ParseGitHubURL extracts owner/repo from a GitHub URL or owner/repo string.

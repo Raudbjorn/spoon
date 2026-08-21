@@ -30,6 +30,20 @@ import (
 // every Open take the write lock and commit an empty transaction forever.
 var SchemaVersion = migrations[len(migrations)-1].version
 
+// ErrSchemaNewerThanSupported is returned by Open when the on-disk store was
+// written by a binary that knows a schema the current binary does not. The
+// CLI catches it and offers Store.Downgrade, which rolls the schema back one
+// step (copying the newer-only columns into a *_backup table first) so the
+// user-visible data is preserved even though the current binary cannot read
+// the newer columns natively.
+var ErrSchemaNewerThanSupported = errors.New("store schema is newer than supported")
+
+// SupportsDowngrade reports whether the binary carries the down-migration
+// recipes needed to roll a store from the on-disk schema back to SchemaVersion
+// without data loss. The CLI calls this after Open returns the sentinel so
+// the user gets an automatic rollback instead of a hard error.
+func SupportsDowngrade() bool { return downgradeStep != nil }
+
 type RepoRecord struct {
 	Provider, Host, Owner, Name string
 	FirstSeen, LastSeen         time.Time
@@ -41,6 +55,12 @@ type RepoRecord struct {
 	// no push to any cached fork), unlike per-fork compare validity which is
 	// keyed on pushed_at.
 	ForksSyncedAt time.Time
+	// APIVersion is the pinned REST API version used to acquire this snapshot.
+	APIVersion string
+	// AcquisitionMethod records how the snapshot was fetched: "graphql", "rest", etc.
+	AcquisitionMethod string
+	// AuthScopeID is the non-reversible fingerprint of the credential set used.
+	AuthScopeID string
 }
 
 type ForkRecord struct {
@@ -51,6 +71,14 @@ type ForkRecord struct {
 	Heat                                             float64
 	Tier                                             int
 	UpdatedAt                                        time.Time
+	// MergeCommits and MergeCommitTruncated mirror the corresponding
+	// derived T1 fields. Persisted on the forks row alongside the
+// relational merge_commit_history so the LIN column renders without a
+// recompute on the next run. LinearHistory itself is not stored here:
+	// it is derived from MergeCommits (linear ⇔ MergeCommits == 0) on
+// read, and from the live provider sweep otherwise.
+	MergeCommits        int
+	MergeCommitTruncated bool
 }
 
 type CommitRecord struct {
@@ -95,9 +123,12 @@ type Snapshot struct {
 
 // RepoSnapshot is the read-side view of one upstream and its cached forks.
 type RepoSnapshot struct {
-	Parent        *forge.ParentData
-	ForksSyncedAt time.Time
-	Forks         []CachedFork
+	Parent            *forge.ParentData
+	ForksSyncedAt     time.Time
+	APIVersion        string
+	AcquisitionMethod string
+	AuthScopeID       string
+	Forks             []CachedFork
 
 	// byID indexes Forks by forge ID, built once by LoadRepoSnapshot so
 	// per-fork lookups are O(1) — callers do one lookup per live fork, and a
@@ -154,7 +185,15 @@ type CachedFork struct {
 	T2          *forge.T2Data
 	T2FetchedAt time.Time
 	Heat        float64
+
 	Tier        int
+	// MergeCommits and MergeCommitTruncated are the linear-history
+	// scalars lifted from the forks row so the TUI can read the value
+	// with a column lookup rather than a t1_json unmarshal. Empty on
+	// a pre-v5 row; compare scripts that need an authoritative
+	// signal must read t1_json instead.
+	MergeCommits        int
+	MergeCommitTruncated bool
 }
 
 type PendingDocument struct {
@@ -322,6 +361,69 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+// OpenForDowngrade opens a store without running the schema migration. The
+// caller is expected to invoke Downgrade on the returned Store and then
+// Close it. The intended use is the CLI auto-rollback path: Open detects a
+// schema mismatch and refuses to migrate, so the CLI reopens with this
+// helper, runs the downgrade, and reopens normally. Anything other than
+// Downgrade called on the returned Store is unsafe.
+func OpenForDowngrade(path string) (*Store, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, fmt.Errorf("create store directory: %w", err)
+	}
+	if err := os.Chmod(filepath.Dir(path), 0o700); err != nil {
+		return nil, fmt.Errorf("secure store directory: %w", err)
+	}
+	base, err := baseConnector(path)
+	if err != nil {
+		return nil, fmt.Errorf("open libsql store: %w", err)
+	}
+	db := sql.OpenDB(&pragmaConnector{base: base})
+	db.SetMaxOpenConns(1)
+	if err := ensureWAL(context.Background(), db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return &Store{db: db, path: path}, nil
+}
+
+// Downgrade rolls a store that is one schema step ahead of SchemaVersion
+// back to SchemaVersion, preserving the user-visible data. The newer-only
+// columns are copied into a side table named repos_v4backup so the
+// information is not destroyed; the live table is then brought to
+// SchemaVersion's shape and user_version is reset. Idempotent: re-running
+// against an already-downgraded store is a no-op. Returns ErrSchemaNewerThanSupported
+// when the on-disk schema is more than one step ahead and the binary does
+// not know how to roll that far back.
+func (s *Store) Downgrade(ctx context.Context) error {
+	if downgradeStep == nil {
+		return fmt.Errorf("this binary does not know how to downgrade a v4 store")
+	}
+	tx, err := beginImmediate(ctx, s.db)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	var version int
+	if err := tx.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
+		return fmt.Errorf("read schema version: %w", err)
+	}
+	switch {
+	case version == SchemaVersion:
+		return nil
+	case version > SchemaVersion+1:
+		return fmt.Errorf("store schema %d is more than one step ahead of %d; manual migration required",
+			version, SchemaVersion)
+	case version < SchemaVersion:
+		return fmt.Errorf("store schema %d is older than supported %d; run the current binary once to migrate",
+			version, SchemaVersion)
+	}
+	if err := downgradeStep(tx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // baseConnector returns the libsql connector for the store path. With
@@ -543,6 +645,13 @@ func (t *wtx) Commit(ctx context.Context) error {
 	return err
 }
 
+// execer is the subset of *sql.Tx / *wtx the down-migration needs. Sharing
+// the helper between the open and the on-disk code path keeps the schema
+// table the single source of truth.
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
 // Rollback after Commit is a no-op so it can sit in a defer.
 func (t *wtx) Rollback(ctx context.Context) {
 	if t.done {
@@ -567,6 +676,8 @@ var migrations = []struct {
 	{version: 1, stmts: schemaV1},
 	{version: 2, stmts: schemaV2},
 	{version: 3, stmts: schemaV3},
+	{version: 4, stmts: schemaV4},
+	{version: 5, stmts: schemaV5},
 }
 
 // createdTable and addedColumn match the exact shapes every step in the
@@ -672,7 +783,7 @@ func (s *Store) initialize(ctx context.Context) error {
 		return fmt.Errorf("read schema version: %w", err)
 	}
 	if version > SchemaVersion {
-		return fmt.Errorf("store schema %d is newer than supported version %d", version, SchemaVersion)
+		return fmt.Errorf("%w: store schema %d is newer than supported version %d", ErrSchemaNewerThanSupported, version, SchemaVersion)
 	}
 	// A stamp equal to SchemaVersion is a claim, not proof. A database whose
 	// columns do not match it -- an out-of-band file copy, a restore from a
@@ -709,7 +820,7 @@ func (s *Store) initialize(ctx context.Context) error {
 	// older steps over its schema would corrupt it. The repair path needs this
 	// most -- it is the one that ignores the version comparison below.
 	if version > SchemaVersion {
-		return fmt.Errorf("store schema %d is newer than supported version %d", version, SchemaVersion)
+		return fmt.Errorf("%w: store schema %d is newer than supported version %d", ErrSchemaNewerThanSupported, version, SchemaVersion)
 	}
 	// The version recheck is a race guard, not a repair guard: on the repair
 	// path the version was already current before the lock, so honouring it
@@ -794,6 +905,14 @@ func RepoKey(provider, host, owner, name string) string {
 	return provider + ":" + strings.ToLower(host) + ":" + strings.ToLower(owner+"/"+name)
 }
 
+// CacheScopeKey extends RepoKey with acquisition-scope fields. A cache hit
+// requires matching apiVersion, authMode, and authScopeID — so a snapshot created
+// under a different credential set or version is a miss, not a collision.
+func CacheScopeKey(provider, host, owner, name, apiVersion, authMode, authScopeID string) string {
+	return provider + ":" + strings.ToLower(host) + ":" + strings.ToLower(owner+"/"+name) +
+		":v=" + apiVersion + ":m=" + authMode + ":s=" + authScopeID
+}
+
 func ForkKey(repoKey, forgeID string) string { return repoKey + ":" + forgeID }
 func DocumentID(forkKey string) string       { return "fork:" + forkKey }
 
@@ -845,8 +964,16 @@ func upsertSnapshotTx(ctx context.Context, tx *wtx, snap Snapshot) error {
 	if err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO repos(repo_key,provider,host,owner,name,first_seen,last_seen) VALUES(?,?,?,?,?,?,?)
-		ON CONFLICT(repo_key) DO UPDATE SET last_seen=excluded.last_seen`, repoKey, snap.Repo.Provider, strings.ToLower(snap.Repo.Host), snap.Repo.Owner, snap.Repo.Name, ts(snap.Repo.FirstSeen), ts(snap.Repo.LastSeen)); err != nil {
+	// If the row already exists with a non-empty authScopeID and the incoming scope is also non-empty
+	// but different, refuse the write. This prevents a misconfigured or credential-rotated run from
+	// silently overwriting a snapshot acquired under a different identity.
+	var existingScopeID string
+	_ = tx.QueryRowContext(ctx, `SELECT auth_scope_id FROM repos WHERE repo_key=?`, repoKey).Scan(&existingScopeID)
+	if existingScopeID != "" && snap.Repo.AuthScopeID != "" && snap.Repo.AuthScopeID != existingScopeID {
+		return fmt.Errorf("auth scope mismatch: cannot overwrite snapshot acquired under scope %q with scope %q (both non-empty)", existingScopeID, snap.Repo.AuthScopeID)
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO repos(repo_key,provider,host,owner,name,first_seen,last_seen,api_version,acquisition_method,auth_scope_id) VALUES(?,?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(repo_key) DO UPDATE SET last_seen=excluded.last_seen,api_version=excluded.api_version,acquisition_method=excluded.acquisition_method,auth_scope_id=excluded.auth_scope_id`, repoKey, snap.Repo.Provider, strings.ToLower(snap.Repo.Host), snap.Repo.Owner, snap.Repo.Name, ts(snap.Repo.FirstSeen), ts(snap.Repo.LastSeen), snap.Repo.APIVersion, snap.Repo.AcquisitionMethod, snap.Repo.AuthScopeID); err != nil {
 		return fmt.Errorf("upsert repo: %w", err)
 	}
 	// Parent and sync-time updates are separate conditional statements so a
@@ -866,13 +993,27 @@ func upsertSnapshotTx(ctx context.Context, tx *wtx, snap Snapshot) error {
 			return fmt.Errorf("update repo sync time: %w", err)
 		}
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO forks(fork_key,repo_key,forge_id,owner,name,url,description,language,topics_json,stars,pushed_at,heat,tier,updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(fork_key) DO UPDATE SET owner=excluded.owner,name=excluded.name,url=excluded.url,description=excluded.description,language=excluded.language,topics_json=excluded.topics_json,stars=excluded.stars,pushed_at=excluded.pushed_at,heat=excluded.heat,tier=excluded.tier,updated_at=excluded.updated_at`,
-		forkKey, repoKey, snap.Fork.ForgeID, snap.Fork.Owner, snap.Fork.Name, snap.Fork.URL, snap.Fork.Description, snap.Fork.Language, string(topicsJSON), snap.Fork.Stars, ts(snap.Fork.PushedAt), snap.Fork.Heat, snap.Fork.Tier, ts(snap.Fork.UpdatedAt)); err != nil {
+	// run's acquisition context. A snapshot with empty scope (pre-schemaV4) is
+	// readable but not Exact-served under a non-empty scope.
+	if snap.Repo.APIVersion != "" || snap.Repo.AcquisitionMethod != "" || snap.Repo.AuthScopeID != "" {
+		if _, err = tx.ExecContext(ctx, `UPDATE repos SET api_version=?,acquisition_method=?,auth_scope_id=? WHERE repo_key=?`, snap.Repo.APIVersion, snap.Repo.AcquisitionMethod, snap.Repo.AuthScopeID, repoKey); err != nil {
+			return fmt.Errorf("update repo scope: %w", err)
+		}
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO forks(fork_key,repo_key,forge_id,owner,name,url,description,language,topics_json,stars,pushed_at,heat,tier,updated_at,merge_commits,merge_commit_truncated)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(fork_key) DO UPDATE SET owner=excluded.owner,name=excluded.name,url=excluded.url,description=excluded.description,language=excluded.language,topics_json=excluded.topics_json,stars=excluded.stars,pushed_at=excluded.pushed_at,heat=excluded.heat,tier=excluded.tier,updated_at=excluded.updated_at,merge_commits=excluded.merge_commits,merge_commit_truncated=excluded.merge_commit_truncated`,
+		forkKey, repoKey, snap.Fork.ForgeID, snap.Fork.Owner, snap.Fork.Name, snap.Fork.URL, snap.Fork.Description, snap.Fork.Language, string(topicsJSON), snap.Fork.Stars, ts(snap.Fork.PushedAt), snap.Fork.Heat, snap.Fork.Tier, ts(snap.Fork.UpdatedAt), snap.Fork.MergeCommits, boolToInt(snap.Fork.MergeCommitTruncated)); err != nil {
 		return fmt.Errorf("upsert fork: %w", err)
 	}
 	if snap.T1 != nil {
-		t1JSON, err := json.Marshal(snap.T1)
+		// Mirror the plan: raw MergeCommitHistory vector lives only in the
+		// relational merge_commit_history table. The scalar MergeCommits and
+		// MergeCommitTruncated still ride into t1_json, downstream tools
+		// use the JSON for the boolean, and the relational table for the
+		// per-commit signal without having to parse JSON.
+		t1Copy := *snap.T1
+		t1Copy.MergeCommitHistory = nil
+		t1JSON, err := json.Marshal(t1Copy)
 		if err != nil {
 			return err
 		}
@@ -921,6 +1062,25 @@ func upsertSnapshotTx(ctx context.Context, tx *wtx, snap Snapshot) error {
 			}
 		}
 	}
+
+// Persist the relational merge_commit_history rows from the T1 vector. The
+// scalar MergeCommits count and the truncation flag ride into the forks row
+// via the upsert above; the per-commit parents vector rides here so
+// downstream tools can read it without parsing t1_json. A fork with no
+// vector (snap.T1 nil, or T1.MergeCommitHistory nil) means unknown and
+// must leave prior rows in place.
+if snap.T1 != nil && snap.T1.MergeCommitHistory != nil {
+	if _, err = tx.ExecContext(ctx, `DELETE FROM merge_commit_history WHERE fork_key=?`, forkKey); err != nil {
+		return fmt.Errorf("clear merge_commit_history: %w", err)
+	}
+	for i, p := range snap.T1.MergeCommitHistory {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO merge_commit_history(fork_key,idx,parents) VALUES(?,?,?)`,
+			forkKey, i, p); err != nil {
+			return fmt.Errorf("insert merge_commit_history: %w", err)
+		}
+	}
+}
+
 	if snap.Document.DocumentID != "" {
 		if _, err = tx.ExecContext(ctx, `INSERT INTO documents(document_id,fork_key,content_hash,body,updated_at) VALUES(?,?,?,?,?)
 			ON CONFLICT(document_id) DO UPDATE SET content_hash=excluded.content_hash,body=excluded.body,updated_at=excluded.updated_at`, snap.Document.DocumentID, forkKey, snap.Document.ContentHash, snap.Document.Body, ts(snap.Document.UpdatedAt)); err != nil {
@@ -940,6 +1100,13 @@ func SnapshotFromForge(repo RepoRecord, t1 forge.T1Data, t2 *forge.T2Data, heat 
 			ForgeID: t1.ID, Owner: t1.Owner, Name: t1.Name, URL: t1.URL,
 			Description: t1.Description, Language: t1.Language, Topics: t1.Topics,
 			Stars: t1.Stars, PushedAt: t1.PushedAt, Heat: heat, Tier: tier, UpdatedAt: now,
+			// Linear-history scalars lift off the T1 fork so the column in
+			// the forks-row reads the right value without a t1_json
+			// unmarshal on every cache hit. The raw vector rides via the
+			// relational table, written from snap.T1.MergeCommitHistory
+			// in upsertSnapshotTx above.
+			MergeCommits:         t1.MergeCommits,
+			MergeCommitTruncated: t1.MergeCommitTruncated,
 		},
 		T1: &t1,
 	}
@@ -1028,7 +1195,8 @@ func headSHA(t2 *forge.T2Data) string {
 func (s *Store) LoadRepoSnapshot(ctx context.Context, provider, host, owner, name string) (*RepoSnapshot, error) {
 	repoKey := RepoKey(provider, host, owner, name)
 	var parentJSON, syncedAt string
-	err := s.db.QueryRowContext(ctx, `SELECT parent_json, forks_synced_at FROM repos WHERE repo_key=?`, repoKey).Scan(&parentJSON, &syncedAt)
+	var apiVersion, acquisitionMethod, authScopeID string
+	err := s.db.QueryRowContext(ctx, `SELECT parent_json, forks_synced_at, api_version, acquisition_method, auth_scope_id FROM repos WHERE repo_key=?`, repoKey).Scan(&parentJSON, &syncedAt, &apiVersion, &acquisitionMethod, &authScopeID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -1045,20 +1213,25 @@ func (s *Store) LoadRepoSnapshot(ctx context.Context, provider, host, owner, nam
 	if syncedAt != "" {
 		snap.ForksSyncedAt, _ = time.Parse(time.RFC3339Nano, syncedAt)
 	}
-
-	rows, err := s.db.QueryContext(ctx, `SELECT fork_key, t1_json, t2_json, t2_fetched_at, heat, tier FROM forks WHERE repo_key=? AND t1_json<>'' ORDER BY fork_key`, repoKey)
+	snap.APIVersion = apiVersion
+	snap.AcquisitionMethod = acquisitionMethod
+	snap.AuthScopeID = authScopeID
+	rows, err := s.db.QueryContext(ctx, `SELECT fork_key, t1_json, t2_json, t2_fetched_at, heat, tier, merge_commits, merge_commit_truncated FROM forks WHERE repo_key=? AND t1_json<>'' ORDER BY fork_key`, repoKey)
 	if err != nil {
 		return nil, fmt.Errorf("load forks for %s: %w", repoKey, err)
 	}
 	defer rows.Close()
 	type pendingT2 struct{ idx int }
 	byKey := map[string]pendingT2{}
+	var forkKeyByIndex []string
 	for rows.Next() {
 		var forkKey, t1JSON, t2JSON, fetchedAt string
 		var cf CachedFork
-		if err := rows.Scan(&forkKey, &t1JSON, &t2JSON, &fetchedAt, &cf.Heat, &cf.Tier); err != nil {
+		var truncated int
+		if err := rows.Scan(&forkKey, &t1JSON, &t2JSON, &fetchedAt, &cf.Heat, &cf.Tier, &cf.MergeCommits, &truncated); err != nil {
 			return nil, err
 		}
+		cf.MergeCommitTruncated = truncated != 0
 		if err := json.Unmarshal([]byte(t1JSON), &cf.T1); err != nil {
 			return nil, fmt.Errorf("decode fork %s: %w", forkKey, err)
 		}
@@ -1071,11 +1244,17 @@ func (s *Store) LoadRepoSnapshot(ctx context.Context, provider, host, owner, nam
 			byKey[forkKey] = pendingT2{idx: len(snap.Forks)}
 		}
 		snap.Forks = append(snap.Forks, cf)
+		forkKeyByIndex = append(forkKeyByIndex, forkKey)
+
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	snap.byID = make(map[string]int, len(snap.Forks))
+	if err := s.loadMergeCommitHistory(ctx, repoKey, forkKeyByIndex, &snap.Forks); err != nil {
+		return nil, err
+	}
+
 	for i := range snap.Forks {
 		snap.byID[snap.Forks[i].T1.ID] = i
 	}
@@ -1158,6 +1337,40 @@ func (s *Store) LoadRepoSnapshot(ctx context.Context, provider, host, owner, nam
 		return nil, err
 	}
 	return snap, nil
+}
+
+// LoadRepoSnapshotExact matches on the full acquisition scope. It is the
+// correct read path when the caller's run has a known scope (which T2
+// enrichment always does). A snapshot with no scope metadata (pre-schemaV4)
+// is a miss for any non-empty scope, preserving the invariant that a
+// legacy row never satisfies a scoped request.
+func (s *Store) LoadRepoSnapshotExact(ctx context.Context, provider, host, owner, name, apiVersion, authMode, authScopeID string) (*RepoSnapshot, error) {
+	if apiVersion == "" && authMode == "" && authScopeID == "" {
+		return s.LoadRepoSnapshot(ctx, provider, host, owner, name)
+	}
+	repoKey := RepoKey(provider, host, owner, name)
+	var parentJSON, syncedAt string
+	var storedAPIVersion, storedMethod, storedScopeID string
+	err := s.db.QueryRowContext(ctx, `SELECT parent_json, forks_synced_at, api_version, acquisition_method, auth_scope_id FROM repos WHERE repo_key=?`, repoKey).Scan(&parentJSON, &syncedAt, &storedAPIVersion, &storedMethod, &storedScopeID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load repo %s: %w", repoKey, err)
+	}
+	// Legacy unscoped rows have empty scope fields: they are never served to a
+	// scoped request.
+	if storedAPIVersion == "" && storedMethod == "" && storedScopeID == "" {
+		return nil, nil
+	}
+	// Scope mismatch is a cache miss, not an error.
+	if storedAPIVersion != apiVersion || storedMethod != authMode || storedScopeID != authScopeID {
+		return nil, nil
+	}
+	// Scope matches: delegate to the full read path. We already loaded the
+	// scope columns; LoadRepoSnapshot will re-read them (harmless duplication
+	// on a single row).
+	return s.LoadRepoSnapshot(ctx, provider, host, owner, name)
 }
 
 func (s *Store) PendingDocuments(ctx context.Context, model string) ([]PendingDocument, error) {
@@ -1430,11 +1643,57 @@ func ValidateVector(values []float32, dim int) error {
 	return nil
 }
 
+
+// loadMergeCommitHistory reads the relational merge_commit_history table and
+// assigns each fork's parents-totalCount vector onto snap.Forks[i].T1.
+// MergeCommitHistory. The lookup is by fork_key (the forks row primary
+// key), so callers must pass the parallel fork_key slice built alongside
+// snap.Forks during the SELECT.
+func (s *Store) loadMergeCommitHistory(ctx context.Context, repoKey string, forkKeyByIndex []string, forks *[]CachedFork) error {
+	if len(forkKeyByIndex) == 0 {
+		return nil
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT fork_key, idx, parents FROM merge_commit_history
+		WHERE fork_key IN (SELECT fork_key FROM forks WHERE repo_key=?) ORDER BY fork_key, idx`, repoKey)
+	if err != nil {
+		return fmt.Errorf("query merge_commit_history: %w", err)
+	}
+	defer rows.Close()
+	byKey := map[string][]int{}
+	for rows.Next() {
+		var forkKey string
+		var idx, parents int
+		if err := rows.Scan(&forkKey, &idx, &parents); err != nil {
+			return fmt.Errorf("scan merge_commit_history: %w", err)
+		}
+		byKey[forkKey] = append(byKey[forkKey], parents)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate merge_commit_history: %w", err)
+	}
+	for i, key := range forkKeyByIndex {
+		if v, ok := byKey[key]; ok {
+			(*forks)[i].T1.MergeCommitHistory = v
+		}
+	}
+	return nil
+}
+
 func ts(t time.Time) string {
 	if t.IsZero() {
 		return time.Unix(0, 0).UTC().Format(time.RFC3339Nano)
 	}
 	return t.UTC().Format(time.RFC3339Nano)
+}
+
+// boolToInt encodes a Go bool for storage in an INTEGER column. Mirrors
+// the implicit Go bool-as-int convention already used elsewhere in the
+// schema; one helper keeps it consistent.
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 var schemaV1 = []string{
@@ -1456,8 +1715,136 @@ var schemaV1 = []string{
 // schemaV3 adds the paid-provider response cache. Voyage embedding and rerank
 // calls cost money per token, and the same (model, input) pair always yields the
 // same answer, so a request that has been paid for once is never worth paying
-// for again. Entries are keyed by a content hash of everything that affects the
-// response — see internal/embed/voyagecache.go for the key derivation.
+// the response -- see internal/embed/voyagecache.go for the key derivation.
+// schemaV4 pins the GitHub acquisition report metadata on the repos row so a
+// later run can rebuild the snapshot's provenance without re-fetching.
+// downgradeStep, when non-nil, is the inverse recipe for rolling a store
+// from the on-disk schema back to SchemaVersion. The CLI calls it when an
+// older binary opens a database written by a newer one. Older data must
+// remain readable after the rollback -- copy every newer-only column into
+// a *_backup table first so the user can recover the dropped values.
+var schemaV4 = []string{
+	`ALTER TABLE repos ADD COLUMN api_version TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE repos ADD COLUMN acquisition_method TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE repos ADD COLUMN auth_scope_id TEXT NOT NULL DEFAULT ''`,
+}
+
+// schemaV5 adds the linear-history signal: two scalar columns on the forks
+// row (merge_commits, merge_commit_truncated) and a relational table for the
+// raw parents.totalCount vector per fork. The scalar columns drive the LIN
+// column in the TUI and the boolean field in the JSON export; the relational
+// table lets downstream tools query the per-commit history without parsing
+// the cached t1_json.
+var schemaV5 = []string{
+	`ALTER TABLE forks ADD COLUMN merge_commits INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE forks ADD COLUMN merge_commit_truncated INTEGER NOT NULL DEFAULT 0`,
+	`CREATE TABLE IF NOT EXISTS merge_commit_history (fork_key TEXT NOT NULL REFERENCES forks(fork_key) ON DELETE CASCADE, idx INTEGER NOT NULL, parents INTEGER NOT NULL, PRIMARY KEY(fork_key, idx))`,
+	`CREATE INDEX IF NOT EXISTS merge_commit_history_fork_idx ON merge_commit_history(fork_key)`,
+}
+
+// downgradeStep rolls a store that is one schema step ahead of
+// SchemaVersion back, preserving the user-visible data. It works by
+// diffing the live repos table against the column set the migration list
+// promises at SchemaVersion: every extra column is copied into a
+// side table (repos_vNNbackup) and then dropped from the live table.
+// Side effects: the live table is reduced to exactly SchemaVersion's
+// shape, the backup table keeps the dropped columns around for forward
+// migration or inspection, and user_version is reset.
+var downgradeStep = func(tx execer) error {
+	ctx := context.Background()
+	liveCols, err := tableColumns(ctx, queryerAdapter{tx}, "repos")
+	if err != nil {
+		return fmt.Errorf("read live repos columns: %w", err)
+	}
+	// expectedSchema only tracks ALTER TABLE additions, not the columns
+	// of the original CREATE TABLE. The base columns are listed here, by
+	// hand, because they don't change between steps. If a future migration
+	// adds a new base table, this list and the v1 schema must move
+	// together; the test TestDowngradeV4ToV3PreservesData pins the v3
+	// shape so a drift breaks loudly in CI.
+	want := map[string]bool{
+		"provider": true, "host": true, "owner": true, "name": true,
+		"first_seen": true, "last_seen": true, "repo_key": true,
+	}
+	for _, c := range expectedSchema()["repos"] {
+		want[c] = true
+	}
+	var extra []string
+	for c := range liveCols {
+		if !want[c] {
+			extra = append(extra, c)
+		}
+	}
+	sort.Strings(extra)
+	if len(extra) == 0 {
+		// No extra columns -- the table is already at SchemaVersion's shape.
+		// Just reset user_version; the rest of the on-disk state is
+		// already compatible.
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version=%d", SchemaVersion)); err != nil {
+			return fmt.Errorf("reset user_version: %w", err)
+		}
+		return nil
+	}
+	backup := fmt.Sprintf("repos_v%dbackup", SchemaVersion+1)
+	if _, err := tx.ExecContext(ctx,
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
+			provider TEXT NOT NULL DEFAULT '',
+			host TEXT NOT NULL DEFAULT '',
+			owner TEXT NOT NULL DEFAULT '',
+			name TEXT NOT NULL DEFAULT '',
+			first_seen TEXT NOT NULL DEFAULT '',
+			last_seen TEXT NOT NULL DEFAULT '',
+			parent_json TEXT NOT NULL DEFAULT '',
+			forks_synced_at TEXT NOT NULL DEFAULT '',
+			PRIMARY KEY(host, owner, name)
+		)`, backup)); err != nil {
+		return fmt.Errorf("create %s: %w", backup, err)
+	}
+	for _, c := range extra {
+		if _, err := tx.ExecContext(ctx,
+			fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s TEXT NOT NULL DEFAULT ''", backup, c)); err != nil {
+			return fmt.Errorf("add backup column %s: %w", c, err)
+		}
+	}
+	quoted := func(ss []string) string {
+		out := make([]string, len(ss))
+		for i, s := range ss {
+			out[i] = `"` + s + `"`
+		}
+		return strings.Join(out, ", ")
+	}
+	if _, err := tx.ExecContext(ctx,
+		fmt.Sprintf(`INSERT OR REPLACE INTO %s (provider, host, owner, name, first_seen, last_seen, parent_json, forks_synced_at, %s)
+			SELECT provider, host, owner, name, first_seen, last_seen, parent_json, forks_synced_at, %s
+			FROM repos`, backup, quoted(extra), quoted(extra))); err != nil {
+		return fmt.Errorf("copy extra columns: %w", err)
+	}
+	for _, c := range extra {
+		if _, err := tx.ExecContext(ctx, "ALTER TABLE repos DROP COLUMN "+c); err != nil {
+			return fmt.Errorf("drop extra column %q: %w", c, err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version=%d", SchemaVersion)); err != nil {
+		return fmt.Errorf("reset user_version: %w", err)
+	}
+	return nil
+}
+
+// queryerAdapter lets an execer (downgradeStep's tx type) participate in the
+// querier interface that tableColumns expects. *wtx only exposes
+// QueryRowContext and ExecContext; PRAGMA table_info returns a Rows, so we
+// reach for the underlying *sql.Conn through QueryContext when we have to.
+type queryerAdapter struct{ tx execer }
+
+func (q queryerAdapter) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	if r, ok := q.tx.(interface {
+		QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	}); ok {
+		return r.QueryContext(ctx, query, args...)
+	}
+	return nil, fmt.Errorf("downgradeStep: tx does not implement QueryContext")
+}
+
 var schemaV3 = []string{
 	`CREATE TABLE IF NOT EXISTS voyage_cache (cache_key TEXT PRIMARY KEY, kind TEXT NOT NULL, model TEXT NOT NULL, value BLOB NOT NULL, created_at TEXT NOT NULL)`,
 	`CREATE INDEX IF NOT EXISTS voyage_cache_created_idx ON voyage_cache(created_at)`,

@@ -54,6 +54,9 @@ func (p *GHProvider) Auth(_ context.Context) (forge.AuthInfo, error) {
 		Concurrency: conc,
 		RateLimit:   rl,
 		RateUnit:    "hour",
+		APIVersion:  p.status.APIVersion,
+		AuthMode:    p.status.AuthMode,
+		AuthScopeID: p.status.AuthScopeID,
 	}, nil
 }
 
@@ -87,6 +90,28 @@ func (p *GHProvider) DivergentBranchCounts(ctx context.Context, forks []forge.T1
 
 var _ forge.BranchDivergenceProvider = (*GHProvider)(nil)
 
+// MergeCommitHistory implements forge.LinearHistoryProvider. The whole batch
+// costs one GraphQL compare query per linearHistoryBatchSize forks; the
+// returned vector is the raw parents.totalCount per commit, capped at
+// linearHistoryCommitLimit per fork. Forks with deeper histories land in
+// Truncated and the consumer renders the lower-bound signal.
+func (p *GHProvider) MergeCommitHistory(ctx context.Context, forks []forge.T1Data) (map[string][]int, []string, error) {
+	targets := make([]forge.T1Data, 0, len(forks))
+	for _, f := range forks {
+		if f.Owner == "" || f.Name == "" {
+			continue
+		}
+		targets = append(targets, f)
+	}
+	hist, err := p.client.FetchMergeCommitHistory(ctx, p.sourceOwner, p.sourceRepo, p.sourceDefaultBranch, targets)
+	if err != nil {
+		return nil, nil, err
+	}
+	return hist.Histories, hist.Truncated, nil
+}
+
+var _ forge.LinearHistoryProvider = (*GHProvider)(nil)
+
 // SetCompareBaseline implements forge.CompareBaselineSetter. Parent() calls it
 // on the live path; a caller that serves the fork list from a local cache must
 // call it explicitly, or every Compare that follows has no upstream to compare
@@ -117,17 +142,19 @@ func (p *GHProvider) Parent(ctx context.Context, owner, repo string) (forge.Pare
 	headSHA, _ := p.client.defaultBranchTipSHA(ctx, owner, repo)
 
 	return forge.ParentData{
-		FullName:      info.FullName,
-		Description:   info.Description,
-		DefaultBranch: info.DefaultBranch,
-		HeadSHA:       headSHA,
-		Stars:         info.Stars,
-		Forks:         info.Forks,
-		Size:          info.Size,
-		PushedAt:      pushed,
-		URL:           info.HTMLURL,
-		Language:      info.Language,
-		Topics:        info.Topics,
+		FullName:             info.FullName,
+		Description:          info.Description,
+		DefaultBranch:        info.DefaultBranch,
+		HeadSHA:              headSHA,
+		Stars:                info.Stars,
+		Forks:                info.Forks,
+		Size:                 info.Size,
+		PushedAt:             pushed,
+		URL:                  info.HTMLURL,
+		Language:             info.Language,
+		Topics:               info.Topics,
+		SourceFullPath:       sourceFullPath(info),
+		DirectParentFullPath: directParentFullPath(info),
 	}, nil
 }
 
@@ -138,8 +165,18 @@ func (p *GHProvider) ListForks(ctx context.Context, owner, repo string) (<-chan 
 	go func() {
 		defer close(out)
 
-		forks, extrasMap, err := p.client.FetchForksAuto(ctx, owner, repo, nil)
+		forks, extrasMap, report, err := p.client.FetchForksAuto(ctx, owner, repo, nil)
 		if err != nil {
+			// On fatal acquisition failure, send the terminal report (when
+			// the provider managed to build one) before any error ForkMsg so
+			// observers can see what we attempted before the failure.
+			if report != nil {
+				select {
+				case out <- forge.ForkMsg{Report: report}:
+				case <-ctx.Done():
+					return
+				}
+			}
 			select {
 			case out <- forge.ForkMsg{Err: err}:
 			case <-ctx.Done():
@@ -161,8 +198,66 @@ func (p *GHProvider) ListForks(ctx context.Context, owner, repo string) (<-chan 
 				return
 			}
 		}
+
+		// Terminal acquisition report: always last on the channel.
+		if report != nil {
+			select {
+			case out <- forge.ForkMsg{Report: report}:
+			case <-ctx.Done():
+			}
+		}
 	}()
 
+	return out, nil
+}
+
+// ListForksBounded implements forge.ListForksBoundedProvider.
+func (p *GHProvider) ListForksBounded(ctx context.Context, owner, repo string, opts forge.BoundedOptions) (<-chan forge.ForkMsg, error) {
+	out := make(chan forge.ForkMsg, 64)
+	go func() {
+		defer close(out)
+		boundedOpts := BoundedOptions{
+			MaxNodes:   opts.MaxNodes,
+			MaxDepth:   opts.MaxDepth,
+			MaxPages:   opts.MaxPages,
+			MaxElapsed: opts.MaxElapsed,
+		}
+		forks, extrasMap, report, err := p.client.FetchForksBounded(ctx, owner, repo, nil, boundedOpts)
+		// Emit partial forks first even on error. FetchForksBounded returns
+		// whatever it had already accepted when an in-flight GraphQL call
+		// fails; discarding that inventory here would mean forksops.Stream
+		// sees an empty result set and exits with success while the upstream
+		// failure goes unreported. Stream filters ForkMsg.Err after consuming
+		// Fork and Report, so the right order is forks -> report -> err.
+		for _, f := range forks {
+			var extra *T1Extra
+			if extrasMap != nil {
+				if e, ok := extrasMap[f.ID]; ok {
+					extra = &e
+				}
+			}
+			t1 := forkInfoToT1(f, extra, owner+"/"+repo)
+			select {
+			case out <- forge.ForkMsg{Fork: t1}:
+			case <-ctx.Done():
+				return
+			}
+		}
+		if report != nil {
+			select {
+			case out <- forge.ForkMsg{Report: report}:
+			case <-ctx.Done():
+				return
+			}
+		}
+		if err != nil {
+			select {
+			case out <- forge.ForkMsg{Err: err}:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 	return out, nil
 }
 
@@ -303,7 +398,26 @@ func (p *GHProvider) Contributors(ctx context.Context, fork forge.T1Data) (forge
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-func forkInfoToT1(f ForkInfo, extra *T1Extra, parentFullPath string) forge.T1Data {
+// sourceFullPath returns the network root for a repository.
+// For a non-fork, this is the repo's own FullName.
+// For a fork, this is its source's FullName (or own FullName if source unavailable).
+func sourceFullPath(info RepoInfo) string {
+	if info.Source != nil && info.Source.FullName != "" {
+		return info.Source.FullName
+	}
+	return info.FullName
+}
+
+// directParentFullPath returns the immediate parent's full name.
+// For a non-fork, this is empty.
+func directParentFullPath(info RepoInfo) string {
+	if info.Parent != nil && info.Parent.FullName != "" {
+		return info.Parent.FullName
+	}
+	return ""
+}
+
+func forkInfoToT1(f ForkInfo, extra *T1Extra, networkRoot string) forge.T1Data {
 	pushed, _ := time.Parse(time.RFC3339, f.PushedAt)
 	created, _ := time.Parse(time.RFC3339, f.CreatedAt)
 
@@ -323,13 +437,22 @@ func forkInfoToT1(f ForkInfo, extra *T1Extra, parentFullPath string) forge.T1Dat
 		OpenIssues:     f.OpenIssues,
 		CreatedAt:      created,
 		Topics:         f.Topics,
-		SourceFullPath: parentFullPath,
-		ParentFullPath: parentFullPath,
+		SourceFullPath: networkRoot,
 	}
 
 	if extra != nil {
 		t1.OpenPRCount = extra.OpenPRCount
 		t1.ReleaseCount = extra.ReleaseCount
+		// Lineage fields are populated only on the GraphQL path (the
+		// REST fallback leaves the extras nil, so all of these stay at
+		// zero/empty/false — see brief: "REST list-forks has no parent
+		// fields: keep direct parent and depth unknown instead of
+		// fabricating the requested root").
+		t1.ParentFullPath = extra.ParentFullPath
+		t1.DepthFromRoot = extra.DepthFromRoot
+		t1.IsForkOfFork = extra.DepthFromRoot > 1
+		t1.DirectTotalCount = extra.DirectTotalCount
+		t1.WholeNetworkForkCount = extra.WholeNetworkForkCount
 
 		branches := make([]forge.BranchRef, 0, len(extra.TopBranches))
 		for _, br := range extra.TopBranches {

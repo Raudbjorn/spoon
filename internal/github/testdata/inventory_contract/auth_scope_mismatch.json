@@ -1,0 +1,15 @@
+{
+  "data": {
+    "repository": {
+      "forkCount": 5,
+      "forks": {
+        "totalCount": 5,
+        "pageInfo": {"hasNextPage": false, "endCursor": null},
+        "nodes": [
+          {"databaseId": 6001, "nameWithOwner": "user1/fork-a", "name": "fork-a", "forkCount": 0, "parent": {"nameWithOwner": "org/project", "databaseId": 6000}, "pushedAt": "2025-06-01T00:00:00Z"}
+        ]
+      },
+      "rateLimit": {"cost": 1}
+    }
+  }
+}

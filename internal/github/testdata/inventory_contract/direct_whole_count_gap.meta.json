@@ -1,0 +1,6 @@
+{
+  "version": "2022-11-28",
+  "schema": "Repository.forkCount vs Repository.forks.totalCount",
+  "reason": "Defends the direct-versus-whole-network count gap: forkCount is the whole network total, forks.totalCount is direct children only. The difference (unresolved) must be explicit.",
+  "commit": "ca00cb8cb48f05877f77ab3e36175bb27ae6c2c6"
+}
