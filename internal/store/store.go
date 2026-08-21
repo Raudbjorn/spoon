@@ -30,6 +30,20 @@ import (
 // every Open take the write lock and commit an empty transaction forever.
 var SchemaVersion = migrations[len(migrations)-1].version
 
+// ErrSchemaNewerThanSupported is returned by Open when the on-disk store was
+// written by a binary that knows a schema the current binary does not. The
+// CLI catches it and offers Store.Downgrade, which rolls the schema back one
+// step (copying the newer-only columns into a *_backup table first) so the
+// user-visible data is preserved even though the current binary cannot read
+// the newer columns natively.
+var ErrSchemaNewerThanSupported = errors.New("store schema is newer than supported")
+
+// SupportsDowngrade reports whether the binary carries the down-migration
+// recipes needed to roll a store from the on-disk schema back to SchemaVersion
+// without data loss. The CLI calls this after Open returns the sentinel so
+// the user gets an automatic rollback instead of a hard error.
+func SupportsDowngrade() bool { return downgradeStep != nil }
+
 type RepoRecord struct {
 	Provider, Host, Owner, Name string
 	FirstSeen, LastSeen         time.Time
@@ -101,12 +115,12 @@ type Snapshot struct {
 
 // RepoSnapshot is the read-side view of one upstream and its cached forks.
 type RepoSnapshot struct {
-	Parent        *forge.ParentData
-	ForksSyncedAt      time.Time
-	APIVersion         string
-	AcquisitionMethod  string
-	AuthScopeID        string
-	Forks              []CachedFork
+	Parent            *forge.ParentData
+	ForksSyncedAt     time.Time
+	APIVersion        string
+	AcquisitionMethod string
+	AuthScopeID       string
+	Forks             []CachedFork
 
 	// byID indexes Forks by forge ID, built once by LoadRepoSnapshot so
 	// per-fork lookups are O(1) — callers do one lookup per live fork, and a
@@ -333,6 +347,69 @@ func Open(path string) (*Store, error) {
 	return s, nil
 }
 
+// OpenForDowngrade opens a store without running the schema migration. The
+// caller is expected to invoke Downgrade on the returned Store and then
+// Close it. The intended use is the CLI auto-rollback path: Open detects a
+// schema mismatch and refuses to migrate, so the CLI reopens with this
+// helper, runs the downgrade, and reopens normally. Anything other than
+// Downgrade called on the returned Store is unsafe.
+func OpenForDowngrade(path string) (*Store, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, fmt.Errorf("create store directory: %w", err)
+	}
+	if err := os.Chmod(filepath.Dir(path), 0o700); err != nil {
+		return nil, fmt.Errorf("secure store directory: %w", err)
+	}
+	base, err := baseConnector(path)
+	if err != nil {
+		return nil, fmt.Errorf("open libsql store: %w", err)
+	}
+	db := sql.OpenDB(&pragmaConnector{base: base})
+	db.SetMaxOpenConns(1)
+	if err := ensureWAL(context.Background(), db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return &Store{db: db, path: path}, nil
+}
+
+// Downgrade rolls a store that is one schema step ahead of SchemaVersion
+// back to SchemaVersion, preserving the user-visible data. The newer-only
+// columns are copied into a side table named repos_v4backup so the
+// information is not destroyed; the live table is then brought to
+// SchemaVersion's shape and user_version is reset. Idempotent: re-running
+// against an already-downgraded store is a no-op. Returns ErrSchemaNewerThanSupported
+// when the on-disk schema is more than one step ahead and the binary does
+// not know how to roll that far back.
+func (s *Store) Downgrade(ctx context.Context) error {
+	if downgradeStep == nil {
+		return fmt.Errorf("this binary does not know how to downgrade a v4 store")
+	}
+	tx, err := beginImmediate(ctx, s.db)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	var version int
+	if err := tx.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
+		return fmt.Errorf("read schema version: %w", err)
+	}
+	switch {
+	case version == SchemaVersion:
+		return nil
+	case version > SchemaVersion+1:
+		return fmt.Errorf("store schema %d is more than one step ahead of %d; manual migration required",
+			version, SchemaVersion)
+	case version < SchemaVersion:
+		return fmt.Errorf("store schema %d is older than supported %d; run the current binary once to migrate",
+			version, SchemaVersion)
+	}
+	if err := downgradeStep(tx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 // baseConnector returns the libsql connector for the store path. With
 // TURSO_DATABASE_URL set, the local file becomes an embedded replica of that
 // remote Turso database (authenticated via TURSO_AUTH_TOKEN); otherwise the
@@ -552,6 +629,13 @@ func (t *wtx) Commit(ctx context.Context) error {
 	return err
 }
 
+// execer is the subset of *sql.Tx / *wtx the down-migration needs. Sharing
+// the helper between the open and the on-disk code path keeps the schema
+// table the single source of truth.
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
 // Rollback after Commit is a no-op so it can sit in a defer.
 func (t *wtx) Rollback(ctx context.Context) {
 	if t.done {
@@ -682,7 +766,7 @@ func (s *Store) initialize(ctx context.Context) error {
 		return fmt.Errorf("read schema version: %w", err)
 	}
 	if version > SchemaVersion {
-		return fmt.Errorf("store schema %d is newer than supported version %d", version, SchemaVersion)
+		return fmt.Errorf("%w: store schema %d is newer than supported version %d", ErrSchemaNewerThanSupported, version, SchemaVersion)
 	}
 	// A stamp equal to SchemaVersion is a claim, not proof. A database whose
 	// columns do not match it -- an out-of-band file copy, a restore from a
@@ -719,7 +803,7 @@ func (s *Store) initialize(ctx context.Context) error {
 	// older steps over its schema would corrupt it. The repair path needs this
 	// most -- it is the one that ignores the version comparison below.
 	if version > SchemaVersion {
-		return fmt.Errorf("store schema %d is newer than supported version %d", version, SchemaVersion)
+		return fmt.Errorf("%w: store schema %d is newer than supported version %d", ErrSchemaNewerThanSupported, version, SchemaVersion)
 	}
 	// The version recheck is a race guard, not a repair guard: on the repair
 	// path the version was already current before the lock, so honouring it
@@ -1231,7 +1315,6 @@ func (s *Store) LoadRepoSnapshotExact(ctx context.Context, provider, host, owner
 	return s.LoadRepoSnapshot(ctx, provider, host, owner, name)
 }
 
-
 func (s *Store) PendingDocuments(ctx context.Context, model string) ([]PendingDocument, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT d.document_id,d.fork_key,d.content_hash,d.body FROM documents d
 		LEFT JOIN embeddings e ON e.document_id=d.document_id AND e.model=?
@@ -1528,12 +1611,121 @@ var schemaV1 = []string{
 // schemaV3 adds the paid-provider response cache. Voyage embedding and rerank
 // calls cost money per token, and the same (model, input) pair always yields the
 // same answer, so a request that has been paid for once is never worth paying
-// for again. Entries are keyed by a content hash of everything that affects the
-// response — see internal/embed/voyagecache.go for the key derivation.
+// the response -- see internal/embed/voyagecache.go for the key derivation.
+// schemaV4 pins the GitHub acquisition report metadata on the repos row so a
+// later run can rebuild the snapshot's provenance without re-fetching.
+// downgradeStep, when non-nil, is the inverse recipe for rolling a store
+// from the on-disk schema back to SchemaVersion. The CLI calls it when an
+// older binary opens a database written by a newer one. Older data must
+// remain readable after the rollback -- copy every newer-only column into
+// a *_backup table first so the user can recover the dropped values.
 var schemaV4 = []string{
 	`ALTER TABLE repos ADD COLUMN api_version TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE repos ADD COLUMN acquisition_method TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE repos ADD COLUMN auth_scope_id TEXT NOT NULL DEFAULT ''`,
+}
+
+// downgradeStep rolls a store that is one schema step ahead of
+// SchemaVersion back, preserving the user-visible data. It works by
+// diffing the live repos table against the column set the migration list
+// promises at SchemaVersion: every extra column is copied into a
+// side table (repos_vNNbackup) and then dropped from the live table.
+// Side effects: the live table is reduced to exactly SchemaVersion's
+// shape, the backup table keeps the dropped columns around for forward
+// migration or inspection, and user_version is reset.
+var downgradeStep = func(tx execer) error {
+	ctx := context.Background()
+	liveCols, err := tableColumns(ctx, queryerAdapter{tx}, "repos")
+	if err != nil {
+		return fmt.Errorf("read live repos columns: %w", err)
+	}
+	// expectedSchema only tracks ALTER TABLE additions, not the columns
+	// of the original CREATE TABLE. The base columns are listed here, by
+	// hand, because they don't change between steps. If a future migration
+	// adds a new base table, this list and the v1 schema must move
+	// together; the test TestDowngradeV4ToV3PreservesData pins the v3
+	// shape so a drift breaks loudly in CI.
+	want := map[string]bool{
+		"provider": true, "host": true, "owner": true, "name": true,
+		"first_seen": true, "last_seen": true, "repo_key": true,
+	}
+	for _, c := range expectedSchema()["repos"] {
+		want[c] = true
+	}
+	var extra []string
+	for c := range liveCols {
+		if !want[c] {
+			extra = append(extra, c)
+		}
+	}
+	sort.Strings(extra)
+	if len(extra) == 0 {
+		// No extra columns -- the table is already at SchemaVersion's shape.
+		// Just reset user_version; the rest of the on-disk state is
+		// already compatible.
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version=%d", SchemaVersion)); err != nil {
+			return fmt.Errorf("reset user_version: %w", err)
+		}
+		return nil
+	}
+	backup := fmt.Sprintf("repos_v%dbackup", SchemaVersion+1)
+	if _, err := tx.ExecContext(ctx,
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
+			provider TEXT NOT NULL DEFAULT '',
+			host TEXT NOT NULL DEFAULT '',
+			owner TEXT NOT NULL DEFAULT '',
+			name TEXT NOT NULL DEFAULT '',
+			first_seen TEXT NOT NULL DEFAULT '',
+			last_seen TEXT NOT NULL DEFAULT '',
+			parent_json TEXT NOT NULL DEFAULT '',
+			forks_synced_at TEXT NOT NULL DEFAULT '',
+			PRIMARY KEY(host, owner, name)
+		)`, backup)); err != nil {
+		return fmt.Errorf("create %s: %w", backup, err)
+	}
+	for _, c := range extra {
+		if _, err := tx.ExecContext(ctx,
+			fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s TEXT NOT NULL DEFAULT ''", backup, c)); err != nil {
+			return fmt.Errorf("add backup column %s: %w", c, err)
+		}
+	}
+	quoted := func(ss []string) string {
+		out := make([]string, len(ss))
+		for i, s := range ss {
+			out[i] = `"` + s + `"`
+		}
+		return strings.Join(out, ", ")
+	}
+	if _, err := tx.ExecContext(ctx,
+		fmt.Sprintf(`INSERT OR REPLACE INTO %s (provider, host, owner, name, first_seen, last_seen, parent_json, forks_synced_at, %s)
+			SELECT provider, host, owner, name, first_seen, last_seen, parent_json, forks_synced_at, %s
+			FROM repos`, backup, quoted(extra), quoted(extra))); err != nil {
+		return fmt.Errorf("copy extra columns: %w", err)
+	}
+	for _, c := range extra {
+		if _, err := tx.ExecContext(ctx, "ALTER TABLE repos DROP COLUMN "+c); err != nil {
+			return fmt.Errorf("drop extra column %q: %w", c, err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version=%d", SchemaVersion)); err != nil {
+		return fmt.Errorf("reset user_version: %w", err)
+	}
+	return nil
+}
+
+// queryerAdapter lets an execer (downgradeStep's tx type) participate in the
+// querier interface that tableColumns expects. *wtx only exposes
+// QueryRowContext and ExecContext; PRAGMA table_info returns a Rows, so we
+// reach for the underlying *sql.Conn through QueryContext when we have to.
+type queryerAdapter struct{ tx execer }
+
+func (q queryerAdapter) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	if r, ok := q.tx.(interface {
+		QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	}); ok {
+		return r.QueryContext(ctx, query, args...)
+	}
+	return nil, fmt.Errorf("downgradeStep: tx does not implement QueryContext")
 }
 
 var schemaV3 = []string{
@@ -1550,4 +1742,3 @@ var schemaV2 = []string{
 	`ALTER TABLE forks ADD COLUMN t2_json TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE forks ADD COLUMN t2_fetched_at TEXT NOT NULL DEFAULT ''`,
 }
-
