@@ -149,6 +149,14 @@ Nouns and verbs:
             the fetch + policy gates run, but no GraphQL resolveReviewThread
             (or unresolveReviewThread) is issued. Output is marked dryRun=true.
   pr status <pr-ref>
+  forks eval <repo> --judgments FILE [--from-export FILE --rank-variant heat|erank|pscore|membership|eb
+                    [--shortlist N] [--prior-scale F]] [--no-cluster] [--cluster-top N]
+        Scores the fork pipeline against hand-labelled judgments. With
+        --from-export the run is offline: forks are read from a spoon export
+        JSON, ordered by the chosen rank variant over the same top-200 pool
+        every variant sees, and the report adds rankVariant, rankReport and
+        the ordered list with each fork's key. This is the gate for changing
+        --shortlist-rule / --eb defaults.
   forks list <repo|topic:NAME> [--tier 1|2|3] [--top N] [--budget N] [--shortlist N] [--shortlist-rule expected|membership] [--rank-diagnostics] [--eb [--prior-scale F]] [--bot-allowlist L] [--refresh|--no-cache] [--csv] [--forge github|gitlab] [--forge-host H]
                     [--rpm N] [--files] [--commits] [--commit-files]
                     [--commit-file-budget N] [--web-diff]

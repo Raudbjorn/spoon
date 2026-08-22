@@ -351,6 +351,11 @@ func ApplyPenalties(result *HeatResult, p PenaltyInput, weights map[string]float
 	}
 }
 
+// TierConfidence is the tier → confidence map used as the rank-model sigma
+// source (internal/forksops.rankSigma); exported so offline evaluation can
+// rebuild confidence for exports that predate the field.
+func TierConfidence(tier int) float64 { return tierConfidence(tier) }
+
 func tierConfidence(tier int) float64 {
 	switch tier {
 	case 1:

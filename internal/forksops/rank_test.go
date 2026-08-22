@@ -3,7 +3,11 @@ package forksops
 import (
 	"math"
 	"math/rand"
+	"strconv"
 	"testing"
+
+	"github.com/svnbjrn/spoon/internal/forge"
+	"github.com/svnbjrn/spoon/internal/heat"
 )
 
 func TestNormalCDF(t *testing.T) {
@@ -344,6 +348,58 @@ func TestPothResiduals_OutlierSharpensClusterBlurs(t *testing.T) {
 	for i := 1; i < 4; i++ {
 		if res[i] >= 0 {
 			t.Errorf("cluster member %d residual %v should be < 0", i, res[i])
+		}
+	}
+}
+
+// --- PR5: offline ranking entry point ---
+
+func syntheticPool(scores []float64, tiers []int) []Result {
+	out := make([]Result, len(scores))
+	for i := range scores {
+		conf := map[int]float64{1: 0.3, 2: 0.7, 3: 0.9}[tiers[i]]
+		out[i] = Result{Fork: forge.T1Data{ID: "o/f" + strconv.Itoa(i)}, Heat: heat.HeatResult{Score: scores[i], Tier: tiers[i], Confidence: conf}}
+	}
+	return out
+}
+
+func TestRankResults_MatchesStreamSemantics(t *testing.T) {
+	pool := syntheticPool([]float64{50, 40, 0, 30, 20, 10}, []int{3, 1, 2, 3, 1, 3})
+	got, report := RankResults(pool, Options{ShortlistN: 3})
+	if len(got) != 3 {
+		t.Fatalf("shortlist len=%d want 3", len(got))
+	}
+	if report.PoolSize != 6 || report.NonzeroPool != 5 || report.ShortlistRule != ShortlistRuleExpected {
+		t.Errorf("report %+v", report)
+	}
+	for i := 1; i < len(got); i++ {
+		if got[i-1].ExpectedRank > got[i].ExpectedRank {
+			t.Errorf("not ordered by expected rank: %v", got)
+		}
+	}
+	if got[0].Fork.ID != "o/f0" || got[0].Rank == nil {
+		t.Errorf("best fork should be o/f0 with Rank set, got %+v", got[0])
+	}
+}
+
+func TestRankResults_RespectsPoolCapAndEB(t *testing.T) {
+	n := rankPoolCap + 50
+	scores := make([]float64, n)
+	tiers := make([]int, n)
+	for i := range scores {
+		scores[i] = float64(n - i)
+		tiers[i] = 1 + i%3
+	}
+	got, report := RankResults(syntheticPool(scores, tiers), Options{ShortlistN: n, EB: true, PriorScale: 100})
+	if len(got) != rankPoolCap || report.PoolSize != rankPoolCap {
+		t.Errorf("pool cap: len=%d poolSize=%d want %d", len(got), report.PoolSize, rankPoolCap)
+	}
+	if report.EBRegime == "" || report.EBRegime == EBRegimeInsufficient {
+		t.Errorf("EB should have run: %+v", report)
+	}
+	for _, r := range got {
+		if r.EB == nil {
+			t.Fatalf("fork %s missing EB stats", r.Fork.ID)
 		}
 	}
 }
