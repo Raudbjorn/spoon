@@ -183,6 +183,7 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 	noSiblingSimFlagSet := false
 	siblingSimModeSet := false
 	shortlistRuleSet := false
+	priorScaleSet := false
 	topicLanesSet := false
 	topicLaneBudgetSet := false
 	for i := 0; i < len(args); i++ {
@@ -274,6 +275,19 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 			shortlistRuleSet = true
 		case "--rank-diagnostics":
 			opts.RankDiagnostics = true
+		case "--eb":
+			opts.EB = true
+		case "--prior-scale":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--prior-scale requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			f, err := strconv.ParseFloat(args[i], 64)
+			if err != nil || !(f > 0) || math.IsInf(f, 0) {
+				return agentio.NewError(agentio.CodeBadInput, "--prior-scale must be a positive number", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			opts.PriorScale = f
+			priorScaleSet = true
 		case "--bot-allowlist":
 			if i+1 >= len(args) {
 				return agentio.NewError(agentio.CodeBadInput, "--bot-allowlist requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
@@ -527,6 +541,12 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 	}
 	if opts.RankDiagnostics && opts.ShortlistN == 0 {
 		return agentio.NewError(agentio.CodeBadInput, "--rank-diagnostics requires --shortlist", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+	}
+	if opts.EB && opts.ShortlistN == 0 {
+		return agentio.NewError(agentio.CodeBadInput, "--eb requires --shortlist", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+	}
+	if priorScaleSet && !opts.EB {
+		return agentio.NewError(agentio.CodeBadInput, "--prior-scale requires --eb", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
 	}
 	var rankReport forksops.RankReport
 	if opts.ShortlistN > 0 {
@@ -1362,6 +1382,13 @@ func forkToJSONDetailed(r forksops.Result, details detailOptions) map[string]any
 			out["pothResidual"] = nanToNil(*r.Rank.PothResidual)
 		}
 	}
+	if r.EB != nil {
+		out["ebTheta"] = r.EB.Theta
+		out["ebSigma"] = r.EB.PostSigma
+		out["ebResidual"] = r.EB.Residual
+		out["ebLeverage"] = r.EB.Leverage
+		out["ebFlag"] = r.EB.Flag
+	}
 	// Components is populated by the v2 scoring path (forksops uses
 	// Scorer.ScoreRaw). Emit when present so downstream agents can inspect
 	// the per-component point budget breakdown (including the novelty
@@ -1605,6 +1632,25 @@ func emitRankReport(stderr io.Writer, report *forksops.RankReport) {
 	summary := fmt.Sprintf("ranked %d forks (%d with heat > 0); shortlist %d by %s; POTH %s, cPOTH_k %s",
 		report.PoolSize, report.NonzeroPool, report.ShortlistN, report.ShortlistRule,
 		fmtProb(report.POTH), fmtProb(report.CPOTHk))
+	if report.EBRegime != "" {
+		details["ebRegime"] = report.EBRegime
+		details["ebPool"] = report.EBPool
+		details["tauHat"] = report.TauHat
+		details["ebMean"] = report.EBMean
+		details["priorScale"] = report.PriorScale
+		details["dBarOverK"] = report.DBarOverK
+		details["pD"] = report.PD
+		switch report.EBRegime {
+		case forksops.EBRegimeInsufficient:
+			summary += fmt.Sprintf("; EB skipped: only %d forks with heat > 0 (need %d)", report.EBPool, 3)
+		case forksops.EBRegimePooled:
+			summary += "; EB skipped: no heterogeneity beyond measurement noise (tau_hat = 0) — ranking unchanged"
+		case forksops.EBRegimeClamped:
+			summary += fmt.Sprintf("; EB applied with tau_hat clamped to %.2f (prior scale %.2f), D_bar/k %.2f", report.TauHat, report.PriorScale, report.DBarOverK)
+		default:
+			summary += fmt.Sprintf("; EB applied: tau_hat %.2f, mean %.2f, D_bar/k %.2f", report.TauHat, report.EBMean, report.DBarOverK)
+		}
+	}
 	_ = agentio.WriteNDJSON(stderr, map[string]any{"info": map[string]any{
 		"code":    "rank_report",
 		"message": summary,

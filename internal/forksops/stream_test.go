@@ -1314,3 +1314,84 @@ func TestStream_shortlistWithoutDiagnosticsOmitsResidual(t *testing.T) {
 		t.Errorf("POTH for n=3 should be finite")
 	}
 }
+
+// ebFakeForge builds a pool big enough for the EB fit: a few strong tier-2
+// forks and one with zero heat (no ahead commits → zeroed) that must bypass
+// shrinkage and stay out of τ̂.
+func ebFakeForge(now time.Time) *fakeForge {
+	ff := &fakeForge{
+		parent: forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
+		t2:     map[string]forge.T2Data{},
+	}
+	mnas := []int{500, 5, 50, 1, 120, 30}
+	for i, mna := range mnas {
+		id := "o/f" + string(rune('a'+i))
+		ff.forks = append(ff.forks, forge.T1Data{ID: id, Owner: "o", Name: id[2:], DefaultBranch: "main", PushedAt: now})
+		ff.t2[id] = forge.T2Data{AheadCount: 1, MNA: mna}
+	}
+	ff.forks = append(ff.forks, forge.T1Data{ID: "o/zero", Owner: "o", Name: "zero", DefaultBranch: "main", PushedAt: now})
+	ff.t2["o/zero"] = forge.T2Data{AheadCount: 0}
+	return ff
+}
+
+func TestStream_ebShrinksScoresAndReportsTau(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	ff := ebFakeForge(time.Now())
+	var report RankReport
+	ch, err := Stream(context.Background(), ff, "o", "r", Options{
+		Tier: 2, ShortlistN: 7, RankReport: &report, EB: true, PriorScale: 100,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []Result
+	for r := range ch {
+		got = append(got, r)
+	}
+	if report.EBRegime != EBRegimeHeterogeneous && report.EBRegime != EBRegimeClamped {
+		t.Fatalf("EB regime %q, report %+v", report.EBRegime, report)
+	}
+	if !(report.TauHat > 0) || report.EBPool != report.NonzeroPool {
+		t.Errorf("tauHat=%v ebPool=%d nonzero=%d", report.TauHat, report.EBPool, report.NonzeroPool)
+	}
+	for _, r := range got {
+		if r.Heat.Score == 0 {
+			if r.EB != nil {
+				t.Errorf("zero-heat fork %s must not carry EB stats", r.Fork.ID)
+			}
+			continue
+		}
+		if r.EB == nil {
+			t.Fatalf("fork %s missing EB stats", r.Fork.ID)
+		}
+		if !(r.EB.PostSigma < rankSigma(r.Heat.Confidence)) {
+			t.Errorf("fork %s posterior sigma %v not below tier sigma", r.Fork.ID, r.EB.PostSigma)
+		}
+		// Shrunken score lies between the raw score and the pooled mean.
+		lo, hi := math.Min(r.Heat.Score, report.EBMean), math.Max(r.Heat.Score, report.EBMean)
+		if r.EB.Theta < lo-1e-9 || r.EB.Theta > hi+1e-9 {
+			t.Errorf("fork %s θ=%v outside [%v,%v]", r.Fork.ID, r.EB.Theta, lo, hi)
+		}
+		if r.EB.Leverage <= 0 || r.EB.Leverage >= 1 {
+			t.Errorf("fork %s leverage %v outside (0,1)", r.Fork.ID, r.EB.Leverage)
+		}
+	}
+}
+
+func TestStream_ebOffLeavesNoEBStats(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	ff := ebFakeForge(time.Now())
+	var report RankReport
+	ch, err := Stream(context.Background(), ff, "o", "r", Options{Tier: 2, ShortlistN: 3, RankReport: &report})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for r := range ch {
+		if r.EB != nil {
+			t.Errorf("EB stats present without Options.EB")
+		}
+	}
+	if report.EBRegime != "" {
+		t.Errorf("EB regime should be empty when EB is off, got %q", report.EBRegime)
+	}
+}

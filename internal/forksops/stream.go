@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -69,6 +70,16 @@ type Options struct {
 	// RankDiagnostics additionally computes each ranked fork's POTH residual
 	// (RankStats.PothResidual). Requires ShortlistN > 0.
 	RankDiagnostics bool
+	// EB, when true, fits the empirical-Bayes normal–normal model over the
+	// ranked forks with heat > 0 and ranks on the shrunken score and
+	// posterior sigma instead of raw heat and the tier sigma. Requires
+	// ShortlistN > 0. Zero-heat forks are excluded from the fit and left
+	// unshrunk; pools below ebMinPool or with τ̂² = 0 leave ranking unchanged
+	// and report the regime.
+	EB bool
+	// PriorScale is the half-normal scale on τ for EB (caps τ̂ at 2×scale);
+	// 0 selects the robust MAD-based default.
+	PriorScale float64
 
 	// Query, when non-empty, scores every enriched fork's change digest
 	// (commit messages + touched paths) against this free-text intent and
@@ -253,6 +264,9 @@ type Result struct {
 	// Rank carries the full rank summary (P-score, P(rank ≤ k), P(rank = 1),
 	// 95% rank interval) for the same pool; nil when ShortlistN == 0.
 	Rank *RankStats
+	// EB carries the empirical-Bayes shrinkage summary; nil unless
+	// Options.EB applied to this fork (heat > 0, fit succeeded).
+	EB *EBStats
 
 	// QueryScore is the fork's relevance to Options.Query in [0,1];
 	// QueryMethod records how it was computed ("voyage" cross-encoder or
@@ -824,6 +838,10 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 				mu[i] = collected[i].Heat.Score
 				sigma[i] = rankSigma(collected[i].Heat.Confidence)
 			}
+			var ebReport RankReport
+			if opts.EB {
+				ebReport = applyEB(collected[:pool], mu, sigma, opts.PriorScale)
+			}
 			p := winProbs(mu, sigma)
 			stats := computeRankStatsFrom(p, opts.ShortlistN)
 			if opts.RankDiagnostics {
@@ -858,6 +876,13 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 					ShortlistRule: rule,
 					POTH:          poth(p),
 					CPOTHk:        subsetPoth(p, chosen),
+					EBRegime:      ebReport.EBRegime,
+					EBPool:        ebReport.EBPool,
+					TauHat:        ebReport.TauHat,
+					EBMean:        ebReport.EBMean,
+					PriorScale:    ebReport.PriorScale,
+					DBarOverK:     ebReport.DBarOverK,
+					PD:            ebReport.PD,
 				}
 			}
 			shortlist := make([]Result, 0, len(chosen))
@@ -1270,4 +1295,52 @@ func scorePriors(opts Options, collected []Result) {
 		r.PriorScore = m.Score
 		r.PriorReasons = m.Reasons
 	}
+}
+
+// applyEB fits the normal–normal model over the forks in pool with heat > 0,
+// overwrites mu/sigma in place with the shrunken score and posterior sigma
+// for those forks, attaches Result.EB, and returns the EB part of the
+// RankReport. Zero-heat forks (no-ahead / upstreamed zeroing) are neither
+// fitted nor shrunk: they carry no evidence about heterogeneity and would
+// drag the pooled mean to 0.
+func applyEB(pool []Result, mu, sigma []float64, priorScale float64) RankReport {
+	if len(mu) < len(pool) || len(sigma) < len(pool) {
+		return RankReport{EBRegime: EBRegimeInsufficient}
+	}
+	idx := make([]int, 0, len(pool))
+	for i := range pool {
+		if mu[i] > 0 {
+			idx = append(idx, i)
+		}
+	}
+	y := make([]float64, len(idx))
+	s := make([]float64, len(idx))
+	for k, i := range idx {
+		y[k] = mu[i]
+		s[k] = sigma[i]
+	}
+	scale := priorScale
+	if scale <= 0 {
+		scale = madScale(y)
+	}
+	fit, ok := fitNormalNormal(y, s, scale)
+	report := RankReport{EBRegime: fit.Regime, EBPool: len(idx), TauHat: math.Sqrt(fit.Tau2), EBMean: fit.M, PriorScale: scale}
+	if !ok {
+		return report
+	}
+	report.DBarOverK = fit.DBarOverK
+	report.PD = fit.PD
+	for k, i := range idx {
+		st := EBStats{
+			Theta:     fit.Theta[k],
+			PostSigma: fit.PostSigma[k],
+			Residual:  fit.Residual[k],
+			Leverage:  fit.B[k],
+		}
+		st.Flag = st.Residual*st.Residual+st.Leverage > ebFlagContour
+		pool[i].EB = &st
+		mu[i] = st.Theta
+		sigma[i] = st.PostSigma
+	}
+	return report
 }

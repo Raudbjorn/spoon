@@ -215,3 +215,75 @@ func TestSpnForksList_rankDiagnostics_requiresShortlist(t *testing.T) {
 		t.Errorf("unexpected stderr: %s", stderr.String())
 	}
 }
+
+func TestSpnForksList_priorScale_requiresEB(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	var stdout, stderr bytes.Buffer
+	if exit := runForksWith([]string{"list", "up/stream", "--shortlist", "3", "--prior-scale", "5"}, &stdout, &stderr); exit != 2 {
+		t.Fatalf("exit=%d want 2\nstderr=%s", exit, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "--prior-scale requires --eb") {
+		t.Errorf("unexpected stderr: %s", stderr.String())
+	}
+}
+
+func TestSpnForksList_eb_requiresShortlistAndPositiveScale(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	var stdout, stderr bytes.Buffer
+	if exit := runForksWith([]string{"list", "up/stream", "--eb"}, &stdout, &stderr); exit != 2 {
+		t.Fatalf("exit=%d want 2\nstderr=%s", exit, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "--eb requires --shortlist") {
+		t.Errorf("unexpected stderr: %s", stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if exit := runForksWith([]string{"list", "up/stream", "--shortlist", "3", "--eb", "--prior-scale", "-1"}, &stdout, &stderr); exit != 2 {
+		t.Fatalf("exit=%d want 2\nstderr=%s", exit, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "--prior-scale must be a positive number") {
+		t.Errorf("unexpected stderr: %s", stderr.String())
+	}
+}
+
+func TestSpnForksList_ebEmitsFieldsAndReport(t *testing.T) {
+	isolateSpoonRun(t)
+	prev := providerFactory
+	defer func() { providerFactory = prev }()
+	now := time.Now()
+	providerFactory = func(_ context.Context, _, _, _ string) (forge.Forge, string, *agentio.Error) {
+		ff := &fakeForge{parent: forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)}, t2: map[string]forge.T2Data{}}
+		for i, mna := range []int{500, 5, 50, 1, 120, 30} {
+			id := "o/f" + string(rune('a'+i))
+			ff.forks = append(ff.forks, forge.T1Data{ID: id, Owner: "o", Name: id[2:], DefaultBranch: "main", PushedAt: now})
+			ff.t2[id] = forge.T2Data{AheadCount: 1, MNA: mna}
+		}
+		return ff, "o/r", nil
+	}
+	var stdout, stderr bytes.Buffer
+	if exit := runForksWith([]string{"list", "o/r", "--tier", "2", "--no-cluster", "--shortlist", "6", "--eb", "--prior-scale", "100"}, &stdout, &stderr); exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+	}
+	reports := rankReportDetails(t, stderr.String())
+	if len(reports) != 1 {
+		t.Fatalf("rank reports = %d: %s", len(reports), stderr.String())
+	}
+	for _, k := range []string{"ebRegime", "tauHat", "ebMean", "ebPool", "dBarOverK", "pD", "priorScale"} {
+		if _, ok := reports[0][k]; !ok {
+			t.Errorf("rank_report missing %s: %v", k, reports[0])
+		}
+	}
+	for _, line := range strings.Split(strings.TrimSpace(stdout.String()), "\n") {
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("bad record %q: %v", line, err)
+		}
+		for _, k := range []string{"ebTheta", "ebSigma", "ebResidual", "ebLeverage", "ebFlag"} {
+			if _, ok := rec[k]; !ok {
+				t.Errorf("record missing %s: %s", k, line)
+			}
+		}
+	}
+}

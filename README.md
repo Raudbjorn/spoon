@@ -287,6 +287,26 @@ adds `pothResidual` per record (negative = this fork blurs the ordering; a
 cheap trigger for a deeper fetch). `--csv` gains `expected_rank, p_score,
 p_top_k, p_first, rank_lo, rank_hi` columns (empty without `--shortlist`).
 
+### Empirical-Bayes shrinkage (`--eb`)
+
+The tier sigma (7 / 3 / 1 heat points for tiers 1 / 2 / 3) is a constant, so
+within a tier the rank machinery reduces to sorting by heat and the win
+probabilities are not calibrated to any observed spread. `--eb` fits the
+normal–normal hierarchical model over the ranked forks with heat > 0:
+`τ̂²` by DerSimonian–Laird, then `θ̂ᵢ = m + Bᵢ(yᵢ − m)` with
+`Bᵢ = τ̂²/(τ̂² + σᵢ²)` and posterior sd `1/√(σᵢ⁻² + τ̂⁻²)`. Ranking then uses
+`θ̂`/posterior sd. Noisy tier-1 scores move toward the pool mean; confirmed
+tier-3 scores barely move. Each record gains `ebTheta`, `ebSigma`,
+`ebResidual` (standardised), `ebLeverage` (= B) and `ebFlag`
+(residual² + leverage > 3, the TSD2 leverage-plot rule: a fork the model
+does not explain). The `rank_report` gains `ebRegime` (`heterogeneous`,
+`clamped`, `pooled` = τ̂ 0 so ranking left unchanged, `insufficient` = fewer
+than 3 forks with heat > 0), `tauHat`, `ebMean`, `dBarOverK` (≈ 1 when the
+model fits) and `pD`. `--prior-scale F` caps τ̂ at 2F (a half-normal prior on
+τ with ≈5% mass above the cap); the default F is 1.4826 × MAD of the scores
+and is printed in the report. Zero-heat forks are never shrunk. Off by
+default until offline evaluation confirms it does not regress nDCG.
+
 Path matching is deliberately simple: a wildcard-free entry matches by exact
 file or **directory prefix** (`internal/auth` covers everything beneath it),
 while an entry containing a glob uses single-segment `path.Match` (`cmd/*.go`
