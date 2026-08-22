@@ -826,19 +826,17 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 			}
 			p := winProbs(mu, sigma)
 			stats := computeRankStatsFrom(p, opts.ShortlistN)
-			var residuals []float64
 			if opts.RankDiagnostics {
-				residuals = pothResiduals(p)
+				residuals := pothResiduals(p)
+				for i := range stats {
+					r := residuals[i]
+					stats[i].PothResidual = &r
+				}
 			}
 			collected = collected[:pool]
 			for i := range collected {
-				rs := stats[i]
-				if residuals != nil {
-					r := residuals[i]
-					rs.PothResidual = &r
-				}
-				collected[i].Rank = &rs
-				collected[i].ExpectedRank = rs.ExpectedRank
+				collected[i].Rank = &stats[i]
+				collected[i].ExpectedRank = stats[i].ExpectedRank
 				collected[i].RankConfidence = collected[i].Heat.Confidence
 			}
 			rule := opts.ShortlistRule
