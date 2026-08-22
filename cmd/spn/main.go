@@ -149,7 +149,7 @@ Nouns and verbs:
             the fetch + policy gates run, but no GraphQL resolveReviewThread
             (or unresolveReviewThread) is issued. Output is marked dryRun=true.
   pr status <pr-ref>
-  forks list <repo|topic:NAME> [--tier 1|2|3] [--top N] [--budget N] [--shortlist N] [--shortlist-rule expected|membership] [--rank-diagnostics] [--bot-allowlist L] [--refresh|--no-cache] [--csv] [--forge github|gitlab] [--forge-host H]
+  forks list <repo|topic:NAME> [--tier 1|2|3] [--top N] [--budget N] [--shortlist N] [--shortlist-rule expected|membership] [--rank-diagnostics] [--eb [--prior-scale F]] [--bot-allowlist L] [--refresh|--no-cache] [--csv] [--forge github|gitlab] [--forge-host H]
                     [--rpm N] [--files] [--commits] [--commit-files]
                     [--commit-file-budget N] [--web-diff]
                     [--no-cluster] [--cluster-top N] [--cluster-epsilon F] [--cluster-min-size N]
@@ -170,6 +170,15 @@ Nouns and verbs:
         (poolSize, nonzeroPool, poth = precision of the whole hierarchy in
         [0,1], cpothK = the same within the shortlist). --rank-diagnostics adds
         pothResidual per fork (negative = this fork blurs the hierarchy).
+        --eb ranks on empirical-Bayes shrunken scores instead of raw heat:
+        between-fork spread tau_hat is estimated (DerSimonian-Laird) over the
+        ranked forks with heat > 0, each score is pulled toward the pooled
+        mean in proportion to its tier noise, and the posterior sigma replaces
+        the tier sigma. Records gain ebTheta, ebSigma, ebResidual, ebLeverage,
+        ebFlag; rank_report gains ebRegime, tauHat, ebMean, dBarOverK, pD.
+        Skipped (ranking unchanged, regime reported) when fewer than 3 forks
+        have heat > 0 or tau_hat = 0. --prior-scale F caps tau_hat at 2F
+        (half-normal prior); default F = 1.4826 x MAD of the scores.
         Flags go AFTER 'forks list <repo>'. The fastembed embedder powers
         persistence + semantic indexing (and 'spn search') by default; it
         needs onnxruntime (set ONNX_PATH to libonnxruntime.so, run 'spoon

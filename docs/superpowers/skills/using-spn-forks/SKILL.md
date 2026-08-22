@@ -79,6 +79,8 @@ Read `pTopK` before trusting position: a tier-1 (unenriched) fork has wide sigma
 
 Every shortlist run writes one `{"info":{"code":"rank_report",...}}` line to stderr: `poolSize`, `nonzeroPool`, `shortlistRule`, `poth` (precision of the whole hierarchy, 0 = coin flips, 1 = certain order) and `cpothK` (the same within the shortlist; `null` when the set is smaller than 3). High `poth` with low `cpothK` means "the shortlist beats the rest, but its internal order is noise". `--rank-diagnostics` adds `pothResidual` per record; the most negative residual is the fork whose wide uncertainty most blurs the ordering — fetch it deeper first.
 
+`--eb` (needs `--shortlist`) replaces raw heat / tier sigma with empirical-Bayes shrunken scores and posterior sigmas fitted over the forks with heat > 0. Check `ebRegime` in the `rank_report` first: `pooled` or `insufficient` means nothing was shrunk. Per record: `ebTheta`, `ebSigma`, `ebResidual`, `ebLeverage`, `ebFlag` (true = the scoring model does not explain this fork; look at it). `--prior-scale F` caps `tauHat` at 2F. Experimental — compare against the default ordering before trusting it.
+
 ## Common Mistakes
 
 | Mistake | What to do instead |
