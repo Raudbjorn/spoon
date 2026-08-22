@@ -27,6 +27,7 @@ func TestRepoSnapshotRoundTrip(t *testing.T) {
 		FullName: "up/stream", Description: "d", DefaultBranch: "main", HeadSHA: "head123",
 		Stars: 42, Forks: 7, Size: 1024, PushedAt: now, URL: "https://example.com/up/stream",
 		Language: "Go", Topics: []string{"a", "b"},
+		SourceFullPath: "root/repo", SourceDefaultBranch: "master",
 	}
 	t1 := &forge.T1Data{
 		ID: "alice/stream", Owner: "alice", Name: "stream", URL: "https://example.com/alice/stream",

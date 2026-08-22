@@ -277,3 +277,73 @@ func TestSelectShortlist_KLargerThanPoolReturnsAllOrdered(t *testing.T) {
 		}
 	}
 }
+
+// --- PR3: POTH (precision of treatment hierarchy) ---
+
+func TestPoth_ZeroForCoinFlipsOneForTotalOrder(t *testing.T) {
+	// All pairwise 0.5 ⇒ every P-score is 0.5 ⇒ POTH 0.
+	flat := winProbs([]float64{5, 5, 5, 5}, []float64{1, 1, 1, 1})
+	if got := poth(flat); math.Abs(got) > 1e-12 {
+		t.Errorf("flat POTH=%v want 0", got)
+	}
+	// Well separated with tiny sigma ⇒ total order ⇒ POTH → 1.
+	sharp := winProbs([]float64{40, 30, 20, 10}, []float64{1e-6, 1e-6, 1e-6, 1e-6})
+	if got := poth(sharp); got < 0.999 || got > 1+1e-9 {
+		t.Errorf("total-order POTH=%v want ≈1", got)
+	}
+}
+
+func TestPoth_BoundedOnRandomPools(t *testing.T) {
+	rng := rand.New(rand.NewSource(6))
+	for trial := 0; trial < 50; trial++ {
+		mu, sigma := randPool(rng, 3+rng.Intn(40))
+		got := poth(winProbs(mu, sigma))
+		if got < -1e-12 || got > 1+1e-12 {
+			t.Fatalf("POTH %v out of [0,1]", got)
+		}
+	}
+}
+
+func TestPoth_TooSmallPoolIsNaN(t *testing.T) {
+	if got := poth(winProbs([]float64{1, 2}, []float64{1, 1})); !math.IsNaN(got) {
+		t.Errorf("n=2 POTH=%v want NaN (gated n>=3)", got)
+	}
+}
+
+func TestSubsetPoth_RecomputesWithinSubset(t *testing.T) {
+	// Fork 0 far ahead; 1..3 a tight cluster. Whole-pool POTH is high, but
+	// the cluster alone is near coin-flip.
+	p := winProbs([]float64{60, 20, 20.5, 19.5}, []float64{1, 1, 1, 1})
+	whole := poth(p)
+	cluster := subsetPoth(p, []int{1, 2, 3})
+	if !(cluster < whole) {
+		t.Errorf("cluster POTH %v should be below whole-pool POTH %v", cluster, whole)
+	}
+	if got := subsetPoth(p, []int{1}); !math.IsNaN(got) {
+		t.Errorf("single-member subset should be NaN, got %v", got)
+	}
+	// Subset equal to the whole pool reproduces poth.
+	if got := subsetPoth(p, []int{0, 1, 2, 3}); math.Abs(got-whole) > 1e-12 {
+		t.Errorf("full subset %v != whole %v", got, whole)
+	}
+}
+
+func TestPothResiduals_OutlierSharpensClusterBlurs(t *testing.T) {
+	p := winProbs([]float64{60, 20, 20.5, 19.5}, []float64{1, 1, 1, 1})
+	res := pothResiduals(p)
+	if len(res) != 4 {
+		t.Fatalf("len=%d want 4", len(res))
+	}
+	// Removing the lone leader leaves only the blurry cluster: POTH drops,
+	// so the leader's residual is positive (it sharpens the hierarchy).
+	if res[0] <= 0 {
+		t.Errorf("leader residual %v should be > 0", res[0])
+	}
+	// Removing a cluster member leaves the leader plus a smaller cluster —
+	// the hierarchy gets sharper, so cluster members have negative residuals.
+	for i := 1; i < 4; i++ {
+		if res[i] >= 0 {
+			t.Errorf("cluster member %d residual %v should be < 0", i, res[i])
+		}
+	}
+}

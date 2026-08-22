@@ -6,10 +6,14 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/svnbjrn/spoon/internal/agentio"
+	"github.com/svnbjrn/spoon/internal/forge"
 	"github.com/svnbjrn/spoon/internal/forksops"
 )
 
@@ -84,6 +88,130 @@ func TestSpnForksList_shortlistRule_requiresShortlist(t *testing.T) {
 		t.Fatalf("exit=%d want 2\nstderr=%s", exit, stderr.String())
 	}
 	if !strings.Contains(stderr.String(), "--shortlist-rule requires --shortlist") {
+		t.Errorf("unexpected stderr: %s", stderr.String())
+	}
+}
+
+func rankReportDetails(t *testing.T, stderr string) []map[string]any {
+	t.Helper()
+	var out []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(stderr), "\n") {
+		if line == "" {
+			continue
+		}
+		var env map[string]any
+		if err := json.Unmarshal([]byte(line), &env); err != nil {
+			continue
+		}
+		info, _ := env["info"].(map[string]any)
+		if info == nil || info["code"] != "rank_report" {
+			continue
+		}
+		d, _ := info["details"].(map[string]any)
+		out = append(out, d)
+	}
+	return out
+}
+
+func shortlistFakeProvider() func(context.Context, string, string, string) (forge.Forge, string, *agentio.Error) {
+	now := time.Now()
+	return func(_ context.Context, _, _, _ string) (forge.Forge, string, *agentio.Error) {
+		return &fakeForge{
+			parent: forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
+			forks: []forge.T1Data{
+				{ID: "o/a", Owner: "o", Name: "a", DefaultBranch: "main", PushedAt: now},
+				{ID: "o/b", Owner: "o", Name: "b", DefaultBranch: "main", PushedAt: now},
+				{ID: "o/c", Owner: "o", Name: "c", DefaultBranch: "main", PushedAt: now},
+				{ID: "o/d", Owner: "o", Name: "d", DefaultBranch: "main", PushedAt: now},
+			},
+			t2: map[string]forge.T2Data{
+				"o/a": {AheadCount: 1, MNA: 500},
+				"o/b": {AheadCount: 1, MNA: 5},
+				"o/c": {AheadCount: 1, MNA: 50},
+				"o/d": {AheadCount: 1, MNA: 1},
+			},
+		}, "o/r", nil
+	}
+}
+
+func TestSpnForksList_shortlistEmitsRankReport_NDJSON(t *testing.T) {
+	isolateSpoonRun(t)
+	prev := providerFactory
+	defer func() { providerFactory = prev }()
+	providerFactory = shortlistFakeProvider()
+
+	var stdout, stderr bytes.Buffer
+	if exit := runForksWith([]string{"list", "o/r", "--tier", "2", "--no-cluster", "--shortlist", "3", "--rank-diagnostics"}, &stdout, &stderr); exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+	}
+	reports := rankReportDetails(t, stderr.String())
+	if len(reports) != 1 {
+		t.Fatalf("rank reports = %d, want 1: %s", len(reports), stderr.String())
+	}
+	if reports[0]["poolSize"] != float64(4) || reports[0]["shortlistN"] != float64(3) || reports[0]["shortlistRule"] != "expected" {
+		t.Errorf("report details: %v", reports[0])
+	}
+	if _, ok := reports[0]["poth"].(float64); !ok {
+		t.Errorf("poth missing or not numeric: %v", reports[0])
+	}
+	if strings.Contains(stdout.String(), "rank_report") {
+		t.Errorf("stdout must not carry the report: %s", stdout.String())
+	}
+	// Records carry pothResidual under --rank-diagnostics.
+	for _, line := range strings.Split(strings.TrimSpace(stdout.String()), "\n") {
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("bad record %q: %v", line, err)
+		}
+		if _, ok := rec["pothResidual"]; !ok {
+			t.Errorf("record missing pothResidual: %s", line)
+		}
+	}
+}
+
+func TestSpnForksList_shortlistCSV_AddsRankColumnsAndReport(t *testing.T) {
+	isolateSpoonRun(t)
+	prev := providerFactory
+	defer func() { providerFactory = prev }()
+	providerFactory = shortlistFakeProvider()
+
+	var stdout, stderr bytes.Buffer
+	if exit := runForksWith([]string{"list", "o/r", "--tier", "2", "--no-cluster", "--shortlist", "3", "--csv"}, &stdout, &stderr); exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+	}
+	header := strings.SplitN(stdout.String(), "\n", 2)[0]
+	for _, col := range []string{"expected_rank", "p_score", "p_top_k", "p_first", "rank_lo", "rank_hi"} {
+		if !strings.Contains(header, col) {
+			t.Errorf("CSV header missing %s: %s", col, header)
+		}
+	}
+	if len(rankReportDetails(t, stderr.String())) != 1 {
+		t.Errorf("CSV run should emit one rank_report: %s", stderr.String())
+	}
+}
+
+func TestSpnForksList_noShortlist_NoRankReport(t *testing.T) {
+	isolateSpoonRun(t)
+	prev := providerFactory
+	defer func() { providerFactory = prev }()
+	providerFactory = shortlistFakeProvider()
+	var stdout, stderr bytes.Buffer
+	if exit := runForksWith([]string{"list", "o/r", "--tier", "1", "--no-cluster"}, &stdout, &stderr); exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+	}
+	if n := len(rankReportDetails(t, stderr.String())); n != 0 {
+		t.Errorf("rank reports = %d, want 0", n)
+	}
+}
+
+func TestSpnForksList_rankDiagnostics_requiresShortlist(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	var stdout, stderr bytes.Buffer
+	if exit := runForksWith([]string{"list", "up/stream", "--rank-diagnostics"}, &stdout, &stderr); exit != 2 {
+		t.Fatalf("exit=%d want 2\nstderr=%s", exit, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "--rank-diagnostics requires --shortlist") {
 		t.Errorf("unexpected stderr: %s", stderr.String())
 	}
 }

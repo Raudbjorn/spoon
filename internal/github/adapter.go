@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/svnbjrn/spoon/internal/forge"
@@ -19,6 +20,7 @@ type GHProvider struct {
 	status AuthStatus
 
 	// Cached after Parent() call; used by Compare().
+	mu                  sync.RWMutex
 	sourceOwner         string
 	sourceRepo          string
 	sourceDefaultBranch string
@@ -81,7 +83,12 @@ func (p *GHProvider) DivergentBranchCounts(ctx context.Context, forks []forge.T1
 	for _, f := range forks {
 		targets = append(targets, ForkTarget{ID: f.ID, Owner: f.Owner, Name: f.Name})
 	}
-	counts, err := p.client.FetchDivergentBranchCounts(ctx, p.sourceOwner, p.sourceRepo, p.sourceDefaultBranch, targets)
+	p.mu.RLock()
+	sourceOwner := p.sourceOwner
+	sourceRepo := p.sourceRepo
+	sourceDefaultBranch := p.sourceDefaultBranch
+	p.mu.RUnlock()
+	counts, err := p.client.FetchDivergentBranchCounts(ctx, sourceOwner, sourceRepo, sourceDefaultBranch, targets)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -117,9 +124,11 @@ var _ forge.LinearHistoryProvider = (*GHProvider)(nil)
 // call it explicitly, or every Compare that follows has no upstream to compare
 // against.
 func (p *GHProvider) SetCompareBaseline(owner, repo, defaultBranch string) {
+	p.mu.Lock()
 	p.sourceOwner = owner
 	p.sourceRepo = repo
 	p.sourceDefaultBranch = defaultBranch
+	p.mu.Unlock()
 }
 
 // Parent implements forge.Forge.
@@ -129,19 +138,14 @@ func (p *GHProvider) Parent(ctx context.Context, owner, repo string) (forge.Pare
 		return forge.ParentData{}, err
 	}
 
-	// Cache for Compare() calls.
-	p.SetCompareBaseline(owner, repo, info.DefaultBranch)
+	baseOwner, baseRepo, baseBranch := repoCompareBaseline(info, owner, repo)
+	p.SetCompareBaseline(baseOwner, baseRepo, baseBranch)
 
 	pushed, _ := time.Parse(time.RFC3339, info.PushedAt)
 
-	// Resolve the default-branch tip SHA so the MDG cache (cluster
-	// pipeline's CentralityHeadSHA) can pin entries. Soft-fail: a missing
-	// SHA disables cache persistence (and the 24h fast path) but does not
-	// fail the parent fetch — change-impact still computes via the
-	// directory proxy.
-	headSHA, _ := p.client.defaultBranchTipSHA(ctx, owner, repo)
+	headSHA, _ := p.client.defaultBranchTipSHA(ctx, baseOwner, baseRepo)
 
-	return forge.ParentData{
+	parent := forge.ParentData{
 		FullName:             info.FullName,
 		Description:          info.Description,
 		DefaultBranch:        info.DefaultBranch,
@@ -153,9 +157,13 @@ func (p *GHProvider) Parent(ctx context.Context, owner, repo string) (forge.Pare
 		URL:                  info.HTMLURL,
 		Language:             info.Language,
 		Topics:               info.Topics,
-		SourceFullPath:       sourceFullPath(info),
 		DirectParentFullPath: directParentFullPath(info),
-	}, nil
+	}
+	if baseOwner != owner || baseRepo != repo {
+		parent.SourceFullPath = baseOwner + "/" + baseRepo
+		parent.SourceDefaultBranch = baseBranch
+	}
+	return parent, nil
 }
 
 // ListForks implements forge.Forge.
@@ -191,7 +199,13 @@ func (p *GHProvider) ListForks(ctx context.Context, owner, repo string) (<-chan 
 					extra = &e
 				}
 			}
-			t1 := forkInfoToT1(f, extra, owner+"/"+repo)
+			sourcePath := owner + "/" + repo
+			p.mu.RLock()
+			if p.sourceOwner != "" && p.sourceRepo != "" {
+				sourcePath = p.sourceOwner + "/" + p.sourceRepo
+			}
+			p.mu.RUnlock()
+			t1 := forkInfoToT1(f, extra, owner+"/"+repo, sourcePath)
 			select {
 			case out <- forge.ForkMsg{Fork: t1}:
 			case <-ctx.Done():
@@ -236,7 +250,17 @@ func (p *GHProvider) ListForksBounded(ctx context.Context, owner, repo string, o
 					extra = &e
 				}
 			}
-			t1 := forkInfoToT1(f, extra, owner+"/"+repo)
+			sourcePath := owner + "/" + repo
+			p.mu.RLock()
+			if p.sourceOwner != "" && p.sourceRepo != "" {
+				sourcePath = p.sourceOwner + "/" + p.sourceRepo
+			}
+			p.mu.RUnlock()
+			// parentFullPath is left unknown here: the bounded walk can surface
+			// forks nested at any depth, so the requested owner/repo is not
+			// necessarily this node's direct parent (only extra's GraphQL
+			// lineage, when present, can say that accurately).
+			t1 := forkInfoToT1(f, extra, "", sourcePath)
 			select {
 			case out <- forge.ForkMsg{Fork: t1}:
 			case <-ctx.Done():
@@ -279,11 +303,16 @@ func (p *GHProvider) Compare(ctx context.Context, fork forge.T1Data, branch stri
 	// which 404s for every fork and — because a 404 is not a run-ending error —
 	// used to surface as a fork list where everything is 0 ahead / 0 behind.
 	// Fail loudly instead; the gitea provider already guards this the same way.
-	if p.sourceOwner == "" || p.sourceRepo == "" {
+	p.mu.RLock()
+	sourceOwner := p.sourceOwner
+	sourceRepo := p.sourceRepo
+	sourceDefaultBranch := p.sourceDefaultBranch
+	p.mu.RUnlock()
+	if sourceOwner == "" || sourceRepo == "" {
 		return forge.T2Data{}, fmt.Errorf("compare %s@%s: upstream not resolved (Parent not called)", fork.ID, branch)
 	}
 
-	parentBranch := p.sourceDefaultBranch
+	parentBranch := sourceDefaultBranch
 	if parentBranch == "" {
 		parentBranch = "HEAD"
 	}
@@ -305,7 +334,7 @@ func (p *GHProvider) Compare(ctx context.Context, fork forge.T1Data, branch stri
 	}
 
 	scan, err := p.client.FetchCompareWithBranchScan(
-		ctx, p.sourceOwner, p.sourceRepo, parentBranch,
+		ctx, sourceOwner, sourceRepo, parentBranch,
 		ghFork, ghBranches,
 	)
 	if err != nil {
@@ -333,7 +362,7 @@ func (p *GHProvider) Compare(ctx context.Context, fork forge.T1Data, branch stri
 			}
 			if base == "" || head == "" {
 				t2.PatchSkipReason = "web diff unavailable: compare response omitted base/head SHA"
-			} else if patches, truncated, webErr := p.client.webDiff.Fetch(ctx, p.sourceOwner, p.sourceRepo, base, head); webErr != nil {
+			} else if patches, truncated, webErr := p.client.webDiff.Fetch(ctx, sourceOwner, sourceRepo, base, head); webErr != nil {
 				t2.PatchSkipReason = webErr.Error()
 			} else if truncated {
 				// A later page failed to parse: the collected patches are
@@ -417,7 +446,10 @@ func directParentFullPath(info RepoInfo) string {
 	return ""
 }
 
-func forkInfoToT1(f ForkInfo, extra *T1Extra, networkRoot string) forge.T1Data {
+func forkInfoToT1(f ForkInfo, extra *T1Extra, parentFullPath, sourceFullPath string) forge.T1Data {
+	if sourceFullPath == "" {
+		sourceFullPath = parentFullPath
+	}
 	pushed, _ := time.Parse(time.RFC3339, f.PushedAt)
 	created, _ := time.Parse(time.RFC3339, f.CreatedAt)
 
@@ -437,7 +469,11 @@ func forkInfoToT1(f ForkInfo, extra *T1Extra, networkRoot string) forge.T1Data {
 		OpenIssues:     f.OpenIssues,
 		CreatedAt:      created,
 		Topics:         f.Topics,
-		SourceFullPath: networkRoot,
+		SourceFullPath: sourceFullPath,
+	}
+	if parentFullPath != "" {
+		t1.ParentFullPath = parentFullPath
+		t1.IsForkOfFork = parentFullPath != sourceFullPath
 	}
 
 	if extra != nil {
@@ -583,6 +619,25 @@ func isMergeOrSyncMsg(msg string) bool {
 		}
 	}
 	return false
+}
+
+// repoCompareBaseline returns the owner/repo/branch Compare and
+// DivergentBranchCounts must use. Named seed wins unless GET /repos says
+// this is a fork and source.full_name is a well-formed owner/repo.
+func repoCompareBaseline(info RepoInfo, namedOwner, namedRepo string) (owner, repo, branch string) {
+	owner, repo, branch = namedOwner, namedRepo, info.DefaultBranch
+	if !info.Fork || info.Source == nil {
+		return owner, repo, branch
+	}
+	so, sr, ok := splitFullName(info.Source.FullName)
+	if !ok {
+		return owner, repo, branch
+	}
+	owner, repo = so, sr
+	if info.Source.DefaultBranch != "" {
+		branch = info.Source.DefaultBranch
+	}
+	return owner, repo, branch
 }
 
 // SearchTopicRepos implements the optional topics.TopicSearcher capability:

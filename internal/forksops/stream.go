@@ -62,6 +62,13 @@ type Options struct {
 	// (default, top-N by expected rank) or ShortlistRuleMembership (top-N by
 	// P(rank ≤ N), then ordered by expected rank). Empty means expected.
 	ShortlistRule string
+	// RankReport, when non-nil, receives the pool-level rank summary (pool
+	// size, POTH, cPOTH_k) after the channel closes. Only filled when
+	// ShortlistN > 0.
+	RankReport *RankReport
+	// RankDiagnostics additionally computes each ranked fork's POTH residual
+	// (RankStats.PothResidual). Requires ShortlistN > 0.
+	RankDiagnostics bool
 
 	// Query, when non-empty, scores every enriched fork's change digest
 	// (commit messages + touched paths) against this free-text intent and
@@ -817,14 +824,42 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 				mu[i] = collected[i].Heat.Score
 				sigma[i] = rankSigma(collected[i].Heat.Confidence)
 			}
-			stats := computeRankStats(mu, sigma, opts.ShortlistN)
+			p := winProbs(mu, sigma)
+			stats := computeRankStatsFrom(p, opts.ShortlistN)
+			if opts.RankDiagnostics {
+				residuals := pothResiduals(p)
+				for i := range stats {
+					r := residuals[i]
+					stats[i].PothResidual = &r
+				}
+			}
 			collected = collected[:pool]
 			for i := range collected {
 				collected[i].Rank = &stats[i]
 				collected[i].ExpectedRank = stats[i].ExpectedRank
 				collected[i].RankConfidence = collected[i].Heat.Confidence
 			}
-			chosen := selectShortlist(stats, opts.ShortlistRule, opts.ShortlistN)
+			rule := opts.ShortlistRule
+			if rule == "" {
+				rule = ShortlistRuleExpected
+			}
+			chosen := selectShortlist(stats, rule, opts.ShortlistN)
+			if opts.RankReport != nil {
+				nonzero := 0
+				for _, m := range mu {
+					if m > 0 {
+						nonzero++
+					}
+				}
+				*opts.RankReport = RankReport{
+					PoolSize:      pool,
+					NonzeroPool:   nonzero,
+					ShortlistN:    opts.ShortlistN,
+					ShortlistRule: rule,
+					POTH:          poth(p),
+					CPOTHk:        subsetPoth(p, chosen),
+				}
+			}
 			shortlist := make([]Result, 0, len(chosen))
 			for _, i := range chosen {
 				shortlist = append(shortlist, collected[i])

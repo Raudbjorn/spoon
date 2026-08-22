@@ -1255,8 +1255,18 @@ func (m *Model) startFetch() tea.Cmd {
 			// Restore it from the snapshot, or every Compare below is issued
 			// against an empty upstream and 404s. The ok-guard only tolerates
 			// test doubles — the real providers implement the setter.
+			baseOwner, baseName := owner, name
+			baseBranch := snap.Parent.DefaultBranch
+			if src := snap.Parent.SourceFullPath; src != "" {
+				if o, n, ok := splitFullName(src); ok {
+					baseOwner, baseName = o, n
+					if snap.Parent.SourceDefaultBranch != "" {
+						baseBranch = snap.Parent.SourceDefaultBranch
+					}
+				}
+			}
 			if setter, ok := provider.(forge.CompareBaselineSetter); ok {
-				setter.SetCompareBaseline(owner, name, snap.Parent.DefaultBranch)
+				setter.SetCompareBaseline(baseOwner, baseName, baseBranch)
 			}
 			forks := make([]forge.T1Data, 0, len(snap.Forks))
 			for _, cf := range snap.Forks {
@@ -1839,8 +1849,15 @@ func (m *Model) openCompare() tea.Cmd {
 		return nil
 	}
 	fork := m.forks[m.cursor].Fork
+	compareBase, compareBranch := m.parent.FullName, m.parent.DefaultBranch
+	if m.parent.SourceFullPath != "" {
+		compareBase = m.parent.SourceFullPath
+		if m.parent.SourceDefaultBranch != "" {
+			compareBranch = m.parent.SourceDefaultBranch
+		}
+	}
 	url := forge.CompareURL(m.auth.Provider, m.auth.Host,
-		m.parent.FullName, m.parent.DefaultBranch,
+		compareBase, compareBranch,
 		fork.Owner, fork.DefaultBranch)
 	return func() tea.Msg {
 		b := browser.New("", os.Stdout, os.Stderr)

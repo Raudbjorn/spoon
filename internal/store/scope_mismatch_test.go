@@ -107,9 +107,15 @@ func TestLoadRepoSnapshot_LegacyUnscoped(t *testing.T) {
 	}
 }
 
-// TestPersistSnapshot_RejectsScopeMismatch verifies that upserting a snapshot
-// with a mismatched AuthScopeID is refused, leaving the original intact.
-func TestPersistSnapshot_RejectsScopeMismatch(t *testing.T) {
+// TestPersistSnapshot_RotatesScopeMismatch verifies that upserting a snapshot
+// with a mismatched AuthScopeID (e.g. a rotated PAT, or a fresh per-run
+// GITHUB_TOKEN in CI) succeeds by adopting the new scope and clearing the
+// stale scope's forks, rather than permanently refusing the write. A hard
+// refusal here would leave the repo un-refreshable forever once its
+// credential set changes -- LoadRepoSnapshotExact already treats a scope
+// mismatch as a plain cache miss, so a stale-scope row left in place would
+// never be served anyway.
+func TestPersistSnapshot_RotatesScopeMismatch(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "spoon.db"))
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -122,47 +128,61 @@ func TestPersistSnapshot_RejectsScopeMismatch(t *testing.T) {
 	// Store with scopeA.
 	storeSnap(t, s, ctx, repoKey, now, "github/2022-11-28", "authenticated", "scopeA")
 
-	// Attempt to overwrite with scopeB → must be refused.
+	// Overwrite with scopeB → must succeed and adopt the new scope.
 	snapB := Snapshot{
 		Repo: RepoRecord{
-			Provider:           "github",
-			Host:               "github.com",
-			Owner:              "up",
-			Name:               "stream",
-			FirstSeen:          now,
-			LastSeen:           now,
-			APIVersion:         "github/2022-11-28",
-			AcquisitionMethod:   "authenticated",
-			AuthScopeID:        "scopeB",
+			Provider:          "github",
+			Host:              "github.com",
+			Owner:             "up",
+			Name:              "stream",
+			FirstSeen:         now,
+			LastSeen:          now,
+			APIVersion:        "github/2022-11-28",
+			AcquisitionMethod: "authenticated",
+			AuthScopeID:       "scopeB",
 		},
 		Fork: ForkRecord{
-			ForgeID:  "alice/stream",
-			Owner:    "alice",
-			Name:     "stream",
-			PushedAt: now.Add(-time.Hour),
+			ForgeID:   "bob/stream",
+			Owner:     "bob",
+			Name:      "stream",
+			PushedAt:  now.Add(-time.Hour),
 			UpdatedAt: now,
 		},
 		T1: &forge.T1Data{
-			ID:        "alice/stream",
-			Owner:     "alice",
+			ID:        "bob/stream",
+			Owner:     "bob",
 			Name:      "stream",
 			PushedAt:  now.Add(-time.Hour),
 			CreatedAt: now.Add(-24 * time.Hour),
 		},
 	}
-	err = s.UpsertSnapshot(ctx, snapB)
-	if err == nil {
-		t.Fatal("expected scope mismatch error")
+	if err := s.UpsertSnapshot(ctx, snapB); err != nil {
+		t.Fatalf("upsert under rotated scope: %v", err)
 	}
 
-	// Original scopeA snapshot must remain.
+	// scopeA is now a miss: its forks were cleared when scopeB adopted the row.
 	got, err := s.LoadRepoSnapshotExact(ctx, "github", "github.com", "up", "stream",
 		"github/2022-11-28", "authenticated", "scopeA")
 	if err != nil {
-		t.Fatalf("load: %v", err)
+		t.Fatalf("load scopeA: %v", err)
+	}
+	if got != nil {
+		t.Fatal("expected miss for scopeA after rotation to scopeB")
+	}
+
+	// scopeB is a hit, and carries only the fork written under scopeB.
+	got, err = s.LoadRepoSnapshotExact(ctx, "github", "github.com", "up", "stream",
+		"github/2022-11-28", "authenticated", "scopeB")
+	if err != nil {
+		t.Fatalf("load scopeB: %v", err)
 	}
 	if got == nil {
-		t.Fatal("expected scope-A snapshot to remain after mismatched write was refused")
+		t.Fatal("expected hit for scopeB")
+	}
+	for _, f := range got.Forks {
+		if f.T1.ID == "alice/stream" {
+			t.Errorf("stale scopeA fork %q was not cleared on rotation", f.T1.ID)
+		}
 	}
 }
 
@@ -208,21 +228,21 @@ func storeSnap(t *testing.T, s *Store, ctx context.Context, repoKey string, now 
 	s.db.ExecContext(ctx, `DELETE FROM repos WHERE repo_key=?`, repoKey)
 	snap := Snapshot{
 		Repo: RepoRecord{
-			Provider:           "github",
-			Host:               "github.com",
-			Owner:              "up",
-			Name:               "stream",
-			FirstSeen:          now,
-			LastSeen:           now,
-			APIVersion:         apiVersion,
-			AcquisitionMethod:   acquisitionMethod,
-			AuthScopeID:        authScopeID,
+			Provider:          "github",
+			Host:              "github.com",
+			Owner:             "up",
+			Name:              "stream",
+			FirstSeen:         now,
+			LastSeen:          now,
+			APIVersion:        apiVersion,
+			AcquisitionMethod: acquisitionMethod,
+			AuthScopeID:       authScopeID,
 		},
 		Fork: ForkRecord{
-			ForgeID:  "alice/stream",
-			Owner:    "alice",
-			Name:     "stream",
-			PushedAt: now.Add(-time.Hour),
+			ForgeID:   "alice/stream",
+			Owner:     "alice",
+			Name:      "stream",
+			PushedAt:  now.Add(-time.Hour),
 			UpdatedAt: now,
 		},
 		T1: &forge.T1Data{
