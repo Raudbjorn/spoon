@@ -166,7 +166,7 @@ func TestForkInfoToT1_RESTNoParentFabrication(t *testing.T) {
 		FullName: "alice/fork-from-rest",
 		Name:     "fork-from-rest",
 	}
-	got := forkInfoToT1(f, nil, "octo/root-repo")
+	got := forkInfoToT1(f, nil, "", "octo/root-repo")
 
 	// SourceFullPath is the network root (always known).
 	if got.SourceFullPath != "octo/root-repo" {
@@ -197,13 +197,13 @@ func TestForkInfoToT1_GraphQLDepthFromExtra(t *testing.T) {
 		Name:     "fork-from-graphql",
 	}
 	extra := &T1Extra{
-		ParentFullPath:       "octo/root-repo",
-		ParentDatabaseID:     8000,
-		DepthFromRoot:        2,
-		DirectTotalCount:     118,
+		ParentFullPath:        "octo/root-repo",
+		ParentDatabaseID:      8000,
+		DepthFromRoot:         2,
+		DirectTotalCount:      118,
 		WholeNetworkForkCount: 128,
 	}
-	got := forkInfoToT1(f, extra, "octo/root-repo")
+	got := forkInfoToT1(f, extra, "", "octo/root-repo")
 
 	if got.SourceFullPath != "octo/root-repo" {
 		t.Errorf("SourceFullPath: got %q, want %q", got.SourceFullPath, "octo/root-repo")
