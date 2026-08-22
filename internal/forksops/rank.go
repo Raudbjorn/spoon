@@ -17,6 +17,10 @@ import (
 // make a small shortlist anyway).
 const rankPoolCap = 200
 
+// RankPoolCap is rankPoolCap for callers outside the package (offline
+// evaluation scores every ordering key over the same top-RankPoolCap rows).
+const RankPoolCap = rankPoolCap
+
 // normalCDF is Φ(x), the standard normal CDF.
 func normalCDF(x float64) float64 {
 	return 0.5 * math.Erfc(-x/math.Sqrt2)
