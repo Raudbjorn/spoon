@@ -864,12 +864,20 @@ func upsertSnapshotTx(ctx context.Context, tx *wtx, snap Snapshot) error {
 		return err
 	}
 	// If the row already exists with a non-empty authScopeID and the incoming scope is also non-empty
-	// but different, refuse the write. This prevents a misconfigured or credential-rotated run from
-	// silently overwriting a snapshot acquired under a different identity.
+	// but different, the credential set has rotated (PAT rotation, a fresh
+	// per-run GITHUB_TOKEN in CI). LoadRepoSnapshotExact already treats a scope
+	// mismatch as a cache miss, so the old scope's forks (and everything that
+	// cascades from them: commits, compare files, documents, embeddings) are
+	// stale and unreachable under the new scope. Clear them before the upsert
+	// below adopts the new scope, rather than refusing the write outright --
+	// hard-failing here would permanently block re-acquisition of any repo
+	// once its credential set changes.
 	var existingScopeID string
 	_ = tx.QueryRowContext(ctx, `SELECT auth_scope_id FROM repos WHERE repo_key=?`, repoKey).Scan(&existingScopeID)
 	if existingScopeID != "" && snap.Repo.AuthScopeID != "" && snap.Repo.AuthScopeID != existingScopeID {
-		return fmt.Errorf("auth scope mismatch: cannot overwrite snapshot acquired under scope %q with scope %q (both non-empty)", existingScopeID, snap.Repo.AuthScopeID)
+		if _, err := tx.ExecContext(ctx, `DELETE FROM forks WHERE repo_key=?`, repoKey); err != nil {
+			return fmt.Errorf("clear stale-scope forks: %w", err)
+		}
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO repos(repo_key,provider,host,owner,name,first_seen,last_seen,api_version,acquisition_method,auth_scope_id) VALUES(?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(repo_key) DO UPDATE SET last_seen=excluded.last_seen,api_version=excluded.api_version,acquisition_method=excluded.acquisition_method,auth_scope_id=excluded.auth_scope_id`, repoKey, snap.Repo.Provider, strings.ToLower(snap.Repo.Host), snap.Repo.Owner, snap.Repo.Name, ts(snap.Repo.FirstSeen), ts(snap.Repo.LastSeen), snap.Repo.APIVersion, snap.Repo.AcquisitionMethod, snap.Repo.AuthScopeID); err != nil {
