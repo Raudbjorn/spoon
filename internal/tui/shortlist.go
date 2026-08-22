@@ -2,6 +2,9 @@ package tui
 
 import (
 	"fmt"
+	"math"
+	"sort"
+	"strings"
 
 	"github.com/svnbjrn/spoon/internal/forksops"
 )
@@ -24,11 +27,34 @@ const shortlistK = 10
 const pscoreSortCol = "pscore"
 
 // recomputeShortlist ranks the current rows and attaches the result. It is
-// called after every scoring pass (initial, per-compare, bulk rescore) so
-// the P column never shows numbers from a stale heat. Empty tables leave
-// the report nil. O(n³) bounded by forksops.RankPoolCap; rows beyond the
-// cap keep Rank nil and render "-".
+// called after every reapplySort — including a plain resort with unchanged
+// heat (cycling the sort column, reversing direction) — so it first checks
+// a signature of the fork set against the last ranked one and skips the
+// O(n³) pass when nothing has actually changed. The signature sorts fork
+// IDs first: reapplySort calls recomputeShortlist before reordering
+// m.forks, so consecutive calls see the rows in whatever order the
+// previous sort left them, and an order-dependent signature would treat
+// every resort as a change. Empty tables leave the report nil. Rows beyond
+// forksops.RankPoolCap keep Rank nil and render "-".
 func (m *Model) recomputeShortlist() {
+	ids := make([]string, len(m.forks))
+	heat := make(map[string]float64, len(m.forks))
+	for i, sf := range m.forks {
+		ids[i] = sf.Fork.ID
+		heat[sf.Fork.ID] = sf.Heat.Score
+	}
+	sort.Strings(ids)
+	var sb strings.Builder
+	for _, id := range ids {
+		sb.WriteString(id)
+		fmt.Fprintf(&sb, ":%.6f;", heat[id])
+	}
+	sig := sb.String()
+	if sig == m.shortlistHash {
+		return
+	}
+	m.shortlistHash = sig
+
 	if len(m.forks) == 0 {
 		m.shortlist = nil
 		return
@@ -85,7 +111,7 @@ func (m Model) shortlistStatus() string {
 }
 
 func fmtPrecision(v float64) string {
-	if v != v { // NaN: set below the POTH minimum
+	if math.IsNaN(v) { // set below the POTH minimum
 		return "-"
 	}
 	return fmt.Sprintf("%.2f", v)

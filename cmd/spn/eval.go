@@ -147,8 +147,16 @@ func runEvalWithEffective(args []string, stdout, stderr io.Writer, effective con
 	if err != nil {
 		return agentio.NewError(agentio.CodeBadInput, err.Error(), agentio.RemediationBadInput("forks", "eval")).Emit(stderr)
 	}
-	if rankVariant != "" && exportPath == "" {
-		return agentio.NewError(agentio.CodeBadInput, "--rank-variant requires --from-export", agentio.RemediationBadInput("forks", "eval")).Emit(stderr)
+	if exportPath == "" {
+		if rankVariant != "" {
+			return agentio.NewError(agentio.CodeBadInput, "--rank-variant requires --from-export", agentio.RemediationBadInput("forks", "eval")).Emit(stderr)
+		}
+		if shortlistN != evalDefaultShortlistN {
+			return agentio.NewError(agentio.CodeBadInput, "--shortlist requires --from-export", agentio.RemediationBadInput("forks", "eval")).Emit(stderr)
+		}
+		if priorScale != 0.0 {
+			return agentio.NewError(agentio.CodeBadInput, "--prior-scale requires --from-export", agentio.RemediationBadInput("forks", "eval")).Emit(stderr)
+		}
 	}
 	if exportPath != "" {
 		if rankVariant == "" {
