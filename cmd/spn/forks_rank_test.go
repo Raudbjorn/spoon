@@ -22,11 +22,12 @@ func TestForkToJSON_EmitsRankStats(t *testing.T) {
 		ExpectedRank:   1.25,
 		RankConfidence: 0.9,
 		Rank: &forksops.RankStats{
-			ExpectedRank: 1.25, PScore: 0.9375, PTopK: 0.98, PFirst: 0.8, Lo: 1, Hi: 2,
+			ExpectedRank: 1.25, PScore: 0.9375, PTopK: 0.98, PFirst: 0.8, Lo: 1, Hi: 2, TieBand: true,
 		},
 	}
 	out := forkToJSON(r)
 	want := map[string]any{
+		"tieBand":        true,
 		"expectedRank":   1.25,
 		"rankConfidence": 0.9,
 		"pScore":         0.9375,
@@ -44,7 +45,7 @@ func TestForkToJSON_EmitsRankStats(t *testing.T) {
 
 func TestForkToJSON_OmitsRankStats_WhenNotComputed(t *testing.T) {
 	out := forkToJSON(forksops.Result{})
-	for _, k := range []string{"expectedRank", "rankConfidence", "pScore", "pTopK", "pFirst", "rankLo", "rankHi"} {
+	for _, k := range []string{"expectedRank", "rankConfidence", "pScore", "pTopK", "pFirst", "rankLo", "rankHi", "tieBand"} {
 		if _, ok := out[k]; ok {
 			t.Errorf("%s should be omitted without a shortlist, got %#v", k, out[k])
 		}

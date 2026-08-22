@@ -72,6 +72,7 @@ Detection works on REST API paths. GitHub's GraphQL endpoint (used by the forks-
 | `pTopK` | P(rank ≤ N): probability the fork genuinely belongs in the shortlist |
 | `pFirst` | P(rank = 1) |
 | `rankLo` / `rankHi` | 95% central rank interval (1-based) |
+| `tieBand` | true when the fork is statistically indistinguishable from an adjacent fork in the emitted order — report the run as one cluster |
 
 Read `pTopK` before trusting position: a tier-1 (unenriched) fork has wide sigma, so it can sit at rank 3 with `pTopK` 0.4. All probabilities are relative to the 200-fork pool, not the whole network.
 
