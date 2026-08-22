@@ -1383,8 +1383,10 @@ func RankResults(pool []Result, opts Options) ([]Result, RankReport) {
 		DBarOverK:     ebReport.DBarOverK,
 		PD:            ebReport.PD,
 	}
+	bands := tieBands(mu, sigma, chosen, tieBandFactor)
 	shortlist := make([]Result, 0, len(chosen))
-	for _, i := range chosen {
+	for k, i := range chosen {
+		pool[i].Rank.TieBand = bands[k]
 		shortlist = append(shortlist, pool[i])
 	}
 	return shortlist, report

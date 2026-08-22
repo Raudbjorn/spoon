@@ -1395,3 +1395,38 @@ func TestStream_ebOffLeavesNoEBStats(t *testing.T) {
 		t.Errorf("EB regime should be empty when EB is off, got %q", report.EBRegime)
 	}
 }
+
+func TestStream_shortlistMarksTieBands(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	now := time.Now()
+	ff := &fakeForge{
+		parent: forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
+		forks: []forge.T1Data{
+			{ID: "o/a", Owner: "o", Name: "a", DefaultBranch: "main", PushedAt: now},
+			{ID: "o/b", Owner: "o", Name: "b", DefaultBranch: "main", PushedAt: now},
+			{ID: "o/c", Owner: "o", Name: "c", DefaultBranch: "main", PushedAt: now},
+		},
+		t2: map[string]forge.T2Data{
+			"o/a": {AheadCount: 1, MNA: 500, Diffs: []forge.FileDiff{{Path: "a.go", Additions: 500}}},
+			"o/b": {AheadCount: 1, MNA: 5}, // identical evidence → identical heat → band
+			"o/c": {AheadCount: 1, MNA: 5},
+		},
+	}
+	ch, err := Stream(context.Background(), ff, "o", "r", Options{Tier: 2, ShortlistN: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []Result
+	for r := range ch {
+		got = append(got, r)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d results", len(got))
+	}
+	if got[0].Rank.TieBand {
+		t.Errorf("clear leader %s should not be banded", got[0].Fork.ID)
+	}
+	if !got[1].Rank.TieBand || !got[2].Rank.TieBand {
+		t.Errorf("identical forks should be banded: %v %v", got[1].Rank.TieBand, got[2].Rank.TieBand)
+	}
+}

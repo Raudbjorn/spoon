@@ -275,7 +275,9 @@ expected rank. Beside `expectedRank` and `rankConfidence`, each record carries
 `pFirst` (P(rank = 1)) and `rankLo`/`rankHi` (95% rank interval), computed
 exactly from the pairwise win probabilities (Poisson-binomial). Treat `pTopK`
 as the honest "does this fork belong here" number; wide-sigma tier-1 forks can
-rank high with low `pTopK`.
+rank high with low `pTopK`. `tieBand` marks forks indistinguishable from a
+neighbour in the emitted order. Full model and field reference:
+[`docs/ranking.md`](docs/ranking.md).
 `--shortlist-rule membership` selects by `pTopK` instead of expected rank (the
 0/1-loss-optimal shortlist rule), then orders the selection by expected rank;
 the default `expected` rule keeps the historical ordering.

@@ -403,3 +403,41 @@ func TestRankResults_RespectsPoolCapAndEB(t *testing.T) {
 		}
 	}
 }
+
+// --- PR6: tie bands ---
+
+func TestTieBands_MarksIndistinguishableNeighbours(t *testing.T) {
+	// Ordered shortlist: 0 and 1 are a clear pair apart; 1, 2, 3 sit within
+	// 0.4·√(σi²+σj²) of their neighbour; 4 is clearly apart again.
+	mu := []float64{50, 30, 29.8, 29.5, 10}
+	sigma := []float64{1, 1, 1, 1, 1}
+	order := []int{0, 1, 2, 3, 4}
+	bands := tieBands(mu, sigma, order, tieBandFactor)
+	want := []bool{false, true, true, true, false}
+	for i := range want {
+		if bands[i] != want[i] {
+			t.Errorf("tieBands=%v want %v", bands, want)
+			break
+		}
+	}
+}
+
+func TestTieBands_WideSigmaWidensBand(t *testing.T) {
+	// Same gaps as a clear separation at σ=1 become a band at σ=7.
+	mu := []float64{40, 38}
+	if b := tieBands(mu, []float64{1, 1}, []int{0, 1}, tieBandFactor); b[0] || b[1] {
+		t.Errorf("gap 2 at σ=1 should not band: %v", b)
+	}
+	if b := tieBands(mu, []float64{7, 7}, []int{0, 1}, tieBandFactor); !b[0] || !b[1] {
+		t.Errorf("gap 2 at σ=7 should band: %v", b)
+	}
+}
+
+func TestTieBands_SingletonAndEmpty(t *testing.T) {
+	if b := tieBands([]float64{5}, []float64{1}, []int{0}, tieBandFactor); len(b) != 1 || b[0] {
+		t.Errorf("singleton: %v", b)
+	}
+	if b := tieBands(nil, nil, nil, tieBandFactor); len(b) != 0 {
+		t.Errorf("empty: %v", b)
+	}
+}

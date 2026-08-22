@@ -1378,6 +1378,7 @@ func forkToJSONDetailed(r forksops.Result, details detailOptions) map[string]any
 		out["pFirst"] = r.Rank.PFirst
 		out["rankLo"] = r.Rank.Lo
 		out["rankHi"] = r.Rank.Hi
+		out["tieBand"] = r.Rank.TieBand
 		if r.Rank.PothResidual != nil {
 			out["pothResidual"] = nanToNil(*r.Rank.PothResidual)
 		}

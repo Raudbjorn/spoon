@@ -176,6 +176,10 @@ type RankStats struct {
 	PTopK        float64 // P(rank ≤ k): probability the fork belongs in a top-k shortlist
 	PFirst       float64 // P(rank = 1)
 	Lo, Hi       int     // 95% central rank interval, 1-based
+	// TieBand marks a fork indistinguishable from an adjacent fork in the
+	// emitted ordering (|Δμ| < tieBandFactor·√(σ_i²+σ_j²)); report such runs
+	// as a band, not an order.
+	TieBand bool
 	// PothResidual is POTH − POTH(pool without this fork): positive when the
 	// fork sharpens the hierarchy, negative when it blurs it. Set only under
 	// Options.RankDiagnostics (it costs one extra O(n²) pass per fork).
@@ -375,6 +379,37 @@ func pothResiduals(p [][]float64) []float64 {
 			}
 		}
 		out[j] = whole - subsetPoth(p, rest)
+	}
+	return out
+}
+
+// tieBandFactor is c in |μ_i − μ_j| < c·√(σ_i²+σ_j²): neighbours closer
+// than that have P(i beats j) within ≈ 0.5 ± 0.15 (Φ(0.4) ≈ 0.66) and are
+// reported as a band rather than ordered (Pearce & Erosheva 2025 pattern:
+// say "indistinguishable" instead of inventing an order).
+const tieBandFactor = 0.4
+
+// tieBands reports, for each position in order (indices into mu/sigma),
+// whether the fork is indistinguishable from at least one adjacent fork in
+// the ordering under the band rule. Both members of a close pair are marked.
+// Indices in order that fall outside mu/sigma's bounds are skipped rather
+// than indexed, matching subsetPoth's defensive posture for the same reason:
+// this helper is reused from more than one entry point.
+func tieBands(mu, sigma []float64, order []int, c float64) []bool {
+	out := make([]bool, len(order))
+	n := len(mu)
+	if len(sigma) < n {
+		n = len(sigma)
+	}
+	for k := 1; k < len(order); k++ {
+		i, j := order[k-1], order[k]
+		if i < 0 || i >= n || j < 0 || j >= n {
+			continue
+		}
+		if math.Abs(mu[i]-mu[j]) < c*math.Hypot(sigma[i], sigma[j]) {
+			out[k-1] = true
+			out[k] = true
+		}
 	}
 	return out
 }
