@@ -279,6 +279,13 @@ rank high with low `pTopK`.
 `--shortlist-rule membership` selects by `pTopK` instead of expected rank (the
 0/1-loss-optimal shortlist rule), then orders the selection by expected rank;
 the default `expected` rule keeps the historical ordering.
+Each shortlist run also emits a `rank_report` info envelope on stderr with the
+pool size, how many ranked forks had heat > 0, and two precision-of-hierarchy
+numbers (Wigle et al. 2025): `poth` over the pool and `cpothK` within the
+shortlist — both in [0,1], 0 = every pair a coin flip. `--rank-diagnostics`
+adds `pothResidual` per record (negative = this fork blurs the ordering; a
+cheap trigger for a deeper fetch). `--csv` gains `expected_rank, p_score,
+p_top_k, p_first, rank_lo, rank_hi` columns (empty without `--shortlist`).
 
 Path matching is deliberately simple: a wildcard-free entry matches by exact
 file or **directory prefix** (`internal/auth` covers everything beneath it),
