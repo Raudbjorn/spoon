@@ -181,6 +181,7 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 	siblingSimFlagSet := false
 	noSiblingSimFlagSet := false
 	siblingSimModeSet := false
+	shortlistRuleSet := false
 	topicLanesSet := false
 	topicLaneBudgetSet := false
 	for i := 0; i < len(args); i++ {
@@ -258,6 +259,18 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 				return agentio.NewError(agentio.CodeBadInput, "--shortlist must be a positive integer", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
 			}
 			opts.ShortlistN = n
+		case "--shortlist-rule":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--shortlist-rule requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			switch args[i] {
+			case forksops.ShortlistRuleExpected, forksops.ShortlistRuleMembership:
+				opts.ShortlistRule = args[i]
+			default:
+				return agentio.NewError(agentio.CodeBadInput, "--shortlist-rule must be expected or membership", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			shortlistRuleSet = true
 		case "--bot-allowlist":
 			if i+1 >= len(args) {
 				return agentio.NewError(agentio.CodeBadInput, "--bot-allowlist requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
@@ -505,6 +518,9 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 	// silent no-op without --commit-files. Reject it rather than accept-and-ignore.
 	if opts.CommitFileBudget > 0 && !opts.CommitFiles {
 		return agentio.NewError(agentio.CodeBadInput, "--commit-file-budget requires --commit-files", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+	}
+	if shortlistRuleSet && opts.ShortlistN == 0 {
+		return agentio.NewError(agentio.CodeBadInput, "--shortlist-rule requires --shortlist", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
 	}
 	if siblingSimModeSet {
 		if noSiblingSimFlagSet {
@@ -1320,6 +1336,15 @@ func forkToJSONDetailed(r forksops.Result, details detailOptions) map[string]any
 	if r.ExpectedRank > 0 {
 		out["expectedRank"] = r.ExpectedRank
 		out["rankConfidence"] = r.RankConfidence
+	}
+	// Full rank summary over the same pool (P-score = SUCRA, P(rank ≤ k),
+	// P(rank = 1), 95% rank interval). Emitted only when Stream computed it.
+	if r.Rank != nil {
+		out["pScore"] = r.Rank.PScore
+		out["pTopK"] = r.Rank.PTopK
+		out["pFirst"] = r.Rank.PFirst
+		out["rankLo"] = r.Rank.Lo
+		out["rankHi"] = r.Rank.Hi
 	}
 	// Components is populated by the v2 scoring path (forksops uses
 	// Scorer.ScoreRaw). Emit when present so downstream agents can inspect

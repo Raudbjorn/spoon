@@ -266,6 +266,20 @@ listed before unmatched ones (heat order within each lane). Priors never hide a
 fork or touch heat; a denied owner scores 0 but is still emitted, carrying its
 `owner_deny` reason.
 
+### Shortlist rank summary
+
+`--shortlist N` ranks the strongest 200 forks under a Gaussian utility model
+(mu = heat, sigma from tier confidence) and emits the top N by Robbins
+expected rank. Beside `expectedRank` and `rankConfidence`, each record carries
+`pScore` (= SUCRA, `(n − expectedRank)/(n − 1)`), `pTopK` (P(rank ≤ N)),
+`pFirst` (P(rank = 1)) and `rankLo`/`rankHi` (95% rank interval), computed
+exactly from the pairwise win probabilities (Poisson-binomial). Treat `pTopK`
+as the honest "does this fork belong here" number; wide-sigma tier-1 forks can
+rank high with low `pTopK`.
+`--shortlist-rule membership` selects by `pTopK` instead of expected rank (the
+0/1-loss-optimal shortlist rule), then orders the selection by expected rank;
+the default `expected` rule keeps the historical ordering.
+
 Path matching is deliberately simple: a wildcard-free entry matches by exact
 file or **directory prefix** (`internal/auth` covers everything beneath it),
 while an entry containing a glob uses single-segment `path.Match` (`cmd/*.go`

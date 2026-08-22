@@ -58,6 +58,10 @@ type Options struct {
 	// expected rank (with confidence) over the enriched set, and emits only the
 	// top-N by expected rank. Forces collect-then-emit semantics.
 	ShortlistN int
+	// ShortlistRule selects which forks make the shortlist: ShortlistRuleExpected
+	// (default, top-N by expected rank) or ShortlistRuleMembership (top-N by
+	// P(rank ≤ N), then ordered by expected rank). Empty means expected.
+	ShortlistRule string
 
 	// Query, when non-empty, scores every enriched fork's change digest
 	// (commit messages + touched paths) against this free-text intent and
@@ -208,15 +212,15 @@ func (o *ClusterOptions) SetEmbedderForTest(e embed.Embedder) { o.Embedder = e }
 // Lineage describes a fork's position in the fork network tree.
 type Lineage struct {
 	NetworkRoot   string // network root owner/repo
-	DirectParent string // direct parent owner/repo
+	DirectParent  string // direct parent owner/repo
 	DepthFromRoot int    // edges from root: 1=direct child, 0=unknown
 }
 
 // Coverage reports how completely the fork list covers the network.
 type Coverage struct {
-	DirectTotalCount       int // forks.totalCount from GraphQL root (direct children)
+	DirectTotalCount      int // forks.totalCount from GraphQL root (direct children)
 	WholeNetworkForkCount int // repository.forkCount from GraphQL root (whole network)
-	Unresolved             int // whole - direct; negative clamped to 0
+	Unresolved            int // whole - direct; negative clamped to 0
 }
 
 // Result is a single fork's outcome. Fork is always populated; Err and the
@@ -239,6 +243,9 @@ type Result struct {
 	// RankConfidence mirrors Heat.Confidence (tier reached).
 	ExpectedRank   float64
 	RankConfidence float64
+	// Rank carries the full rank summary (P-score, P(rank ≤ k), P(rank = 1),
+	// 95% rank interval) for the same pool; nil when ShortlistN == 0.
+	Rank *RankStats
 
 	// QueryScore is the fork's relevance to Options.Query in [0,1];
 	// QueryMethod records how it was computed ("voyage" cross-encoder or
@@ -562,18 +569,18 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 					i := dispatchOrder[pos]
 					s := all[i]
 					r := Result{
-						Fork:      s.fork,
-						Heat:      s.res,
-						Momentum:  momentumByID[s.fork.ID],
+						Fork:     s.fork,
+						Heat:     s.res,
+						Momentum: momentumByID[s.fork.ID],
 						Lineage: Lineage{
 							NetworkRoot:   s.fork.SourceFullPath,
 							DirectParent:  s.fork.ParentFullPath,
 							DepthFromRoot: s.fork.DepthFromRoot,
 						},
 						Coverage: Coverage{
-							DirectTotalCount:       s.fork.DirectTotalCount,
+							DirectTotalCount:      s.fork.DirectTotalCount,
 							WholeNetworkForkCount: s.fork.WholeNetworkForkCount,
-							Unresolved:             coverageUnresolved(s.fork, opts.Report),
+							Unresolved:            coverageUnresolved(s.fork, opts.Report),
 						},
 					}
 
@@ -810,18 +817,19 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 				mu[i] = collected[i].Heat.Score
 				sigma[i] = rankSigma(collected[i].Heat.Confidence)
 			}
-			ranks := expectedRanks(mu, sigma)
+			stats := computeRankStats(mu, sigma, opts.ShortlistN)
 			collected = collected[:pool]
 			for i := range collected {
-				collected[i].ExpectedRank = ranks[i]
+				collected[i].Rank = &stats[i]
+				collected[i].ExpectedRank = stats[i].ExpectedRank
 				collected[i].RankConfidence = collected[i].Heat.Confidence
 			}
-			sort.SliceStable(collected, func(i, j int) bool {
-				return collected[i].ExpectedRank < collected[j].ExpectedRank
-			})
-			if len(collected) > opts.ShortlistN {
-				collected = collected[:opts.ShortlistN]
+			chosen := selectShortlist(stats, opts.ShortlistRule, opts.ShortlistN)
+			shortlist := make([]Result, 0, len(chosen))
+			for _, i := range chosen {
+				shortlist = append(shortlist, collected[i])
 			}
+			collected = shortlist
 		} else if opts.Query != "" {
 			// Query mode: most relevant first; heat breaks ties.
 			sort.SliceStable(collected, func(i, j int) bool {

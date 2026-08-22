@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 	"testing"
@@ -234,6 +235,42 @@ func TestStream_shortlistTruncatesAndRanks(t *testing.T) {
 	}
 	if got[0].ExpectedRank > got[1].ExpectedRank {
 		t.Errorf("shortlist not sorted by expected rank ascending: %v, %v", got[0].ExpectedRank, got[1].ExpectedRank)
+	}
+	for i, r := range got {
+		if r.Rank == nil {
+			t.Fatalf("result %d missing Rank stats", i)
+		}
+		if r.Rank.ExpectedRank != r.ExpectedRank {
+			t.Errorf("result %d Rank.ExpectedRank %v != ExpectedRank %v", i, r.Rank.ExpectedRank, r.ExpectedRank)
+		}
+		// Pool was 4 forks: PScore = (4 − E)/3 by the identity.
+		if want := (4 - r.ExpectedRank) / 3; math.Abs(r.Rank.PScore-want) > 1e-12 {
+			t.Errorf("result %d PScore %v want %v", i, r.Rank.PScore, want)
+		}
+		if r.Rank.Lo < 1 || r.Rank.Hi > 4 || r.Rank.Lo > r.Rank.Hi {
+			t.Errorf("result %d bad rank interval [%d,%d]", i, r.Rank.Lo, r.Rank.Hi)
+		}
+		if r.Rank.PTopK <= 0 || r.Rank.PTopK > 1 {
+			t.Errorf("result %d PTopK %v out of (0,1]", i, r.Rank.PTopK)
+		}
+	}
+}
+
+func TestStream_noShortlistLeavesRankNil(t *testing.T) {
+	ff := &fakeForge{
+		parent: forge.ParentData{DefaultBranch: "main", PushedAt: time.Now()},
+		forks: []forge.T1Data{
+			{ID: "o/a", Owner: "o", Name: "a", PushedAt: time.Now()},
+		},
+	}
+	ch, err := Stream(context.Background(), ff, "o", "r", Options{Tier: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for r := range ch {
+		if r.Rank != nil {
+			t.Errorf("Rank should be nil without ShortlistN, got %+v", r.Rank)
+		}
 	}
 }
 
@@ -1080,34 +1117,34 @@ func TestStreamEmitsLineageAndCoverage(t *testing.T) {
 		},
 		forks: []forge.T1Data{
 			{
-				ID:                   "alice/chunkhound-fork-1",
-				Owner:                "alice",
-				Name:                 "chunkhound-fork-1",
-				URL:                  "https://github.com/alice/chunkhound-fork-1",
-				DefaultBranch:        "main",
-				Stars:                10,
-				PushedAt:             time.Now(),
-				SourceFullPath:       "chunkhound/chunkhound",
-				ParentFullPath:       "chunkhound/chunkhound",
-				DepthFromRoot:        1,
-				DirectTotalCount:     118,
+				ID:                    "alice/chunkhound-fork-1",
+				Owner:                 "alice",
+				Name:                  "chunkhound-fork-1",
+				URL:                   "https://github.com/alice/chunkhound-fork-1",
+				DefaultBranch:         "main",
+				Stars:                 10,
+				PushedAt:              time.Now(),
+				SourceFullPath:        "chunkhound/chunkhound",
+				ParentFullPath:        "chunkhound/chunkhound",
+				DepthFromRoot:         1,
+				DirectTotalCount:      118,
 				WholeNetworkForkCount: 128,
-				SubForkCount:         5,
+				SubForkCount:          5,
 			},
 			{
-				ID:                   "bob/chunkhound-fork-2",
-				Owner:                "bob",
-				Name:                 "chunkhound-fork-2",
-				URL:                  "https://github.com/bob/chunkhound-fork-2",
-				DefaultBranch:        "main",
-				Stars:                5,
-				PushedAt:             time.Now(),
-				SourceFullPath:       "chunkhound/chunkhound",
-				ParentFullPath:       "chunkhound/chunkhound",
-				DepthFromRoot:        1,
-				DirectTotalCount:     118,
+				ID:                    "bob/chunkhound-fork-2",
+				Owner:                 "bob",
+				Name:                  "chunkhound-fork-2",
+				URL:                   "https://github.com/bob/chunkhound-fork-2",
+				DefaultBranch:         "main",
+				Stars:                 5,
+				PushedAt:              time.Now(),
+				SourceFullPath:        "chunkhound/chunkhound",
+				ParentFullPath:        "chunkhound/chunkhound",
+				DepthFromRoot:         1,
+				DirectTotalCount:      118,
 				WholeNetworkForkCount: 128,
-				SubForkCount:         0,
+				SubForkCount:          0,
 			},
 		},
 	}
@@ -1147,6 +1184,50 @@ func TestStreamEmitsLineageAndCoverage(t *testing.T) {
 		}
 		if r.Coverage.Unresolved != 10 {
 			t.Errorf("Coverage.Unresolved: got %d, want 10", r.Coverage.Unresolved)
+		}
+	}
+}
+
+func TestStream_shortlistRuleMembership_selectsByPTopK(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	now := time.Now()
+	ff := &fakeForge{
+		parent: forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
+		forks: []forge.T1Data{
+			{ID: "o/a", Owner: "o", Name: "a", DefaultBranch: "main", PushedAt: now},
+			{ID: "o/b", Owner: "o", Name: "b", DefaultBranch: "main", PushedAt: now},
+			{ID: "o/c", Owner: "o", Name: "c", DefaultBranch: "main", PushedAt: now},
+			{ID: "o/d", Owner: "o", Name: "d", DefaultBranch: "main", PushedAt: now},
+		},
+		t2: map[string]forge.T2Data{
+			"o/a": {AheadCount: 1, MNA: 500, Diffs: []forge.FileDiff{{Path: "a.go", Additions: 500}}},
+			"o/b": {AheadCount: 1, MNA: 5},
+			"o/c": {AheadCount: 1, MNA: 50},
+			"o/d": {AheadCount: 1, MNA: 1},
+		},
+	}
+	ch, err := Stream(context.Background(), ff, "o", "r", Options{Tier: 2, ShortlistN: 2, ShortlistRule: ShortlistRuleMembership})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []Result
+	for r := range ch {
+		got = append(got, r)
+	}
+	if len(got) != 2 {
+		t.Fatalf("shortlist should emit 2, got %d", len(got))
+	}
+	// Selected forks are the two highest P(rank<=2) in the pool, and are
+	// ordered by expected rank within the shortlist.
+	if got[0].Rank == nil || got[1].Rank == nil {
+		t.Fatal("missing Rank stats")
+	}
+	if got[0].ExpectedRank > got[1].ExpectedRank {
+		t.Errorf("shortlist not ordered by expected rank: %v, %v", got[0].ExpectedRank, got[1].ExpectedRank)
+	}
+	for _, r := range got {
+		if r.Rank.PTopK < 0.5 {
+			t.Errorf("membership-selected fork %s has PTopK %v < 0.5", r.Fork.ID, r.Rank.PTopK)
 		}
 	}
 }
