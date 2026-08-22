@@ -719,7 +719,7 @@ func annotateDepths(forks []ForkInfo, extras []T1Extra, root string) []T1Extra {
 	children := make(map[int64][]int, len(forks))
 	queue := make([]int, 0, len(forks))
 	for i := range extras {
-		if extras[i].ParentFullPath == root {
+		if strings.EqualFold(extras[i].ParentFullPath, root) {
 			extras[i].DirectParent = 1
 			extras[i].DepthFromRoot = 1
 			queue = append(queue, i)

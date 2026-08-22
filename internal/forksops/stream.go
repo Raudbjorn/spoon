@@ -1245,6 +1245,9 @@ func scorePriors(opts Options, collected []Result) {
 // fitted nor shrunk: they carry no evidence about heterogeneity and would
 // drag the pooled mean to 0.
 func applyEB(pool []Result, mu, sigma []float64, priorScale float64) RankReport {
+	if len(mu) < len(pool) || len(sigma) < len(pool) {
+		return RankReport{EBRegime: EBRegimeInsufficient}
+	}
 	idx := make([]int, 0, len(pool))
 	for i := range pool {
 		if mu[i] > 0 {
@@ -1332,11 +1335,33 @@ func RankResults(pool []Result, opts Options) ([]Result, RankReport) {
 	if rule == "" {
 		rule = ShortlistRuleExpected
 	}
-	keep := opts.ShortlistN
+	// picked is always the top ShortlistN under rule, in rule order — it
+	// both drives CPOTHk (which must reflect the actual shortlist, never
+	// the kept-all remainder) and, under RankKeepAll, seeds the front of
+	// the returned slice so the rule's selection is still visible instead
+	// of being flattened by a final by-expected-rank sort over everything.
+	picked := selectShortlist(stats, rule, opts.ShortlistN)
+	chosen := picked
 	if opts.RankKeepAll {
-		keep = n
+		pickedSet := make(map[int]bool, len(picked))
+		for _, i := range picked {
+			pickedSet[i] = true
+		}
+		rest := make([]int, 0, n-len(picked))
+		for i := 0; i < n; i++ {
+			if !pickedSet[i] {
+				rest = append(rest, i)
+			}
+		}
+		sort.SliceStable(rest, func(x, y int) bool {
+			a, b := rest[x], rest[y]
+			if stats[a].ExpectedRank != stats[b].ExpectedRank {
+				return stats[a].ExpectedRank < stats[b].ExpectedRank
+			}
+			return a < b
+		})
+		chosen = append(append([]int(nil), picked...), rest...)
 	}
-	chosen := selectShortlist(stats, rule, keep)
 	nonzero := 0
 	for _, m := range mu {
 		if m > 0 {
@@ -1349,7 +1374,7 @@ func RankResults(pool []Result, opts Options) ([]Result, RankReport) {
 		ShortlistN:    opts.ShortlistN,
 		ShortlistRule: rule,
 		POTH:          poth(p),
-		CPOTHk:        subsetPoth(p, selectShortlist(stats, rule, opts.ShortlistN)),
+		CPOTHk:        subsetPoth(p, picked),
 		EBRegime:      ebReport.EBRegime,
 		EBPool:        ebReport.EBPool,
 		TauHat:        ebReport.TauHat,

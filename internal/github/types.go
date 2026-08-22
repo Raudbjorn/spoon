@@ -25,21 +25,19 @@ type RepoInfo struct {
 	Fork          bool     `json:"fork"`
 
 	Owner OwnerInfo `json:"owner"`
-
-	// Source is the ultimate upstream of a fork chain (REST `source`).
-	// Nil for non-forks and for forks missing the field.
-	Source *RepoRef `json:"source,omitempty"`
-
-	// Parent is the immediate parent of a fork (REST `parent`).
-	// Nil for non-forks and for forks missing the field.
+	// Parent is the immediate forked-from repo. Nil when this repo is not a fork
+	// or the API omitted the object.
 	Parent *RepoRef `json:"parent,omitempty"`
+	// Source is the ultimate network root. Nil when this repo is not a fork
+	// or the API omitted the object.
+	Source *RepoRef `json:"source,omitempty"`
 }
 
-// RepoRef is the slim reference returned by GitHub REST for `source` and
-// `parent` payloads: id + full_name only.
+// RepoRef is the nested repository object on GET /repos parent/source.
 type RepoRef struct {
-	ID       int64  `json:"id"`
-	FullName string `json:"full_name"`
+	ID            int64  `json:"id"`
+	FullName      string `json:"full_name"`
+	DefaultBranch string `json:"default_branch"`
 }
 
 // ForkInfo represents a fork from the forks list endpoint.
@@ -186,10 +184,10 @@ type AuthStatus struct {
 	TokenSource         string   // "gh", "env", "none"
 	Scopes              []string // OAuth scopes attached to the token (empty if unauthenticated)
 	RateLimit           RateLimit
-	DuplicateIdentities int // configured tokens collapsed because they resolve to the same login
-	AuthScopeID      string // non-reversible scope fingerprint (first 16 hex of SHA-256)
-	APIVersion       string // pinned REST API version for storage (github/<date>). HTTP wire uses defaultRESTVersion.
-	AuthMode         string // "authenticated" or "anonymous"
+	DuplicateIdentities int    // configured tokens collapsed because they resolve to the same login
+	AuthScopeID         string // non-reversible scope fingerprint (first 16 hex of SHA-256)
+	APIVersion          string // pinned REST API version for storage (github/<date>). HTTP wire uses defaultRESTVersion.
+	AuthMode            string // "authenticated" or "anonymous"
 }
 
 // T1Extra holds additional data from the GraphQL T1 query not in the REST ForkInfo.

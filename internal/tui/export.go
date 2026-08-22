@@ -270,6 +270,13 @@ func (m *Model) doExport(toExport []ScoredFork, filename string) tea.Cmd {
 			},
 			ExportedAt: time.Now().UTC().Format(time.RFC3339),
 		}
+		compareBase, compareBranch := parent.FullName, parent.DefaultBranch
+		if parent.SourceFullPath != "" {
+			compareBase = parent.SourceFullPath
+			if parent.SourceDefaultBranch != "" {
+				compareBranch = parent.SourceDefaultBranch
+			}
+		}
 
 		for _, sf := range toExport {
 			efHeat := ExportHeat{
@@ -297,7 +304,7 @@ func (m *Model) doExport(toExport []ScoredFork, filename string) tea.Cmd {
 				Enriched:   sf.Enriched,
 				Heat:       efHeat,
 				CompareURL: forge.CompareURL(auth.Provider, auth.Host,
-					parent.FullName, parent.DefaultBranch, sf.Fork.Owner, sf.Fork.DefaultBranch),
+					compareBase, compareBranch, sf.Fork.Owner, sf.Fork.DefaultBranch),
 			}
 
 			ef.Divergence = forgeT2ToExportDiv(sf.T2)
