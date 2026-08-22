@@ -81,6 +81,15 @@ scores, printed in the report. Diagnostics per fork: `ebResidual`
 On the 3,065-fork `stablyai/orca` export: τ̂ = 9.9 heat points, D̄/k = 1.13,
 POTH 0.94 — heterogeneity is real and of the same order as the tier-1 σ.
 
+## In the TUI
+
+`spoon` ranks the same way on every scoring pass (`internal/tui/shortlist.go`,
+k = 10, no EB): the `P` column shows P-score as a percentage with a `~` tie
+mark (`~50`), `s` cycles to the `pscore` sort, the status bar carries
+`POTH x.xx top10 x.xx`, the detail view a "Rank" block, and the export a
+`rank` block per fork plus `rank_report`. Rows beyond the 200-fork pool show
+`-`.
+
 ## Evaluating a change offline
 
 ```bash

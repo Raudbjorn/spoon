@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/svnbjrn/spoon/internal/forge"
+	"github.com/svnbjrn/spoon/internal/forksops"
 	"github.com/svnbjrn/spoon/internal/tui/keymap"
 	"github.com/svnbjrn/spoon/internal/tui/ui"
 )
@@ -27,6 +28,11 @@ type ExportData struct {
 	Degraded      bool `json:"degraded"`
 	EnrichedCount int  `json:"enriched_count"`
 	TotalCount    int  `json:"total_count"`
+
+	// RankReport is the pool-level shortlist summary (pool size, POTH,
+	// cPOTH_k) the per-fork rank blocks are relative to; absent when nothing
+	// was ranked. Same shape as the spn rank_report details.
+	RankReport *forksops.RankReport `json:"rank_report,omitempty"`
 
 	Forks []ExportFork `json:"forks"`
 }
@@ -60,6 +66,7 @@ type ExportFork struct {
 	Enriched bool `json:"enriched"`
 
 	Heat        ExportHeat        `json:"heat"`
+	Rank        *ExportRank       `json:"rank,omitempty"`
 	Components  []ExportComponent `json:"components,omitempty"`
 	Divergence  *ExportDiv        `json:"divergence,omitempty"`
 	LoneWolf    *ExportLoneWolf   `json:"lone_wolf,omitempty"`
@@ -114,6 +121,19 @@ type ExportLoneWolf struct {
 	RevertCount       int     `json:"revertCount"`
 	IsSquash          bool    `json:"isSquash"`
 	MsgQualityScore   float64 `json:"msgQualityScore"`
+}
+
+// ExportRank is the shortlist rank section, present when the fork was in
+// the ranked pool at export time. Mirrors the `spn forks list --shortlist`
+// record fields (docs/ranking.md).
+type ExportRank struct {
+	ExpectedRank float64 `json:"expected_rank"`
+	PScore       float64 `json:"p_score"`
+	PTopK        float64 `json:"p_top_k"`
+	PFirst       float64 `json:"p_first"`
+	RankLo       int     `json:"rank_lo"`
+	RankHi       int     `json:"rank_hi"`
+	TieBand      bool    `json:"tie_band"`
 }
 
 // ExportHeat is the heat score section.
@@ -269,6 +289,7 @@ func (m *Model) doExport(toExport []ScoredFork, filename string) tea.Cmd {
 				DefaultBranch: parent.DefaultBranch,
 			},
 			ExportedAt: time.Now().UTC().Format(time.RFC3339),
+			RankReport: m.shortlist,
 		}
 		compareBase, compareBranch := parent.FullName, parent.DefaultBranch
 		if parent.SourceFullPath != "" {
@@ -303,6 +324,7 @@ func (m *Model) doExport(toExport []ScoredFork, filename string) tea.Cmd {
 				CreatedAt:  formatOptionalTime(sf.Fork.CreatedAt),
 				Enriched:   sf.Enriched,
 				Heat:       efHeat,
+				Rank:       exportRank(sf.Rank),
 				CompareURL: forge.CompareURL(auth.Provider, auth.Host,
 					compareBase, compareBranch, sf.Fork.Owner, sf.Fork.DefaultBranch),
 			}
@@ -439,4 +461,16 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen-3] + "..."
+}
+
+// exportRank maps the in-memory rank summary to its export shape; nil in,
+// nil out, so unranked rows omit the block rather than emitting zeros.
+func exportRank(r *forksops.RankStats) *ExportRank {
+	if r == nil {
+		return nil
+	}
+	return &ExportRank{
+		ExpectedRank: r.ExpectedRank, PScore: r.PScore, PTopK: r.PTopK, PFirst: r.PFirst,
+		RankLo: r.Lo, RankHi: r.Hi, TieBand: r.TieBand,
+	}
 }

@@ -1,9 +1,9 @@
  spoon | owner/repo | 4 forks | ! Unauthenticated
- HEAT      REPOSITORY                        *     f  BRANCH  LIN PUSHED
- > ###.90  alice/tool                         1     0       -  -  1h ago
-   ###.80  bob/tool                           1     0       -  -  1h ago
-   ##..70  carol/widget                       1     0       -  -  1h ago
-   ##..60  dave/widget                        1     0       -  -  1h ago
+ HEAT      P   REPOSITORY                        *     f  BRANCH  LIN PUSHED
+ > ###.90   -  alice/tool                         1     0       -  -  1h ago
+   ###.80   -  bob/tool                           1     0       -  -  1h ago
+   ##..70   -  carol/widget                       1     0       -  -  1h ago
+   ##..60   -  dave/widget                        1     0       -  -  1h ago
 
 [Enter] View fork details [/] Filter forks [s] Cycle sort column [Space] Mark or unmark fork [e] Export marked forks
 [i] Embed marked forks [r] Refresh [,] Open settings [?] Open help [q] Quit
