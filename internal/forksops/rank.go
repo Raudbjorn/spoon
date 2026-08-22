@@ -109,6 +109,9 @@ func expectedRanks(mu, sigma []float64) []float64 {
 // dynamic programme; probabilities are clamped at 0 against float drift.
 func rankDistribution(p [][]float64, i int) []float64 {
 	n := len(p)
+	if n == 0 {
+		return nil
+	}
 	dist := make([]float64, n)
 	dist[0] = 1
 	for j := 0; j < n; j++ {
@@ -135,6 +138,9 @@ func rankDistribution(p [][]float64, i int) []float64 {
 // side of the mass.
 func rankInterval(dist []float64, level float64) (lo, hi int) {
 	n := len(dist)
+	if n == 0 {
+		return 1, 1
+	}
 	tail := (1 - level) / 2
 	lo, hi = 1, n
 	acc := 0.0
@@ -196,6 +202,11 @@ func computeRankStats(mu, sigma []float64, k int) []RankStats {
 		ps := 1.0
 		if n > 1 {
 			ps = (float64(n) - er[i]) / float64(n-1)
+			if ps < 0 {
+				ps = 0
+			} else if ps > 1 {
+				ps = 1
+			}
 		}
 		lo, hi := rankInterval(dist, rankIntervalLevel)
 		out[i] = RankStats{ExpectedRank: er[i], PScore: ps, PTopK: top, PFirst: dist[0], Lo: lo, Hi: hi}
@@ -218,6 +229,9 @@ const (
 // ordered by expected rank ascending (index ascending on exact ties). k
 // larger than the pool returns the whole pool ordered.
 func selectShortlist(rs []RankStats, rule string, k int) []int {
+	if k < 0 {
+		k = 0
+	}
 	n := len(rs)
 	idx := make([]int, n)
 	for i := range idx {

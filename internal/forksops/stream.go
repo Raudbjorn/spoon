@@ -820,9 +820,8 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 			stats := computeRankStats(mu, sigma, opts.ShortlistN)
 			collected = collected[:pool]
 			for i := range collected {
-				rs := stats[i]
-				collected[i].Rank = &rs
-				collected[i].ExpectedRank = rs.ExpectedRank
+				collected[i].Rank = &stats[i]
+				collected[i].ExpectedRank = stats[i].ExpectedRank
 				collected[i].RankConfidence = collected[i].Heat.Confidence
 			}
 			chosen := selectShortlist(stats, opts.ShortlistRule, opts.ShortlistN)
