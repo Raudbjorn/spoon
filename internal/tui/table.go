@@ -94,25 +94,35 @@ func (m Model) viewTable() string {
 		embHeader = " EMB"
 	}
 
+	// Linear-history cell: ✓ when the boolean is true (or "~" for the
+	// truncated variant), ✗ when false, "-" when unknown. The header
+	// carries the same content on both sides of the conditional to keep
+	// header/row alignment under TestViewTable_HeaderAndRowsAlign — see
+	// the parallel `embHeader` note above.
+	linHeader := " LIN"
 	if hasCompare {
-		header := fmt.Sprintf("%-4s %3s  %-26s  %s%s %6s %7s %7s  %-10s  %s",
+		header := fmt.Sprintf("%-4s %3s  %-26s  %s%s %6s %7s %7s%s %-10s  %s",
 			"HEAT", sortInd("heat"), "REPOSITORY",
 			padLeftCells(ctx.Glyph(theme.Star)+sortInd("stars"), 5),
 			embHeader,
 			"AHEAD"+sortInd("ahead"), "BEHIND",
 			"BRANCH"+sortInd("branches"),
+			linHeader,
 			"PUSHED"+sortInd("pushed"), "STATUS")
 		b.WriteString(ui.TableHeader(ctx, " "+header, 0))
 	} else {
-		header := fmt.Sprintf("%-4s %3s  %-30s %s %s%s %7s  %-12s",
+		header := fmt.Sprintf("%-4s %3s  %-30s %s %s%s %7s%s %-12s",
 			"HEAT", sortInd("heat"), "REPOSITORY",
 			padLeftCells(ctx.Glyph(theme.Star)+sortInd("stars"), 5),
 			padLeftCells(ctx.Glyph(theme.Fork)+sortInd("forks"), 5),
 			embHeader,
 			"BRANCH"+sortInd("branches"),
+			linHeader,
 			"PUSHED"+sortInd("pushed"))
 		b.WriteString(ui.TableHeader(ctx, " "+header, 0))
 	}
+
+
 	b.WriteString("\n")
 
 	// A filter matching nothing is not the same as having no forks: the
@@ -202,29 +212,47 @@ func (m Model) viewTable() string {
 			emb = " " + m.embedCellFor(sf) + " "
 		}
 
-		var row string
-		if hasCompare {
-			if len(name) > 26 {
-				name = name[:23] + "..."
-			}
-			ahead := "  -"
-			behind := "  -"
-			if sf.T2 != nil {
-				ahead = fmt.Sprintf("%5d", sf.T2.AheadCount)
-				behind = fmt.Sprintf("%6d", sf.T2.BehindCount)
-			} else if sf.Enriching {
-				ahead = "   ~"
-				behind = "    ~"
-			}
-			row = fmt.Sprintf("%s%s%s%s%s  %-26s  %5d%s %6s %7s %7s  %-10s  %s",
-				gutter, prefix, scorePrefix, heatBar, scoreStyled, name, sf.Fork.Stars, emb, ahead, behind, branches, pushed, badges)
+	// Linear-history cell mirrors the header's " LIN" four-cell run. The
+	// glyph comes from the theme table (theme.Check / theme.Cross) so the
+	// ASCII profile degrades cleanly to "+" / "x" rather than baking a
+	// literal unicode value into the render. "~" tags a truncated history;
+	// "?" is the render when the boolean has not been computed yet.
+	linGlyph := "-"
+	if sf.Fork.LinearHistory != nil {
+		if *sf.Fork.LinearHistory {
+			linGlyph = ctx.Glyph(theme.Check)
 		} else {
-			if len(name) > 30 {
-				name = name[:27] + "..."
-			}
-			row = fmt.Sprintf("%s%s%s%s%s  %-30s %5d %5d%s %7s  %-12s",
-				gutter, prefix, scorePrefix, heatBar, scoreStyled, name, sf.Fork.Stars, sf.Fork.SubForkCount, emb, branches, pushed)
+			linGlyph = ctx.Glyph(theme.Cross)
 		}
+	}
+	if sf.Fork.MergeCommitTruncated {
+		linGlyph += "~"
+	}
+	lin := " " + padLeftCells(linGlyph, 2) + " "
+
+	var row string
+	if hasCompare {
+		if len(name) > 26 {
+			name = name[:23] + "..."
+		}
+		ahead := "  -"
+		behind := "  -"
+		if sf.T2 != nil {
+			ahead = fmt.Sprintf("%5d", sf.T2.AheadCount)
+			behind = fmt.Sprintf("%6d", sf.T2.BehindCount)
+		} else if sf.Enriching {
+			ahead = "   ~"
+			behind = "    ~"
+		}
+		row = fmt.Sprintf("%s%s%s%s%s  %-26s  %5d%s %6s %7s %7s%s %-10s  %s",
+			gutter, prefix, scorePrefix, heatBar, scoreStyled, name, sf.Fork.Stars, emb, ahead, behind, branches, lin, pushed, badges)
+	} else {
+		if len(name) > 30 {
+			name = name[:27] + "..."
+		}
+		row = fmt.Sprintf("%s%s%s%s%s  %-30s %5d %5d%s %7s%s %-12s",
+			gutter, prefix, scorePrefix, heatBar, scoreStyled, name, sf.Fork.Stars, sf.Fork.SubForkCount, emb, branches, lin, pushed)
+	}
 
 		row = ui.TableRow(ctx, row, isSelected, 0)
 
@@ -425,6 +453,16 @@ func (m Model) renderStatusBar() string {
 		tail = append(tail, statusSegment{text: text, priority: priority})
 	}
 
+	// Refreshing: the user pressed `r` and the existing fork slice stays
+	// visible during the network round-trip (startFetch gates the wipe on
+	// !m.refresh). Without this segment the user sees the same fork count
+	// and cannot tell whether a refresh is in flight or the network is
+	// hung. Priority 0 puts it ahead of the fork-count segment so the
+// way around.
+	if m.loading && m.refresh {
+		appendTail(0, "Refreshing...")
+	}
+
 	if m.parent != nil {
 		variable = append(variable, m.parent.FullName)
 		if m.filter != "" {
@@ -519,16 +557,16 @@ func (m Model) renderStatusBar() string {
 	// Rendering still preserves their normal left-to-right order below.
 	selected := make([]bool, len(tail))
 	for priority := 6; priority >= 1; priority-- {
-		for i, segment := range tail {
-			if segment.priority != priority {
-				continue
-			}
-			selected[i] = true
-			if lipgloss.Width(render(prefix, selected)) > contentLimit {
-				selected[i] = false
-			}
+	for i, segment := range tail {
+		if segment.priority != priority {
+			continue
+		}
+		selected[i] = true
+		if lipgloss.Width(render(prefix, selected)) > contentLimit {
+			selected[i] = false
 		}
 	}
+}
 
 	if len(variable) > 0 {
 		selectedContent := render(prefix, selected)
@@ -546,7 +584,7 @@ func (m Model) renderStatusBar() string {
 }
 
 func (m *Model) cycleSortColumn() {
-	cols := []string{"heat", "stars", "ahead", "branches", "forks", "pushed"}
+	cols := []string{"heat", "stars", "ahead", "branches", "forks", "pushed", "linear"}
 	for i, c := range cols {
 		if c == m.sortCol {
 			m.sortCol = cols[(i+1)%len(cols)]
@@ -574,15 +612,29 @@ func (m *Model) sortForks() {
 // inferred from sorted output.
 func (m *Model) forkLess() func(i, j int) bool {
 	return func(i, j int) bool {
-		// less and equal are computed separately so ties can be reported as
-		// "neither less nor greater". Deriving the descending case as !less
-		// alone would return true for both (i,j) and (j,i) on a tie, which is
-		// not a strict weak ordering: sort is then free to reorder equal
-		// elements, defeating SliceStable and making the row order that
-		// gatherDuplicateGroups anchors to non-deterministic.
-		var less, equal bool
-		switch m.sortCol {
-		case "heat":
+	var less, equal bool
+	switch m.sortCol {
+	case "linear":
+		// nil sorts below known: the user pressed `s` to see linear forks
+		// first, and a row that hasn't been measured yet shouldn't jump
+		// ahead of one that was.
+		ki, kj := -1, -1
+		if b := m.forks[i].Fork.LinearHistory; b != nil {
+			if *b {
+				ki = 2
+			} else {
+				ki = 1
+			}
+		}
+		if b := m.forks[j].Fork.LinearHistory; b != nil {
+			if *b {
+				kj = 2
+			} else {
+				kj = 1
+			}
+		}
+		less, equal = ki < kj, ki == kj
+	case "heat":
 			a, b := m.forks[i].Heat.Score, m.forks[j].Heat.Score
 			less, equal = a < b, a == b
 		case "stars":
