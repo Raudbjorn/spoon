@@ -17,6 +17,10 @@ import (
 // make a small shortlist anyway).
 const rankPoolCap = 200
 
+// RankPoolCap is rankPoolCap for callers outside the package (offline
+// evaluation scores every ordering key over the same top-RankPoolCap rows).
+const RankPoolCap = rankPoolCap
+
 // normalCDF is Φ(x), the standard normal CDF.
 func normalCDF(x float64) float64 {
 	return 0.5 * math.Erfc(-x/math.Sqrt2)
@@ -172,7 +176,52 @@ type RankStats struct {
 	PTopK        float64 // P(rank ≤ k): probability the fork belongs in a top-k shortlist
 	PFirst       float64 // P(rank = 1)
 	Lo, Hi       int     // 95% central rank interval, 1-based
+	// TieBand marks a fork indistinguishable from an adjacent fork in the
+	// emitted ordering (|Δμ| < tieBandFactor·√(σ_i²+σ_j²)); report such runs
+	// as a band, not an order.
+	TieBand bool
+	// PothResidual is POTH − POTH(pool without this fork): positive when the
+	// fork sharpens the hierarchy, negative when it blurs it. Set only under
+	// Options.RankDiagnostics (it costs one extra O(n²) pass per fork).
+	PothResidual *float64
 }
+
+// RankReport is the pool-level summary of a shortlist run, filled by Stream
+// into Options.RankReport after the channel closes. POTH and CPOTHk are NaN
+// when the respective set is smaller than pothMinPool. The JSON form is the
+// "details" payload of the rank_report info envelope.
+type RankReport struct {
+	PoolSize      int     `json:"poolSize"`      // forks ranked (≤ rankPoolCap)
+	NonzeroPool   int     `json:"nonzeroPool"`   // ranked forks with heat > 0
+	ShortlistN    int     `json:"shortlistN"`    // requested shortlist size
+	ShortlistRule string  `json:"shortlistRule"` // expected | membership
+	POTH          float64 `json:"poth"`          // hierarchy precision over the pool, [0,1]
+	CPOTHk        float64 `json:"cpothK"`        // POTH recomputed within the shortlist
+	// Empirical-Bayes fields; zero/empty unless Options.EB.
+	EBRegime   string  `json:"ebRegime,omitempty"`   // insufficient | pooled | heterogeneous | clamped
+	EBPool     int     `json:"ebPool,omitempty"`     // forks entering the fit (heat > 0)
+	TauHat     float64 `json:"tauHat,omitempty"`     // between-fork sd estimate
+	EBMean     float64 `json:"ebMean,omitempty"`     // pooled mean m
+	PriorScale float64 `json:"priorScale,omitempty"` // half-normal scale on τ actually used
+	DBarOverK  float64 `json:"dBarOverK,omitempty"`  // posterior-mean deviance per fork, ≈ 1 when the model fits
+	PD         float64 `json:"pD,omitempty"`         // effective parameters = Σ leverage
+}
+
+// EBStats is the per-fork empirical-Bayes summary (Result.EB), set only for
+// forks with heat > 0 when Options.EB is on and the fit applied.
+type EBStats struct {
+	Theta     float64 // shrunken score, replaces heat as mu in the ranking
+	PostSigma float64 // posterior sd, replaces the tier sigma
+	Residual  float64 // standardised residual (y − θ̂)/σ at the fit
+	Leverage  float64 // B = τ²/(τ²+σ²); Σ = pD
+	// Flag marks residual² + leverage > ebFlagContour: a fork the model does
+	// not explain (TSD2 leverage-plot rule, contour c = 3).
+	Flag bool
+}
+
+// ebFlagContour is the TSD2 leverage-plot contour outside which a point is
+// flagged as poorly fit / over-influential.
+const ebFlagContour = 3.0
 
 // rankIntervalLevel is the credible level of RankStats.Lo/Hi.
 const rankIntervalLevel = 0.95
@@ -180,14 +229,18 @@ const rankIntervalLevel = 0.95
 // computeRankStats computes RankStats for every item in the pool, with the
 // shortlist size k used for PTopK (clamped to [1, n]).
 func computeRankStats(mu, sigma []float64, k int) []RankStats {
-	n := len(mu)
+	return computeRankStatsFrom(winProbs(mu, sigma), k)
+}
+
+// computeRankStatsFrom is computeRankStats over a precomputed win matrix.
+func computeRankStatsFrom(p [][]float64, k int) []RankStats {
+	n := len(p)
 	if k < 1 {
 		k = 1
 	}
 	if k > n {
 		k = n
 	}
-	p := winProbs(mu, sigma)
 	er := expectedRanksFrom(p)
 	out := make([]RankStats, n)
 	for i := 0; i < n; i++ {
@@ -260,4 +313,103 @@ func selectShortlist(rs []RankStats, rule string, k int) []int {
 	}
 	sort.SliceStable(idx, func(x, y int) bool { return byExpected(idx[x], idx[y]) })
 	return idx
+}
+
+// pothMinPool is the smallest pool for which POTH is reported; below it the
+// normalisation is degenerate (n = 2 reduces to 4(p − ½)²).
+const pothMinPool = 3
+
+// subsetPoth is the precision of treatment hierarchy (Wigle et al. 2025)
+// over the members idx of the pool described by win matrix p, with P-scores
+// recomputed within the subset: P̄_i = mean_{j∈T, j≠i} p[i][j] and
+// POTH_T = 12(m−1)/(m+1) · (1/m) Σ_{i∈T} (P̄_i − ½)², which lies in [0, 1]
+// (0 = every pair a coin flip, 1 = a certain total order). NaN when the
+// subset has fewer than pothMinPool members, or when idx references a row
+// outside p's bounds (defensive: p and idx are internal to this package but
+// helper functions like this are reused from multiple entry points).
+func subsetPoth(p [][]float64, idx []int) float64 {
+	m := len(idx)
+	if m < pothMinPool {
+		return math.NaN()
+	}
+	n := len(p)
+	for _, i := range idx {
+		if i < 0 || i >= n || len(p[i]) < n {
+			return math.NaN()
+		}
+	}
+	s2 := 0.0
+	for _, i := range idx {
+		sum := 0.0
+		for _, j := range idx {
+			if i != j {
+				sum += p[i][j]
+			}
+		}
+		pbar := sum / float64(m-1)
+		s2 += (pbar - 0.5) * (pbar - 0.5)
+	}
+	s2 /= float64(m)
+	return 12 * float64(m-1) / float64(m+1) * s2
+}
+
+// poth is subsetPoth over the whole pool.
+func poth(p [][]float64) float64 {
+	idx := make([]int, len(p))
+	for i := range idx {
+		idx[i] = i
+	}
+	return subsetPoth(p, idx)
+}
+
+// pothResiduals returns, for each fork j, POTH − POTH_{pool without j}:
+// positive when j stands apart and sharpens the hierarchy, negative when j
+// blurs it (wide uncertainty, close neighbours). NaN entries when the pool
+// is too small for POTH before or after removal.
+func pothResiduals(p [][]float64) []float64 {
+	n := len(p)
+	whole := poth(p)
+	out := make([]float64, n)
+	rest := make([]int, 0, n-1)
+	for j := 0; j < n; j++ {
+		rest = rest[:0]
+		for i := 0; i < n; i++ {
+			if i != j {
+				rest = append(rest, i)
+			}
+		}
+		out[j] = whole - subsetPoth(p, rest)
+	}
+	return out
+}
+
+// tieBandFactor is c in |μ_i − μ_j| < c·√(σ_i²+σ_j²): neighbours closer
+// than that have P(i beats j) within ≈ 0.5 ± 0.15 (Φ(0.4) ≈ 0.66) and are
+// reported as a band rather than ordered (Pearce & Erosheva 2025 pattern:
+// say "indistinguishable" instead of inventing an order).
+const tieBandFactor = 0.4
+
+// tieBands reports, for each position in order (indices into mu/sigma),
+// whether the fork is indistinguishable from at least one adjacent fork in
+// the ordering under the band rule. Both members of a close pair are marked.
+// Indices in order that fall outside mu/sigma's bounds are skipped rather
+// than indexed, matching subsetPoth's defensive posture for the same reason:
+// this helper is reused from more than one entry point.
+func tieBands(mu, sigma []float64, order []int, c float64) []bool {
+	out := make([]bool, len(order))
+	n := len(mu)
+	if len(sigma) < n {
+		n = len(sigma)
+	}
+	for k := 1; k < len(order); k++ {
+		i, j := order[k-1], order[k]
+		if i < 0 || i >= n || j < 0 || j >= n {
+			continue
+		}
+		if math.Abs(mu[i]-mu[j]) < c*math.Hypot(sigma[i], sigma[j]) {
+			out[k-1] = true
+			out[k] = true
+		}
+	}
+	return out
 }

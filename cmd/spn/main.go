@@ -149,7 +149,15 @@ Nouns and verbs:
             the fetch + policy gates run, but no GraphQL resolveReviewThread
             (or unresolveReviewThread) is issued. Output is marked dryRun=true.
   pr status <pr-ref>
-  forks list <repo|topic:NAME> [--tier 1|2|3] [--top N] [--budget N] [--shortlist N] [--shortlist-rule expected|membership] [--bot-allowlist L] [--refresh|--no-cache] [--csv] [--forge github|gitlab] [--forge-host H]
+  forks eval <repo> --judgments FILE [--from-export FILE --rank-variant heat|erank|pscore|membership|eb
+                    [--shortlist N] [--prior-scale F]] [--no-cluster] [--cluster-top N]
+        Scores the fork pipeline against hand-labelled judgments. With
+        --from-export the run is offline: forks are read from a spoon export
+        JSON, ordered by the chosen rank variant over the same top-200 pool
+        every variant sees, and the report adds rankVariant, rankReport and
+        the ordered list with each fork's key. This is the gate for changing
+        --shortlist-rule / --eb defaults.
+  forks list <repo|topic:NAME> [--tier 1|2|3] [--top N] [--budget N] [--shortlist N] [--shortlist-rule expected|membership] [--rank-diagnostics] [--eb [--prior-scale F]] [--bot-allowlist L] [--refresh|--no-cache] [--csv] [--forge github|gitlab] [--forge-host H]
                     [--rpm N] [--files] [--commits] [--commit-files]
                     [--commit-file-budget N] [--web-diff]
                     [--no-cluster] [--cluster-top N] [--cluster-epsilon F] [--cluster-min-size N]
@@ -166,6 +174,19 @@ Nouns and verbs:
         --shortlist-rule membership picks the N forks with the highest pTopK
         (P(rank <= N)) instead of the lowest expected rank, then orders them
         by expected rank; it only differs near the cut. Default: expected.
+        Every --shortlist run also writes a rank_report info envelope to stderr
+        (poolSize, nonzeroPool, poth = precision of the whole hierarchy in
+        [0,1], cpothK = the same within the shortlist). --rank-diagnostics adds
+        pothResidual per fork (negative = this fork blurs the hierarchy).
+        --eb ranks on empirical-Bayes shrunken scores instead of raw heat:
+        between-fork spread tau_hat is estimated (DerSimonian-Laird) over the
+        ranked forks with heat > 0, each score is pulled toward the pooled
+        mean in proportion to its tier noise, and the posterior sigma replaces
+        the tier sigma. Records gain ebTheta, ebSigma, ebResidual, ebLeverage,
+        ebFlag; rank_report gains ebRegime, tauHat, ebMean, dBarOverK, pD.
+        Skipped (ranking unchanged, regime reported) when fewer than 3 forks
+        have heat > 0 or tau_hat = 0. --prior-scale F caps tau_hat at 2F
+        (half-normal prior); default F = 1.4826 x MAD of the scores.
         Flags go AFTER 'forks list <repo>'. The fastembed embedder powers
         persistence + semantic indexing (and 'spn search') by default; it
         needs onnxruntime (set ONNX_PATH to libonnxruntime.so, run 'spoon

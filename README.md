@@ -178,7 +178,7 @@ spn forks list <repo> [--tier N] [--top N] [--budget N] [--shortlist N]
     [--cluster-top N] [--no-cluster] [--no-embed] [--csv] [...]
 spn forks list topic:zig [--topic-repos 5] [...]
 spn search "oauth rate limiting" [--repo owner/repo] [--top N] [--voyage]
-spn forks eval <repo> --judgments FILE
+spn forks eval <repo> --judgments FILE [--from-export EXPORT --rank-variant V]
 spn repo centrality <owner/repo>
 ```
 
@@ -266,6 +266,17 @@ listed before unmatched ones (heat order within each lane). Priors never hide a
 fork or touch heat; a denied owner scores 0 but is still emitted, carrying its
 `owner_deny` reason.
 
+### Shortlist rank in the TUI
+
+The `spoon` table carries the same model: the `P` column is each fork's
+P-score as a percentage (`99` = beats almost every other fork, `50` = coin
+flip), with a `~` prefix when the row is statistically tied with its
+neighbour; `s` cycles to sort by it. The status bar shows `POTH` (precision
+of the whole ordering) and `top10` (precision within the top ten); the detail
+view lists expected rank, P-score, P(top 10) and the 95% rank interval; exports
+carry a `rank` block per fork and a `rank_report`. Numbers are relative to the
+strongest 200 forks and use the tier sigma (no `--eb` in the TUI).
+
 ### Shortlist rank summary
 
 `--shortlist N` ranks the strongest 200 forks under a Gaussian utility model
@@ -275,10 +286,55 @@ expected rank. Beside `expectedRank` and `rankConfidence`, each record carries
 `pFirst` (P(rank = 1)) and `rankLo`/`rankHi` (95% rank interval), computed
 exactly from the pairwise win probabilities (Poisson-binomial). Treat `pTopK`
 as the honest "does this fork belong here" number; wide-sigma tier-1 forks can
-rank high with low `pTopK`.
+rank high with low `pTopK`. `tieBand` marks forks indistinguishable from a
+neighbour in the emitted order. Full model and field reference:
+[`docs/ranking.md`](docs/ranking.md).
 `--shortlist-rule membership` selects by `pTopK` instead of expected rank (the
 0/1-loss-optimal shortlist rule), then orders the selection by expected rank;
 the default `expected` rule keeps the historical ordering.
+Each shortlist run also emits a `rank_report` info envelope on stderr with the
+pool size, how many ranked forks had heat > 0, and two precision-of-hierarchy
+numbers (Wigle et al. 2025): `poth` over the pool and `cpothK` within the
+shortlist — both in [0,1], 0 = every pair a coin flip. `--rank-diagnostics`
+adds `pothResidual` per record (negative = this fork blurs the ordering; a
+cheap trigger for a deeper fetch). `--csv` gains `expected_rank, p_score,
+p_top_k, p_first, rank_lo, rank_hi` columns (empty without `--shortlist`).
+
+### Empirical-Bayes shrinkage (`--eb`)
+
+The tier sigma (7 / 3 / 1 heat points for tiers 1 / 2 / 3) is a constant, so
+within a tier the rank machinery reduces to sorting by heat and the win
+probabilities are not calibrated to any observed spread. `--eb` fits the
+normal–normal hierarchical model over the ranked forks with heat > 0:
+`τ̂²` by DerSimonian–Laird, then `θ̂ᵢ = m + Bᵢ(yᵢ − m)` with
+`Bᵢ = τ̂²/(τ̂² + σᵢ²)` and posterior sd `1/√(σᵢ⁻² + τ̂⁻²)`. Ranking then uses
+`θ̂`/posterior sd. Noisy tier-1 scores move toward the pool mean; confirmed
+tier-3 scores barely move. Each record gains `ebTheta`, `ebSigma`,
+`ebResidual` (standardised), `ebLeverage` (= B) and `ebFlag`
+(residual² + leverage > 3, the TSD2 leverage-plot rule: a fork the model
+does not explain). The `rank_report` gains `ebRegime` (`heterogeneous`,
+`clamped`, `pooled` = τ̂ 0 so ranking left unchanged, `insufficient` = fewer
+than 3 forks with heat > 0), `tauHat`, `ebMean`, `dBarOverK` (≈ 1 when the
+model fits) and `pD`. `--prior-scale F` caps τ̂ at 2F (a half-normal prior on
+τ with ≈5% mass above the cap); the default F is 1.4826 × MAD of the scores
+and is printed in the report. Zero-heat forks are never shrunk. Off by
+default until offline evaluation confirms it does not regress nDCG.
+
+To compare ranking variants without network access, evaluate an export:
+
+```bash
+spn forks eval stablyai/orca --from-export spoon-export.json \
+  --judgments judgments.json --rank-variant eb --shortlist 10
+```
+
+`--rank-variant` is one of `heat` (raw score), `erank` (expected rank, the
+`--shortlist` default), `pscore`, `membership` (`--shortlist-rule membership`),
+`eb` (`--eb`). Every variant is scored over the same top-200-by-heat rows, so
+nDCG/AUC are comparable; the report carries `rankReport` and the ordered
+`ranked` list with each fork's key. A seed judgment file for `stablyai/orca`
+lives in `internal/eval/testdata/judgments_stablyai-orca_seed.json`; on it all
+five variants tie (nDCG 0.967, AUC 0.85) because its labels were themselves
+derived from a heat-ranked review — it proves non-regression, not gain.
 
 Path matching is deliberately simple: a wildcard-free entry matches by exact
 file or **directory prefix** (`internal/auth` covers everything beneath it),

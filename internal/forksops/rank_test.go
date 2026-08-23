@@ -3,7 +3,11 @@ package forksops
 import (
 	"math"
 	"math/rand"
+	"strconv"
 	"testing"
+
+	"github.com/svnbjrn/spoon/internal/forge"
+	"github.com/svnbjrn/spoon/internal/heat"
 )
 
 func TestNormalCDF(t *testing.T) {
@@ -275,5 +279,165 @@ func TestSelectShortlist_KLargerThanPoolReturnsAllOrdered(t *testing.T) {
 		if len(got) != 2 || got[0] != 1 || got[1] != 0 {
 			t.Errorf("%s: got %v want [1 0]", rule, got)
 		}
+	}
+}
+
+// --- PR3: POTH (precision of treatment hierarchy) ---
+
+func TestPoth_ZeroForCoinFlipsOneForTotalOrder(t *testing.T) {
+	// All pairwise 0.5 ⇒ every P-score is 0.5 ⇒ POTH 0.
+	flat := winProbs([]float64{5, 5, 5, 5}, []float64{1, 1, 1, 1})
+	if got := poth(flat); math.Abs(got) > 1e-12 {
+		t.Errorf("flat POTH=%v want 0", got)
+	}
+	// Well separated with tiny sigma ⇒ total order ⇒ POTH → 1.
+	sharp := winProbs([]float64{40, 30, 20, 10}, []float64{1e-6, 1e-6, 1e-6, 1e-6})
+	if got := poth(sharp); got < 0.999 || got > 1+1e-9 {
+		t.Errorf("total-order POTH=%v want ≈1", got)
+	}
+}
+
+func TestPoth_BoundedOnRandomPools(t *testing.T) {
+	rng := rand.New(rand.NewSource(6))
+	for trial := 0; trial < 50; trial++ {
+		mu, sigma := randPool(rng, 3+rng.Intn(40))
+		got := poth(winProbs(mu, sigma))
+		if got < -1e-12 || got > 1+1e-12 {
+			t.Fatalf("POTH %v out of [0,1]", got)
+		}
+	}
+}
+
+func TestPoth_TooSmallPoolIsNaN(t *testing.T) {
+	if got := poth(winProbs([]float64{1, 2}, []float64{1, 1})); !math.IsNaN(got) {
+		t.Errorf("n=2 POTH=%v want NaN (gated n>=3)", got)
+	}
+}
+
+func TestSubsetPoth_RecomputesWithinSubset(t *testing.T) {
+	// Fork 0 far ahead; 1..3 a tight cluster. Whole-pool POTH is high, but
+	// the cluster alone is near coin-flip.
+	p := winProbs([]float64{60, 20, 20.5, 19.5}, []float64{1, 1, 1, 1})
+	whole := poth(p)
+	cluster := subsetPoth(p, []int{1, 2, 3})
+	if !(cluster < whole) {
+		t.Errorf("cluster POTH %v should be below whole-pool POTH %v", cluster, whole)
+	}
+	if got := subsetPoth(p, []int{1}); !math.IsNaN(got) {
+		t.Errorf("single-member subset should be NaN, got %v", got)
+	}
+	// Subset equal to the whole pool reproduces poth.
+	if got := subsetPoth(p, []int{0, 1, 2, 3}); math.Abs(got-whole) > 1e-12 {
+		t.Errorf("full subset %v != whole %v", got, whole)
+	}
+}
+
+func TestPothResiduals_OutlierSharpensClusterBlurs(t *testing.T) {
+	p := winProbs([]float64{60, 20, 20.5, 19.5}, []float64{1, 1, 1, 1})
+	res := pothResiduals(p)
+	if len(res) != 4 {
+		t.Fatalf("len=%d want 4", len(res))
+	}
+	// Removing the lone leader leaves only the blurry cluster: POTH drops,
+	// so the leader's residual is positive (it sharpens the hierarchy).
+	if res[0] <= 0 {
+		t.Errorf("leader residual %v should be > 0", res[0])
+	}
+	// Removing a cluster member leaves the leader plus a smaller cluster —
+	// the hierarchy gets sharper, so cluster members have negative residuals.
+	for i := 1; i < 4; i++ {
+		if res[i] >= 0 {
+			t.Errorf("cluster member %d residual %v should be < 0", i, res[i])
+		}
+	}
+}
+
+// --- PR5: offline ranking entry point ---
+
+func syntheticPool(scores []float64, tiers []int) []Result {
+	out := make([]Result, len(scores))
+	for i := range scores {
+		conf := map[int]float64{1: 0.3, 2: 0.7, 3: 0.9}[tiers[i]]
+		out[i] = Result{Fork: forge.T1Data{ID: "o/f" + strconv.Itoa(i)}, Heat: heat.HeatResult{Score: scores[i], Tier: tiers[i], Confidence: conf}}
+	}
+	return out
+}
+
+func TestRankResults_MatchesStreamSemantics(t *testing.T) {
+	pool := syntheticPool([]float64{50, 40, 0, 30, 20, 10}, []int{3, 1, 2, 3, 1, 3})
+	got, report := RankResults(pool, Options{ShortlistN: 3})
+	if len(got) != 3 {
+		t.Fatalf("shortlist len=%d want 3", len(got))
+	}
+	if report.PoolSize != 6 || report.NonzeroPool != 5 || report.ShortlistRule != ShortlistRuleExpected {
+		t.Errorf("report %+v", report)
+	}
+	for i := 1; i < len(got); i++ {
+		if got[i-1].ExpectedRank > got[i].ExpectedRank {
+			t.Errorf("not ordered by expected rank: %v", got)
+		}
+	}
+	if got[0].Fork.ID != "o/f0" || got[0].Rank == nil {
+		t.Errorf("best fork should be o/f0 with Rank set, got %+v", got[0])
+	}
+}
+
+func TestRankResults_RespectsPoolCapAndEB(t *testing.T) {
+	n := rankPoolCap + 50
+	scores := make([]float64, n)
+	tiers := make([]int, n)
+	for i := range scores {
+		scores[i] = float64(n - i)
+		tiers[i] = 1 + i%3
+	}
+	got, report := RankResults(syntheticPool(scores, tiers), Options{ShortlistN: n, EB: true, PriorScale: 100})
+	if len(got) != rankPoolCap || report.PoolSize != rankPoolCap {
+		t.Errorf("pool cap: len=%d poolSize=%d want %d", len(got), report.PoolSize, rankPoolCap)
+	}
+	if report.EBRegime == "" || report.EBRegime == EBRegimeInsufficient {
+		t.Errorf("EB should have run: %+v", report)
+	}
+	for _, r := range got {
+		if r.EB == nil {
+			t.Fatalf("fork %s missing EB stats", r.Fork.ID)
+		}
+	}
+}
+
+// --- PR6: tie bands ---
+
+func TestTieBands_MarksIndistinguishableNeighbours(t *testing.T) {
+	// Ordered shortlist: 0 and 1 are a clear pair apart; 1, 2, 3 sit within
+	// 0.4·√(σi²+σj²) of their neighbour; 4 is clearly apart again.
+	mu := []float64{50, 30, 29.8, 29.5, 10}
+	sigma := []float64{1, 1, 1, 1, 1}
+	order := []int{0, 1, 2, 3, 4}
+	bands := tieBands(mu, sigma, order, tieBandFactor)
+	want := []bool{false, true, true, true, false}
+	for i := range want {
+		if bands[i] != want[i] {
+			t.Errorf("tieBands=%v want %v", bands, want)
+			break
+		}
+	}
+}
+
+func TestTieBands_WideSigmaWidensBand(t *testing.T) {
+	// Same gaps as a clear separation at σ=1 become a band at σ=7.
+	mu := []float64{40, 38}
+	if b := tieBands(mu, []float64{1, 1}, []int{0, 1}, tieBandFactor); b[0] || b[1] {
+		t.Errorf("gap 2 at σ=1 should not band: %v", b)
+	}
+	if b := tieBands(mu, []float64{7, 7}, []int{0, 1}, tieBandFactor); !b[0] || !b[1] {
+		t.Errorf("gap 2 at σ=7 should band: %v", b)
+	}
+}
+
+func TestTieBands_SingletonAndEmpty(t *testing.T) {
+	if b := tieBands([]float64{5}, []float64{1}, []int{0}, tieBandFactor); len(b) != 1 || b[0] {
+		t.Errorf("singleton: %v", b)
+	}
+	if b := tieBands(nil, nil, nil, tieBandFactor); len(b) != 0 {
+		t.Errorf("empty: %v", b)
 	}
 }

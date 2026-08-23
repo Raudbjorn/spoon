@@ -32,7 +32,7 @@ Streaming NDJSON: one fork per line, ordered by heat-score descending after sort
 spn forks list owner/repo --csv > forks.csv
 ```
 
-Collects all enriched forks and emits a single CSV blob on stdout with a fixed header (18 columns covering identity, T1, T2, T3, and cluster fields). Per-fork enrichment errors still go to stderr as compact JSON. Use this when downstream tooling expects tabular data; use the default NDJSON when streaming or jq pipelines fit better.
+Collects all enriched forks and emits a single CSV blob on stdout with a fixed header (24 columns covering identity, T1, T2, T3, cluster, and shortlist rank fields — the six rank columns are empty without `--shortlist`). Per-fork enrichment errors still go to stderr as compact JSON. Use this when downstream tooling expects tabular data; use the default NDJSON when streaming or jq pipelines fit better.
 
 ## Output Contract (shared with the PR-review skill)
 
@@ -72,10 +72,15 @@ Detection works on REST API paths. GitHub's GraphQL endpoint (used by the forks-
 | `pTopK` | P(rank ≤ N): probability the fork genuinely belongs in the shortlist |
 | `pFirst` | P(rank = 1) |
 | `rankLo` / `rankHi` | 95% central rank interval (1-based) |
+| `tieBand` | true when the fork is statistically indistinguishable from an adjacent fork in the emitted order — report the run as one cluster |
 
 Read `pTopK` before trusting position: a tier-1 (unenriched) fork has wide sigma, so it can sit at rank 3 with `pTopK` 0.4. All probabilities are relative to the 200-fork pool, not the whole network.
 
 `--shortlist-rule membership` selects the N forks by `pTopK` instead of expected rank (then orders by expected rank). Use it when the shortlist is a decision set ("which N do I open?"); keep the default `expected` when you want the full-ordering view.
+
+Every shortlist run writes one `{"info":{"code":"rank_report",...}}` line to stderr: `poolSize`, `nonzeroPool`, `shortlistRule`, `poth` (precision of the whole hierarchy, 0 = coin flips, 1 = certain order) and `cpothK` (the same within the shortlist; `null` when the set is smaller than 3). High `poth` with low `cpothK` means "the shortlist beats the rest, but its internal order is noise". `--rank-diagnostics` adds `pothResidual` per record; the most negative residual is the fork whose wide uncertainty most blurs the ordering — fetch it deeper first.
+
+`--eb` (needs `--shortlist`) replaces raw heat / tier sigma with empirical-Bayes shrunken scores and posterior sigmas fitted over the forks with heat > 0. Check `ebRegime` in the `rank_report` first: `pooled` or `insufficient` means nothing was shrunk. Per record: `ebTheta`, `ebSigma`, `ebResidual`, `ebLeverage`, `ebFlag` (true = the scoring model does not explain this fork; look at it). `--prior-scale F` caps `tauHat` at 2F. Experimental — compare against the default ordering before trusting it.
 
 ## Common Mistakes
 

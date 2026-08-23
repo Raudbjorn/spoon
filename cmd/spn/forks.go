@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -146,7 +147,7 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 	var acquisitionReport forge.AcquisitionReport
 	opts := forksops.Options{
 		Report: &acquisitionReport,
-		Now: deps.now,
+		Now:    deps.now,
 		// Default: clustering enabled — the built-in embedder is always
 		// available, so this never blocks on external services.
 		Cluster: forksops.ClusterOptions{
@@ -182,6 +183,7 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 	noSiblingSimFlagSet := false
 	siblingSimModeSet := false
 	shortlistRuleSet := false
+	priorScaleSet := false
 	topicLanesSet := false
 	topicLaneBudgetSet := false
 	for i := 0; i < len(args); i++ {
@@ -271,6 +273,21 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 				return agentio.NewError(agentio.CodeBadInput, "--shortlist-rule must be expected or membership", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
 			}
 			shortlistRuleSet = true
+		case "--rank-diagnostics":
+			opts.RankDiagnostics = true
+		case "--eb":
+			opts.EB = true
+		case "--prior-scale":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--prior-scale requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			f, err := strconv.ParseFloat(args[i], 64)
+			if err != nil || !(f > 0) || math.IsInf(f, 0) {
+				return agentio.NewError(agentio.CodeBadInput, "--prior-scale must be a positive number", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			opts.PriorScale = f
+			priorScaleSet = true
 		case "--bot-allowlist":
 			if i+1 >= len(args) {
 				return agentio.NewError(agentio.CodeBadInput, "--bot-allowlist requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
@@ -521,6 +538,19 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 	}
 	if shortlistRuleSet && opts.ShortlistN == 0 {
 		return agentio.NewError(agentio.CodeBadInput, "--shortlist-rule requires --shortlist", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+	}
+	if opts.RankDiagnostics && opts.ShortlistN == 0 {
+		return agentio.NewError(agentio.CodeBadInput, "--rank-diagnostics requires --shortlist", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+	}
+	if opts.EB && opts.ShortlistN == 0 {
+		return agentio.NewError(agentio.CodeBadInput, "--eb requires --shortlist", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+	}
+	if priorScaleSet && !opts.EB {
+		return agentio.NewError(agentio.CodeBadInput, "--prior-scale requires --eb", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+	}
+	var rankReport forksops.RankReport
+	if opts.ShortlistN > 0 {
+		opts.RankReport = &rankReport
 	}
 	if siblingSimModeSet {
 		if noSiblingSimFlagSet {
@@ -808,6 +838,7 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 		code := emitForksCSV(ctx, db, auth, owner, name, semanticModelID, stdout, stderr, ch)
 		if code == 0 {
 			emitAcquisitionReport(stderr, opts.Report)
+			emitRankReport(stderr, opts.RankReport)
 			// CSV scans persist documents too; index them like the NDJSON path.
 			emitSemanticIndexWarning(ctx, db, searchEmbedders, stderr)
 		}
@@ -857,6 +888,7 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 		}})
 	}
 	emitAcquisitionReport(stderr, opts.Report)
+	emitRankReport(stderr, opts.RankReport)
 	emitSemanticIndexWarning(ctx, db, searchEmbedders, stderr)
 	return 0
 }
@@ -896,15 +928,15 @@ func persistForkSnapshot(ctx context.Context, db *store.Store, auth forge.AuthIn
 	}
 	snapshot := store.Snapshot{
 		Repo: store.RepoRecord{
-			Provider:           auth.Provider.String(),
-			Host:               host,
-			Owner:              owner,
-			Name:               name,
-			FirstSeen:          firstSeen,
-			LastSeen:           now,
-			APIVersion:         auth.APIVersion,
-			AcquisitionMethod:   auth.AuthMode,
-			AuthScopeID:        auth.AuthScopeID,
+			Provider:          auth.Provider.String(),
+			Host:              host,
+			Owner:             owner,
+			Name:              name,
+			FirstSeen:         firstSeen,
+			LastSeen:          now,
+			APIVersion:        auth.APIVersion,
+			AcquisitionMethod: auth.AuthMode,
+			AuthScopeID:       auth.AuthScopeID,
 		},
 		Fork: store.ForkRecord{
 			ForgeID: r.Fork.ID, Owner: r.Fork.Owner, Name: r.Fork.Name, URL: r.Fork.URL,
@@ -913,7 +945,7 @@ func persistForkSnapshot(ctx context.Context, db *store.Store, auth forge.AuthIn
 			Tier: r.Heat.Tier, UpdatedAt: now,
 			// Linear-history scalars lifted from r.Fork so the CLI upsert
 			// writes the same columns the TUI sweep produces.
-			MergeCommits:        r.Fork.MergeCommits,
+			MergeCommits:         r.Fork.MergeCommits,
 			MergeCommitTruncated: r.Fork.MergeCommitTruncated,
 		},
 		// Full-fidelity halves: T1 makes the fork reusable as a listing entry
@@ -1249,9 +1281,9 @@ func forkToJSONDetailed(r forksops.Result, details detailOptions) map[string]any
 	// REST path leaves both at zero and produces no entry.
 	if r.Coverage.DirectTotalCount > 0 || r.Coverage.WholeNetworkForkCount > 0 {
 		out["coverage"] = map[string]any{
-			"directTotalCount":       r.Coverage.DirectTotalCount,
+			"directTotalCount":      r.Coverage.DirectTotalCount,
 			"wholeNetworkForkCount": r.Coverage.WholeNetworkForkCount,
-			"unresolved":             r.Coverage.Unresolved,
+			"unresolved":            r.Coverage.Unresolved,
 		}
 	}
 	// priorScore/priorReasons are emitted only when --priors ran (a match
@@ -1345,6 +1377,17 @@ func forkToJSONDetailed(r forksops.Result, details detailOptions) map[string]any
 		out["pFirst"] = r.Rank.PFirst
 		out["rankLo"] = r.Rank.Lo
 		out["rankHi"] = r.Rank.Hi
+		out["tieBand"] = r.Rank.TieBand
+		if r.Rank.PothResidual != nil {
+			out["pothResidual"] = nanToNil(*r.Rank.PothResidual)
+		}
+	}
+	if r.EB != nil {
+		out["ebTheta"] = r.EB.Theta
+		out["ebSigma"] = r.EB.PostSigma
+		out["ebResidual"] = r.EB.Residual
+		out["ebLeverage"] = r.EB.Leverage
+		out["ebFlag"] = r.EB.Flag
 	}
 	// Components is populated by the v2 scoring path (forksops uses
 	// Scorer.ScoreRaw). Emit when present so downstream agents can inspect
@@ -1450,6 +1493,7 @@ func emitForksCSV(ctx context.Context, db *store.Store, auth forge.AuthInfo, own
 		"t2_ahead", "t2_behind", "t2_mna",
 		"t3_contributors", "t3_commit_span_days",
 		"cluster_name", "cluster_score",
+		"expected_rank", "p_score", "p_top_k", "p_first", "rank_lo", "rank_hi",
 	}
 	if err := w.writeRecord(header); err != nil {
 		return agentio.NewError(agentio.CodeInternal, "write csv header: "+err.Error(), agentio.RemediationInternal()).Emit(stderr)
@@ -1507,6 +1551,15 @@ func forkToCSVRow(r forksops.Result) []string {
 		clusterName = r.Heat.ClusterLabel
 		clusterScore = strconv.FormatFloat(r.Heat.NoveltyScore, 'f', 3, 64)
 	}
+	expectedRank, pScore, pTopK, pFirst, rankLo, rankHi := "", "", "", "", "", ""
+	if r.Rank != nil {
+		expectedRank = strconv.FormatFloat(r.Rank.ExpectedRank, 'f', 3, 64)
+		pScore = strconv.FormatFloat(r.Rank.PScore, 'f', 4, 64)
+		pTopK = strconv.FormatFloat(r.Rank.PTopK, 'f', 4, 64)
+		pFirst = strconv.FormatFloat(r.Rank.PFirst, 'f', 4, 64)
+		rankLo = strconv.Itoa(r.Rank.Lo)
+		rankHi = strconv.Itoa(r.Rank.Hi)
+	}
 	return []string{
 		r.Fork.ID,
 		r.Fork.Owner,
@@ -1526,6 +1579,12 @@ func forkToCSVRow(r forksops.Result) []string {
 		t3Span,
 		clusterName,
 		clusterScore,
+		expectedRank,
+		pScore,
+		pTopK,
+		pFirst,
+		rankLo,
+		rankHi,
 	}
 }
 
@@ -1555,6 +1614,66 @@ func emitStageSkipWarning(stderr io.Writer, skip *forksops.StageSkip) {
 // emitAcquisitionReport writes one terminal metadata envelope after a Stream
 // channel has closed. It never writes to stdout and silently ignores providers
 // that omit the optional terminal report.
+// emitRankReport writes the shortlist pool summary to stderr as a
+// rank_report info envelope. Nil report (no --shortlist) emits nothing. NaN
+// POTH values (pool or shortlist below the POTH minimum) are emitted as null.
+func emitRankReport(stderr io.Writer, report *forksops.RankReport) {
+	if report == nil || report.PoolSize == 0 {
+		return
+	}
+	details := map[string]any{
+		"poolSize":      report.PoolSize,
+		"nonzeroPool":   report.NonzeroPool,
+		"shortlistN":    report.ShortlistN,
+		"shortlistRule": report.ShortlistRule,
+		"poth":          nanToNil(report.POTH),
+		"cpothK":        nanToNil(report.CPOTHk),
+	}
+	summary := fmt.Sprintf("ranked %d forks (%d with heat > 0); shortlist %d by %s; POTH %s, cPOTH_k %s",
+		report.PoolSize, report.NonzeroPool, report.ShortlistN, report.ShortlistRule,
+		fmtProb(report.POTH), fmtProb(report.CPOTHk))
+	if report.EBRegime != "" {
+		details["ebRegime"] = report.EBRegime
+		details["ebPool"] = report.EBPool
+		details["tauHat"] = report.TauHat
+		details["ebMean"] = report.EBMean
+		details["priorScale"] = report.PriorScale
+		details["dBarOverK"] = report.DBarOverK
+		details["pD"] = report.PD
+		switch report.EBRegime {
+		case forksops.EBRegimeInsufficient:
+			summary += fmt.Sprintf("; EB skipped: only %d forks with heat > 0 (need %d)", report.EBPool, 3)
+		case forksops.EBRegimePooled:
+			summary += "; EB skipped: no heterogeneity beyond measurement noise (tau_hat = 0) — ranking unchanged"
+		case forksops.EBRegimeClamped:
+			summary += fmt.Sprintf("; EB applied with tau_hat clamped to %.2f (prior scale %.2f), D_bar/k %.2f", report.TauHat, report.PriorScale, report.DBarOverK)
+		default:
+			summary += fmt.Sprintf("; EB applied: tau_hat %.2f, mean %.2f, D_bar/k %.2f", report.TauHat, report.EBMean, report.DBarOverK)
+		}
+	}
+	_ = agentio.WriteNDJSON(stderr, map[string]any{"info": map[string]any{
+		"code":    "rank_report",
+		"message": summary,
+		"details": details,
+	}})
+}
+
+// nanToNil maps NaN to nil so JSON encoding never fails on an undefined
+// statistic.
+func nanToNil(v float64) any {
+	if math.IsNaN(v) {
+		return nil
+	}
+	return v
+}
+
+func fmtProb(v float64) string {
+	if math.IsNaN(v) {
+		return "n/a"
+	}
+	return strconv.FormatFloat(v, 'f', 3, 64)
+}
+
 func emitAcquisitionReport(stderr io.Writer, report *forge.AcquisitionReport) {
 	if report == nil || report.Method == "" {
 		return
@@ -1697,6 +1816,7 @@ func streamAndEmit(ctx context.Context, db *store.Store, auth forge.AuthInfo, pr
 		})
 	}
 	emitAcquisitionReport(stderr, opts.Report)
+	emitRankReport(stderr, opts.RankReport)
 	return 0
 }
 

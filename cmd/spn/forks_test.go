@@ -567,7 +567,12 @@ func TestSpnForksList_csv_emitsHeaderAndRows(t *testing.T) {
 	if len(lines) != 3 {
 		t.Fatalf("expected 1 header + 2 data rows, got %d:\n%s", len(lines), stdout.String())
 	}
-	wantHeader := "id,owner,name,url,stars,pushed_at,is_archived,sub_forks,releases,heat,tier,t2_ahead,t2_behind,t2_mna,t3_contributors,t3_commit_span_days,cluster_name,cluster_score"
+	// The six trailing rank columns were appended (not inserted) so existing
+	// column positions stay stable; they are empty without --shortlist.
+	wantHeader := "id,owner,name,url,stars,pushed_at,is_archived,sub_forks,releases,heat,tier,t2_ahead,t2_behind,t2_mna,t3_contributors,t3_commit_span_days,cluster_name,cluster_score,expected_rank,p_score,p_top_k,p_first,rank_lo,rank_hi"
+	if !strings.HasSuffix(lines[1], ",,,,,,") {
+		t.Errorf("rank columns should be empty without --shortlist: %s", lines[1])
+	}
 	if lines[0] != wantHeader {
 		t.Errorf("header mismatch:\n got: %s\nwant: %s", lines[0], wantHeader)
 	}

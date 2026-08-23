@@ -82,15 +82,27 @@ type ScoredFork struct {
 	SiblingCount     int
 	SiblingPrimary   bool
 	SiblingCandidate string
+
+	// Rank is the shortlist rank summary from the last recomputeShortlist
+	// (P-score, P(rank ≤ k), interval, tie band); nil until ranked or when
+	// the row fell outside the rank pool. See shortlist.go.
+	Rank *forksops.RankStats
 }
 
 // Model is the top-level Bubble Tea model.
 type Model struct {
 	// State
-	view     viewState
-	width    int
-	height   int
-	quitting bool
+	view viewState
+	// shortlist is the pool-level rank report (POTH, cPOTH_k) from the last
+	// recomputeShortlist; nil before the first scoring pass.
+	shortlist *forksops.RankReport
+	// shortlistHash is the signature (fork IDs + heat scores) recomputeShortlist
+	// last ranked. A resort that doesn't change any heat score matches this
+	// hash and skips the O(n³) rank pass instead of repeating it.
+	shortlistHash string
+	width         int
+	height        int
+	quitting      bool
 
 	// fullscreen hides table/detail chrome without changing selection,
 	// scroll offsets, or paging geometry.
@@ -485,7 +497,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case linearHistoryMsg:
 		return m.handleLinearHistory(msg)
-
 
 	case enrichmentDoneMsg:
 		m.enriching = false
@@ -1117,6 +1128,10 @@ func (m *Model) toggleGroupByCluster() {
 // reapplySort routes through either sortForks (flat) or
 // sortForksByCluster (grouped) depending on the current toggle.
 func (m *Model) reapplySort() {
+	// Every heat change (initial score, per-compare rescore, ceiling rescore,
+	// cluster novelty) ends in a reapplySort, so ranking here keeps the P
+	// column and the precision segment in step with the heat the rows show.
+	m.recomputeShortlist()
 	if m.groupByCluster {
 		m.sortForksByCluster()
 	} else {
@@ -1247,7 +1262,7 @@ func (m *Model) startFetch() tea.Cmd {
 		var snap *store.RepoSnapshot
 		if !refresh && db != nil {
 			snap, _ = db.LoadRepoSnapshotExact(context.Background(), storeProvider, storeHost, owner, name,
-			m.auth.APIVersion, m.auth.AuthMode, m.auth.AuthScopeID)
+				m.auth.APIVersion, m.auth.AuthMode, m.auth.AuthScopeID)
 		}
 		if snap != nil && snap.Parent != nil && len(snap.Forks) > 0 && time.Since(snap.ForksSyncedAt) < forkListTTL {
 			// This path returns without calling provider.Parent, which is
@@ -1307,16 +1322,16 @@ func (m *Model) storeRepoRecord(withParent bool, syncedAt time.Time) (store.Repo
 	providerName, host := m.storeIdentity()
 	now := time.Now().UTC()
 	rec := store.RepoRecord{
-		Provider:           providerName,
-		Host:               host,
-		Owner:              parts[0],
-		Name:               parts[1],
-		FirstSeen:          now,
-		LastSeen:           now,
-		ForksSyncedAt:      syncedAt,
-		APIVersion:         m.auth.APIVersion,
-		AcquisitionMethod:   m.auth.AuthMode,
-		AuthScopeID:        m.auth.AuthScopeID,
+		Provider:          providerName,
+		Host:              host,
+		Owner:             parts[0],
+		Name:              parts[1],
+		FirstSeen:         now,
+		LastSeen:          now,
+		ForksSyncedAt:     syncedAt,
+		APIVersion:        m.auth.APIVersion,
+		AcquisitionMethod: m.auth.AuthMode,
+		AuthScopeID:       m.auth.AuthScopeID,
 	}
 	if withParent {
 		p := *m.parent

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -62,6 +63,27 @@ type Options struct {
 	// (default, top-N by expected rank) or ShortlistRuleMembership (top-N by
 	// P(rank ≤ N), then ordered by expected rank). Empty means expected.
 	ShortlistRule string
+	// RankReport, when non-nil, receives the pool-level rank summary (pool
+	// size, POTH, cPOTH_k) after the channel closes. Only filled when
+	// ShortlistN > 0.
+	RankReport *RankReport
+	// RankDiagnostics additionally computes each ranked fork's POTH residual
+	// (RankStats.PothResidual). Requires ShortlistN > 0.
+	RankDiagnostics bool
+	// EB, when true, fits the empirical-Bayes normal–normal model over the
+	// ranked forks with heat > 0 and ranks on the shrunken score and
+	// posterior sigma instead of raw heat and the tier sigma. Requires
+	// ShortlistN > 0. Zero-heat forks are excluded from the fit and left
+	// unshrunk; pools below ebMinPool or with τ̂² = 0 leave ranking unchanged
+	// and report the regime.
+	EB bool
+	// PriorScale is the half-normal scale on τ for EB (caps τ̂ at 2×scale);
+	// 0 selects the robust MAD-based default.
+	PriorScale float64
+	// RankKeepAll returns the whole ranked pool (ordered by the shortlist
+	// rule) instead of cutting it to ShortlistN; ShortlistN still sets k for
+	// P(rank ≤ k) and cPOTH_k. Used by offline evaluation.
+	RankKeepAll bool
 
 	// Query, when non-empty, scores every enriched fork's change digest
 	// (commit messages + touched paths) against this free-text intent and
@@ -246,6 +268,9 @@ type Result struct {
 	// Rank carries the full rank summary (P-score, P(rank ≤ k), P(rank = 1),
 	// 95% rank interval) for the same pool; nil when ShortlistN == 0.
 	Rank *RankStats
+	// EB carries the empirical-Bayes shrinkage summary; nil unless
+	// Options.EB applied to this fork (heat > 0, fit succeeded).
+	EB *EBStats
 
 	// QueryScore is the fork's relevance to Options.Query in [0,1];
 	// QueryMethod records how it was computed ("voyage" cross-encoder or
@@ -800,36 +825,12 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 
 		if opts.ShortlistN > 0 {
 			// Robbins expected-rank shortlist: compute over the final heat (after
-			// clustering, so novelty is included). Bound the O(n^2) rank pass to
-			// the strongest rankPoolCap candidates by heat — a fork outside that
-			// pool would not make a small shortlist anyway — so it stays cheap on
-			// huge fork networks.
-			sort.SliceStable(collected, func(i, j int) bool {
-				return collected[i].Heat.Score > collected[j].Heat.Score
-			})
-			pool := len(collected)
-			if pool > rankPoolCap {
-				pool = rankPoolCap
+			// clustering, so novelty is included).
+			var report RankReport
+			collected, report = RankResults(collected, opts)
+			if opts.RankReport != nil {
+				*opts.RankReport = report
 			}
-			mu := make([]float64, pool)
-			sigma := make([]float64, pool)
-			for i := 0; i < pool; i++ {
-				mu[i] = collected[i].Heat.Score
-				sigma[i] = rankSigma(collected[i].Heat.Confidence)
-			}
-			stats := computeRankStats(mu, sigma, opts.ShortlistN)
-			collected = collected[:pool]
-			for i := range collected {
-				collected[i].Rank = &stats[i]
-				collected[i].ExpectedRank = stats[i].ExpectedRank
-				collected[i].RankConfidence = collected[i].Heat.Confidence
-			}
-			chosen := selectShortlist(stats, opts.ShortlistRule, opts.ShortlistN)
-			shortlist := make([]Result, 0, len(chosen))
-			for _, i := range chosen {
-				shortlist = append(shortlist, collected[i])
-			}
-			collected = shortlist
 		} else if opts.Query != "" {
 			// Query mode: most relevant first; heat breaks ties.
 			sort.SliceStable(collected, func(i, j int) bool {
@@ -1235,4 +1236,158 @@ func scorePriors(opts Options, collected []Result) {
 		r.PriorScore = m.Score
 		r.PriorReasons = m.Reasons
 	}
+}
+
+// applyEB fits the normal–normal model over the forks in pool with heat > 0,
+// overwrites mu/sigma in place with the shrunken score and posterior sigma
+// for those forks, attaches Result.EB, and returns the EB part of the
+// RankReport. Zero-heat forks (no-ahead / upstreamed zeroing) are neither
+// fitted nor shrunk: they carry no evidence about heterogeneity and would
+// drag the pooled mean to 0.
+func applyEB(pool []Result, mu, sigma []float64, priorScale float64) RankReport {
+	if len(mu) < len(pool) || len(sigma) < len(pool) {
+		return RankReport{EBRegime: EBRegimeInsufficient}
+	}
+	idx := make([]int, 0, len(pool))
+	for i := range pool {
+		if mu[i] > 0 {
+			idx = append(idx, i)
+		}
+	}
+	y := make([]float64, len(idx))
+	s := make([]float64, len(idx))
+	for k, i := range idx {
+		y[k] = mu[i]
+		s[k] = sigma[i]
+	}
+	scale := priorScale
+	if scale <= 0 {
+		scale = madScale(y)
+	}
+	fit, ok := fitNormalNormal(y, s, scale)
+	report := RankReport{EBRegime: fit.Regime, EBPool: len(idx), TauHat: math.Sqrt(fit.Tau2), EBMean: fit.M, PriorScale: scale}
+	if !ok {
+		return report
+	}
+	report.DBarOverK = fit.DBarOverK
+	report.PD = fit.PD
+	for k, i := range idx {
+		st := EBStats{
+			Theta:     fit.Theta[k],
+			PostSigma: fit.PostSigma[k],
+			Residual:  fit.Residual[k],
+			Leverage:  fit.B[k],
+		}
+		st.Flag = st.Residual*st.Residual+st.Leverage > ebFlagContour
+		pool[i].EB = &st
+		mu[i] = st.Theta
+		sigma[i] = st.PostSigma
+	}
+	return report
+}
+
+// RankResults ranks pool under the Gaussian utility model and returns the
+// shortlist (ordered by expected rank) plus the pool-level report. It is
+// the whole of the --shortlist path, exposed so offline evaluation can
+// rank synthetic Results (heat score + confidence) without a Stream.
+//
+// The O(n²)–O(n³) rank pass is bounded to the strongest rankPoolCap forks
+// by heat — a fork outside that pool would not make a small shortlist
+// anyway. Options fields read: ShortlistN, ShortlistRule, RankDiagnostics,
+// EB, PriorScale. Entries of pool within the cap are mutated (Rank, EB,
+// ExpectedRank, RankConfidence set) and the returned slice aliases them.
+func RankResults(pool []Result, opts Options) ([]Result, RankReport) {
+	sort.SliceStable(pool, func(i, j int) bool {
+		return pool[i].Heat.Score > pool[j].Heat.Score
+	})
+	n := len(pool)
+	if n > rankPoolCap {
+		n = rankPoolCap
+	}
+	pool = pool[:n]
+	mu := make([]float64, n)
+	sigma := make([]float64, n)
+	for i := range pool {
+		mu[i] = pool[i].Heat.Score
+		sigma[i] = rankSigma(pool[i].Heat.Confidence)
+	}
+	var ebReport RankReport
+	if opts.EB {
+		ebReport = applyEB(pool, mu, sigma, opts.PriorScale)
+	}
+	p := winProbs(mu, sigma)
+	stats := computeRankStatsFrom(p, opts.ShortlistN)
+	var residuals []float64
+	if opts.RankDiagnostics {
+		residuals = pothResiduals(p)
+	}
+	for i := range pool {
+		rs := stats[i]
+		if residuals != nil {
+			r := residuals[i]
+			rs.PothResidual = &r
+		}
+		pool[i].Rank = &rs
+		pool[i].ExpectedRank = rs.ExpectedRank
+		pool[i].RankConfidence = pool[i].Heat.Confidence
+	}
+	rule := opts.ShortlistRule
+	if rule == "" {
+		rule = ShortlistRuleExpected
+	}
+	// picked is always the top ShortlistN under rule, in rule order — it
+	// both drives CPOTHk (which must reflect the actual shortlist, never
+	// the kept-all remainder) and, under RankKeepAll, seeds the front of
+	// the returned slice so the rule's selection is still visible instead
+	// of being flattened by a final by-expected-rank sort over everything.
+	picked := selectShortlist(stats, rule, opts.ShortlistN)
+	chosen := picked
+	if opts.RankKeepAll {
+		pickedSet := make(map[int]bool, len(picked))
+		for _, i := range picked {
+			pickedSet[i] = true
+		}
+		rest := make([]int, 0, n-len(picked))
+		for i := 0; i < n; i++ {
+			if !pickedSet[i] {
+				rest = append(rest, i)
+			}
+		}
+		sort.SliceStable(rest, func(x, y int) bool {
+			a, b := rest[x], rest[y]
+			if stats[a].ExpectedRank != stats[b].ExpectedRank {
+				return stats[a].ExpectedRank < stats[b].ExpectedRank
+			}
+			return a < b
+		})
+		chosen = append(append([]int(nil), picked...), rest...)
+	}
+	nonzero := 0
+	for _, m := range mu {
+		if m > 0 {
+			nonzero++
+		}
+	}
+	report := RankReport{
+		PoolSize:      n,
+		NonzeroPool:   nonzero,
+		ShortlistN:    opts.ShortlistN,
+		ShortlistRule: rule,
+		POTH:          poth(p),
+		CPOTHk:        subsetPoth(p, picked),
+		EBRegime:      ebReport.EBRegime,
+		EBPool:        ebReport.EBPool,
+		TauHat:        ebReport.TauHat,
+		EBMean:        ebReport.EBMean,
+		PriorScale:    ebReport.PriorScale,
+		DBarOverK:     ebReport.DBarOverK,
+		PD:            ebReport.PD,
+	}
+	bands := tieBands(mu, sigma, chosen, tieBandFactor)
+	shortlist := make([]Result, 0, len(chosen))
+	for k, i := range chosen {
+		pool[i].Rank.TieBand = bands[k]
+		shortlist = append(shortlist, pool[i])
+	}
+	return shortlist, report
 }
