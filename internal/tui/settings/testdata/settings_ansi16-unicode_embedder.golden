@@ -6,7 +6,7 @@
 ├──────────────────────────────────────────────────────────────────────────────┤
 │ [1;37m> [7mB[0mackend: fastembed [DEFAULT][0m                                               │
 │ [2;90mfastembed or empty.[0m                                                          │
-│ [37m  Model: fast-bge-small-en-v1.5 [DEFAULT][0m                                    │
+│ [37m  Model: fast-bge-small-en-v1.5 · download [DEFAULT] [↓][0m                     │
 │ [37m  Cache directory: /home/svnbjrn/.cache/spoon/models/fastembed [DEFAULT][0m     │
 │ [37m  Maximum length: 512 [DEFAULT][0m                                              │
 │ [37m  Batch size: 32 [DEFAULT][0m                                                   │

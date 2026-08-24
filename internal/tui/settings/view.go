@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/svnbjrn/spoon/internal/embed"
+	"github.com/svnbjrn/spoon/internal/tui/theme"
 	"github.com/svnbjrn/spoon/internal/tui/ui"
 )
 
@@ -50,6 +52,16 @@ func render(m Model) string {
 		spinners := []string{"-", "\\", "|", "/"}
 		b.WriteString(ui.Alert(m.Theme, ui.AlertInfo, "Working "+spinners[m.spinner%len(spinners)]+": "+string(m.busyAction), width))
 	}
+	if m.selecting {
+		sep := " " + m.Theme.Glyph(theme.Separator) + " "
+		for i, opt := range m.selectOptions {
+			b.WriteByte('\n')
+			b.WriteString(ui.Radio(m.Theme, ui.ToggleState{
+				Label: opt.Name + sep + opt.Status + sep + opt.Description,
+				On:    i == m.selectIndex, Focused: i == m.selectIndex, Enabled: true,
+			}, width))
+		}
+	}
 	if m.editing {
 		b.WriteByte('\n')
 		value := m.input
@@ -90,9 +102,26 @@ func (m Model) sectionParts(width int) []ui.BoxPart {
 			if field.IsCredential() && value != "" {
 				value = credentialMask()
 			}
-			out = append(out, ui.BoxPart{Text: ui.Input(m.Theme, ui.InputState{Value: field.Label + ": " + value + " [" + string(row.Source) + "]", Focused: i == m.focus, Enabled: field.Editable && m.canEdit()}, width)})
+			if field.Key == "embedder.model" {
+				status := embed.ProbeFastEmbedProfile(m.fastEmbedCacheDir(), value, nil)
+				label := "download"
+				if status.ModelPresent {
+					label = "ready"
+				}
+				sep := " " + m.Theme.Glyph(theme.Separator) + " "
+				out = append(out, ui.BoxPart{Text: ui.Select(m.Theme, ui.SelectState{
+					Label: field.Label, Value: value + sep + label + " [" + string(row.Source) + "]",
+					Focused: i == m.focus, Enabled: field.Editable && m.canEdit(),
+					Open: m.selecting && i == m.focus,
+				}, width)})
+			} else {
+				out = append(out, ui.BoxPart{Text: ui.Input(m.Theme, ui.InputState{Value: field.Label + ": " + value + " [" + string(row.Source) + "]", Focused: i == m.focus, Enabled: field.Editable && m.canEdit()}, width)})
+			}
 			if i == m.focus {
 				detail := field.Help
+				if field.Key == "embedder.model" {
+					detail = "enter opens the list. ready = already cached; download = will fetch."
+				}
 				if row.Detail != "" {
 					detail += " " + row.Detail
 				}

@@ -261,3 +261,22 @@ func TestSaveOverwritePreservesModeAndContent(t *testing.T) {
 		t.Errorf("leftover temp file after save: %v", err)
 	}
 }
+
+func TestValidateFastEmbedModels(t *testing.T) {
+	for _, name := range []string{
+		"",
+		"fast-bge-small-en-v1.5",
+		"fast-bge-small-en",
+		"fast-bge-base-en-v1.5",
+		"fast-bge-base-en",
+		"fast-bge-small-zh-v1.5",
+		"fast-all-MiniLM-L6-v2",
+	} {
+		if err := (&Config{Embedder: EmbedderConfig{Model: name}}).Validate(); err != nil {
+			t.Errorf("model %q rejected: %v", name, err)
+		}
+	}
+	if err := (&Config{Embedder: EmbedderConfig{Model: "candidate-model"}}).Validate(); err == nil {
+		t.Fatal("candidate-model accepted")
+	}
+}

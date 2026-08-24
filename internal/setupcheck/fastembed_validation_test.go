@@ -12,3 +12,9 @@ func TestValidateFastEmbedRejectsRuntimeUnsupportedValues(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateFastEmbedAcceptsBaseEnglishProfile(t *testing.T) {
+	if err := ValidateFastEmbed(config.EmbedderConfig{Model: "fast-bge-base-en-v1.5"}); err != nil {
+		t.Fatalf("supported model rejected: %v", err)
+	}
+}

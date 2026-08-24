@@ -129,7 +129,7 @@ func TestLoad_legacyOpenVINOBackendNormalizes(t *testing.T) {
 	path := filepath.Join(dir, "config.json")
 	body := `{
 		"version": 1,
-		"embedder": {"backend": "openvino", "model": "keep-me"},
+		"embedder": {"backend": "openvino", "model": "fast-bge-small-en-v1.5"},
 		"reranker": {"modelPath": "/old/reranker"},
 		"labeler": {"modelPath": "/old/labeler"}
 	}`
@@ -143,7 +143,7 @@ func TestLoad_legacyOpenVINOBackendNormalizes(t *testing.T) {
 	if cfg.Embedder.Backend != "" {
 		t.Errorf("backend = %q, want normalized empty (fastembed)", cfg.Embedder.Backend)
 	}
-	if cfg.Embedder.Model != "keep-me" {
+	if cfg.Embedder.Model != "fast-bge-small-en-v1.5" {
 		t.Errorf("non-backend embedder fields must survive normalization, got %q", cfg.Embedder.Model)
 	}
 }

@@ -36,10 +36,26 @@ func TestEveryConsequenceFieldUsesRootModalBeforeMutationThenSaveReload(t *testi
 			m := matrixRootWithSettings(config.LoadedLayer{Config: cfg, Path: path, State: config.LayerLoaded})
 			m = matrixRootKey(t, m, ",")
 			m = matrixRootFocus(t, m, field.Key)
-			m = matrixRootKey(t, m, "e")
-			m = matrixRootKey(t, m, "ctrl+u")
-			m = matrixRootKey(t, m, value)
-			m = matrixRootKey(t, m, "enter")
+			if field.Key == "embedder.model" {
+				m = matrixRootKey(t, m, "e")
+				found := false
+				for range 6 {
+					if strings.Contains(m.View(), "(*) "+value) {
+						found = true
+						break
+					}
+					m = matrixRootKey(t, m, "down")
+				}
+				if !found {
+					t.Fatalf("could not focus model %s in select list: %q", value, m.View())
+				}
+				m = matrixRootKey(t, m, "enter")
+			} else {
+				m = matrixRootKey(t, m, "e")
+				m = matrixRootKey(t, m, "ctrl+u")
+				m = matrixRootKey(t, m, value)
+				m = matrixRootKey(t, m, "enter")
+			}
 			if !strings.Contains(m.View(), "Confirm consequence") || !strings.Contains(m.View(), consequenceModalPrefix(field.Consequence)) {
 				t.Fatalf("%s did not render its actual consequence modal: %q", field.Key, m.View())
 			}
@@ -117,6 +133,13 @@ func matrixConsequenceConfig(t *testing.T, key string) (*config.Config, string) 
 		// Off in the fixture, so the edit under test is the expensive
 		// direction: switching every listed fork onto a billed service.
 		return cfg, "true"
+	case "embedder.model":
+		cache := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(cache, "fast-bge-base-en-v1.5"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		cfg.Embedder.CacheDir = cache
+		return cfg, "fast-bge-base-en-v1.5"
 	default:
 		t.Fatalf("missing consequence fixture for %s", key)
 		return nil, ""

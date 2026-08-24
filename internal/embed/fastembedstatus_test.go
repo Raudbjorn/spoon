@@ -14,7 +14,7 @@ import (
 // compiled into the binary.
 func TestFastEmbedStatusReportsModelAndRuntimeSeparately(t *testing.T) {
 	cacheDir := t.TempDir()
-	modelDir := filepath.Join(cacheDir, fastEmbedModelName)
+	modelDir := filepath.Join(cacheDir, "fast-bge-small-en-v1.5")
 
 	t.Run("model absent is stated as absent", func(t *testing.T) {
 		got := ProbeFastEmbed(cacheDir, map[string]string{})
@@ -40,7 +40,7 @@ func TestFastEmbedStatusReportsModelAndRuntimeSeparately(t *testing.T) {
 		}
 		// The user asked to confirm the model "exists/is set". A bare tick does
 		// not answer that; the name and the path do.
-		if !strings.Contains(got.Summary, fastEmbedModelName) {
+		if !strings.Contains(got.Summary, "fast-bge-small-en-v1.5") {
 			t.Errorf("summary %q does not name the model", got.Summary)
 		}
 	})
@@ -80,4 +80,42 @@ func TestFastEmbedStatusReportsModelAndRuntimeSeparately(t *testing.T) {
 			t.Errorf("summary %q does not tell the user what to set: ", got.Summary)
 		}
 	})
+}
+
+func TestProbeFastEmbedProfileAndListOptions(t *testing.T) {
+	cache := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cache, "fast-bge-base-en-v1.5"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	def := ProbeFastEmbed(cache, map[string]string{})
+	if def.ModelPresent {
+		t.Fatal("default probe reported present with only base-en cached")
+	}
+	got := ProbeFastEmbedProfile(cache, "fast-bge-base-en-v1.5", map[string]string{})
+	if !got.ModelPresent {
+		t.Fatal("profile probe missed cached base-en")
+	}
+	opts := ListFastEmbedOptions(cache)
+	if len(opts) != 6 {
+		t.Fatalf("ListFastEmbedOptions len = %d, want 6", len(opts))
+	}
+	ready := 0
+	for _, o := range opts {
+		switch o.Status {
+		case "ready":
+			ready++
+			if o.Name != "fast-bge-base-en-v1.5" || !o.Present {
+				t.Errorf("ready option = %+v, want only base-en present", o)
+			}
+		case "download":
+			if o.Present {
+				t.Errorf("%s marked download but Present", o.Name)
+			}
+		default:
+			t.Errorf("%s status %q, want ready or download", o.Name, o.Status)
+		}
+	}
+	if ready != 1 {
+		t.Fatalf("ready count = %d, want 1", ready)
+	}
 }

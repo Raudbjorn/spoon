@@ -92,14 +92,14 @@ func TestSafeExtractRejectsTraversal(t *testing.T) {
 func TestSafeExtractAcceptsWellFormedArchive(t *testing.T) {
 	target := t.TempDir()
 	err := safeExtractTarGz(buildTarGz(t, []tarEntry{
-		{name: fastEmbedModelName, typeflag: tar.TypeDir},
-		{name: fastEmbedModelName + "/model.onnx", body: "weights"},
-		{name: fastEmbedModelName + "/tokenizer.json", body: "{}"},
+		{name: "fast-bge-small-en-v1.5", typeflag: tar.TypeDir},
+		{name: "fast-bge-small-en-v1.5" + "/model.onnx", body: "weights"},
+		{name: "fast-bge-small-en-v1.5" + "/tokenizer.json", body: "{}"},
 	}), target)
 	if err != nil {
 		t.Fatalf("well-formed archive rejected: %v", err)
 	}
-	got, err := os.ReadFile(filepath.Join(target, fastEmbedModelName, "model.onnx"))
+	got, err := os.ReadFile(filepath.Join(target, "fast-bge-small-en-v1.5", "model.onnx"))
 	if err != nil || string(got) != "weights" {
 		t.Fatalf("model.onnx = %q, %v", got, err)
 	}
@@ -108,7 +108,7 @@ func TestSafeExtractAcceptsWellFormedArchive(t *testing.T) {
 func TestSafeExtractEnforcesEntryCap(t *testing.T) {
 	entries := make([]tarEntry, fastEmbedMaxEntries+2)
 	for i := range entries {
-		entries[i] = tarEntry{name: fastEmbedModelName + "/f" + string(rune('a'+i%26)) + itoa(i), body: "x"}
+		entries[i] = tarEntry{name: "fast-bge-small-en-v1.5" + "/f" + string(rune('a'+i%26)) + itoa(i), body: "x"}
 	}
 	err := safeExtractTarGz(buildTarGz(t, entries), t.TempDir())
 	if err == nil || !strings.Contains(err.Error(), "entries") {
@@ -149,11 +149,14 @@ func TestContainedPath(t *testing.T) {
 // discardFastEmbedCache must remove only the model directory, never the cache
 // root, so a misconfigured CacheDir cannot become a recursive delete.
 func TestDiscardFastEmbedCacheGuards(t *testing.T) {
-	if err := discardFastEmbedCache(""); err == nil {
+	if err := discardFastEmbedCache("", "fast-bge-small-en-v1.5"); err == nil {
 		t.Fatal("empty cache dir accepted")
 	}
+	if err := discardFastEmbedCache(t.TempDir(), ""); err == nil {
+		t.Fatal("empty model name accepted")
+	}
 	root := t.TempDir()
-	dest := filepath.Join(root, fastEmbedModelName)
+	dest := filepath.Join(root, "fast-bge-small-en-v1.5")
 	if err := os.MkdirAll(dest, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +164,7 @@ func TestDiscardFastEmbedCacheGuards(t *testing.T) {
 	if err := os.WriteFile(sentinel, []byte("keep"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := discardFastEmbedCache(root); err != nil {
+	if err := discardFastEmbedCache(root, "fast-bge-small-en-v1.5"); err != nil {
 		t.Fatalf("discard: %v", err)
 	}
 	if _, err := os.Stat(dest); !os.IsNotExist(err) {
@@ -172,5 +175,23 @@ func TestDiscardFastEmbedCacheGuards(t *testing.T) {
 	}
 	if _, err := os.Stat(root); err != nil {
 		t.Fatalf("discard removed the cache root: %v", err)
+	}
+}
+
+func TestProvisionProfileADoesNotCreateProfileB(t *testing.T) {
+	cache := t.TempDir()
+	a, ok := LookupFastEmbedProfile("fast-bge-small-en-v1.5")
+	if !ok {
+		t.Fatal("default profile missing")
+	}
+	bName := "fast-bge-base-en-v1.5"
+	if err := os.MkdirAll(filepath.Join(cache, a.Name), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := provisionFastEmbedModel(t.Context(), cache, a); err != nil {
+		t.Fatalf("provision A: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cache, bName)); !os.IsNotExist(err) {
+		t.Fatalf("provisioning %s created %s", a.Name, bName)
 	}
 }
