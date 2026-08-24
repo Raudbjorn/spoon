@@ -27,9 +27,6 @@ import (
 // populating that directory ourselves means the vulnerable path never runs. We
 // download and extract with the checks the upstream lacks.
 const (
-	fastEmbedModelName  = "fast-bge-small-en-v1.5"
-	fastEmbedArchiveURL = "https://storage.googleapis.com/qdrant-fastembed/" + fastEmbedModelName + ".tar.gz"
-
 	// Caps bound a hostile or corrupt archive: a decompression bomb cannot
 	// exhaust the disk, and an endless entry stream cannot spin forever.
 	fastEmbedMaxArchiveBytes = 1 << 30 // 1 GiB decompressed
@@ -48,8 +45,16 @@ var fastEmbedArchiveSHA256 = strings.TrimSpace(os.Getenv("SPOON_FASTEMBED_SHA256
 // provisionFastEmbedModel ensures cacheDir/<model> exists, downloading and
 // extracting it safely if absent. It is a no-op when the model is already
 // cached, including when a previous run used the upstream downloader.
-func provisionFastEmbedModel(ctx context.Context, cacheDir string) error {
-	dest := filepath.Join(cacheDir, fastEmbedModelName)
+func ProvisionFastEmbedModel(ctx context.Context, cacheDir, model string) error {
+	profile, ok := LookupFastEmbedProfile(model)
+	if !ok {
+		return fmt.Errorf("fastembed model %q is not supported", model)
+	}
+	return provisionFastEmbedModel(ctx, cacheDir, profile)
+}
+
+func provisionFastEmbedModel(ctx context.Context, cacheDir string, profile FastEmbedProfile) error {
+	dest := filepath.Join(cacheDir, profile.Name)
 	if _, err := os.Stat(dest); err == nil {
 		return nil
 	} else if !errors.Is(err, fs.ErrNotExist) {
@@ -64,7 +69,7 @@ func provisionFastEmbedModel(ctx context.Context, cacheDir string) error {
 	ctx, cancel := context.WithTimeout(ctx, fastEmbedDownloadTimeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fastEmbedArchiveURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, profile.ArchiveURL(), nil)
 	if err != nil {
 		return err
 	}
@@ -113,9 +118,9 @@ func provisionFastEmbedModel(ctx context.Context, cacheDir string) error {
 		return err
 	}
 
-	extracted := filepath.Join(staging, fastEmbedModelName)
+	extracted := filepath.Join(staging, profile.Name)
 	if _, err := os.Stat(extracted); err != nil {
-		return fmt.Errorf("fastembed archive did not contain %s: %w", fastEmbedModelName, err)
+		return fmt.Errorf("fastembed archive did not contain %s: %w", profile.Name, err)
 	}
 	if err := os.Rename(extracted, dest); err != nil {
 		// Another process may have won the race; its copy is equally valid.
@@ -236,11 +241,14 @@ func containedPath(root, name string) (string, error) {
 // provision re-fetches it. Guarded so a misconfigured CacheDir cannot turn
 // into a recursive delete of something unrelated: only the model directory
 // beneath it is removed, never the cache root itself.
-func discardFastEmbedCache(cacheDir string) error {
+func discardFastEmbedCache(cacheDir, modelName string) error {
 	if strings.TrimSpace(cacheDir) == "" {
 		return fmt.Errorf("refusing to discard an empty fastembed cache dir")
 	}
-	dest := filepath.Join(cacheDir, fastEmbedModelName)
+	if strings.TrimSpace(modelName) == "" {
+		return fmt.Errorf("refusing to discard an empty fastembed model name")
+	}
+	dest := filepath.Join(cacheDir, modelName)
 	if filepath.Clean(dest) == filepath.Clean(cacheDir) {
 		return fmt.Errorf("refusing to discard the fastembed cache root %q", cacheDir)
 	}

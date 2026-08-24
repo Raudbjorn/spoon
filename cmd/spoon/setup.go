@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/mattn/go-isatty"
@@ -380,8 +381,9 @@ func setupFastEmbed(cfg *config.Config, cacheDir string, noColor bool, out io.Wr
 		return false
 	}
 	_ = model.Close()
+	profile, _ := embed.LookupFastEmbedProfile(fastCfg.Model)
 	printCheck(out, "FastEmbed", true, []string{
-		"Model ready: fast-bge-small-en-v1.5 (384 dimensions, max length 512).",
+		"Model ready: " + profile.Name + " (" + strconv.Itoa(profile.Dim) + " dimensions, max length " + strconv.Itoa(profile.MaxLength) + ").",
 		"Cache: " + cfg.Embedder.CacheDir,
 	}, noColor)
 	return true

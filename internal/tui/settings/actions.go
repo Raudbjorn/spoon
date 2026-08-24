@@ -20,13 +20,14 @@ import (
 type ActionID string
 
 const (
-	ActionProviderProbe  ActionID = "provider-probe"
-	ActionStoreCheck     ActionID = "store-check"
-	ActionFastEmbedCheck ActionID = "fastembed-check"
-	ActionVoyageStatus   ActionID = "voyage-status"
-	ActionRewriteReadme  ActionID = "rewrite-readme"
-	ActionCopyConfigPath ActionID = "copy-config-path"
-	ActionSave           ActionID = "save"
+	ActionProviderProbe    ActionID = "provider-probe"
+	ActionStoreCheck       ActionID = "store-check"
+	ActionFastEmbedCheck   ActionID = "fastembed-check"
+	ActionVoyageStatus     ActionID = "voyage-status"
+	ActionRewriteReadme    ActionID = "rewrite-readme"
+	ActionCopyConfigPath   ActionID = "copy-config-path"
+	ActionSave             ActionID = "save"
+	ActionFastEmbedInstall ActionID = "fastembed-install"
 )
 
 type Action struct {
@@ -56,8 +57,9 @@ type ActionDeps struct {
 	// VoyageStatus receives a client pinned to this action's fail-closed
 	// transport. Status resolution remains local; a future HTTP addition cannot
 	// accidentally fall back to http.DefaultTransport.
-	VoyageStatus  func(context.Context, config.EffectiveConfig, embed.ResponseCache, map[string]string, *http.Client) (embed.VoyageConfig, bool, error)
-	HTTPTransport http.RoundTripper
+	VoyageStatus       func(context.Context, config.EffectiveConfig, embed.ResponseCache, map[string]string, *http.Client) (embed.VoyageConfig, bool, error)
+	HTTPTransport      http.RoundTripper
+	ProvisionFastEmbed func(context.Context, string, string) error
 }
 
 func (d ActionDeps) normalized() ActionDeps {
@@ -69,6 +71,9 @@ func (d ActionDeps) normalized() ActionDeps {
 	}
 	if d.HTTPTransport == nil {
 		d.HTTPTransport = setupcheck.DenyHTTPTransport{}
+	}
+	if d.ProvisionFastEmbed == nil {
+		d.ProvisionFastEmbed = embed.ProvisionFastEmbedModel
 	}
 	if d.VoyageStatus == nil {
 		d.VoyageStatus = func(ctx context.Context, effective config.EffectiveConfig, cache embed.ResponseCache, environment map[string]string, client *http.Client) (embed.VoyageConfig, bool, error) {
@@ -198,6 +203,25 @@ func runActionWithDeps(id ActionID, m *Model, deps ActionDeps) (string, error) {
 			return "", err
 		}
 		return "saved", nil
+	case ActionFastEmbedInstall:
+		if m.Config == nil {
+			return "", fmt.Errorf("configuration layer is disabled")
+		}
+		model := m.pendingInstall
+		if model == "" {
+			return "", fmt.Errorf("no FastEmbed model to install")
+		}
+		if err := deps.ProvisionFastEmbed(context.Background(), m.fastEmbedCacheDir(), model); err != nil {
+			return "", err
+		}
+		if m.pendingCandidate != nil {
+			*m.Config = *m.pendingCandidate
+			m.refreshEffective()
+		}
+		m.pendingInstall = ""
+		m.pendingCandidate = nil
+		m.pending = Field{}
+		return "Installed " + model + "; press s to save", nil
 	default:
 		return "", fmt.Errorf("unknown settings action %q", id)
 	}

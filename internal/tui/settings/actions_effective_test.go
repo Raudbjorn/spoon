@@ -15,7 +15,7 @@ func TestFastEmbedActionValidatesRuntimeEffectiveConfiguration(t *testing.T) {
 		Environment: map[string]string{"SPOON_FASTEMBED_MODEL": "unsupported"},
 	}
 	_, err := runActionWithDeps(ActionFastEmbedCheck, &model, ActionDeps{})
-	if err == nil || !strings.Contains(err.Error(), "fixed") {
+	if err == nil || !strings.Contains(err.Error(), "supported") {
 		t.Fatalf("startup snapshot override was not checked: %v", err)
 	}
 }

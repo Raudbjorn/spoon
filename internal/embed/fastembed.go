@@ -12,14 +12,11 @@ import (
 )
 
 const (
-	// FastEmbedModelID is the semantic identity of a stored vector: any change
-	// to the model, its length limit, or the prompt scheme must change this
-	// string so cached embeddings are re-computed rather than silently compared
-	// against vectors produced a different way.
-	//
-	// The `prompts=bge` suffix marks the switch away from the library's
-	// PassageEmbed/QueryEmbed helpers, which prepend the E5 convention
-	// ("passage: " / "query: ") that this BGE model was never trained on.
+	// FastEmbedModelID and FastEmbedDimension are the default profile's
+	// identity and dim (see FastEmbedProfiles). They are not the only model.
+	// Any change to a profile's name, length limit, or prompt scheme must
+	// change that profile's Identity() so cached embeddings are re-computed
+	// rather than silently compared against vectors produced a different way.
 	FastEmbedModelID   = "fastembed:fast-bge-small-en-v1.5:maxlen=512:prompts=bge"
 	FastEmbedDimension = 384
 
@@ -48,6 +45,7 @@ type FastEmbedEmbedder struct {
 	mu        sync.Mutex
 	model     *fastembed.FlagEmbedding
 	batchSize int
+	profile   FastEmbedProfile
 	closeOnce sync.Once
 	closeErr  error
 }
@@ -104,11 +102,12 @@ func DefaultFastEmbedCacheDir() (string, error) {
 }
 
 func NewFastEmbedEmbedder(cfg FastEmbedConfig) (*FastEmbedEmbedder, error) {
-	if cfg.Model != "" && cfg.Model != string(fastembed.BGESmallENV15) {
-		return nil, fmt.Errorf("fastembed model is fixed at %q", fastembed.BGESmallENV15)
+	profile, ok := LookupFastEmbedProfile(cfg.Model)
+	if !ok {
+		return nil, fmt.Errorf("fastembed model %q is not supported", cfg.Model)
 	}
-	if cfg.MaxLength != 0 && cfg.MaxLength != 512 {
-		return nil, fmt.Errorf("fastembed max length is fixed at 512")
+	if cfg.MaxLength != 0 && cfg.MaxLength != profile.MaxLength {
+		return nil, fmt.Errorf("fastembed max length for %s is %d", profile.Name, profile.MaxLength)
 	}
 	if cfg.BatchSize <= 0 {
 		cfg.BatchSize = 32
@@ -124,7 +123,7 @@ func NewFastEmbedEmbedder(cfg FastEmbedConfig) (*FastEmbedEmbedder, error) {
 	// extracts without a containment check, so a crafted archive entry could
 	// write outside CacheDir; retrieveModel skips it entirely once the model
 	// directory exists.
-	if err := provisionFastEmbedModel(context.Background(), cfg.CacheDir); err != nil {
+	if err := provisionFastEmbedModel(context.Background(), cfg.CacheDir, profile); err != nil {
 		return nil, err
 	}
 	showProgress := false
@@ -135,7 +134,7 @@ func NewFastEmbedEmbedder(cfg FastEmbedConfig) (*FastEmbedEmbedder, error) {
 	// — which the re-provision path below then treats as a bad cache.
 	newModel := func() (*fastembed.FlagEmbedding, error) {
 		return initFlagEmbedding(&fastembed.InitOptions{
-			Model: fastembed.BGESmallENV15, MaxLength: 512, CacheDir: cfg.CacheDir,
+			Model: profile.Enum, MaxLength: profile.MaxLength, CacheDir: cfg.CacheDir,
 			ShowDownloadProgress: &showProgress,
 		})
 	}
@@ -146,10 +145,10 @@ func NewFastEmbedEmbedder(cfg FastEmbedConfig) (*FastEmbedEmbedder, error) {
 		// model that fails on every later run with no automatic recovery.
 		// Treat a failed session construction as proof the cache is bad,
 		// discard it, and re-provision once.
-		if rmErr := discardFastEmbedCache(cfg.CacheDir); rmErr != nil {
+		if rmErr := discardFastEmbedCache(cfg.CacheDir, profile.Name); rmErr != nil {
 			return nil, fmt.Errorf("initialize fastembed: %w (and discarding the cache failed: %v)", err, rmErr)
 		}
-		if perr := provisionFastEmbedModel(context.Background(), cfg.CacheDir); perr != nil {
+		if perr := provisionFastEmbedModel(context.Background(), cfg.CacheDir, profile); perr != nil {
 			return nil, fmt.Errorf("initialize fastembed: %w (re-provisioning failed: %v)", err, perr)
 		}
 		if model, err = newModel(); err != nil {
@@ -157,7 +156,7 @@ func NewFastEmbedEmbedder(cfg FastEmbedConfig) (*FastEmbedEmbedder, error) {
 		}
 	}
 	acquireORT()
-	return &FastEmbedEmbedder{model: model, batchSize: cfg.BatchSize}, nil
+	return &FastEmbedEmbedder{model: model, batchSize: cfg.BatchSize, profile: profile}, nil
 }
 
 // initFlagEmbedding wraps the library's constructor so a panic becomes an
@@ -184,8 +183,8 @@ func recoverEmbed(op string, err *error) {
 	}
 }
 
-func (e *FastEmbedEmbedder) Dim() int        { return FastEmbedDimension }
-func (e *FastEmbedEmbedder) ModelID() string { return FastEmbedModelID }
+func (e *FastEmbedEmbedder) Dim() int        { return e.profile.Dim }
+func (e *FastEmbedEmbedder) ModelID() string { return e.profile.Identity() }
 
 func (e *FastEmbedEmbedder) Embed(ctx context.Context, texts []string) ([]Vector, error) {
 	return e.EmbedPassages(ctx, texts)
@@ -209,16 +208,22 @@ func (e *FastEmbedEmbedder) EmbedPassages(ctx context.Context, texts []string) (
 		return nil, fmt.Errorf("fastembed is closed")
 	}
 	// Plain Embed, not PassageEmbed: the latter prepends "passage: ", an E5
-	// convention this BGE model was never trained on. BGE passages take no
-	// prefix.
-	raw, err := e.embedChunked(ctx, texts)
+	// convention BGE was never trained on. Apply the profile prefix if any.
+	toEmbed := texts
+	if e.profile.PassagePrefix != "" {
+		toEmbed = make([]string, len(texts))
+		for i, text := range texts {
+			toEmbed[i] = e.profile.PassagePrefix + text
+		}
+	}
+	raw, err := e.embedChunked(ctx, toEmbed)
 	if err != nil {
 		return nil, fmt.Errorf("embed passages: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return validateFastEmbed(raw)
+	return validateFastEmbed(raw, e.profile.Dim)
 }
 
 // embedChunked splits texts so no single library call fans out beyond
@@ -273,7 +278,7 @@ func (e *FastEmbedEmbedder) EmbedQuery(ctx context.Context, text string) (Vector
 	// Plain Embed with BGE's own instruction, not QueryEmbed — which would
 	// prepend E5's "query: ". Passages are embedded bare, so the asymmetry here
 	// is intentional and matches the BGE v1.5 model card.
-	raw, err := e.embedChunked(ctx, []string{bgeQueryInstruction + text})
+	raw, err := e.embedChunked(ctx, []string{e.profile.QueryPrefix + text})
 	if err != nil {
 		return nil, fmt.Errorf("embed query: %w", err)
 	}
@@ -283,18 +288,18 @@ func (e *FastEmbedEmbedder) EmbedQuery(ctx context.Context, text string) (Vector
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	vectors, err := validateFastEmbed(raw)
+	vectors, err := validateFastEmbed(raw, e.profile.Dim)
 	if err != nil {
 		return nil, err
 	}
 	return vectors[0], nil
 }
 
-func validateFastEmbed(raw [][]float32) ([]Vector, error) {
+func validateFastEmbed(raw [][]float32, dim int) ([]Vector, error) {
 	vectors := make([]Vector, len(raw))
 	for i, row := range raw {
-		if len(row) != FastEmbedDimension {
-			return nil, fmt.Errorf("fastembed vector %d has dimension %d, want %d", i, len(row), FastEmbedDimension)
+		if len(row) != dim {
+			return nil, fmt.Errorf("fastembed vector %d has dimension %d, want %d", i, len(row), dim)
 		}
 		for _, value := range row {
 			if math.IsNaN(float64(value)) || math.IsInf(float64(value), 0) {

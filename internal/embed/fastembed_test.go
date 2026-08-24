@@ -124,3 +124,10 @@ func TestFastEmbedChunkSizeIsBounded(t *testing.T) {
 		t.Errorf("chunkSize = %d permits too many concurrent ONNX sessions", got)
 	}
 }
+
+func TestNewFastEmbedEmbedderRejectsUnknownModel(t *testing.T) {
+	_, err := NewFastEmbedEmbedder(FastEmbedConfig{Model: "nomic-embed-text-v1.5"})
+	if err == nil || !strings.Contains(err.Error(), "not supported") {
+		t.Fatalf("unknown model error = %v, want not supported", err)
+	}
+}
