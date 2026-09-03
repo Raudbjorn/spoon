@@ -105,7 +105,15 @@ type budgetState struct {
 }
 
 type backend struct {
-	Rest          *ghAPI.RESTClient
+	Rest *ghAPI.RESTClient
+	// RestDiff is Rest's sibling for FetchCompareDiff: same identity
+	// (AuthToken/Host/Transport), but built with Accept: diffAcceptHeader so
+	// GitHub returns a unified diff instead of JSON. May be nil -- a backend
+	// whose RestDiff failed to build (or was never given one, e.g. a
+	// pre-existing test that only sets Rest) simply can't run the diff
+	// fallback; doGetDiff reports that as an ordinary error rather than
+	// panicking.
+	RestDiff      *ghAPI.RESTClient
 	GraphQL       *ghAPI.GraphQLClient
 	Login         string
 	REST          budgetState
@@ -135,9 +143,10 @@ type Client struct {
 	localBranchScan bool
 
 	rest                *ghAPI.RESTClient
+	restDiff            *ghAPI.RESTClient // aliases backends[0].RestDiff; see installBackends/ensurePool
 	gql                 *ghAPI.GraphQLClient
 	authenticated       bool
-	authScopeID        string // computed once; non-reversible scope fingerprint
+	authScopeID         string // computed once; non-reversible scope fingerprint
 	duplicateIdentities int
 
 	currentUserLogin     string
@@ -246,6 +255,11 @@ func NewClientWithOptions(opts ClientOptions) (*Client, error) {
 		rest, err := newVersionedRESTClient(defaultOpts)
 		if err == nil {
 			b := &backend{Rest: rest, REST: newBudget(), GraphQLBudget: newBudget()}
+			if restDiff, diffErr := newVersionedRESTClient(diffClientOptions(defaultOpts)); diffErr == nil {
+				b.RestDiff = restDiff
+			} else {
+				slog.Debug("github: building diff-accept REST client failed; unbounded compare-diff fallback disabled for this backend", "error", diffErr)
+			}
 			if gql, gqlErr := ghAPI.NewGraphQLClient(defaultOpts); gqlErr == nil {
 				b.GraphQL = gql
 			}
@@ -254,12 +268,19 @@ func NewClientWithOptions(opts ClientOptions) (*Client, error) {
 			c.initRateControls()
 			return c, nil
 		}
-		rest, err = newVersionedRESTClient(ghAPI.ClientOptions{AuthToken: "x", Host: defaultHost, Transport: &unauthTransport{base: rotating}, Timeout: requestTimeout})
+		anonOpts := ghAPI.ClientOptions{AuthToken: "x", Host: defaultHost, Transport: &unauthTransport{base: rotating}, Timeout: requestTimeout}
+		rest, err = newVersionedRESTClient(anonOpts)
 		if err != nil {
 			return nil, fmt.Errorf("creating unauthenticated client: %w", err)
 		}
 		c.authenticated = false
-		c.installBackends([]*backend{{Rest: rest, REST: newBudget(), GraphQLBudget: newBudget()}})
+		b := &backend{Rest: rest, REST: newBudget(), GraphQLBudget: newBudget()}
+		if restDiff, diffErr := newVersionedRESTClient(diffClientOptions(anonOpts)); diffErr == nil {
+			b.RestDiff = restDiff
+		} else {
+			slog.Debug("github: building diff-accept REST client failed; unbounded compare-diff fallback disabled for this backend", "error", diffErr)
+		}
+		c.installBackends([]*backend{b})
 		c.initRateControls()
 		return c, nil
 	}
@@ -284,7 +305,13 @@ func NewClientWithOptions(opts ClientOptions) (*Client, error) {
 		if err != nil {
 			return nil, fmt.Errorf("creating GitHub GraphQL backend: %w", err)
 		}
-		backends = append(backends, &backend{Rest: rest, GraphQL: gql, REST: newBudget(), GraphQLBudget: newBudget()})
+		b := &backend{Rest: rest, GraphQL: gql, REST: newBudget(), GraphQLBudget: newBudget()}
+		if restDiff, diffErr := newVersionedRESTClient(diffClientOptions(clientOpts)); diffErr == nil {
+			b.RestDiff = restDiff
+		} else {
+			slog.Debug("github: building diff-accept REST client failed; unbounded compare-diff fallback disabled for this backend", "error", diffErr)
+		}
+		backends = append(backends, b)
 	}
 	c.installBackends(backends)
 	c.initRateControls()
@@ -300,6 +327,7 @@ func (c *Client) installBackends(backends []*backend) {
 	c.pool = &backendPool{backends: backends}
 	if len(backends) > 0 {
 		c.rest = backends[0].Rest
+		c.restDiff = backends[0].RestDiff
 		c.gql = backends[0].GraphQL
 	}
 }
@@ -313,7 +341,7 @@ func (c *Client) ensurePool() {
 	if c.pool != nil {
 		return
 	}
-	b := &backend{Rest: c.rest, GraphQL: c.gql, REST: newBudget(), GraphQLBudget: newBudget()}
+	b := &backend{Rest: c.rest, RestDiff: c.restDiff, GraphQL: c.gql, REST: newBudget(), GraphQLBudget: newBudget()}
 	c.backends = []*backend{b}
 	c.pool = &backendPool{backends: c.backends}
 	if c.global == nil {
@@ -454,27 +482,44 @@ func (c *Client) waitRequest(ctx context.Context, lim *limiter) error {
 }
 
 func (c *Client) doGet(ctx context.Context, path string) (*http.Response, error) {
+	return c.doGetSelect(ctx, path, func(b *backend) *ghAPI.RESTClient { return b.Rest })
+}
+
+// doGetDiff is doGet's counterpart for FetchCompareDiff: identical backend
+// selection, retry, limiter wait, and rate-limit accounting, but issues the
+// request through b.RestDiff (Accept: diffAcceptHeader) instead of b.Rest.
+// It still draws on the REST budget/limiter — GitHub bills this as one
+// ordinary core API call; only the Accept header differs, not the resource.
+func (c *Client) doGetDiff(ctx context.Context, path string) (*http.Response, error) {
+	return c.doGetSelect(ctx, path, func(b *backend) *ghAPI.RESTClient { return b.RestDiff })
+}
+
+// doGetSelect is doGet's shared implementation, parameterized on which of a
+// backend's REST clients to use. selectClient runs inside doWithRetry's
+// closure for the same reason backend selection does: a retry after a
+// rate-limit sleep must be able to land on a different backend (and that
+// backend's own RestDiff/Rest), not silently reuse the one just disabled.
+func (c *Client) doGetSelect(ctx context.Context, path string, selectClient func(*backend) *ghAPI.RESTClient) (*http.Response, error) {
 	c.ensurePool()
 	var (
 		resp *http.Response
 		b    *backend
 	)
-	// Select the identity inside the closure. doWithRetry calls fn again after
-	// a rate-limit sleep, and that retry has to land on a different identity
-	// than the one it just disabled — otherwise a spent token absorbs the retry
-	// and healthy tokens are never tried, which is the only path multi-token
-	// dispatch exists for.
 	err := c.doWithRetry(ctx, func() error {
 		var berr error
 		if b, berr = c.pool.nextBackend(time.Now()); berr != nil {
 			return berr
+		}
+		rc := selectClient(b)
+		if rc == nil {
+			return fmt.Errorf("github: no REST client configured for this backend/request")
 		}
 		var requestErr error
 		for attempt := range 3 {
 			if err := c.waitRequest(ctx, b.REST.Limiter); err != nil {
 				return err
 			}
-			resp, requestErr = b.Rest.RequestWithContext(ctx, http.MethodGet, path, nil)
+			resp, requestErr = rc.RequestWithContext(ctx, http.MethodGet, path, nil)
 			if requestErr == nil || !isGatewayOrTransportError(requestErr) || attempt == 2 {
 				break
 			}

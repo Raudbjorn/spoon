@@ -1328,7 +1328,7 @@ func forkToJSONDetailed(r forksops.Result, details detailOptions) map[string]any
 			"ahead":           r.T2.AheadCount,
 			"behind":          r.T2.BehindCount,
 			"mna":             r.T2.MNA,
-			"files_truncated": r.T2.FilesTruncated || len(r.T2.Diffs) >= forge.CompareFilesCap,
+			"files_truncated": r.T2.IsFilesTruncated(),
 		}
 		if details.files {
 			t2["files"] = fileDiffsToJSON(r.T2.Diffs)

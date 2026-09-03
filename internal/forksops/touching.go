@@ -110,7 +110,7 @@ func touchOne(m pathmatch.Matcher, c repo.Centrality, r Result) TouchMatch {
 	if r.T2FromCache && len(t2.Diffs) == 0 && t2.TotalAdditions+t2.TotalDeletions > 0 {
 		return TouchMatch{Status: TouchUnknown, Reason: "cache_no_files"}
 	}
-	partial := t2.FilesTruncated || len(t2.Diffs) >= forge.CompareFilesCap
+	partial := t2.IsFilesTruncated()
 	var files []TouchedFile
 	for _, d := range t2.Diffs {
 		pat, ok := m.First(d.Path)

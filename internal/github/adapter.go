@@ -437,6 +437,10 @@ var _ forge.ResolvedCompareProvider = (*GHProvider)(nil)
 func (p *GHProvider) finishT2(ctx context.Context, sourceOwner, sourceRepo string, scan BranchScan, fork forge.T1Data) forge.T2Data {
 	t2 := compareToT2(scan.Compare)
 
+	if t2.FilesTruncated {
+		p.fillTruncatedFiles(ctx, sourceOwner, sourceRepo, scan, fork, &t2)
+	}
+
 	if p.client.webDiff != nil {
 		missing := false
 		for _, diff := range t2.Diffs {
@@ -491,6 +495,71 @@ func (p *GHProvider) finishT2(ctx context.Context, sourceOwner, sourceRepo strin
 	}
 
 	return t2
+}
+
+// fillTruncatedFiles attempts to recover the files a JSON compare lost past
+// forge.CompareFilesCap by re-fetching the same compare as an unbounded
+// unified diff (FetchCompareDiff). It mutates t2 in place and never returns
+// an error: a Performed=true T2Data must stay Performed=true no matter how
+// this fallback goes, so every non-success path just records why in
+// t2.FilesTruncatedReason and leaves t2.Diffs (and the truncated flag) as
+// compareToT2 left them.
+//
+// Called before the web-diff patch-fill step in finishT2 so that step still
+// runs afterward and can top up any file — from the original 300 or from the
+// newly recovered ones — that still lacks a patch (binary files, oversize
+// patches).
+func (p *GHProvider) fillTruncatedFiles(ctx context.Context, sourceOwner, sourceRepo string, scan BranchScan, fork forge.T1Data, t2 *forge.T2Data) {
+	forkBranch := scan.Branch
+	if forkBranch == "" {
+		forkBranch = fork.DefaultBranch
+	}
+	// The same baseline compareToT2/Compare/CompareResolved already used —
+	// re-read here rather than threaded through BranchScan because both
+	// callers derive it identically from p.sourceDefaultBranch and this is
+	// the only place downstream of them that needs it a second time.
+	p.mu.RLock()
+	parentBranch := p.sourceDefaultBranch
+	p.mu.RUnlock()
+	if parentBranch == "" {
+		parentBranch = "HEAD"
+	}
+
+	files, complete, err := p.client.FetchCompareDiff(ctx, sourceOwner, sourceRepo, parentBranch, fork.Owner, forkBranch)
+	switch {
+	case err == nil && complete && len(files) >= len(t2.Diffs):
+		// REST's patch is authoritative for files it covered (the diff's hunk
+		// text should be identical, but there is no reason to discard a
+		// value already known good); files beyond the original cap have no
+		// REST patch to carry over and keep whatever unidiff.Parse gave them.
+		restPatches := make(map[string]forge.FileDiff, len(t2.Diffs))
+		for _, d := range t2.Diffs {
+			if d.Patch != "" {
+				restPatches[d.Path] = d
+			}
+		}
+		var totalAdd, totalDel int
+		for i := range files {
+			if rd, ok := restPatches[files[i].Path]; ok {
+				files[i].Patch = rd.Patch
+				files[i].PatchSource = rd.PatchSource
+			}
+			totalAdd += files[i].Additions
+			totalDel += files[i].Deletions
+		}
+		t2.Diffs = files
+		t2.TotalAdditions = totalAdd
+		t2.TotalDeletions = totalDel
+		t2.MNA = computeMNAFromDiffs(files)
+		t2.FilesTruncated = false
+		t2.FilesComplete = true
+	case err != nil:
+		t2.FilesTruncatedReason = err.Error()
+	case !complete:
+		t2.FilesTruncatedReason = "diff fallback unavailable (compare not renderable as a diff, or exceeded the size cap)"
+	default:
+		t2.FilesTruncatedReason = fmt.Sprintf("diff fallback returned %d files, fewer than the %d-file compare JSON", len(files), len(t2.Diffs))
+	}
 }
 
 // Contributors implements forge.Forge.

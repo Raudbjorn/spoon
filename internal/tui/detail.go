@@ -187,12 +187,12 @@ func (m Model) detailBody() string {
 			totalDels += diff.Deletions
 		}
 		filesLine := fmt.Sprintf("Ahead: %d (+%d/-%d)  Behind: %d  Files: %d", sf.T2.AheadCount, totalAdds, totalDels, sf.T2.BehindCount, len(sf.T2.Diffs))
-		if sf.T2.FilesTruncated || len(sf.T2.Diffs) >= forge.CompareFilesCap {
+		if sf.T2.IsFilesTruncated() {
 			filesLine += fmt.Sprintf(" (capped at %d)", forge.CompareFilesCap)
 		}
 		writeLine(filesLine)
 		writeLine(fmt.Sprintf("Authors: %d", len(forge.UniqueAuthors(sf.T2.Commits))))
-		if sf.T2.FilesTruncated || len(sf.T2.Diffs) >= forge.CompareFilesCap {
+		if sf.T2.IsFilesTruncated() {
 			writeLine(styles.warn.Render(fmt.Sprintf(" file list capped at %d by the provider; counts are lower bounds", forge.CompareFilesCap)))
 		}
 		if m.pathFilter != nil {
