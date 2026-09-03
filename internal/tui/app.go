@@ -17,6 +17,7 @@ import (
 	"github.com/svnbjrn/spoon/internal/forge"
 	"github.com/svnbjrn/spoon/internal/forksops"
 	"github.com/svnbjrn/spoon/internal/heat"
+	"github.com/svnbjrn/spoon/internal/pathmatch"
 	"github.com/svnbjrn/spoon/internal/store"
 	"github.com/svnbjrn/spoon/internal/topics"
 	"github.com/svnbjrn/spoon/internal/tui/keymap"
@@ -152,6 +153,9 @@ type Model struct {
 	// the table renders and what the cursor may land on; it never reslices
 	// m.forks, which stays the canonical, complete list. See filter.go.
 	filter string
+	// pathFilter is the compiled matcher for a "path:<glob>" filter query, or
+	// nil otherwise. Compiled once in applyFilter rather than per row.
+	pathFilter *pathmatch.Matcher
 	// filterInput is the in-progress prompt text, applied to filter on Enter;
 	// filterCursor is its insertion point as a rune offset, matching the
 	// input/export prompts.
