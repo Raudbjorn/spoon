@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/svnbjrn/spoon/internal/forge"
+	"github.com/svnbjrn/spoon/internal/github/treecommitinfo"
 	"github.com/svnbjrn/spoon/internal/heat"
 )
 
@@ -161,6 +162,51 @@ func (p *GHProvider) MergeCommitHistory(ctx context.Context, forks []forge.T1Dat
 }
 
 var _ forge.LinearHistoryProvider = (*GHProvider)(nil)
+
+// PathLastTouch implements forge.LastTouchProvider. It resolves the upstream
+// side of the last-touch comparison: for each path, the most recent commit
+// on the network root's default branch that touched it, and how many
+// commits landed there since. See DivergentBranchCounts for why the baseline
+// is read under p.mu rather than taken from a field directly.
+func (p *GHProvider) PathLastTouch(ctx context.Context, paths []string) (map[string]forge.PathLastTouch, error) {
+	p.mu.RLock()
+	sourceOwner := p.sourceOwner
+	sourceRepo := p.sourceRepo
+	sourceDefaultBranch := p.sourceDefaultBranch
+	p.mu.RUnlock()
+	return p.client.FetchPathLastTouch(ctx, sourceOwner, sourceRepo, sourceDefaultBranch, paths)
+}
+
+// ForkLastTouch implements forge.LastTouchProvider. It is the fork side of
+// the last-touch comparison: a thin wrapper over the opt-in, best-effort
+// tree-commit-info client. Reports LastTouchDisabled (and a nil map) when
+// EnableTreeCommitInfo was never called, the same "capability not turned on"
+// signal a disabled client would produce live.
+func (p *GHProvider) ForkLastTouch(ctx context.Context, fork forge.T1Data, ref, dir string) (map[string]string, forge.LastTouchOutcome) {
+	tci := p.client.TreeCommitInfo()
+	if tci == nil {
+		return nil, forge.LastTouchDisabled
+	}
+	entries, outcome := tci.LastTouch(ctx, fork.Owner, fork.Name, ref, dir)
+	return entries, forgeLastTouchOutcome(outcome)
+}
+
+// forgeLastTouchOutcome translates treecommitinfo's package-local Outcome to
+// forge.LastTouchOutcome, the shared vocabulary Task 7 consumes.
+func forgeLastTouchOutcome(o treecommitinfo.Outcome) forge.LastTouchOutcome {
+	switch o {
+	case treecommitinfo.OK:
+		return forge.LastTouchOK
+	case treecommitinfo.NotFound:
+		return forge.LastTouchNotFound
+	case treecommitinfo.Disabled:
+		return forge.LastTouchDisabled
+	default:
+		return forge.LastTouchError
+	}
+}
+
+var _ forge.LastTouchProvider = (*GHProvider)(nil)
 
 // SetCompareBaseline implements forge.CompareBaselineSetter. Parent() calls it
 // on the live path; a caller that serves the fork list from a local cache must

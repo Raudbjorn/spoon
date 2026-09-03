@@ -432,6 +432,70 @@ type LinearHistoryProvider interface {
 type CompareBaselineSetter interface {
 	SetCompareBaseline(owner, repo, defaultBranch string)
 }
+
+// PathLastTouch is the upstream last-touch resolution for one path: the most
+// recent commit on the upstream default branch that changed it, and how many
+// commits landed on that branch afterward (CommitsSince). A fork whose own
+// last-touch commit for the same path equals SHA has never itself changed
+// the path -- everything the fork carries there came from upstream.
+type PathLastTouch struct {
+	SHA          string
+	CommittedAt  time.Time
+	CommitsSince int
+}
+
+// LastTouchOutcome classifies a ForkLastTouch call. GitHub's tree-commit-info
+// endpoint is undocumented and best-effort (see internal/github/treecommitinfo),
+// so every value other than LastTouchOK means "no information" -- callers
+// must treat it as a skip, never as evidence a path is untouched.
+type LastTouchOutcome int
+
+const (
+	LastTouchOK LastTouchOutcome = iota
+	LastTouchNotFound
+	LastTouchDisabled
+	LastTouchError
+)
+
+// String renders o for logging.
+func (o LastTouchOutcome) String() string {
+	switch o {
+	case LastTouchOK:
+		return "ok"
+	case LastTouchNotFound:
+		return "not_found"
+	case LastTouchDisabled:
+		return "disabled"
+	case LastTouchError:
+		return "error"
+	default:
+		return "unknown"
+	}
+}
+
+// LastTouchProvider is an optional provider capability that lets a caller
+// compare a fork's own last-touch commit for a path against upstream's,
+// skipping a REST compare when they agree (proof the fork never changed the
+// path itself). PathLastTouch resolves the upstream side in one bounded
+// batch; ForkLastTouch is the fork-side counterpart, called per fork/ref/dir.
+//
+// Providers that do not implement it remain valid Forge values -- callers
+// fall back to their normal compare path when this capability is absent.
+type LastTouchProvider interface {
+	// PathLastTouch resolves, for each of paths, the most recent commit on
+	// the upstream default branch that touched it. A path absent from the
+	// returned map has no history on that branch at all -- distinct from a
+	// present entry with CommitsSince == 0.
+	PathLastTouch(ctx context.Context, paths []string) (map[string]PathLastTouch, error)
+
+	// ForkLastTouch queries the fork's own last-touch commit for every entry
+	// name in dir at ref (dir == "" addresses the repository root), the same
+	// listing GitHub's file browser shows. The returned map is keyed by
+	// entry name (not full path); it is nil whenever the outcome is not
+	// LastTouchOK.
+	ForkLastTouch(ctx context.Context, fork T1Data, ref, dir string) (map[string]string, LastTouchOutcome)
+}
+
 type TopicLane string
 
 const (

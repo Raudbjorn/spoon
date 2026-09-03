@@ -28,6 +28,7 @@ import (
 
 	ghAPI "github.com/cli/go-gh/v2/pkg/api"
 	ghauth "github.com/cli/go-gh/v2/pkg/auth"
+	"github.com/svnbjrn/spoon/internal/github/treecommitinfo"
 	"github.com/svnbjrn/spoon/internal/github/webdiff"
 )
 
@@ -135,6 +136,12 @@ type Client struct {
 	rotating *rotatingProxyTransport
 	global   *limiter
 	webDiff  *webdiff.Client
+
+	// treeCommitInfo is the opt-in client for GitHub's undocumented
+	// tree-commit-info endpoint (internal/github/treecommitinfo), used to
+	// resolve a fork's own last-touch commit for a path without a REST
+	// compare. Nil until EnableTreeCommitInfo is called.
+	treeCommitInfo *treecommitinfo.Client
 
 	// localBranchScan gates ScanBranchesLocal (localbranchscan.go), the
 	// git-ls-remote/fetch/merge-base alternative to the REST/GraphQL-only
@@ -371,6 +378,27 @@ func (c *Client) EnableWebDiff(cookie string) {
 // REST/GraphQL-only ScanBranches when the default branch shows no work.
 func (c *Client) EnableLocalBranchScan() {
 	c.localBranchScan = true
+}
+
+// EnableTreeCommitInfo turns on the explicitly undocumented, best-effort
+// lookup against GitHub's tree-commit-info endpoint (see
+// internal/github/treecommitinfo), used to resolve a fork's own last-touch
+// commit for a path without a REST compare. Unlike EnableWebDiff there is no
+// cookie: the endpoint is called anonymously.
+//
+// No shared gate is wired in: unlike webDiff, whose gate gives it a share of
+// c.global (the REST pacing pool), tree-commit-info traffic must not draw
+// from that budget at all -- it hits github.com outside the REST/GraphQL
+// surface entirely, with its own unknown limit, which is exactly why the
+// package carries its own conservative bucket and run-scoped breaker.
+func (c *Client) EnableTreeCommitInfo() {
+	c.treeCommitInfo = treecommitinfo.New(nil)
+}
+
+// TreeCommitInfo returns the tree-commit-info client, or nil when
+// EnableTreeCommitInfo was never called.
+func (c *Client) TreeCommitInfo() *treecommitinfo.Client {
+	return c.treeCommitInfo
 }
 
 type unauthTransport struct{ base http.RoundTripper }
