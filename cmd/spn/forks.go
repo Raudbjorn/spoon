@@ -36,6 +36,13 @@ import (
 // built-in embedder runs as usual.
 var embedderHookForTest embed.Embedder
 
+// noLastTouchHookForTest, when non-nil, is called with the value
+// opts.NoLastTouch was set to, right after that decision is made (once per
+// provider-creation site: topic mode and single-repo). Tests use it to
+// observe the --no-tree-commit-info wiring reaching forksops.Options without
+// needing a real *gh.GHProvider fixture. Production code leaves this nil.
+var noLastTouchHookForTest func(bool)
+
 type githubRPMContextKey struct{}
 
 type effectiveConfigContextKey struct{}
@@ -774,7 +781,13 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 		}
 		enableWebDiffIfRequested(provider, webDiffEnabled)
 		enableLocalBranchScanIfRequested(provider, localBranchScanEnabled)
-		enableTreeCommitInfoIfRequested(provider, treeCommitInfoEnabled)
+		// One provider is shared by every repo topic mode evaluates, so this
+		// decision is made once here rather than per repo; opts (passed by
+		// value into each streamAndEmit call below) carries it to all of them.
+		opts.NoLastTouch = !enableTreeCommitInfoIfRequested(provider, treeCommitInfoEnabled)
+		if noLastTouchHookForTest != nil {
+			noLastTouchHookForTest(opts.NoLastTouch)
+		}
 		parsedLanes, perr := topics.ParseLanes(topicLanesRaw)
 		if perr != nil {
 			return agentio.NewError(agentio.CodeBadInput, perr.Error(),
@@ -824,7 +837,10 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 	}
 	enableWebDiffIfRequested(provider, webDiffEnabled)
 	enableLocalBranchScanIfRequested(provider, localBranchScanEnabled)
-	enableTreeCommitInfoIfRequested(provider, treeCommitInfoEnabled)
+	opts.NoLastTouch = !enableTreeCommitInfoIfRequested(provider, treeCommitInfoEnabled)
+	if noLastTouchHookForTest != nil {
+		noLastTouchHookForTest(opts.NoLastTouch)
+	}
 	owner, name := splitRepoArg(repoArg)
 	warnDuplicateIdentityFor(provider, stderr)
 	if owner == "" || name == "" {
@@ -1080,14 +1096,21 @@ func touchingWantsTreeCommitInfo(touching []string, noTreeCommitInfo bool) bool 
 
 // enableTreeCommitInfoIfRequested turns on the anonymous, best-effort
 // tree-commit-info lookup (see touchingWantsTreeCommitInfo) for GitHub
-// providers. Non-GitHub forges have no equivalent and are left alone.
-func enableTreeCommitInfoIfRequested(provider forge.Forge, enabled bool) {
+// providers, and reports whether it actually did. Non-GitHub forges have no
+// equivalent and are left alone (reported as not enabled). This return value
+// is the single source of truth for opts.NoLastTouch: a caller sets
+// NoLastTouch to its negation so forksops.Stream never builds the
+// last-touch gate when the client it would depend on was not turned on here.
+func enableTreeCommitInfoIfRequested(provider forge.Forge, enabled bool) bool {
 	if !enabled {
-		return
+		return false
 	}
-	if ghp, ok := provider.(*gh.GHProvider); ok && ghp.Client() != nil {
-		ghp.Client().EnableTreeCommitInfo()
+	ghp, ok := provider.(*gh.GHProvider)
+	if !ok || ghp.Client() == nil {
+		return false
 	}
+	ghp.Client().EnableTreeCommitInfo()
+	return true
 }
 
 // warnDuplicateIdentityFor emits the duplicate-token warning for GitHub
@@ -1784,7 +1807,7 @@ func emitTouchReport(stderr io.Writer, s *forksops.TouchSummary) {
 			"gated": s.LastTouchGated, "looked_up": s.LastTouchLookedUp, "skipped": s.LastTouchSkipped,
 			"mismatch": s.LastTouchMismatch, "unavailable": s.LastTouchUnavailable,
 		},
-		"note": "unknown = no usable compare (rate reserve, 404, or cached rows missing); re-run to backfill. never_pushed = pushed_at <= created_at, compared last. last_touch.unavailable also counts every fork looked up while the tree-commit-info client was off (no --touching literal pattern enabled it, or --no-tree-commit-info was passed) -- not necessarily a real lookup failure.",
+		"note": "unknown = no usable compare (rate reserve, 404, or cached rows missing); re-run to backfill. never_pushed = pushed_at <= created_at, compared last.",
 	}})
 }
 

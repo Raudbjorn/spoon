@@ -1039,3 +1039,41 @@ func TestEmitCompareSummary(t *testing.T) {
 		}
 	})
 }
+
+// enableTreeCommitInfoIfRequested is the single source of truth
+// cmd/spn/forks.go negates into opts.NoLastTouch: it must report false
+// (never touching the provider) both when the caller didn't ask for it and
+// when the provider isn't GitHub, even if the caller did ask (task 8 fix
+// round 1).
+func TestEnableTreeCommitInfoIfRequested(t *testing.T) {
+	if got := enableTreeCommitInfoIfRequested(&fakeForge{}, false); got {
+		t.Error("enabled=false must return false")
+	}
+	if got := enableTreeCommitInfoIfRequested(&fakeForge{}, true); got {
+		t.Error("a non-GitHub provider must return false even when enabled=true")
+	}
+}
+
+// --no-tree-commit-info must reach forksops.Options as NoLastTouch == true
+// once dispatch creates the provider. Without this wiring, the last-touch
+// gate still engaged and spent an upstream lookup even though the CLI never
+// enabled a last-touch source on the provider, misreporting every fork as
+// "unavailable" (task 8 fix round 1).
+func TestForksListNoTreeCommitInfoSetsNoLastTouch(t *testing.T) {
+	blockEmbedderCache(t)
+	stubTwoForkProvider(t)
+
+	var got []bool
+	noLastTouchHookForTest = func(v bool) { got = append(got, v) }
+	defer func() { noLastTouchHookForTest = nil }()
+
+	var stdout, stderr bytes.Buffer
+	runForksWith([]string{"list", "o/r", "--no-cluster", "--touching", "a.go", "--no-tree-commit-info"}, &stdout, &stderr)
+
+	if len(got) != 1 {
+		t.Fatalf("noLastTouchHookForTest fired %d times, want 1 (stderr:\n%s)", len(got), stderr.String())
+	}
+	if !got[0] {
+		t.Errorf("opts.NoLastTouch = %v, want true with --no-tree-commit-info", got[0])
+	}
+}

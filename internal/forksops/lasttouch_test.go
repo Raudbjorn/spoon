@@ -28,11 +28,15 @@ type lastTouchFakeForge struct {
 	forkEntries map[string]map[string]string
 	forkOutcome map[string]forge.LastTouchOutcome
 
-	mu    sync.Mutex
-	calls []string // "<forkID>@<ref>@<dir>", one per ForkLastTouch call
+	mu               sync.Mutex
+	calls            []string // "<forkID>@<ref>@<dir>", one per ForkLastTouch call
+	pathLastTouchHit int      // incremented once per PathLastTouch call
 }
 
 func (f *lastTouchFakeForge) PathLastTouch(_ context.Context, _ []string) (map[string]forge.PathLastTouch, error) {
+	f.mu.Lock()
+	f.pathLastTouchHit++
+	f.mu.Unlock()
 	if f.upstreamErr != nil {
 		return nil, f.upstreamErr
 	}
@@ -58,6 +62,12 @@ func (f *lastTouchFakeForge) callCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.calls)
+}
+
+func (f *lastTouchFakeForge) pathLastTouchCallCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.pathLastTouchHit
 }
 
 var _ forge.LastTouchProvider = (*lastTouchFakeForge)(nil)
@@ -139,6 +149,81 @@ func TestLastTouchGate_equalOIDSkipsCompare(t *testing.T) {
 	const wantSuffix = "last_touch: gated 0 · looked_up 1 · skipped 1 · mismatch 0 · unavailable 0"
 	if !strings.Contains(logger.String(), wantSuffix) {
 		t.Errorf("[touching] stderr line missing last-touch suffix %q, got log:\n%s", wantSuffix, logger.String())
+	}
+}
+
+// TestOptionsNoLastTouchSkipsGateEntirely uses the exact fixture from
+// TestLastTouchGate_equalOIDSkipsCompare -- upstream and fork OIDs equal, so
+// the gate would definitely skip the REST compare if built -- but sets
+// Options.NoLastTouch. The gate must never be built at all: no PathLastTouch
+// round-trip (the once-per-run upstream lookup newLastTouchGate makes before
+// any fork is examined), no ForkLastTouch call, and every TouchSummary
+// last-touch counter stays zero. This is the fix for the CLI's
+// --no-tree-commit-info: without NoLastTouch, the gate still built and spent
+// the upstream lookup even though every fork's ForkLastTouch call was
+// guaranteed to report the capability off, which the caller could not tell
+// apart from a real lookup failure (task 8 fix round 1).
+func TestOptionsNoLastTouchSkipsGateEntirely(t *testing.T) {
+	now := time.Now()
+	var resolved []string
+	ff := &lastTouchFakeForge{
+		batchFakeForge: &batchFakeForge{
+			fakeForge: &fakeForge{
+				parent:      forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
+				forks:       []forge.T1Data{baseFork(now)},
+				concurrency: 1,
+			},
+			batch: map[string]forge.ForkDivergence{
+				"o/a": {Resolved: true, Default: forge.BranchDivergence{Name: "main", TipSHA: "tip1", AheadBy: 2, BehindBy: 1}},
+			},
+			resolvedCalls: &resolved,
+		},
+		upstream: map[string]forge.PathLastTouch{
+			"src/a.go": {SHA: "C1", CommitsSince: 5},
+		},
+		forkEntries: map[string]map[string]string{
+			"o/a@src": {"a.go": "C1"},
+		},
+	}
+	var compareReport CompareSummary
+	var touchReport TouchSummary
+	var logger bytes.Buffer
+	opts := Options{
+		Tier: 2, Touching: []string{"src/a.go"}, NoLastTouch: true,
+		CompareReport: &compareReport, TouchReport: &touchReport,
+		ReserveDisabled: true, Cluster: ClusterOptions{Enabled: false},
+		Logger: &logger,
+	}
+	ch, err := Stream(context.Background(), ff, "o", "r", opts)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	var got []Result
+	for r := range ch {
+		got = append(got, r)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d results, want 1", len(got))
+	}
+	if n := ff.pathLastTouchCallCount(); n != 0 {
+		t.Errorf("PathLastTouch calls = %d, want 0 (NoLastTouch must stop the gate before the upstream lookup)", n)
+	}
+	if n := ff.callCount(); n != 0 {
+		t.Errorf("ForkLastTouch calls = %d, want 0, got %v", n, ff.calls)
+	}
+	r := got[0]
+	if r.T2FilesUnfetched {
+		t.Error("T2FilesUnfetched should be false: the last-touch skip stage never ran")
+	}
+	if r.Touching != nil && r.Touching.Reason == "last_touch" {
+		t.Errorf("Touching.Reason = %q, want anything but last_touch: the gate never ran to produce that verdict", r.Touching.Reason)
+	}
+	if compareReport.LastTouchSkipped != 0 {
+		t.Errorf("CompareSummary.LastTouchSkipped = %d, want 0", compareReport.LastTouchSkipped)
+	}
+	if touchReport.LastTouchGated != 0 || touchReport.LastTouchLookedUp != 0 || touchReport.LastTouchSkipped != 0 ||
+		touchReport.LastTouchMismatch != 0 || touchReport.LastTouchUnavailable != 0 {
+		t.Errorf("TouchSummary last-touch counters not all zero: %+v", touchReport)
 	}
 }
 

@@ -181,6 +181,20 @@ type Options struct {
 	// TouchReport.
 	CompareReport *CompareSummary
 
+	// NoLastTouch disables the --touching last-touch skip stage
+	// (lasttouch.go) entirely: newLastTouchGate is never called, so no
+	// upstream PathLastTouch lookup is made and every TouchSummary
+	// last-touch counter stays zero. Set by a caller that has not enabled
+	// a last-touch source on the provider (e.g. the CLI's
+	// --no-tree-commit-info, or --touching using a non-literal pattern) --
+	// without it, the gate still builds and spends the upstream lookup even
+	// though every fork's ForkLastTouch call is guaranteed to report the
+	// capability as off, which reads as a lookup failure rather than a
+	// feature that was never turned on. False is the default (build the
+	// gate whenever the ordinary preconditions in newLastTouchGate allow
+	// it).
+	NoLastTouch bool
+
 	// NetworkScope controls fork-list breadth: "direct" (default) or "all".
 	// When "all", ListForksBounded is used if the provider implements it.
 	NetworkScope string
@@ -655,8 +669,15 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 		// values for the worker to test (see decide()'s guard for the
 		// proof); building it when the batch didn't run would spend the
 		// once-per-run upstream lookup for a stage no fork could reach.
+		// opts.NoLastTouch skips it for the same reason: without a
+		// last-touch source enabled on the provider, every fork's
+		// ForkLastTouch call is guaranteed to report the capability off, so
+		// building the gate would spend the upstream lookup and then tally
+		// every fork as "unavailable" for a stage that could never do
+		// anything -- checked before any provider call, per opts.NoLastTouch's
+		// doc comment.
 		var ltGate *lastTouchGate
-		if touching && batchRan {
+		if touching && batchRan && !opts.NoLastTouch {
 			ltGate = newLastTouchGate(ctx, provider, opts.Touching, logger)
 		}
 
