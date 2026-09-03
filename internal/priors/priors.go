@@ -13,9 +13,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path"
 	"sort"
 	"strings"
+
+	"github.com/svnbjrn/spoon/internal/pathmatch"
 )
 
 // Spec is the on-disk priors interest declaration. A dimension is
@@ -77,8 +78,8 @@ func (s *Spec) Score(language, owner string, changedPaths []string, digest strin
 	matched := 0
 
 	// Path dimension: directory-prefix / exact for wildcard-free specs,
-	// path.Match (single-segment globs only; recursive ** unsupported) for
-	// specs containing *?[. Each matching spec path adds one reason.
+	// wildcards with * ? [ and ** (delegates to internal/pathmatch).
+	// Each matching spec path adds one reason.
 	if len(s.Paths) > 0 {
 		hit := false
 		for _, p := range s.Paths {
@@ -165,19 +166,11 @@ func (s *Spec) Score(language, owner string, changedPaths []string, digest strin
 	return Match{Score: score, Reasons: dedupSort(reasons)}
 }
 
-// matchPath reports whether spec path p matches any changed path. A
-// wildcard-free p matches by exact file or directory prefix (p or p+"/");
-// a p containing *?[ uses path.Match (single-segment globs; ** unsupported).
+// matchPath reports whether spec path p matches any changed path. Delegates
+// to internal/pathmatch for full wildcard support including ** (recursive globs).
 func matchPath(p string, changedPaths []string) bool {
-	glob := strings.ContainsAny(p, "*?[")
 	for _, c := range changedPaths {
-		if glob {
-			if ok, err := path.Match(p, c); ok && err == nil {
-				return true
-			}
-			continue
-		}
-		if c == p || strings.HasPrefix(c, p+"/") {
+		if ok, _ := pathmatch.Match(p, c); ok {
 			return true
 		}
 	}
