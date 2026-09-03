@@ -587,7 +587,11 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 		var divergence map[string]forge.ForkDivergence
 		var batchStats forge.BatchStats
 		batchRan := false
-		if tier >= 2 && !opts.NoBatchCompare {
+		// Type-assert before building `pending`: on a provider that can't
+		// batch at all (gitea, gitlab, or a plain REST-only GitHub client),
+		// this skips the loop entirely rather than calling opts.CachedT2
+		// once per eligible fork only to discard the result unused.
+		if bp, hasBatch := provider.(forge.BatchCompareProvider); tier >= 2 && !opts.NoBatchCompare && hasBatch {
 			for i, s := range all {
 				if !eligible(s.fork.ID, i) {
 					continue
@@ -597,7 +601,7 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 				}
 				pending = append(pending, s.fork)
 			}
-			if bp, ok := provider.(forge.BatchCompareProvider); ok && len(pending) > 0 {
+			if len(pending) > 0 {
 				var berr error
 				divergence, batchStats, berr = bp.BatchCompare(ctx, pending)
 				switch {

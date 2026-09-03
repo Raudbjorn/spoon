@@ -249,6 +249,55 @@ func TestEstimateRequests(t *testing.T) {
 	}
 }
 
+// TestBatchEstimate_ContributorsCostAtTier3 pins batchEstimate's request
+// count for a fixed fork mix at tier 2 and tier 3. A batch-resolved fork
+// (zero-ahead or divergent) skips or shrinks its T2 compare cost, but the
+// worker's tier-3 Contributors call still runs for it -- `enrich` does not
+// depend on how T2 was obtained -- so the tier-3 estimate must add that
+// share for every resolved fork, not just the ones the batch left
+// unresolved.
+func TestBatchEstimate_ContributorsCostAtTier3(t *testing.T) {
+	pending := make([]forge.T1Data, 0, 105)
+	divergence := make(map[string]forge.ForkDivergence, 100)
+	for i := 0; i < 90; i++ {
+		id := fmt.Sprintf("o/zero%d", i)
+		pending = append(pending, forge.T1Data{ID: id})
+		divergence[id] = forge.ForkDivergence{Resolved: true, Default: forge.BranchDivergence{AheadBy: 0}}
+	}
+	for i := 0; i < 10; i++ {
+		id := fmt.Sprintf("o/div%d", i)
+		pending = append(pending, forge.T1Data{ID: id})
+		divergence[id] = forge.ForkDivergence{Resolved: true, Default: forge.BranchDivergence{AheadBy: 2}}
+	}
+	for i := 0; i < 5; i++ {
+		// Deliberately absent from divergence: unresolved by the batch.
+		pending = append(pending, forge.T1Data{ID: fmt.Sprintf("o/unresolved%d", i)})
+	}
+
+	divergent, resolved, tier2Estimate := batchEstimate(pending, divergence, 2)
+	if divergent != 10 {
+		t.Errorf("divergent = %d, want 10", divergent)
+	}
+	if resolved != 100 {
+		t.Errorf("resolved = %d, want 100", resolved)
+	}
+	// tier 2: no Contributors call at all, so a batch-resolved fork
+	// (zero-ahead or divergent) never pays the T3 share. 10 divergent * 1
+	// (CompareResolved) + 5 unresolved * perRequestCost(2)=3.
+	if tier2Estimate != 25 {
+		t.Errorf("tier2Estimate = %d, want 25 (10 divergent + 5*3 unresolved)", tier2Estimate)
+	}
+
+	_, _, tier3Estimate := batchEstimate(pending, divergence, 3)
+	// tier 3: every resolved fork (all 100) still pays a Contributors call
+	// -- perRequestCost(3)-perRequestCost(2) = 2 -- on top of the 10
+	// divergent compares; unresolved forks pay the full perRequestCost(3)=5
+	// each (already includes their own T3 share). 10 + 100*2 + 5*5 = 235.
+	if tier3Estimate != 235 {
+		t.Errorf("tier3Estimate = %d, want 235 (10 divergent + 100*2 contributors + 5*5 unresolved)", tier3Estimate)
+	}
+}
+
 func TestStream_shortlistTruncatesAndRanks(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	now := time.Now()

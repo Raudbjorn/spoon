@@ -148,9 +148,18 @@ func logCompareResolvedFallback(logger io.Writer, forkID string, err error) {
 // CompareResolved call each), versus resolved to nothing ahead (no REST
 // call at all, already fully known) or were not resolved by the batch at
 // all (fall back to a full per-fork Compare, same cost as before the
-// batch existed). restEstimate adds those together: one request per
-// divergent fork, plus the old per-fork tier estimate for every fork the
-// batch could not resolve.
+// batch existed).
+//
+// restEstimate adds those together: one request per divergent fork, plus
+// the old per-fork tier estimate for every fork the batch could not
+// resolve. A batch-resolved fork -- divergent or zero-ahead alike --
+// skips or shrinks the T2 compare cost, but at tier >= 3 it still pays
+// for the T3 Contributors call: the worker's `enrich` stays true for it
+// (only the reserve floor or a fatal T2 error would flip it), so
+// perRequestCost(tier)'s T2/T3 split (see budget.go) applies its
+// contributors-only share -- perRequestCost(3)-perRequestCost(2) -- to
+// every resolved fork, not just the unresolved ones already folded into
+// perRequestCost(tier).
 func batchEstimate(pending []forge.T1Data, divergence map[string]forge.ForkDivergence, tier int) (divergent, resolved, restEstimate int) {
 	unresolved := 0
 	for _, f := range pending {
@@ -164,6 +173,10 @@ func batchEstimate(pending []forge.T1Data, divergence map[string]forge.ForkDiver
 			divergent++
 		}
 	}
-	restEstimate = divergent + unresolved*perRequestCost(tier)
+	contributorsShare := 0
+	if tier >= 3 {
+		contributorsShare = perRequestCost(3) - perRequestCost(2)
+	}
+	restEstimate = divergent + resolved*contributorsShare + unresolved*perRequestCost(tier)
 	return divergent, resolved, restEstimate
 }
