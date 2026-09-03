@@ -1,6 +1,8 @@
 package forksops
 
 import (
+	"sort"
+
 	"github.com/svnbjrn/spoon/internal/forge"
 	"github.com/svnbjrn/spoon/internal/pathmatch"
 	"github.com/svnbjrn/spoon/internal/repo"
@@ -164,4 +166,47 @@ func scoreTouching(m pathmatch.Matcher, c repo.Centrality, results []Result) Tou
 		}
 	}
 	return s
+}
+
+// splitTouching partitions results into matched and everything else,
+// preserving order within each half.
+func splitTouching(rs []Result) (matched, rest []Result) {
+	for _, r := range rs {
+		if r.Touching != nil && r.Touching.Status == TouchMatched {
+			matched = append(matched, r)
+		} else {
+			rest = append(rest, r)
+		}
+	}
+	return matched, rest
+}
+
+func touchLane(r Result) int {
+	switch {
+	case r.Touching == nil:
+		return 2
+	case r.Touching.Status == TouchMatched:
+		return 0
+	case r.Touching.Status == TouchUnmatched && r.Touching.Partial:
+		return 1
+	default:
+		return 2
+	}
+}
+
+// sortTouchingLanes orders results for --touching output: matches first
+// (most load-bearing file first, then whatever order the earlier passes
+// produced), then capped-unmatched forks, then the rest. Stable, so
+// query/priors/heat order survives inside each lane.
+func sortTouchingLanes(rs []Result) {
+	sort.SliceStable(rs, func(i, j int) bool {
+		li, lj := touchLane(rs[i]), touchLane(rs[j])
+		if li != lj {
+			return li < lj
+		}
+		if li == 0 {
+			return rs[i].Touching.Impact > rs[j].Touching.Impact
+		}
+		return false
+	})
 }

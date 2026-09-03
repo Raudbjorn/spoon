@@ -102,3 +102,19 @@ func TestTouchOneCentrality(t *testing.T) {
 		t.Fatalf("Impact must be the max file centrality: %+v", got)
 	}
 }
+
+func TestSortTouchingLanesByImpact(t *testing.T) {
+	rs := []Result{
+		{Fork: forge.T1Data{ID: "rest"}},
+		{Fork: forge.T1Data{ID: "partial"}, Touching: &TouchMatch{Status: TouchUnmatched, Partial: true}},
+		{Fork: forge.T1Data{ID: "low"}, Touching: &TouchMatch{Status: TouchMatched, Impact: 0.2}},
+		{Fork: forge.T1Data{ID: "high"}, Touching: &TouchMatch{Status: TouchMatched, Impact: 0.9}},
+	}
+	sortTouchingLanes(rs)
+	want := []string{"high", "low", "partial", "rest"}
+	for i, w := range want {
+		if rs[i].Fork.ID != w {
+			t.Fatalf("pos %d = %s want %s", i, rs[i].Fork.ID, w)
+		}
+	}
+}

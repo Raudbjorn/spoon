@@ -80,7 +80,7 @@ type PipelineOptions struct {
 	// GHSiblingSearcher when --sibling-sim is set.
 	SiblingSearcher SiblingSearcher
 
-	// StrictMDG, when true, makes loadOrComputeCentrality return an error
+	// StrictMDG, when true, makes LoadOrComputeCentrality return an error
 	// to the caller on MDG build/cache failure instead of silently falling
 	// back to the directory proxy. The error is surfaced as a ClusterSkip
 	// with code "mdg_unavailable" so callers can decide whether to treat
@@ -264,7 +264,7 @@ func RunPipeline(ctx context.Context, opts PipelineOptions, inputs PipelineInput
 	}
 
 	// 3. Compute (or load) centrality (directory proxy or MDG, per opts).
-	c, cOK, err := loadOrComputeCentrality(ctx, opts, inputs, logger)
+	c, cOK, err := LoadOrComputeCentrality(ctx, opts, inputs, logger)
 	if err != nil {
 		// StrictMDG: surface MDG failure as a non-fatal skip so callers
 		// can render the policy_violation envelope.
@@ -539,12 +539,15 @@ func applyAssignmentsToForks(clusters []Cluster, assignments []Assignment, forks
 	}
 }
 
-// loadOrComputeCentrality returns the centrality backend. Dispatch is by
+// LoadOrComputeCentrality returns the centrality backend. Dispatch is by
 // PipelineOptions.CentralityBackend. When CentralityBackend == "mdg" and
 // StrictMDG is true, an MDG build/cache failure is propagated as an error
 // (caller surfaces it as a SkipReason with code "mdg_unavailable"). Otherwise
 // MDG failures fall back silently to the directory proxy.
-func loadOrComputeCentrality(
+//
+// Exported so forksops can score --touching files with the same backend and
+// caches the cluster pass uses.
+func LoadOrComputeCentrality(
 	ctx context.Context,
 	opts PipelineOptions,
 	inputs PipelineInputs,

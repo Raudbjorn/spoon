@@ -20,6 +20,7 @@ import (
 	"github.com/svnbjrn/spoon/internal/forge"
 	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/heat"
+	"github.com/svnbjrn/spoon/internal/pathmatch"
 	"github.com/svnbjrn/spoon/internal/priors"
 )
 
@@ -103,6 +104,16 @@ type Options struct {
 	// into a matched-then-unmatched lane. Forces collect-then-emit semantics.
 	Priors *priors.Spec
 
+	// Touching, when non-empty, annotates every result with a TouchMatch
+	// (see touching.go) computed from T2.Diffs — merge-base-relative by
+	// construction, never tip-vs-tip. Forces collect-then-emit. Stream never
+	// drops a result; the CLI decides what to print. Under Touching the
+	// dispatch order compares pushed-after-fork forks before never-pushed
+	// ones so the rate reserve is spent where a match is possible.
+	Touching []string
+	// TouchReport, when non-nil, receives the run tally.
+	TouchReport *TouchSummary
+
 	// ReserveDisabled turns off the automatic rate-limit reserve floor
 	// (ReserveHeadroom). By default the pipeline stops enriching when the forge's
 	// headroom drops below the reserve and marks the remaining forks degraded
@@ -175,6 +186,12 @@ type Options struct {
 // the most-promising fork owners in a typical run, low enough to
 // leave the 5000/h rate budget untouched for the rest of the pipeline.
 const ownerProfileDefaultCap = 30
+
+// touchingNeverPushedDemotion pushes never-pushed forks behind every pushed
+// one in dispatch order under --touching: they are still compared if
+// headroom remains, but the rate reserve is spent where a match is
+// possible first.
+const touchingNeverPushedDemotion = 1e6
 
 // ClusterOptions is the spn-side options struct for the cluster pipeline.
 // Mirrors cluster.PipelineOptions but keeps the test seam unexported.
@@ -374,6 +391,16 @@ type Error struct {
 // cluster pipeline runs over the batch, and each Result is then emitted with
 // its cluster fields populated. See Options.Cluster for the trade-off rationale.
 func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts Options) (<-chan Result, error) {
+	touching := len(opts.Touching) > 0
+	var touchMatcher pathmatch.Matcher
+	if touching {
+		m, err := pathmatch.Compile(opts.Touching)
+		if err != nil {
+			return nil, fmt.Errorf("--touching: %w", err)
+		}
+		touchMatcher = m
+	}
+
 	parent, err := provider.Parent(ctx, owner, repo)
 	if err != nil {
 		var rl *gh.RateLimitError
@@ -560,6 +587,9 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 		priorities := make([]float64, len(all))
 		for i, s := range all {
 			priorities[i] = DispatchPriority(s.fork, parent.PushedAt, s.res.Score)
+			if touching && NeverPushed(s.fork) {
+				priorities[i] -= touchingNeverPushedDemotion
+			}
 		}
 		dispatchOrder := make([]int, len(all))
 		for i := range dispatchOrder {
@@ -575,7 +605,7 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 		// them into `collected` (mu-guarded) and emit at the end.
 		// Clustering and the expected-rank shortlist both require all enriched
 		// results in hand, so either forces collect-then-emit.
-		batchMode := opts.Cluster.Enabled || opts.ShortlistN > 0 || opts.Query != "" || opts.Priors != nil || opts.CommitFiles
+		batchMode := opts.Cluster.Enabled || opts.ShortlistN > 0 || opts.Query != "" || opts.Priors != nil || opts.CommitFiles || len(opts.Touching) > 0
 		var (
 			collectedMu sync.Mutex
 			collected   []Result
@@ -807,6 +837,33 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 			collected[0].ClusterSkip = skip
 		}
 
+		var touchSummary TouchSummary
+		if touching {
+			// Same backend and caches as the cluster pass: a hit is free, a
+			// miss costs what clustering would have paid. Failure degrades
+			// to zero centrality, never to a missing verdict.
+			// NB: Stream's parameter named `repo` shadows the internal/repo
+			// package here, so do not name the repo.Centrality type in this
+			// scope; take the interface value straight from the call.
+			envInputs, envOpts := clusterEnv(ctx, provider, &parent, owner, repo, opts.Cluster)
+			centrality, ok, cerr := cluster.LoadOrComputeCentrality(ctx, envOpts, envInputs, logger)
+			if !ok {
+				centrality = nil
+				if cerr != nil {
+					fmt.Fprintf(logger, "[touching] centrality unavailable (%v); files reported without impact\n", cerr)
+				}
+			}
+			touchSummary = scoreTouching(touchMatcher, centrality, collected)
+			if opts.TouchReport != nil {
+				*opts.TouchReport = touchSummary
+			}
+			fmt.Fprintf(logger, "[touching] matched %d (%d partial: file list capped at %d) · unmatched %d · unknown %d · never_pushed %d · centrality=%q\n",
+				touchSummary.Matched, touchSummary.Partial, forge.CompareFilesCap, touchSummary.Unmatched, touchSummary.Unknown, touchSummary.NeverPushed, touchSummary.CentralityMethod)
+			if touchSummary.Unknown > 0 {
+				fmt.Fprintf(logger, "[touching] %d forks have no usable compare; re-run after the rate window resets to backfill\n", touchSummary.Unknown)
+			}
+		}
+
 		for i := range collected {
 			collected[i].Visibility = deriveVisibility(collected[i])
 			collected[i].Degraded = collectDegradedStages(collected[i])
@@ -829,9 +886,17 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 
 		if opts.ShortlistN > 0 {
 			// Robbins expected-rank shortlist: compute over the final heat (after
-			// clustering, so novelty is included).
+			// clustering, so novelty is included). Under --touching the rank pool
+			// is the matched subset; unmatched results are appended after it —
+			// Stream still emits them, the CLI decides what to print.
 			var report RankReport
-			collected, report = RankResults(collected, opts)
+			if touching {
+				matched, rest := splitTouching(collected)
+				matched, report = RankResults(matched, opts)
+				collected = append(matched, rest...)
+			} else {
+				collected, report = RankResults(collected, opts)
+			}
 			if opts.RankReport != nil {
 				*opts.RankReport = report
 			}
@@ -859,6 +924,10 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 			sort.SliceStable(collected, func(i, j int) bool {
 				return collected[i].Heat.Score > collected[j].Heat.Score
 			})
+		}
+
+		if touching {
+			sortTouchingLanes(collected)
 		}
 
 		for _, r := range collected {
@@ -953,30 +1022,20 @@ func enrichCommitFiles(ctx context.Context, provider forge.Forge, collected []Re
 	}
 }
 
-func runForksClusterPipeline(
-	ctx context.Context,
-	provider forge.Forge,
-	parent *forge.ParentData,
-	owner, repoName string,
-	collected []Result,
-	opts ClusterOptions,
-	logger io.Writer,
-) *ClusterSkip {
-	enriched := make([]cluster.EnrichedFork, len(collected))
-	for i := range collected {
-		enriched[i] = cluster.EnrichedFork{
-			T1:   collected[i].Fork,
-			T2:   collected[i].T2,
-			Heat: &collected[i].Heat,
-		}
-	}
-
+// clusterEnv builds the cluster.PipelineInputs / cluster.PipelineOptions
+// shared by the cluster pass (runForksClusterPipeline) and the --touching
+// centrality lookup: same provider/tree/commit sources, same MDG cache pin,
+// so a centrality fetch made for --touching alone is a cache hit once
+// clustering has already run, and costs the same as clustering would have
+// paid otherwise. The caller sets inputs.Forks and inputs.Upstream —
+// clusterEnv doesn't have a collected-forks slice to draw Forks from, and
+// leaving Upstream to the caller keeps this function usable from a context
+// that only wants centrality, not a full cluster pass.
+func clusterEnv(ctx context.Context, provider forge.Forge, parent *forge.ParentData, owner, repoName string, opts ClusterOptions) (cluster.PipelineInputs, cluster.PipelineOptions) {
 	inputs := cluster.PipelineInputs{
 		Provider:      providerName(ctx, provider),
 		UpstreamOwner: owner,
 		UpstreamRepo:  repoName,
-		Upstream:      *parent,
-		Forks:         enriched,
 	}
 	if ghp, ok := provider.(*gh.GHProvider); ok {
 		client := ghp.Client()
@@ -1009,6 +1068,31 @@ func runForksClusterPipeline(
 		CentralityHeadSHA: pin,
 		StrictMDG:         opts.StrictMDG,
 	}
+	return inputs, pipelineOpts
+}
+
+func runForksClusterPipeline(
+	ctx context.Context,
+	provider forge.Forge,
+	parent *forge.ParentData,
+	owner, repoName string,
+	collected []Result,
+	opts ClusterOptions,
+	logger io.Writer,
+) *ClusterSkip {
+	enriched := make([]cluster.EnrichedFork, len(collected))
+	for i := range collected {
+		enriched[i] = cluster.EnrichedFork{
+			T1:   collected[i].Fork,
+			T2:   collected[i].T2,
+			Heat: &collected[i].Heat,
+		}
+	}
+
+	inputs, pipelineOpts := clusterEnv(ctx, provider, parent, owner, repoName, opts)
+	inputs.Forks = enriched
+	inputs.Upstream = *parent
+
 	// Forward the optional embedder / categorizer / label-polisher hooks
 	// from the spn-side options into the cluster pipeline. When fastembed is
 	// active it is passed here (clustering + zero-shot categories use it);
