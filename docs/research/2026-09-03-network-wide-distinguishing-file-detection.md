@@ -395,3 +395,17 @@ that verification rather than assuming access to run it.
 - `pushed_at <= created_at` is not a hard zero-ahead proof (1/1855 exception
   observed); such forks are compared last, not skipped.
 - Citations above are search-grounding redirects; API specifics unverified.
+- The "GraphQL pre-filter — Rejected" row in the `--touching` implementation
+  plan's verified-against-source table
+  (`docs/superpowers/plans/2026-09-03-touching-path-filter.md:32`, reasoning:
+  "REST compare is already mandatory and returns the file list") no longer
+  holds. A later branch makes the REST compare non-mandatory for zero-ahead
+  forks: a pre-dispatch GraphQL batch resolves an entire network's
+  ahead/behind status in a handful of queries, and a fork the batch finds
+  with nothing ahead of upstream gets a synthesised T2 with no compare call
+  at all. See `docs/research/2026-09-03-github-request-efficiency.md`.
+- See `docs/research/2026-09-03-github-request-efficiency.md` for the
+  follow-up work that reduces `spn forks list`'s GitHub request volume: the
+  GraphQL batch above, an unbounded `.diff` fallback for the 300-file
+  compare cap this document first flagged, and a `tree-commit-info`-backed
+  skip for `--touching` on literal paths.
