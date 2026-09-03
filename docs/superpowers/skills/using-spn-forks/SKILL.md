@@ -60,6 +60,14 @@ Detection works on REST API paths. GitHub's GraphQL endpoint (used by the forks-
 
 `spn search "<query>"` is a different operation: vector retrieval over the persistent index built by `forks list`, rather than scoring an already-enumerated set. With a Voyage key it also reranks its candidates, adding `rerankScore`/`rerankModel` while `score` stays the retrieval cosine; `--voyage` ranks against the Voyage index instead of the fastembed one. `--voyage` or `--rerank` without a key exits 2 rather than silently answering from the other index.
 
+## Touched-path filtering (`--touching`)
+
+`spn forks list <repo> --touching '<path|glob>'` (repeatable) prints only forks whose **own ahead commits** changed a matching path, reading the merge-base-relative compare (`base...head`) already cached per fork — a re-run against a scanned network costs no API calls. Patterns are repo-relative; `**` spans directories, `*` does not. Each matched record gains a `touching` block (`status`, `partial`, `impact`, `centrality_method`, `files[]` with `path`/`previousPath`/`status`/`additions`/`deletions`/`pattern`/`centrality`) and is pinned into the output (`visibility.status: "pinned"`, `profile: "touches_target"`). `touching.partial: true` marks a fork whose file list hit GitHub's 300-file compare cap; such a fork is still printed even when unmatched, so the gap in coverage is visible. A stderr summary tallies matched/unmatched/unknown/never_pushed; `unknown` means the fork was not compared (rate reserve) and needs a re-run to resolve. NDJSON only — `--csv` and `--tier 1` are both rejected since `--touching` needs compare data.
+
+## Prior-biased ordering (`--priors`)
+
+`spn forks list <repo> --priors PATH` scores every fork against a JSON interest spec (`paths`, `keywords`, `languages`, `owners.allow`/`owners.deny`) from data already fetched, at zero extra API cost. Each record gains `priorScore` (0–1) and `priorReasons` (e.g. `path:internal/auth`, `keyword:oauth`, `owner_deny:fork-farmer`); when neither `--query` nor `--shortlist` is active, matched forks list before unmatched ones (heat order within each lane). Priors never hide a fork or change its heat — a denied owner scores 0 but is still emitted. Path entries follow the same matcher as `--touching`: exact/directory-prefix without a glob, single-segment `path.Match` for a glob without `**`, and `**` for a segment wildcard spanning any depth.
+
 ## Shortlist with rank uncertainty
 
 `spn forks list <repo> --shortlist N` buffers the run, ranks the strongest 200 forks by heat under a Gaussian utility model (mu = heat score, sigma from tier confidence), and emits the top N by Robbins expected rank. Each record gains:
@@ -95,4 +103,5 @@ Every shortlist run writes one `{"info":{"code":"rank_report",...}}` line to std
 | --- | --- |
 | `spn forks list <repo>` | NDJSON stream of enriched forks |
 | `spn forks list <repo> --csv` | Batched CSV with fixed 18-column header |
+| `spn forks list <repo> --touching PATH` | Only forks whose own ahead commits changed a matching path |
 | `spn repo centrality <owner/repo>` | Per-directory centrality JSON for the upstream repo |

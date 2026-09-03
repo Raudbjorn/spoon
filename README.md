@@ -83,6 +83,7 @@ spn forks list charmbracelet/bubbletea          # NDJSON to stdout (agent CLI)
 spn forks list charmbracelet/bubbletea --csv    # batched CSV (see "Agent CLI" below)
 spn forks list golang/go --tier 1               # T1 only (skip compare calls)
 spn forks list golang/go --top 5                # only enrich top 5 by T1 score
+spn forks list pbakaus/impeccable --touching '**/registry/antipatterns.mjs'  # forks that changed a path
 spoon topic:terminal                            # GitHub topic → repo picker → forks
 ```
 
@@ -174,8 +175,8 @@ spn threads apply-suggestion <pr-ref> <id> [--suggestion-index N] [--dry-run]
 spn threads list-prs <owner/repo> [--limit N] [--state open]
 spn pr status <pr-ref>
 spn forks list <repo> [--tier N] [--top N] [--budget N] [--shortlist N]
-    [--query "T"] [--priors PATH] [--files] [--commits] [--commit-files]
-    [--cluster-top N] [--no-cluster] [--no-embed] [--csv] [...]
+    [--query "T"] [--priors PATH] [--touching PATH] [--files] [--commits]
+    [--commit-files] [--cluster-top N] [--no-cluster] [--no-embed] [--csv] [...]
 spn forks list topic:zig [--topic-repos 5] [...]
 spn search "oauth rate limiting" [--repo owner/repo] [--top N] [--voyage]
 spn forks eval <repo> --judgments FILE [--from-export EXPORT --rank-variant V]
@@ -266,6 +267,28 @@ listed before unmatched ones (heat order within each lane). Priors never hide a
 fork or touch heat; a denied owner scores 0 but is still emitted, carrying its
 `owner_deny` reason.
 
+### Touched paths (`--touching`)
+
+    spn forks list pbakaus/impeccable --touching '**/registry/antipatterns.mjs'
+
+Reports only forks whose **own ahead commits** changed a matching path, with
+the file's status and line counts under `touching.files`. Matching reads the
+merge-base-relative compare (`base...head`) spoon already caches per fork, so
+a fork that is merely behind upstream never matches, and a re-run against a
+scanned network costs no API calls. Patterns are repo-relative; `**` spans
+directories, `*` does not. Repeat the flag for several patterns.
+
+Records carry `visibility.status: "pinned"` and `profile: "touches_target"`.
+Each matched file also carries `centrality`, the upstream importance of its
+directory (or module with `--full-mdg`) from the same backend that feeds
+`changeImpact`; `touching.impact` is the highest of them and orders the
+output, so a fork that edited a core module lists before one that edited docs.
+`touching.partial: true` marks forks whose file list hit GitHub's 300-file
+compare cap; an unmatched fork in that state is still printed so the gap is
+visible. A stderr summary tallies matched / unmatched / unknown / never_pushed;
+`unknown` forks were not compared (rate reserve) — re-run to backfill.
+NDJSON only; `--csv` is rejected.
+
 ### Shortlist rank in the TUI
 
 The `spoon` table carries the same model: the `P` column is each fork's
@@ -336,10 +359,13 @@ lives in `internal/eval/testdata/judgments_stablyai-orca_seed.json`; on it all
 five variants tie (nDCG 0.967, AUC 0.85) because its labels were themselves
 derived from a heat-ranked review — it proves non-regression, not gain.
 
-Path matching is deliberately simple: a wildcard-free entry matches by exact
-file or **directory prefix** (`internal/auth` covers everything beneath it),
-while an entry containing a glob uses single-segment `path.Match` (`cmd/*.go`
-matches `cmd/main.go` but not `cmd/sub/x.go`). Recursive `**` is not supported.
+Path matching (shared by `--priors`, `--touching`, and the TUI `path:` filter
+via `internal/pathmatch`) is deliberately simple: a wildcard-free entry
+matches by exact file or **directory prefix** (`internal/auth` covers
+everything beneath it); an entry containing a glob without `**` uses
+single-segment `path.Match` (`cmd/*.go` matches `cmd/main.go` but not
+`cmd/sub/x.go`); a `**` segment matches zero or more whole path segments, so
+`**/registry/antipatterns.mjs` matches at any depth.
 
 ## Fork profiles
 
@@ -352,6 +378,7 @@ records easier to skim. First match wins, with `standard` as the floor:
 | `profile` | when |
 | --- | --- |
 | `hidden` | upstreamed / no commits ahead (non-actionable) |
+| `touches_target` | matches an explicit --touching path; overrides hidden/demoted for display only |
 | `focused_change` | lone-wolf Sniper archetype |
 | `focused_feature` | lone-wolf Feature Builder archetype |
 | `broad_maintenance` | lone-wolf Drifter archetype |
