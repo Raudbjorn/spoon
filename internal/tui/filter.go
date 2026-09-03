@@ -67,16 +67,29 @@ func touchesPath(t2 *forge.T2Data, m pathmatch.Matcher) bool {
 		return false
 	}
 	for _, d := range t2.Diffs {
-		if _, ok := m.First(d.Path); ok {
+		if diffMatches(d, m) {
 			return true
-		}
-		if d.PreviousPath != "" {
-			if _, ok := m.First(d.PreviousPath); ok {
-				return true
-			}
 		}
 	}
 	return false
+}
+
+// diffMatches reports whether a single file diff matches m, checking the
+// current path first and falling back to PreviousPath for a rename. Shared
+// by the filter (touchesPath), the detail view's Touches block, and the
+// patch view (renderPatch) so a renamed file is treated identically in all
+// three: a fork that passes the "path:<glob>" filter because it renamed a
+// matched file must also show that file in the detail list and the patch,
+// never one without the other two.
+func diffMatches(d forge.FileDiff, m pathmatch.Matcher) bool {
+	if _, ok := m.First(d.Path); ok {
+		return true
+	}
+	if d.PreviousPath == "" {
+		return false
+	}
+	_, ok := m.First(d.PreviousPath)
+	return ok
 }
 
 // visibleIdx returns the absolute indices of the forks passing the active

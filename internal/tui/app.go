@@ -1228,8 +1228,17 @@ func (m *Model) handleDetailKey(key string) (tea.Model, tea.Cmd) {
 	case keymap.Yank:
 		return m, m.yankCloneCommand()
 	case keymap.ViewPatch:
-		m.view = viewPatch
-		return m, m.fetchPatchCmd()
+		// fetchPatchCmd returns nil when there is no provider or the cursor
+		// is out of range; switching to viewPatch anyway would render
+		// whatever patchBody a previous fork's fetch left behind. Only
+		// commit to the view -- and clear that stale body -- once a real
+		// fetch is in flight.
+		if cmd := m.fetchPatchCmd(); cmd != nil {
+			m.patchBody = ""
+			m.patchOffset = 0
+			m.view = viewPatch
+			return m, cmd
+		}
 	}
 	return m, nil
 }

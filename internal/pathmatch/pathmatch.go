@@ -117,4 +117,4 @@ func (m Matcher) First(name string) (string, bool) {
 }
 
 func (m Matcher) Patterns() []string { return append([]string(nil), m.patterns...) }
-func (m Matcher) Empty() bool         { return len(m.patterns) == 0 }
+func (m Matcher) Empty() bool        { return len(m.patterns) == 0 }

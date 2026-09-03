@@ -377,8 +377,8 @@ records easier to skim. First match wins, with `standard` as the floor:
 
 | `profile` | when |
 | --- | --- |
-| `hidden` | upstreamed / no commits ahead (non-actionable) |
 | `touches_target` | matches an explicit --touching path; overrides hidden/demoted for display only |
+| `hidden` | upstreamed / no commits ahead (non-actionable) |
 | `focused_change` | lone-wolf Sniper archetype |
 | `focused_feature` | lone-wolf Feature Builder archetype |
 | `broad_maintenance` | lone-wolf Drifter archetype |

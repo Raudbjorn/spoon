@@ -198,7 +198,7 @@ func (m Model) detailBody() string {
 		if m.pathFilter != nil {
 			var touched []forge.FileDiff
 			for _, d := range sf.T2.Diffs {
-				if _, ok := m.pathFilter.First(d.Path); ok {
+				if diffMatches(d, *m.pathFilter) {
 					touched = append(touched, d)
 				}
 			}

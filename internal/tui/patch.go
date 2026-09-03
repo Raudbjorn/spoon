@@ -48,10 +48,8 @@ func renderPatch(ctx theme.Context, t2 forge.T2Data, pm *pathmatch.Matcher, limi
 	hunk := lipgloss.NewStyle().Foreground(ctx.Palette.Info)
 	shown := 0
 	for _, d := range t2.Diffs {
-		if pm != nil {
-			if _, ok := pm.First(d.Path); !ok {
-				continue
-			}
+		if pm != nil && !diffMatches(d, *pm) {
+			continue
 		}
 		shown++
 		b.WriteString(lipgloss.NewStyle().Bold(true).Render(fmt.Sprintf("=== %s %s (+%d/-%d)", d.Status, d.Path, d.Additions, d.Deletions)) + "\n")

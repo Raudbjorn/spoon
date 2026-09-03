@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/svnbjrn/spoon/internal/forge"
+	"github.com/svnbjrn/spoon/internal/tui/theme"
 )
 
 // filterModel builds a table with predictable, distinguishable fork IDs.
@@ -365,5 +366,41 @@ func TestPathFilterBadPatternIsVisible(t *testing.T) {
 	}
 	if m.errMsgTime.IsZero() {
 		t.Fatal("errMsg set without errMsgTime, so the footer can never render it")
+	}
+}
+
+// TestRenameConsistentAcrossFilterDetailAndPatch guards diffMatches (added in
+// filter.go): a fork that renamed a file away from a matched pattern -- the
+// old path matches, the new Path does not -- must still pass the
+// "path:<glob>" filter (touchesPath), still list the file in the detail
+// view's Touches block, and still include it in the rendered patch. Before
+// diffMatches, touchesPath alone checked PreviousPath, so a rename could
+// pass the filter yet show nothing in the detail view or the patch.
+func TestRenameConsistentAcrossFilterDetailAndPatch(t *testing.T) {
+	renamed := forge.FileDiff{
+		Path:         "cli/registry/newname.mjs",
+		PreviousPath: "cli/registry/antipatterns.mjs",
+		Status:       "renamed",
+		Additions:    2,
+		Deletions:    1,
+		Patch:        "@@ -1 +1 @@\n-old\n+new\n",
+	}
+	sf := ScoredFork{Fork: forge.T1Data{ID: "o/renamer"}, T2: &forge.T2Data{Performed: true, AheadCount: 1, Diffs: []forge.FileDiff{renamed}}}
+	m := &Model{forks: []ScoredFork{sf}}
+	m.applyFilter("path:**/antipatterns.mjs")
+
+	if got := m.visibleIdx(); len(got) != 1 || got[0] != 0 {
+		t.Fatalf("filter did not admit the renamed fork: visible = %v", got)
+	}
+
+	m.cursor = 0
+	body := m.detailBody()
+	if !strings.Contains(body, "renamed cli/registry/newname.mjs") {
+		t.Errorf("detail Touches block missing the renamed file:\n%s", body)
+	}
+
+	out := renderPatch(theme.Context{}, *sf.T2, m.pathFilter, 200_000)
+	if !strings.Contains(out, "cli/registry/newname.mjs") {
+		t.Errorf("renderPatch dropped the renamed file:\n%s", out)
 	}
 }

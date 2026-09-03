@@ -28,6 +28,33 @@ func TestRenderPatchFiltersAndColours(t *testing.T) {
 	}
 }
 
+// TestViewPatchKeyNoProviderLeavesDetailView guards the fix in
+// handleDetailKey (app.go): fetchPatchCmd returns nil when there is no
+// provider (or the cursor is out of range), and switching to viewPatch
+// regardless would render whatever patchBody a *previous* fork's fetch left
+// behind. With provider nil, "p" must leave the view on detail and must not
+// touch the stale patchBody -- there is nothing to fetch, so there is
+// nothing to clear either.
+func TestViewPatchKeyNoProviderLeavesDetailView(t *testing.T) {
+	m := newTestModel()
+	m.view = viewDetail
+	m.forks = []ScoredFork{{Fork: forge.T1Data{ID: "o/x"}, T2: &forge.T2Data{Performed: true, AheadCount: 1}}}
+	m.cursor = 0
+	m.patchBody = "stale body from a previous fork"
+
+	_, cmd := m.handleDetailKey("p")
+
+	if m.view != viewDetail {
+		t.Fatalf("view = %v, want viewDetail (no provider means no fetch, so no view switch)", m.view)
+	}
+	if cmd != nil {
+		t.Fatal("handleDetailKey returned a non-nil cmd with no provider")
+	}
+	if m.patchBody != "stale body from a previous fork" {
+		t.Fatalf("patchBody = %q, want untouched since no fetch started", m.patchBody)
+	}
+}
+
 func TestPatchKeymap(t *testing.T) {
 	if keymap.Dispatch(keymap.MainDetail, "p") != keymap.ViewPatch {
 		t.Fatal("p must open the patch view from detail")
