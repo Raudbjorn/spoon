@@ -176,7 +176,8 @@ spn threads list-prs <owner/repo> [--limit N] [--state open]
 spn pr status <pr-ref>
 spn forks list <repo> [--tier N] [--top N] [--budget N] [--shortlist N]
     [--query "T"] [--priors PATH] [--touching PATH] [--files] [--commits]
-    [--commit-files] [--cluster-top N] [--no-cluster] [--no-embed] [--csv] [...]
+    [--commit-files] [--cluster-top N] [--no-cluster] [--no-embed] [--csv]
+    [--no-batch-compare] [--no-tree-commit-info] [...]
 spn forks list topic:zig [--topic-repos 5] [...]
 spn search "oauth rate limiting" [--repo owner/repo] [--top N] [--voyage]
 spn forks eval <repo> --judgments FILE [--from-export EXPORT --rank-variant V]
@@ -189,10 +190,17 @@ Run `spn --help` for the complete flag surface and mutation policy.
 `$XDG_CONFIG_HOME/spoon/spoon.db` (default `~/.config/spoon/spoon.db`;
 `/var/lib/spoon/spoon.db` on hosts without a home directory) before printing
 it. The store doubles as a cross-invocation cache shared with the TUI: a
-stored compare is reused until its fork is pushed again. `--files` and
-`--commits` opt into detailed wire output without changing what the store
-retains. `--commit-files` implies both and attributes files to at most 100
-commits per run by default; override with `--commit-file-budget N`.
+stored compare is reused until its fork is pushed again. Before any
+per-fork compare runs, divergence for the whole network is resolved in a
+few GraphQL queries (the pre-dispatch batch); a REST compare is then made
+only for forks the batch found ahead of upstream, and `--no-batch-compare`
+restores one REST compare per fork. Every compare's 300-file cap is
+completed by one unbounded `.diff` fetch, so the emitted file list is a
+lower bound only when that fallback itself could not confirm completeness.
+`--files` and `--commits` opt into detailed wire output without changing
+what the store retains. `--commit-files` implies both and attributes files
+to at most 100 commits per run by default; override with
+`--commit-file-budget N`.
 
 GitHub traffic is capped at 300 requests/minute by default. Set `--rpm`,
 `SPOON_GITHUB_RPM`, or `github.requestsPerMinute` (maximum 900). Configured
@@ -206,6 +214,12 @@ mode `0600`.
 text. It reads a cookie only from `SPOON_GH_COOKIE`, never persists it, and is
 not a supported GitHub API. REST metadata remains authoritative if the HTML
 adapter fails.
+
+With `--touching` and only literal paths, `spn` also turns on an anonymous,
+best-effort lookup against GitHub's undocumented tree-commit-info page to
+skip a REST compare when a fork's last commit touching the target already
+equals upstream's. It is explicitly unstable, not a supported GitHub API,
+and reads no cookie; disable it with `--no-tree-commit-info`.
 
 Success: bare JSON to stdout. Failure: structured envelope to stderr:
 

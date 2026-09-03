@@ -159,7 +159,8 @@ Nouns and verbs:
         --shortlist-rule / --eb defaults.
   forks list <repo|topic:NAME> [--tier 1|2|3] [--top N] [--budget N] [--shortlist N] [--shortlist-rule expected|membership] [--rank-diagnostics] [--eb [--prior-scale F]] [--bot-allowlist L] [--refresh|--no-cache] [--csv] [--forge github|gitlab] [--forge-host H]
                     [--rpm N] [--files] [--commits] [--commit-files]
-                    [--commit-file-budget N] [--web-diff]
+                    [--commit-file-budget N] [--web-diff] [--local-branch-scan]
+                    [--no-batch-compare] [--no-tree-commit-info]
                     [--no-cluster] [--cluster-top N] [--cluster-epsilon F] [--cluster-min-size N]
                     [--no-embed] [--heat-weights W] [--strict-mdg] [--full-mdg] [--no-mdg]
                     [--query "intent"] [--priors PATH] [--touching PATH]
@@ -197,6 +198,16 @@ Nouns and verbs:
         semantic indexing and 'spn search'. --commit-files implies --files and
         --commits and defaults to a 100-commit run budget. --web-diff is an
         unstable SPOON_GH_COOKIE-gated HTML fallback, not a supported API.
+        Divergence is resolved for the whole network in a few GraphQL
+        queries first; REST compares are then made only for forks with
+        ahead work. --no-batch-compare restores one REST compare per fork.
+        --local-branch-scan falls back to git ls-remote/fetch/merge-base
+        when the default branch shows no work; the GraphQL batch
+        supersedes it whenever the provider supports batching. With
+        --touching and literal paths, GitHub's undocumented
+        tree-commit-info page is consulted anonymously to skip compares
+        for forks whose last commit touching the target equals upstream's;
+        best-effort, off the API budgets. --no-tree-commit-info disables it.
         topic:NAME evaluates the fork networks of the best repositories
         representing a GitHub topic (selection by stars + fork-network size +
         recency; cap with --topic-repos N, default 5). Each record gains an
