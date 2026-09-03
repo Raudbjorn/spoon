@@ -45,6 +45,7 @@ func (p *Provider) Compare(ctx context.Context, fork forge.T1Data, branch string
 	}
 
 	// 4. Convert glDiff -> forge.FileDiff with parsed line counts.
+	// GitLab diff caps are not detected; FilesTruncated stays false.
 	diffs := make([]forge.FileDiff, 0, len(cmp.Diffs))
 	var totalAdd, totalDel int
 	for _, d := range cmp.Diffs {

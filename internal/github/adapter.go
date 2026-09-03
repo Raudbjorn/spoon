@@ -560,6 +560,7 @@ func compareToT2(r CompareResult) forge.T2Data {
 		BaseSHA:            baseSHA,
 		HeadSHA:            headSHA,
 		Diffs:              diffs,
+		FilesTruncated:     len(r.Files) >= forge.CompareFilesCap,
 		Commits:            ahead,
 	}
 }

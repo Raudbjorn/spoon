@@ -253,6 +253,11 @@ type AheadCommit struct {
 	Files       []FileDiff // per-commit file changes; may be nil if not fetched at this tier
 }
 
+// CompareFilesCap is the largest file list a single GitHub compare response
+// carries (300). A T2 whose Diffs hit it may be missing files; see
+// T2Data.FilesTruncated.
+const CompareFilesCap = 300
+
 // T2Data is code-divergence data from comparing the fork to its upstream source.
 type T2Data struct {
 	// Performed reports whether the comparison actually ran against the
@@ -277,8 +282,14 @@ type T2Data struct {
 	BaseSHA            string  // merge-base commit used for the comparison
 	HeadSHA            string  // resolved tip of the compared fork branch
 	Diffs              []FileDiff
-	Commits            []AheadCommit // used by the T3 lone-wolf gate
-	PatchSkipReason    string
+	// FilesTruncated is true when the provider capped the file list (GitHub:
+	// 300 entries per compare, unpaginated here). Diffs, TotalAdditions,
+	// TotalDeletions and MNA are then lower bounds. Rows stored before this
+	// field existed decode as false; readers must also treat
+	// len(Diffs) >= CompareFilesCap as truncated.
+	FilesTruncated  bool
+	Commits         []AheadCommit // used by the T3 lone-wolf gate
+	PatchSkipReason string
 }
 
 // Contributor is a single contributor to a fork.
