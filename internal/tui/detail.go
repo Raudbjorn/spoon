@@ -186,8 +186,36 @@ func (m Model) detailBody() string {
 			totalAdds += diff.Additions
 			totalDels += diff.Deletions
 		}
-		writeLine(fmt.Sprintf("Ahead: %d (+%d/-%d)  Behind: %d  Files: %d", sf.T2.AheadCount, totalAdds, totalDels, sf.T2.BehindCount, len(sf.T2.Diffs)))
+		filesLine := fmt.Sprintf("Ahead: %d (+%d/-%d)  Behind: %d  Files: %d", sf.T2.AheadCount, totalAdds, totalDels, sf.T2.BehindCount, len(sf.T2.Diffs))
+		if sf.T2.FilesTruncated || len(sf.T2.Diffs) >= forge.CompareFilesCap {
+			filesLine += fmt.Sprintf(" (capped at %d)", forge.CompareFilesCap)
+		}
+		writeLine(filesLine)
 		writeLine(fmt.Sprintf("Authors: %d", len(forge.UniqueAuthors(sf.T2.Commits))))
+		if sf.T2.FilesTruncated || len(sf.T2.Diffs) >= forge.CompareFilesCap {
+			writeLine(styles.warn.Render(fmt.Sprintf(" file list capped at %d by the provider; counts are lower bounds", forge.CompareFilesCap)))
+		}
+		if m.pathFilter != nil {
+			var touched []forge.FileDiff
+			for _, d := range sf.T2.Diffs {
+				if _, ok := m.pathFilter.First(d.Path); ok {
+					touched = append(touched, d)
+				}
+			}
+			if len(touched) > 0 {
+				divider()
+				writeLine(styles.warn.Render("Touches " + strings.Join(m.pathFilter.Patterns(), ", ") + ":"))
+				const maxShown = 20
+				for i, d := range touched {
+					if i == maxShown {
+						writeLine(fmt.Sprintf("   ... and %d more", len(touched)-maxShown))
+						break
+					}
+					writeLine(fmt.Sprintf(" %s %s (+%d/-%d)", d.Status, d.Path, d.Additions, d.Deletions))
+				}
+				writeLine("   [p] View patch for these files")
+			}
+		}
 	}
 
 	var badges []string
