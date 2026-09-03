@@ -23,6 +23,7 @@ import (
 	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/gitlab"
 	"github.com/svnbjrn/spoon/internal/heat"
+	"github.com/svnbjrn/spoon/internal/pathmatch"
 	"github.com/svnbjrn/spoon/internal/priors"
 	"github.com/svnbjrn/spoon/internal/semantic"
 	"github.com/svnbjrn/spoon/internal/store"
@@ -390,6 +391,12 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 				return agentio.NewError(agentio.CodeBadInput, "--priors: "+perr.Error(), agentio.RemediationBadInput("forks", "list")).Emit(stderr)
 			}
 			opts.Priors = spec
+		case "--touching":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--touching requires a path or glob (repeatable)", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			opts.Touching = append(opts.Touching, args[i])
 		case "--query":
 			if i+1 >= len(args) {
 				return agentio.NewError(agentio.CodeBadInput, "--query requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
@@ -547,6 +554,18 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 	}
 	if priorScaleSet && !opts.EB {
 		return agentio.NewError(agentio.CodeBadInput, "--prior-scale requires --eb", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+	}
+	if len(opts.Touching) > 0 {
+		if _, err := pathmatch.Compile(opts.Touching); err != nil {
+			return agentio.NewError(agentio.CodeBadInput, "--touching: "+err.Error()+" (repo-relative path or glob; ** matches directories)", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+		}
+		if opts.Tier == 1 {
+			return agentio.NewError(agentio.CodeBadInput, "--touching needs compare data; drop --tier 1", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+		}
+		if csvMode {
+			return agentio.NewError(agentio.CodeBadInput, "--touching emits NDJSON only; drop --csv", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+		}
+		opts.TouchReport = &forksops.TouchSummary{}
 	}
 	var rankReport forksops.RankReport
 	if opts.ShortlistN > 0 {
@@ -876,6 +895,9 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 			degraded++
 		}
 		persistSnapshotBestEffort(ctx, db, auth, owner, name, semanticModelID, r, &storeWarned, &truncWarned, stderr)
+		if !shouldEmitFork(opts, r) {
+			continue
+		}
 		if err := emitForkRecord(stdout, r, details, ""); err != nil {
 			return agentio.NewError(agentio.CodeInternal, err.Error(), agentio.RemediationInternal()).Emit(stderr)
 		}
@@ -889,6 +911,7 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 	}
 	emitAcquisitionReport(stderr, opts.Report)
 	emitRankReport(stderr, opts.RankReport)
+	emitTouchReport(stderr, opts.TouchReport)
 	emitSemanticIndexWarning(ctx, db, searchEmbedders, stderr)
 	return 0
 }
@@ -1293,6 +1316,9 @@ func forkToJSONDetailed(r forksops.Result, details detailOptions) map[string]any
 		out["priorScore"] = r.PriorScore
 		out["priorReasons"] = r.PriorReasons
 	}
+	if r.Touching != nil {
+		out["touching"] = touchingToJSON(*r.Touching)
+	}
 	if r.Heat.Category != "" {
 		out["category"] = r.Heat.Category
 		out["categoryScore"] = r.Heat.CategoryScore
@@ -1470,6 +1496,29 @@ func degradedToJSON(r forksops.Result) []map[string]any {
 			"stage":  d.Stage,
 			"reason": d.Reason,
 		})
+	}
+	return out
+}
+
+func touchingToJSON(t forksops.TouchMatch) map[string]any {
+	out := map[string]any{"status": string(t.Status), "partial": t.Partial}
+	if t.Reason != "" {
+		out["reason"] = t.Reason
+	}
+	if t.Status == forksops.TouchMatched {
+		out["impact"] = t.Impact
+		out["centrality_method"] = t.CentralityMethod
+	}
+	if len(t.Files) > 0 {
+		files := make([]map[string]any, 0, len(t.Files))
+		for _, f := range t.Files {
+			files = append(files, map[string]any{
+				"path": f.Path, "previousPath": f.PreviousPath, "status": f.Status,
+				"additions": f.Additions, "deletions": f.Deletions, "pattern": f.Pattern,
+				"centrality": f.Centrality,
+			})
+		}
+		out["files"] = files
 	}
 	return out
 }
@@ -1659,6 +1708,17 @@ func emitRankReport(stderr io.Writer, report *forksops.RankReport) {
 	}})
 }
 
+func emitTouchReport(stderr io.Writer, s *forksops.TouchSummary) {
+	if s == nil {
+		return
+	}
+	_ = agentio.WriteNDJSON(stderr, map[string]any{"touching": map[string]any{
+		"matched": s.Matched, "partial": s.Partial, "unmatched": s.Unmatched,
+		"unknown": s.Unknown, "never_pushed": s.NeverPushed, "centrality_method": s.CentralityMethod,
+		"note": "unknown = no usable compare (rate reserve, 404, or cached rows missing); re-run to backfill. never_pushed = pushed_at <= created_at, compared last.",
+	}})
+}
+
 // nanToNil maps NaN to nil so JSON encoding never fails on an undefined
 // statistic.
 func nanToNil(v float64) any {
@@ -1803,6 +1863,9 @@ func streamAndEmit(ctx context.Context, db *store.Store, auth forge.AuthInfo, pr
 			degraded++
 		}
 		persistSnapshotBestEffort(ctx, db, auth, owner, name, modelID, r, &storeWarned, &truncWarned, stderr)
+		if !shouldEmitFork(opts, r) {
+			continue
+		}
 		if err := emitForkRecord(stdout, r, details, upstream); err != nil {
 			return agentio.NewError(agentio.CodeInternal, err.Error(), agentio.RemediationInternal()).Emit(stderr)
 		}
@@ -1818,7 +1881,19 @@ func streamAndEmit(ctx context.Context, db *store.Store, auth forge.AuthInfo, pr
 	}
 	emitAcquisitionReport(stderr, opts.Report)
 	emitRankReport(stderr, opts.RankReport)
+	emitTouchReport(stderr, opts.TouchReport)
 	return 0
+}
+
+// shouldEmitFork applies the --touching output filter. It runs after the
+// snapshot is persisted so a live compare for an unmatched fork is never
+// thrown away: the next --touching run with another pattern reads it from
+// the store.
+func shouldEmitFork(opts forksops.Options, r forksops.Result) bool {
+	if len(opts.Touching) == 0 {
+		return true
+	}
+	return r.Touching.Emit()
 }
 
 // forkToJSONUpstream is forkToJSON plus an optional upstream tag (topic mode).

@@ -868,3 +868,16 @@ func TestSplitRepoArgAgreesWithForgeParse(t *testing.T) {
 		})
 	}
 }
+
+func TestShouldEmitForkUnderTouching(t *testing.T) {
+	opts := forksops.Options{Touching: []string{"a.go"}}
+	if shouldEmitFork(opts, forksops.Result{Touching: &forksops.TouchMatch{Status: forksops.TouchUnmatched}}) {
+		t.Fatal("unmatched must be suppressed")
+	}
+	if !shouldEmitFork(opts, forksops.Result{Touching: &forksops.TouchMatch{Status: forksops.TouchUnmatched, Partial: true}}) {
+		t.Fatal("partial unmatched must be emitted")
+	}
+	if !shouldEmitFork(forksops.Options{}, forksops.Result{}) {
+		t.Fatal("no touching option: everything emits")
+	}
+}

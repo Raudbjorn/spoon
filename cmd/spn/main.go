@@ -162,7 +162,7 @@ Nouns and verbs:
                     [--commit-file-budget N] [--web-diff]
                     [--no-cluster] [--cluster-top N] [--cluster-epsilon F] [--cluster-min-size N]
                     [--no-embed] [--heat-weights W] [--strict-mdg] [--full-mdg] [--no-mdg]
-                    [--query "intent"] [--priors PATH]
+                    [--query "intent"] [--priors PATH] [--touching PATH]
                     [--sibling-sim | --no-sibling-sim] [--sibling-sim-mode MODE] [--owner-cache-ttl DUR]
                     [--topic-repos N] [--topic-lanes LIST] [--topic-lane-budget N]
         --budget N caps the expensive per-fork compare/contributors calls to N.
@@ -220,6 +220,12 @@ Nouns and verbs:
         priorScore/priorReasons and, when neither --query nor --shortlist
         is set, lists matched forks before unmatched (heat order within
         each lane); never hides forks or changes heat.
+        --touching PATH|GLOB only lists forks whose own ahead commits touched
+        the path (repeatable; ** matches directories). Uses the
+        merge-base-relative compare already cached per fork, so re-runs cost
+        no API calls. Adds a "touching" block to each record; unmatched
+        forks are omitted. NDJSON only (rejects --csv), and needs compare
+        data (rejects --tier 1).
         --sibling-sim / --no-sibling-sim toggles P2 distant-relation
         discovery: one /search/repositories + ~50 README fetches + one
         batched embed. The default upstream_readme mode folds the max cosine

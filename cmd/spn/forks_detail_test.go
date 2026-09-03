@@ -31,3 +31,15 @@ func TestDetailedForkJSONGatesAndAttributesFiles(t *testing.T) {
 		t.Fatalf("completion marker missing: %+v", t2)
 	}
 }
+
+func TestForkToJSONTouchingBlock(t *testing.T) {
+	r := forksops.Result{Touching: &forksops.TouchMatch{Status: forksops.TouchMatched, Files: []forksops.TouchedFile{{Path: "a.go", Status: "added", Additions: 3, Pattern: "*.go"}}}}
+	out := forkToJSON(r)
+	tb, ok := out["touching"].(map[string]any)
+	if !ok || tb["status"] != "matched" {
+		t.Fatalf("touching block missing: %v", out["touching"])
+	}
+	if _, has := forkToJSON(forksops.Result{})["touching"]; has {
+		t.Fatal("touching must be omitted when the option was not set")
+	}
+}
