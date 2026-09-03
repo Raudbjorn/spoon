@@ -3,6 +3,8 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,8 +13,42 @@ import (
 	"testing"
 	"time"
 
+	ghAPI "github.com/cli/go-gh/v2/pkg/api"
 	"github.com/svnbjrn/spoon/internal/forge"
 )
+
+// isBatchServerFailure decides whether adaptive halving applies at all, so
+// its three-way split (server failure vs. tolerated partial vs. fatal
+// GraphQL error vs. caller cancellation) gets direct, table-driven coverage
+// here rather than only the indirect coverage the integration tests below
+// give it.
+func TestIsBatchServerFailure(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"typed 502", &ghAPI.HTTPError{StatusCode: 502}, true},
+		{"typed 503", &ghAPI.HTTPError{StatusCode: 503}, true},
+		{"typed 504", &ghAPI.HTTPError{StatusCode: 504}, true},
+		{"typed 500 is not this class", &ghAPI.HTTPError{StatusCode: 500}, false},
+		{"typed 404 is not this class", &ghAPI.HTTPError{StatusCode: 404}, false},
+		{"context canceled", context.Canceled, false},
+		{"context deadline exceeded", context.DeadlineExceeded, false},
+		{"wrapped context canceled", fmt.Errorf("request: %w", context.Canceled), false},
+		{"NOT_FOUND graphql error is not this class", &ghAPI.GraphQLError{Errors: []ghAPI.GraphQLErrorItem{{Type: "NOT_FOUND"}}}, false},
+		{"RATE_LIMITED graphql error is not this class", &ghAPI.GraphQLError{Errors: []ghAPI.GraphQLErrorItem{{Type: "RATE_LIMITED"}}}, false},
+		{"unclassified transport/decode error", errors.New("unexpected end of JSON input"), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isBatchServerFailure(tt.err); got != tt.want {
+				t.Errorf("isBatchServerFailure(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
 
 // batchStub answers FetchBatchDivergence's two phases, routing on the
 // "commits(last:" substring that only Phase B's nested tip+PR selection set
@@ -241,6 +277,24 @@ func TestFetchBatchDivergence_UnresolvedUpstreamRefErrors(t *testing.T) {
 	}
 }
 
+// A GraphQL-level error that is not NOT_FOUND-only, and not a server-side
+// failure either, must still fail the whole call: adaptive halving cannot
+// fix a rate limit, so this class of error keeps the pre-halving behavior
+// of aborting the sweep rather than silently under-reporting it.
+func TestFetchBatchDivergence_RejectsNonLookupGraphQLError(t *testing.T) {
+	phaseA := `{"data":{"repository":{"ref":null}},
+		"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}`
+
+	srv, _ := batchStub(t, phaseA, "")
+	c := newTestClientGQL(t, srv)
+
+	_, _, err := c.FetchBatchDivergence(context.Background(), "up", "stream", "main",
+		[]BatchTarget{{ID: "o/repo", Owner: "o", Name: "repo", DefaultBranch: "main"}})
+	if err == nil {
+		t.Fatal("a RATE_LIMITED error was swallowed; the sweep must fail loudly")
+	}
+}
+
 // A Phase B query that fails outright (retries exhausted on a persistent
 // 5xx) must not fail the whole call or discard Phase A's ahead/behind data:
 // the branch falls back to its listing tip with UpstreamedPR left at 0,
@@ -292,4 +346,283 @@ func TestFetchBatchDivergence_PhaseBFailureFallsBackToListingTip(t *testing.T) {
 	if stats.Queries != 2 {
 		t.Errorf("stats.Queries = %d, want 2 (phase A + the failed phase B document)", stats.Queries)
 	}
+}
+
+// phaseAOKBody builds a successful Phase A response with n aliases, each
+// resolving to aheadBy=0 behindBy=0 -- the shape aliasesOverThreshold's stub
+// serves for a document it accepts.
+func phaseAOKBody(n int) string {
+	var sb strings.Builder
+	sb.WriteString(`{"data":{"repository":{"ref":{`)
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			sb.WriteString(",")
+		}
+		fmt.Fprintf(&sb, `"c%d":{"aheadBy":0,"behindBy":0}`, i)
+	}
+	sb.WriteString(`}},` + rl + `}}`)
+	return sb.String()
+}
+
+// aliasCount counts compare(headRef: aliases in a query document, used by
+// the stubs below to decide how many branches a given request is asking
+// about without depending on chunk boundaries.
+func aliasCount(query string) int {
+	return strings.Count(query, "compare(headRef:")
+}
+
+// An oversized Phase A document (GitHub's "malformed/empty response" or
+// HTTP 502 failure mode, observed independent of GraphQL's own reported
+// query cost -- see the batchCompareSize doc comment) must not fail the
+// whole call: adaptive halving retries it as smaller documents until they
+// fit, and every branch ends up resolved.
+func TestFetchBatchDivergence_PhaseAHalvingRecoversFromOversizedDocument(t *testing.T) {
+	const threshold = 30 // aliases; a document larger than this 502s
+
+	var mu sync.Mutex
+	var docs []string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			Query string `json:"query"`
+		}
+		_ = json.Unmarshal(body, &req)
+		mu.Lock()
+		docs = append(docs, req.Query)
+		mu.Unlock()
+		n := aliasCount(req.Query)
+		if n > threshold {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(phaseAOKBody(n)))
+	}))
+	t.Cleanup(srv.Close)
+	c := newTestClientGQL(t, srv)
+
+	const numTargets = 35 // one top-level chunk (batchCompareSize=50), over threshold
+	targets := make([]BatchTarget, numTargets)
+	for i := range targets {
+		targets[i] = BatchTarget{
+			ID: fmt.Sprintf("o/repo%d", i), Owner: "o", Name: fmt.Sprintf("repo%d", i),
+			DefaultBranch: "main",
+		}
+	}
+
+	got, stats, err := c.FetchBatchDivergence(context.Background(), "up", "stream", "main", targets)
+	if err != nil {
+		t.Fatalf("adaptive halving must recover from an oversized-document server failure: %v", err)
+	}
+	for _, tg := range targets {
+		fd, ok := got[tg.ID]
+		if !ok || !fd.Resolved {
+			t.Errorf("%s = (%+v, %v), want Resolved=true after halving", tg.ID, fd, ok)
+		}
+	}
+	// stats.Queries counts one per document actually sent (a retried
+	// document is still one document, physically resent up to
+	// gqlMaxAttempts times) -- assert that directly against the set of
+	// distinct query strings the stub actually received, rather than a
+	// hand-derived number, so the logical-vs-physical distinction is
+	// explicit: 35 fails once (over threshold, retried 3x physically but
+	// one document), then splits into 17+18, both under threshold and
+	// succeed on the first try -- 3 distinct documents, 5 physical requests.
+	mu.Lock()
+	unique := make(map[string]struct{}, len(docs))
+	for _, d := range docs {
+		unique[d] = struct{}{}
+	}
+	physical := len(docs)
+	mu.Unlock()
+	if stats.Queries != len(unique) {
+		t.Errorf("stats.Queries = %d, want %d (the number of distinct documents sent)", stats.Queries, len(unique))
+	}
+	if physical <= len(unique) {
+		t.Errorf("physical requests = %d, want more than %d distinct documents (the oversized one should have been retried)", physical, len(unique))
+	}
+}
+
+// A Phase A document that fails no matter how small it gets (a persistent
+// 5xx, not merely an oversized one) must still not fail the whole call:
+// adaptive halving gives up at batchMinChunk and leaves those branches
+// unresolved, and the number of documents sent stays bounded rather than
+// recursing forever.
+func TestFetchBatchDivergence_PhaseAPersistentFailureDropsWithoutError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	t.Cleanup(srv.Close)
+	c := newTestClientGQL(t, srv)
+
+	// 11 is the smallest size that still forces exactly one split (over
+	// batchMinChunk=10); both halves (5 and 6) then fail at or below the
+	// floor and are dropped without splitting further.
+	const numTargets = 11
+	targets := make([]BatchTarget, numTargets)
+	for i := range targets {
+		targets[i] = BatchTarget{
+			ID: fmt.Sprintf("o/repo%d", i), Owner: "o", Name: fmt.Sprintf("repo%d", i),
+			DefaultBranch: "main",
+		}
+	}
+
+	got, stats, err := c.FetchBatchDivergence(context.Background(), "up", "stream", "main", targets)
+	if err != nil {
+		t.Fatalf("a persistent server failure must not fail the whole batch: %v", err)
+	}
+	for _, tg := range targets {
+		if fd := got[tg.ID]; fd.Resolved {
+			t.Errorf("%s Resolved = true, want false (every Phase A document failed)", tg.ID)
+		}
+	}
+	// 11 fails, splits into 5+6, both fail at/below the floor and are
+	// dropped without further splitting: exactly 3 documents, not an
+	// unbounded recursion.
+	if stats.Queries != 3 {
+		t.Errorf("stats.Queries = %d, want 3 (bounded: no infinite halving)", stats.Queries)
+	}
+}
+
+// Halving splits one target's attempts (its default branch plus its side
+// branches) across chunks independently of which target they belong to, so
+// a single fork's default branch can be dropped at the floor while a
+// sibling side branch of the *same* fork resolves cleanly in a different
+// chunk. The fork must still come back Resolved=false as a whole -- a
+// resolved side must not stand in for a clean answer about the dropped
+// default, which would otherwise synthesize a fabricated "0 ahead" default
+// and skip the REST fallback for a fork that was never actually checked.
+func TestFetchBatchDivergence_PartialDropWithinTargetForcesUnresolved(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			Query string `json:"query"`
+		}
+		_ = json.Unmarshal(body, &req)
+		w.Header().Set("Content-Type", "application/json")
+		// Any document asking about the default branch ("o:main") 502s;
+		// documents asking only about side branches succeed. This forces
+		// the default branch's chunk (and only that chunk) to fail all the
+		// way down to the floor.
+		if strings.Contains(req.Query, `"o:main"`) {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		_, _ = w.Write([]byte(phaseAOKBody(aliasCount(req.Query))))
+	}))
+	t.Cleanup(srv.Close)
+	c := newTestClientGQL(t, srv)
+
+	// One target: default branch + 10 side branches = 11 attempts, forcing
+	// exactly one split (over batchMinChunk=10). The split puts the default
+	// branch in the first half (size 5, which includes it) and the last 6
+	// side branches in the second half (no default) -- see batchAttempt
+	// construction order in FetchBatchDivergence (default first, then
+	// sides in order).
+	target := BatchTarget{ID: "o/repo", Owner: "o", Name: "repo", DefaultBranch: "main", DefaultTipSHA: "mainSeed"}
+	for i := 0; i < 10; i++ {
+		target.Sides = append(target.Sides, BatchBranch{Name: fmt.Sprintf("side%d", i), TipSHA: fmt.Sprintf("sideSeed%d", i)})
+	}
+
+	got, stats, err := c.FetchBatchDivergence(context.Background(), "up", "stream", "main", []BatchTarget{target})
+	if err != nil {
+		t.Fatalf("a partial drop within one target must not fail the whole batch: %v", err)
+	}
+	fd, ok := got["o/repo"]
+	if !ok {
+		t.Fatal("o/repo missing from result map, want a present Resolved=false entry")
+	}
+	if fd.Resolved {
+		t.Errorf("o/repo = %+v, want Resolved=false (its default branch was never actually answered)", fd)
+	}
+	if fd.Default.Name != "" || fd.Default.AheadBy != 0 || len(fd.Sides) != 0 {
+		t.Errorf("o/repo = %+v, want zero-value Default/Sides (must not synthesize a fabricated answer from the resolved sides)", fd)
+	}
+	// The size-11 attempt sees "o:main" -> 502; it splits into 5 (still
+	// containing "o:main") + 6 (no default, side branches only). The size-5
+	// half also sees "o:main" -> 502, and since 5 <= batchMinChunk it is
+	// dropped without splitting further. The size-6 half has no default
+	// branch alias, so it succeeds immediately. 3 documents total.
+	if stats.Queries != 3 {
+		t.Errorf("stats.Queries = %d, want 3 (size-11 fail, size-5 fail-and-drop, size-6 succeed)", stats.Queries)
+	}
+}
+
+// The Phase B analogue: a chunk that fails no matter how small it gets
+// (here, via a response body that never decodes -- GitHub's other observed
+// oversized-document failure mode, and explicitly the same isBatchServerFailure
+// class as an HTTP 5xx) halves down to the floor and is dropped the same
+// way Phase A drops one, leaving those branches on their listing-seeded tip
+// with UpstreamedPR left at 0 rather than failing the call.
+func TestFetchBatchDivergence_PhaseBHalvingDropsAtFloorWithoutError(t *testing.T) {
+	const numBranches = 11 // smallest size forcing exactly one split, as above
+
+	phaseA := phaseAAllAheadBody(numBranches)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			Query string `json:"query"`
+		}
+		_ = json.Unmarshal(body, &req)
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(req.Query, "commits(last:") {
+			// A body that never decodes as JSON -- go-gh surfaces this as a
+			// plain decode error, not retried by doGraphQLWithRetry (it
+			// isn't an HTTP 5xx), which is exactly what keeps this test fast
+			// despite exercising the same isBatchServerFailure classification.
+			_, _ = w.Write([]byte("{not valid json"))
+			return
+		}
+		_, _ = w.Write([]byte(phaseA))
+	}))
+	t.Cleanup(srv.Close)
+	c := newTestClientGQL(t, srv)
+
+	seedTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	targets := make([]BatchTarget, numBranches)
+	for i := range targets {
+		targets[i] = BatchTarget{
+			ID: fmt.Sprintf("o/repo%d", i), Owner: "o", Name: fmt.Sprintf("repo%d", i),
+			DefaultBranch: "main", DefaultTipSHA: fmt.Sprintf("seed%d", i), DefaultCommittedAt: seedTime,
+		}
+	}
+
+	got, stats, err := c.FetchBatchDivergence(context.Background(), "up", "stream", "main", targets)
+	if err != nil {
+		t.Fatalf("a persistent Phase B failure must not fail the whole batch: %v", err)
+	}
+	for _, tg := range targets {
+		fd := got[tg.ID]
+		if !fd.Resolved || fd.Default.AheadBy != 3 {
+			t.Fatalf("%s = %+v, want Resolved=true AheadBy=3 (Phase A succeeded)", tg.ID, fd)
+		}
+		if fd.Default.TipSHA != tg.DefaultTipSHA || !fd.Default.TipCommittedAt.Equal(seedTime) {
+			t.Errorf("%s tip = (%q, %v), want listing fallback (%q, %v)", tg.ID, fd.Default.TipSHA, fd.Default.TipCommittedAt, tg.DefaultTipSHA, seedTime)
+		}
+		if fd.Default.UpstreamedPR != 0 {
+			t.Errorf("%s UpstreamedPR = %d, want 0 (Phase B never answered)", tg.ID, fd.Default.UpstreamedPR)
+		}
+	}
+	// 1 phase A document + phase B: 11 fails, splits into 5+6, both fail
+	// at/below the floor and are dropped: 3 more documents, 4 total.
+	if stats.Queries != 4 {
+		t.Errorf("stats.Queries = %d, want 4 (1 phase A + 3 phase B: bounded, no infinite halving)", stats.Queries)
+	}
+}
+
+// phaseAAllAheadBody builds a successful Phase A response with n aliases,
+// each ahead by 3 (so every branch qualifies for Phase B).
+func phaseAAllAheadBody(n int) string {
+	var sb strings.Builder
+	sb.WriteString(`{"data":{"repository":{"ref":{`)
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			sb.WriteString(",")
+		}
+		fmt.Fprintf(&sb, `"c%d":{"aheadBy":3,"behindBy":0}`, i)
+	}
+	sb.WriteString(`}},` + rl + `}}`)
+	return sb.String()
 }
