@@ -97,6 +97,49 @@ func (p *GHProvider) DivergentBranchCounts(ctx context.Context, forks []forge.T1
 
 var _ forge.BranchDivergenceProvider = (*GHProvider)(nil)
 
+// BatchCompare implements forge.BatchCompareProvider: it resolves ahead/
+// behind (and, for ahead branches, tip + upstreamed-PR status) for every
+// fork's default and side branches against the network root in two GraphQL
+// passes, replacing a per-fork REST branch scan.
+//
+// Returns forge.ErrBatchCompareUnavailable when the client has no working
+// GraphQL backend, so callers fall back to the REST path silently rather
+// than treating it as a hard failure.
+func (p *GHProvider) BatchCompare(ctx context.Context, forks []forge.T1Data) (map[string]forge.ForkDivergence, forge.BatchStats, error) {
+	if !p.client.HasGraphQL() {
+		return nil, forge.BatchStats{}, forge.ErrBatchCompareUnavailable
+	}
+	p.mu.RLock()
+	sourceOwner := p.sourceOwner
+	sourceRepo := p.sourceRepo
+	sourceDefaultBranch := p.sourceDefaultBranch
+	p.mu.RUnlock()
+
+	targets := make([]BatchTarget, 0, len(forks))
+	for _, f := range forks {
+		sides := make([]BatchBranch, 0, len(f.Branches))
+		for _, b := range f.Branches {
+			sides = append(sides, BatchBranch{
+				Name:        b.Name,
+				TipSHA:      b.TipSHA,
+				CommittedAt: b.CommittedDate,
+			})
+		}
+		targets = append(targets, BatchTarget{
+			ID:                 f.ID,
+			Owner:              f.Owner,
+			Name:               f.Name,
+			DefaultBranch:      f.DefaultBranch,
+			DefaultTipSHA:      f.DefaultTipSHA,
+			DefaultCommittedAt: f.PushedAt,
+			Sides:              sides,
+		})
+	}
+	return p.client.FetchBatchDivergence(ctx, sourceOwner, sourceRepo, sourceDefaultBranch, targets)
+}
+
+var _ forge.BatchCompareProvider = (*GHProvider)(nil)
+
 // MergeCommitHistory implements forge.LinearHistoryProvider. The whole batch
 // costs one GraphQL compare query per linearHistoryBatchSize forks; the
 // returned vector is the raw parents.totalCount per commit, capped at
@@ -489,6 +532,7 @@ func forkInfoToT1(f ForkInfo, extra *T1Extra, parentFullPath, sourceFullPath str
 		t1.IsForkOfFork = extra.DepthFromRoot > 1
 		t1.DirectTotalCount = extra.DirectTotalCount
 		t1.WholeNetworkForkCount = extra.WholeNetworkForkCount
+		t1.DefaultTipSHA = extra.DefaultTipSHA
 
 		branches := make([]forge.BranchRef, 0, len(extra.TopBranches))
 		for _, br := range extra.TopBranches {
@@ -496,6 +540,7 @@ func forkInfoToT1(f ForkInfo, extra *T1Extra, parentFullPath, sourceFullPath str
 			branches = append(branches, forge.BranchRef{
 				Name:          br.Name,
 				CommittedDate: cd,
+				TipSHA:        br.TipSHA,
 			})
 		}
 		t1.Branches = branches
