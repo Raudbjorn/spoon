@@ -384,6 +384,57 @@ func (p *GHProvider) Compare(ctx context.Context, fork forge.T1Data, branch stri
 		return forge.T2Data{}, fmt.Errorf("compare %s@%s: %w", fork.ID, branch, err)
 	}
 
+	return p.finishT2(ctx, sourceOwner, sourceRepo, scan, fork), nil
+}
+
+// CompareResolved implements forge.ResolvedCompareProvider. The branch to
+// attribute the fork's work to, and its upstreamed verdict, were already
+// decided by forge.SelectDivergentBranch from a batch-resolved
+// forge.ForkDivergence -- so unlike Compare, this issues exactly one REST
+// compare against sel.Branch and never scans side branches or probes
+// commits/{sha}/pulls.
+func (p *GHProvider) CompareResolved(ctx context.Context, fork forge.T1Data, sel forge.BranchSelection) (forge.T2Data, error) {
+	// Same baseline guard as Compare: without it the compare path degrades to
+	// "repos///compare/HEAD...", which 404s and would otherwise launder into
+	// a false "0 ahead, 0 behind" result.
+	p.mu.RLock()
+	sourceOwner := p.sourceOwner
+	sourceRepo := p.sourceRepo
+	sourceDefaultBranch := p.sourceDefaultBranch
+	p.mu.RUnlock()
+	if sourceOwner == "" || sourceRepo == "" {
+		return forge.T2Data{}, fmt.Errorf("compare resolved %s@%s: upstream not resolved (Parent not called)", fork.ID, sel.Branch)
+	}
+
+	parentBranch := sourceDefaultBranch
+	if parentBranch == "" {
+		parentBranch = "HEAD"
+	}
+
+	result, err := p.client.FetchCompare(ctx, sourceOwner, sourceRepo, parentBranch, fork.Owner, sel.Branch)
+	if err != nil {
+		return forge.T2Data{}, fmt.Errorf("compare resolved %s@%s: %w", fork.ID, sel.Branch, err)
+	}
+
+	scan := BranchScan{
+		Compare:      result,
+		Branch:       sel.Branch,
+		Upstreamed:   sel.Upstreamed,
+		UpstreamedPR: sel.UpstreamedPR,
+	}
+
+	return p.finishT2(ctx, sourceOwner, sourceRepo, scan, fork), nil
+}
+
+var _ forge.ResolvedCompareProvider = (*GHProvider)(nil)
+
+// finishT2 completes a compare into forge.T2Data: converts the REST compare
+// result, fills in patches the compare response omitted via the cookie
+// web-diff client when one is configured, and applies the branch-work and
+// upstreamed flags carried by scan. Compare (full branch scan) and
+// CompareResolved (single pre-selected branch) differ only in how scan is
+// produced; from here on they finish identically.
+func (p *GHProvider) finishT2(ctx context.Context, sourceOwner, sourceRepo string, scan BranchScan, fork forge.T1Data) forge.T2Data {
 	t2 := compareToT2(scan.Compare)
 
 	if p.client.webDiff != nil {
@@ -439,7 +490,7 @@ func (p *GHProvider) Compare(ctx context.Context, fork forge.T1Data, branch stri
 		t2.UpstreamedPR = scan.UpstreamedPR
 	}
 
-	return t2, nil
+	return t2
 }
 
 // Contributors implements forge.Forge.
