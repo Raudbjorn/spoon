@@ -69,8 +69,8 @@ two transports should coexist with GraphQL as the default and
 ## Note: refreshing `BehindCount` for cached forks through the batch
 
 Today, a fork served from `Options.CachedT2` never reaches the pre-dispatch
-GraphQL batch (`internal/forksops/batchcompare.go`'s pending-fork filter
-excludes anything `CachedT2` already resolves), so its `BehindCount` stays
+GraphQL batch (`internal/forksops/stream.go`'s pre-dispatch pending-fork
+loop excludes anything `CachedT2` already resolves), so its `BehindCount` stays
 whatever it was on the run that originally fetched it — potentially stale
 if upstream has moved since. The batch already computes `behindBy` for
 every branch it touches at effectively no marginal cost (Phase A's

@@ -52,24 +52,44 @@ per branch, against `pbakaus/impeccable`'s default branch.
 
 | Shape | Aliases | Result |
 |---|---|---|
-| `{aheadBy behindBy}` | 150 | HTTP 200, cost 1 (pre-existing proven shape, `divergent_branches.go:42`) |
-| `commits(last:1){oid committedDate associatedPullRequests(first:5){...}}` | 5 | HTTP 200, cost 1 |
-| same nested shape | 50 | HTTP 200, cost 1 |
+| `{aheadBy behindBy}` | 50 | HTTP 200, cost 1 |
+| `{aheadBy behindBy}` | 75 | HTTP 200, cost 1 |
+| `{aheadBy behindBy}` | 100 | malformed/empty response (failure) |
+| `{aheadBy behindBy}` | 150 | HTTP 502 |
+| bare `{aheadBy}` (no `behindBy`) | 150 | HTTP 502 |
+| `commits(last:1){oid committedDate associatedPullRequests(first:3){...}}` | 5 | HTTP 200, cost 1 |
+| `commits(last:1){oid committedDate associatedPullRequests(first:5){...}}` | 50 | HTTP 200, cost 1 |
 | same nested shape | 75, 100 | HTTP 502 |
 | `commits(last:1)` with no `associatedPullRequests` | 100, 150 | HTTP 502 |
 
-GitHub times out walking commit history for that many cross-repo compares
-once the nested `commits(last:1)` shape is involved, regardless of whether
-`associatedPullRequests` is included — the nesting itself, not the PR lookup,
-is what caps the safe alias count around 50-75.
+The `{aheadBy behindBy}` failures at 100/150 aliases contradict
+`divergent_branches.go:42`'s "150 measured safe" note (a bare `{aheadBy}`
+shape 502s at 150 too): that figure was measured against a far smaller
+upstream and does not generalize — GitHub is imposing a document-size
+ceiling on `ref(...)`'s compare block independent of the reported GraphQL
+query cost (every successful response above was cost 1 regardless of alias
+count). The nested `commits(last:1)` shape fails at a lower alias count
+(75) than the flat shape (100) for the same reason — more document per
+alias, same underlying ceiling — not because walking commit history itself
+is what times out.
 
-**Ruling:** the batch is two phases. Phase A resolves `{aheadBy behindBy}`
-for every branch at `batchCompareSize = 150` aliases per query. Phase B, only
-for branches Phase A found `aheadBy > 0`, resolves
-`commits(last:1){nodes{oid committedDate associatedPullRequests(first:5){...}}}`
-at `batchTipSize = 50` aliases per query. Tip SHAs for zero-ahead branches
-come from the fork-listing query instead (extended to carry `oid`), so Phase
-B never needs to ask about them.
+**Ruling (superseded, see below):** the plan's Task 0 ruling set
+`batchCompareSize = 150` for Phase A on the strength of
+`divergent_branches.go`'s "150 measured safe" note, without re-measuring it
+against `pbakaus/impeccable` specifically. A same-day re-measurement (the
+table above) found that note does not hold on this upstream: Phase A fails
+at 100 and 150 aliases. **Shipped instead** (`internal/github/batch_compare.go`,
+commit `da2ae73`): `batchCompareSize = 50` for Phase A and `batchTipSize =
+50` for Phase B — the largest size measured safe for both shapes — plus
+adaptive halving: a chunk that fails with a server-side error (5xx, a
+gateway/transport error, or an undecodable body) is split and retried
+recursively down to `batchMinChunk = 10`, and a chunk still failing at that
+floor is dropped (its forks left unresolved, falling back to the ordinary
+REST path) rather than failing the whole batch call. A genuine GraphQL-level
+error that is not a server-side failure (e.g. `RATE_LIMITED`) still aborts
+Phase A outright, since a smaller document cannot fix that. Tip SHAs for
+zero-ahead branches come from the fork-listing query instead (extended to
+carry `oid`), so Phase B never needs to ask about them.
 
 A NOT_FOUND alias (fork renamed, deleted, or privated between listing and
 the batch call) returns `null` in `data` for that alias with a corresponding
@@ -183,9 +203,23 @@ resolve for free anyway.
 
 - **Two-phase batch, two sizes.** Task 0's measurement (above) forced a
   two-phase design rather than one query per branch: `batchCompareSize =
-  150` for `{aheadBy behindBy}`, `batchTipSize = 50` for the nested
-  tip+PR shape. Tip SHAs for zero-ahead branches are seeded from the
-  listing query instead of asked for in Phase B.
+  50` for `{aheadBy behindBy}`, `batchTipSize = 50` for the nested
+  tip+PR shape — plus adaptive halving of a chunk that fails with a
+  server-side error, down to a `batchMinChunk = 10` floor before it is
+  dropped. Tip SHAs for zero-ahead branches are seeded from the listing
+  query instead of asked for in Phase B.
+- **The plan's Task 0 ruling of `batchCompareSize = 150` was superseded**
+  (commit `da2ae73`, same day). The plan's own Task 0 measurement borrowed
+  `divergent_branches.go`'s "150 measured safe" figure for the flat
+  `{aheadBy behindBy}` shape without separately re-measuring it against
+  `pbakaus/impeccable`; a same-day re-measurement (see "GraphQL batch shape
+  and size" above) found Phase A itself fails at 100 and 150 aliases on
+  this upstream, because `divergent_branches.go`'s figure was measured
+  against a smaller one. At 150, Phase A would 502, `doGraphQLWithRetry`
+  would exhaust its retries against the same oversized document, and the
+  whole batch call would error out — silently falling back to REST for
+  every fork on exactly the large networks this feature exists for. Fixed
+  by dropping to 50 and adding adaptive halving, above.
 - **`BatchStats` return shape.** `forge.BatchCompareProvider.BatchCompare`
   returns `(map[string]ForkDivergence, forge.BatchStats, error)` rather than
   folding query/cost accounting into a side channel, so `Stream` can report
@@ -231,8 +265,9 @@ measured):
 | | Before this branch | Expected after |
 |---|---|---|
 | impeccable REST requests | >= 3692 (one compare per fork; reserve stopped the sweep at 2120) | ~ 37 listing + 1 parent + ~69 compares + <= 10 diffs, i.e. < 150 |
-| impeccable GraphQL queries | 0 (no batch existed) | ~ 25-40 |
+| impeccable GraphQL queries | 0 (no batch existed) | ~ 74 Phase A (3692 branches / 50 per query) + <= 2 Phase B (69 ahead branches / 50), ~ 76 total |
 | litellm REST requests | 3493 (reserve-limited) | ~ 1300 divergent forks + 58 diffs |
+| litellm GraphQL queries | 0 (no batch existed) | ~ 600 Phase A (~30000 branches [10735 forks + 19221 side branches] / 50) + ~ 40 Phase B (1280 ahead branches / 50, plus retries from adaptive halving) |
 
 ## Risks
 
