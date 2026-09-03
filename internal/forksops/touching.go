@@ -41,8 +41,14 @@ type TouchedFile struct {
 // highest upstream centrality among the matched files (0 when no backend);
 // CentralityMethod names the backend that produced it.
 type TouchMatch struct {
-	Status           TouchStatus
-	Reason           string // unknown only: compare_unavailable | cache_no_files | reserve_skipped
+	Status TouchStatus
+	// Reason explains a verdict that isn't a plain scan result: on
+	// TouchUnknown, one of compare_unavailable | cache_no_files |
+	// reserve_skipped; on TouchUnmatched, "last_touch" when the REST
+	// compare was skipped by the last-touch proof (lasttouch.go) rather
+	// than actually run -- see Result.T2FilesUnfetched. Empty for an
+	// ordinary matched/unmatched verdict from a real compare.
+	Reason           string
 	Files            []TouchedFile
 	Partial          bool
 	Impact           float64
@@ -77,6 +83,19 @@ func (t *TouchMatch) Emit() bool {
 type TouchSummary struct {
 	Matched, Partial, Unmatched, Unknown, NeverPushed int
 	CentralityMethod                                  string
+
+	// LastTouchGated, LastTouchLookedUp, LastTouchSkipped, LastTouchMismatch
+	// and LastTouchUnavailable tally the last-touch skip stage's per-fork
+	// decisions (lasttouch.go). Gated: the selected branch could not
+	// contain upstream's last-touch commit for some target, so no lookup
+	// was made. LookedUp: the gate actually queried the fork. Skipped: the
+	// gate proved every target untouched -- REST compare skipped,
+	// Result.T2FilesUnfetched set, verdict TouchUnmatched/"last_touch".
+	// Mismatch and Unavailable are lookups that could not prove the
+	// negative and fell through to an ordinary compare. All zero when
+	// --touching wasn't set, a pattern used a wildcard, or the provider
+	// lacks forge.LastTouchProvider.
+	LastTouchGated, LastTouchLookedUp, LastTouchSkipped, LastTouchMismatch, LastTouchUnavailable int
 }
 
 // NeverPushed reports a fork that has not been pushed since it was created.
@@ -104,6 +123,13 @@ func touchOne(m pathmatch.Matcher, c repo.Centrality, r Result) TouchMatch {
 	// scan Diffs (they may be stale or absent).
 	if t2.AheadCount == 0 {
 		return TouchMatch{Status: TouchUnmatched}
+	}
+	// The last-touch skip stage (lasttouch.go) proved every --touching
+	// target untouched without ever fetching Diffs; there is nothing to
+	// scan here, and the AheadCount/BehindCount on this T2 are real, not a
+	// signal that the compare ran empty.
+	if r.T2FilesUnfetched {
+		return TouchMatch{Status: TouchUnmatched, Reason: "last_touch"}
 	}
 	// A cached compare rehydrates Diffs from compare_files. Missing rows for a
 	// compare that had a non-empty diff are "unknown", not "unmatched".

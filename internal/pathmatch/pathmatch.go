@@ -34,6 +34,19 @@ func Normalize(pattern string) (string, error) {
 
 func hasWildcard(s string) bool { return strings.ContainsAny(s, "*?[") }
 
+// IsLiteral reports whether pattern, once normalized, names exactly one
+// path (file or directory) with no wildcard segments -- the precondition a
+// caller needing a single, unambiguous target checks before treating a
+// pattern as one concrete path rather than a set Match could match many
+// paths against. A pattern that fails to normalize is not literal.
+func IsLiteral(pattern string) bool {
+	n, err := Normalize(pattern)
+	if err != nil {
+		return false
+	}
+	return !hasWildcard(n)
+}
+
 // Match reports whether name matches pattern. The only error is ErrBadPattern.
 func Match(pattern, name string) (bool, error) {
 	if !hasWildcard(pattern) {

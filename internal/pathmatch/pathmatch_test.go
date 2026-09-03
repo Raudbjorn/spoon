@@ -51,6 +51,19 @@ func TestNormalize(t *testing.T) {
 	}
 }
 
+func TestIsLiteral(t *testing.T) {
+	for _, lit := range []string{"src/a.go", "./src/", "docs", "README.md"} {
+		if !IsLiteral(lit) {
+			t.Errorf("IsLiteral(%q) = false, want true", lit)
+		}
+	}
+	for _, notLit := range []string{"*.mjs", "**/*.mjs", "cli/**", "cli/**/x.js", "[", "", "/abs", "../x"} {
+		if IsLiteral(notLit) {
+			t.Errorf("IsLiteral(%q) = true, want false", notLit)
+		}
+	}
+}
+
 func TestCompileFirst(t *testing.T) {
 	m, err := Compile([]string{"docs/", "**/*.mjs"})
 	if err != nil {

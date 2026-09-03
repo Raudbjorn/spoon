@@ -1821,7 +1821,7 @@ func TestStream_compareReportCounts(t *testing.T) {
 		t.Errorf("DiffFallback = %d, want 1", summary.DiffFallback)
 	}
 	if summary.LastTouchSkipped != 0 {
-		t.Errorf("LastTouchSkipped = %d, want 0 (not wired until task 7)", summary.LastTouchSkipped)
+		t.Errorf("LastTouchSkipped = %d, want 0 (opts.Touching unset, so the last-touch gate never builds)", summary.LastTouchSkipped)
 	}
 	if summary.BatchQueries != 2 || summary.BatchCost != 7 {
 		t.Errorf("BatchQueries/BatchCost = %d/%d, want 2/7", summary.BatchQueries, summary.BatchCost)

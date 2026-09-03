@@ -290,6 +290,16 @@ type Result struct {
 	// re-persisting them would overwrite full rows with patch-less ones.
 	T2FromCache bool
 
+	// T2FilesUnfetched marks a T2 synthesised by the last-touch skip stage
+	// (lasttouch.go): AheadCount/BehindCount/HeadSHA come from the
+	// batch-resolved BranchSelection and are real, but Diffs was never
+	// fetched -- avoiding exactly that REST call is the stage's purpose. A
+	// scalars-only T2 like this must never be persisted as if it were a
+	// real "compare ran, no files changed" result -- a caller that
+	// persists T2 rows must gate on this field the same way it already
+	// gates on T2FromCache.
+	T2FilesUnfetched bool
+
 	// ExpectedRank / RankConfidence are set only when ShortlistN > 0 (Robbins
 	// expected-rank shortlist). Lower ExpectedRank ≈ more likely the best fork;
 	// RankConfidence mirrors Heat.Confidence (tier reached).
@@ -638,6 +648,18 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 			}
 		}
 
+		// Last-touch skip gate (lasttouch.go): a cheap negative proof that
+		// lets the worker below skip the REST compare entirely for a fork
+		// whose selected branch cannot have touched any --touching target.
+		// Only meaningful once the batch has produced BranchSelection
+		// values for the worker to test (see decide()'s guard for the
+		// proof); building it when the batch didn't run would spend the
+		// once-per-run upstream lookup for a stage no fork could reach.
+		var ltGate *lastTouchGate
+		if touching && batchRan {
+			ltGate = newLastTouchGate(ctx, provider, opts.Touching, logger)
+		}
+
 		concurrency := 4
 		if a, _ := provider.Auth(ctx); a.Concurrency > 0 {
 			concurrency = a.Concurrency
@@ -826,6 +848,29 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 						}
 						budgetSkipped.Add(1)
 					}
+					// Last-touch skip: consult the gate only when the batch
+					// gave this fork a BranchSelection to test (sel != nil)
+					// and no earlier stage already resolved T2. See
+					// lasttouch.go's decide() for the proof this relies on.
+					if enrich && tier >= 2 && r.T2 == nil && ltGate != nil && sel != nil {
+						if skip, _ := ltGate.decide(ctx, s.fork, *sel); skip {
+							t2 := forge.T2Data{
+								Performed:     true,
+								AheadCount:    sel.Ahead,
+								BehindCount:   sel.Behind,
+								HeadSHA:       sel.TipSHA,
+								IsBranchWork:  sel.IsSide,
+								Upstreamed:    sel.Upstreamed,
+								UpstreamedPR:  sel.UpstreamedPR,
+								CompareSource: "graphql_batch",
+							}
+							if sel.IsSide {
+								t2.ActiveBranch = sel.Branch
+							}
+							r.T2 = &t2
+							r.T2FilesUnfetched = true
+						}
+					}
 					if tier >= 2 && enrich && r.T2 == nil {
 						t2, terr := compareFork(ctx, provider, s.fork, sel, logger)
 						if terr != nil {
@@ -912,19 +957,19 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 				n, len(all))
 		}
 
+		_, _, ltSkipped, _, _ := ltGate.counts()
 		if opts.CompareReport != nil {
 			opts.CompareReport.Cached = int(compareCached.Load())
 			opts.CompareReport.Batch = int(compareBatch.Load())
 			opts.CompareReport.REST = int(compareREST.Load())
 			opts.CompareReport.DiffFallback = int(compareDiffFallback.Load())
+			opts.CompareReport.LastTouchSkipped = ltSkipped
 			opts.CompareReport.BatchQueries = batchStats.Queries
 			opts.CompareReport.BatchCost = batchStats.Cost
-			// LastTouchSkipped stays 0 here; a later stage (--touching's
-			// last-touch attribution pass) increments it.
 		}
 		if tier >= 2 && len(all) > 0 {
 			fmt.Fprintf(logger, "[triage] compare sources: cached %d · graphql_batch %d · rest %d · diff_fallback %d · last_touch_skipped %d (batch: %d queries, cost %d)\n",
-				compareCached.Load(), compareBatch.Load(), compareREST.Load(), compareDiffFallback.Load(), 0,
+				compareCached.Load(), compareBatch.Load(), compareREST.Load(), compareDiffFallback.Load(), ltSkipped,
 				batchStats.Queries, batchStats.Cost)
 		}
 
@@ -965,11 +1010,13 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 				}
 			}
 			touchSummary = scoreTouching(touchMatcher, centrality, collected)
+			touchSummary.LastTouchGated, touchSummary.LastTouchLookedUp, touchSummary.LastTouchSkipped, touchSummary.LastTouchMismatch, touchSummary.LastTouchUnavailable = ltGate.counts()
 			if opts.TouchReport != nil {
 				*opts.TouchReport = touchSummary
 			}
-			fmt.Fprintf(logger, "[touching] matched %d (%d partial: file list capped at %d) · unmatched %d · unknown %d · never_pushed %d · centrality=%q\n",
-				touchSummary.Matched, touchSummary.Partial, forge.CompareFilesCap, touchSummary.Unmatched, touchSummary.Unknown, touchSummary.NeverPushed, touchSummary.CentralityMethod)
+			fmt.Fprintf(logger, "[touching] matched %d (%d partial: file list capped at %d) · unmatched %d · unknown %d · never_pushed %d · centrality=%q · last_touch: gated %d · looked_up %d · skipped %d · mismatch %d · unavailable %d\n",
+				touchSummary.Matched, touchSummary.Partial, forge.CompareFilesCap, touchSummary.Unmatched, touchSummary.Unknown, touchSummary.NeverPushed, touchSummary.CentralityMethod,
+				touchSummary.LastTouchGated, touchSummary.LastTouchLookedUp, touchSummary.LastTouchSkipped, touchSummary.LastTouchMismatch, touchSummary.LastTouchUnavailable)
 			if touchSummary.Unknown > 0 {
 				fmt.Fprintf(logger, "[touching] %d forks have no usable compare; re-run after the rate window resets to backfill\n", touchSummary.Unknown)
 			}
