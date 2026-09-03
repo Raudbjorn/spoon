@@ -155,11 +155,18 @@ type tipResult struct {
 // branches the tip commit and merged-upstream-PR status, for every target's
 // default and side branches against baseOwner/baseRepo@baseBranch.
 //
-// A target every one of whose branches failed to resolve in Phase A (fork
-// deleted, renamed away, or made private between listing and this call)
-// still gets an entry in the returned map, with Resolved == false -- see
-// forge.ForkDivergence. A target absent from targets is simply absent from
-// the result; forge.BatchCompareProvider's doc covers how callers must
+// A target's entry has Resolved == false unless its own default-branch
+// attempt resolved in Phase A *and* none of its attempts (default or side)
+// were dropped by adaptive halving -- see forge.ForkDivergence and
+// batchAttempt.dropped. That covers a fork that vanished entirely (every
+// alias null or dropped), a fork whose default branch alone was renamed or
+// deleted between listing and this call (a definitive null alias for just
+// that attempt, even alongside a resolved side branch), and a fork with an
+// unlucky side-branch chunk that failed all the way to batchMinChunk. Phase
+// B is skipped for such a target -- see FetchBatchDivergence's BatchStats,
+// which will not carry a document for it -- since its side data would only
+// be discarded once folded. A target absent from targets is simply absent
+// from the result; forge.BatchCompareProvider's doc covers how callers must
 // handle both cases identically (fall back to the REST path).
 func (c *Client) FetchBatchDivergence(
 	ctx context.Context,
@@ -209,61 +216,85 @@ func (c *Client) FetchBatchDivergence(
 		return nil, stats, err
 	}
 
-	var ahead []*batchAttempt
-	for _, a := range attempts {
-		if a.resolved && a.aheadBy > 0 {
-			ahead = append(ahead, a)
-		}
-	}
-	tips := c.fetchBatchTips(ctx, baseOwner, baseRepo, qualified, ahead, &stats)
-
 	byTarget := make(map[int][]*batchAttempt, len(targets))
 	for _, a := range attempts {
 		byTarget[a.targetIdx] = append(byTarget[a.targetIdx], a)
 	}
-	for ti, t := range targets {
-		tAttempts := byTarget[ti]
-		anyResolved := false
+
+	// A target's picture is untrustworthy -- Resolved must end up false --
+	// when either (a) any of its attempts belongs to a chunk that failed
+	// as a server-side failure all the way down to batchMinChunk and was
+	// dropped there (batchAttempt.dropped), or (b) its own default-branch
+	// attempt did not resolve at all, whether from a dropped chunk or a
+	// definitive null alias (NOT_FOUND: the default branch was renamed or
+	// deleted between listing and this call). (b) matters independently
+	// of (a): a null default alias can occur inside an otherwise fully
+	// successful, non-dropped chunk, tolerated the same way any partial
+	// NOT_FOUND is. Computed once, before Phase B, so a doomed target's
+	// resolved side branches don't spend Phase B budget on data the fold
+	// step below will discard anyway.
+	//
+	// Halving splits one target's attempts across chunks independently of
+	// which target they belong to, and a chunk answers strictly aliased
+	// per-branch, not per-fork -- so neither condition can be inferred
+	// from "did *any* attempt for this target resolve," which is what an
+	// earlier version of this check did. That let a resolved side branch
+	// stand in for a fork whose default was never actually answered,
+	// fabricating a "0 ahead" Default and skipping the REST fallback for
+	// a fork that was never actually checked -- exactly the
+	// fabricated-zero bug class this package exists to avoid.
+	unresolvedTarget := make(map[int]bool, len(targets))
+	for ti := range targets {
+		var defaultAttempt *batchAttempt
 		anyDropped := false
-		for _, a := range tAttempts {
-			if a.resolved {
-				anyResolved = true
+		for _, a := range byTarget[ti] {
+			if a.isDefault {
+				defaultAttempt = a
 			}
 			if a.dropped {
 				anyDropped = true
 			}
 		}
-		if anyDropped || !anyResolved {
-			// Either every alias for this fork came back null (it
-			// vanished, or was renamed/privated, between listing and this
-			// call), or at least one of its branches was never actually
-			// answered at all -- its chunk failed as a server-side
-			// failure all the way down to batchMinChunk and was dropped
-			// there (batchAttempt.dropped). Halving splits a target's
-			// attempts across chunks independently, so a sibling branch
-			// resolving fine does not make the rest of the picture
-			// trustworthy: fabricating a zero for the dropped branch (as
-			// leaving anyDropped unchecked would, via its zero-value
-			// aheadBy/behindBy) could hide genuine ahead work. The caller
-			// must fall back to the REST path for this fork wholesale,
-			// same as a target absent from the map entirely.
+		if anyDropped || defaultAttempt == nil || !defaultAttempt.resolved {
+			unresolvedTarget[ti] = true
+		}
+	}
+
+	var ahead []*batchAttempt
+	for _, a := range attempts {
+		if !unresolvedTarget[a.targetIdx] && a.resolved && a.aheadBy > 0 {
+			ahead = append(ahead, a)
+		}
+	}
+	tips := c.fetchBatchTips(ctx, baseOwner, baseRepo, qualified, ahead, &stats)
+
+	for ti, t := range targets {
+		if unresolvedTarget[ti] {
+			// The caller must fall back to the REST path for this fork
+			// wholesale, same as a target absent from the map entirely --
+			// see forge.ForkDivergence.Resolved's doc.
 			out[t.ID] = forge.ForkDivergence{Resolved: false}
 			continue
 		}
 
 		fd := forge.ForkDivergence{Resolved: true}
-		for _, a := range tAttempts {
+		for _, a := range byTarget[ti] {
 			bd := branchDivergenceFor(a, tips[a])
 			if a.isDefault {
 				fd.Default = bd
 				continue
 			}
 			if a.resolved {
-				// An unresolved side branch (deleted between listing and
-				// Phase A) carries nothing useful -- zero ahead/behind, no
-				// real tip -- and would masquerade as "checked, nothing
+				// An unresolved side branch (a definitive null alias --
+				// deleted between listing and Phase A, not a dropped
+				// chunk, which unresolvedTarget already excluded above)
+				// carries nothing useful -- zero ahead/behind, no real
+				// tip -- and would masquerade as "checked, nothing
 				// diverges" in SelectDivergentBranch if included; drop it
-				// instead of fabricating a false all-clear.
+				// instead of fabricating a false all-clear. Unlike the
+				// default branch, a fork's picture stays trustworthy
+				// without every side resolving: a side branch simply not
+				// existing is a legitimate answer, not a gap.
 				fd.Sides = append(fd.Sides, bd)
 			}
 		}

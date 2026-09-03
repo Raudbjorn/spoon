@@ -262,6 +262,91 @@ func TestFetchBatchDivergence_PartialNotFoundLeavesForkUnresolved(t *testing.T) 
 	}
 }
 
+// A fork's default-branch alias coming back a definitive null (NOT_FOUND --
+// renamed or deleted between listing and Phase A) inside an otherwise
+// successful, non-dropped chunk must force the whole fork Resolved=false,
+// even when a sibling side branch of the same fork resolved fine with real
+// ahead work. Before this fix, a bare "did any attempt for this target
+// resolve" check let the resolved side stand in for the fork, fabricating a
+// "0 ahead" Default and skipping the REST fallback for a fork whose default
+// branch was never actually answered -- the same fabricated-zero bug class
+// as a dropped chunk, just via a different failure path (a real NOT_FOUND
+// answer, not a server-side failure). No Phase B query must be issued for
+// this fork either: its side's ahead=1 result is worthless once the fork as
+// a whole is going to be reported unresolved.
+func TestFetchBatchDivergence_UnresolvedDefaultForcesUnresolvedDespiteResolvedSide(t *testing.T) {
+	// c0 = default (main, null/NOT_FOUND), c1 = side (feature, ahead 1).
+	phaseA := `{"data":{"repository":{"ref":{
+		"c0":null,
+		"c1":{"aheadBy":1,"behindBy":0}
+	}},` + rl + `},
+		"errors":[{"type":"NOT_FOUND","path":["repository","ref","c0"],"message":"Could not resolve head ref"}]}`
+
+	srv, docs := batchStub(t, phaseA, "")
+	c := newTestClientGQL(t, srv)
+
+	got, _, err := c.FetchBatchDivergence(context.Background(), "up", "stream", "main",
+		[]BatchTarget{{
+			ID: "o/repo", Owner: "o", Name: "repo", DefaultBranch: "main",
+			Sides: []BatchBranch{{Name: "feature", TipSHA: "featureSeed"}},
+		}})
+	if err != nil {
+		t.Fatalf("a partial NOT_FOUND must not fail the batch: %v", err)
+	}
+
+	fd, ok := got["o/repo"]
+	if !ok {
+		t.Fatal("o/repo missing from result map, want a present Resolved=false entry")
+	}
+	if fd.Resolved {
+		t.Errorf("o/repo = %+v, want Resolved=false (its default branch was never actually answered, despite the resolved side)", fd)
+	}
+
+	for _, d := range docs() {
+		if strings.Contains(d, "commits(last:") {
+			t.Error("a Phase B document was sent for a fork whose default branch never resolved")
+		}
+	}
+}
+
+// Guard against over-correcting the fix above: a fork whose default branch
+// resolves cleanly (even at ahead=0) alongside a resolved, genuinely ahead
+// side branch must still come back Resolved=true, with the side's data
+// intact -- the fix must not turn every fork with any side branch into
+// Resolved=false.
+func TestFetchBatchDivergence_ResolvedDefaultWithAheadSideStaysResolved(t *testing.T) {
+	phaseA := `{"data":{"repository":{"ref":{
+		"c0":{"aheadBy":0,"behindBy":0},
+		"c1":{"aheadBy":1,"behindBy":0}
+	}},` + rl + `}}`
+	phaseB := `{"data":{"repository":{"ref":{
+		"c0":{"commits":{"nodes":[{"oid":"sidetip","committedDate":"2026-04-04T00:00:00Z","associatedPullRequests":{"nodes":[]}}]}}
+	}},` + rl + `}}`
+
+	srv, _ := batchStub(t, phaseA, phaseB)
+	c := newTestClientGQL(t, srv)
+
+	got, _, err := c.FetchBatchDivergence(context.Background(), "up", "stream", "main",
+		[]BatchTarget{{
+			ID: "o/repo", Owner: "o", Name: "repo", DefaultBranch: "main",
+			Sides: []BatchBranch{{Name: "feature", TipSHA: "featureSeed"}},
+		}})
+	if err != nil {
+		t.Fatalf("FetchBatchDivergence: %v", err)
+	}
+
+	fd := got["o/repo"]
+	if !fd.Resolved {
+		t.Fatalf("o/repo = %+v, want Resolved=true (both default and side resolved cleanly)", fd)
+	}
+	if fd.Default.AheadBy != 0 {
+		t.Errorf("Default.AheadBy = %d, want 0", fd.Default.AheadBy)
+	}
+	if len(fd.Sides) != 1 || fd.Sides[0].AheadBy != 1 || fd.Sides[0].Name != "feature" {
+		t.Errorf("Sides = %+v, want one entry (feature, ahead=1)", fd.Sides)
+	}
+}
+
 // An upstream ref that fails to resolve at all (as opposed to one individual
 // alias) must fail the whole call loudly, not silently report zeros.
 func TestFetchBatchDivergence_UnresolvedUpstreamRefErrors(t *testing.T) {
