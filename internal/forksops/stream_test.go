@@ -77,6 +77,56 @@ func (f *fakeForge) Headroom() float64 {
 	return 1.0
 }
 
+// batchFakeForge wraps *fakeForge to optionally implement
+// forge.BatchCompareProvider and forge.ResolvedCompareProvider. A plain
+// *fakeForge deliberately does NOT implement either interface -- several
+// existing tests above rely on Stream falling back to the no-batch path
+// when the provider lacks the capability. Wrapping (rather than adding the
+// methods to fakeForge directly) keeps that behavior intact while letting
+// batch-specific tests opt in by constructing a batchFakeForge instead.
+type batchFakeForge struct {
+	*fakeForge
+
+	batch      map[string]forge.ForkDivergence
+	batchErr   error
+	batchStats forge.BatchStats
+	batchCalls int // count of BatchCompare invocations
+
+	// resolvedCalls, when non-nil, has "<forkID>@<branch>" appended for
+	// every CompareResolved call, so a test can assert both which forks
+	// were resolved via the batch-chosen-branch path and which branch was
+	// selected for each.
+	resolvedCalls *[]string
+	// resolvedErr, keyed by fork ID, makes CompareResolved fail without
+	// also making the fallback fakeForge.Compare fail (fakeForge.Compare
+	// has its own, separate forkErrors map).
+	resolvedErr map[string]error
+}
+
+func (f *batchFakeForge) BatchCompare(_ context.Context, _ []forge.T1Data) (map[string]forge.ForkDivergence, forge.BatchStats, error) {
+	f.batchCalls++
+	if f.batchErr != nil {
+		return f.batch, f.batchStats, f.batchErr
+	}
+	return f.batch, f.batchStats, nil
+}
+
+func (f *batchFakeForge) CompareResolved(_ context.Context, fk forge.T1Data, sel forge.BranchSelection) (forge.T2Data, error) {
+	if f.resolvedCalls != nil {
+		*f.resolvedCalls = append(*f.resolvedCalls, fmt.Sprintf("%s@%s", fk.ID, sel.Branch))
+	}
+	if err, ok := f.resolvedErr[fk.ID]; ok {
+		return forge.T2Data{}, err
+	}
+	return f.t2[fk.ID], nil
+}
+
+var (
+	_ forge.Forge                   = (*batchFakeForge)(nil)
+	_ forge.BatchCompareProvider    = (*batchFakeForge)(nil)
+	_ forge.ResolvedCompareProvider = (*batchFakeForge)(nil)
+)
+
 func TestStream_dispatchesByPriorityNotSurfaceScore(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	now := time.Now()
@@ -1428,5 +1478,351 @@ func TestStream_shortlistMarksTieBands(t *testing.T) {
 	}
 	if !got[1].Rank.TieBand || !got[2].Rank.TieBand {
 		t.Errorf("identical forks should be banded: %v %v", got[1].Rank.TieBand, got[2].Rank.TieBand)
+	}
+}
+
+// --- Task 5: batch integration ---
+
+func TestStream_batchZeroAhead_neverHitsCompareOrResolved(t *testing.T) {
+	now := time.Now()
+	var order []string
+	var resolved []string
+	ff := &batchFakeForge{
+		fakeForge: &fakeForge{
+			parent: forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
+			forks: []forge.T1Data{
+				{ID: "o/a", Owner: "o", Name: "a", DefaultBranch: "main", PushedAt: now},
+			},
+			concurrency:  1,
+			compareOrder: &order,
+		},
+		batch: map[string]forge.ForkDivergence{
+			"o/a": {
+				Resolved: true,
+				Default:  forge.BranchDivergence{Name: "main", TipSHA: "maintip", AheadBy: 0, BehindBy: 3},
+			},
+		},
+		resolvedCalls: &resolved,
+	}
+	ch, err := Stream(context.Background(), ff, "o", "r", Options{Tier: 2})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	r := <-ch
+	if r.Err != nil {
+		t.Fatalf("unexpected error: %+v", r.Err)
+	}
+	if len(order) != 0 {
+		t.Errorf("Compare should not be called for a zero-ahead batch resolution, got calls: %v", order)
+	}
+	if len(resolved) != 0 {
+		t.Errorf("CompareResolved should not be called for a zero-ahead batch resolution, got calls: %v", resolved)
+	}
+	if r.T2 == nil {
+		t.Fatal("expected synthesised T2")
+	}
+	if !r.T2.Performed || r.T2.AheadCount != 0 || r.T2.BehindCount != 3 || r.T2.HeadSHA != "maintip" {
+		t.Errorf("unexpected synthesised T2: %+v", r.T2)
+	}
+	if r.T2.CompareSource != "graphql_batch" {
+		t.Errorf("CompareSource = %q, want graphql_batch", r.T2.CompareSource)
+	}
+	if r.T2FromCache {
+		t.Error("T2FromCache should be false for a batch-synthesised T2 so it persists")
+	}
+}
+
+func TestStream_batchDivergent_hitsCompareResolvedOnceWithSideBranch(t *testing.T) {
+	now := time.Now()
+	var order []string
+	var resolved []string
+	ff := &batchFakeForge{
+		fakeForge: &fakeForge{
+			parent: forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
+			forks: []forge.T1Data{
+				{ID: "o/b", Owner: "o", Name: "b", DefaultBranch: "main", PushedAt: now},
+			},
+			concurrency:  1,
+			compareOrder: &order,
+			t2: map[string]forge.T2Data{
+				"o/b": {Performed: true, AheadCount: 5, BehindCount: 1, IsBranchWork: true, ActiveBranch: "feature", HeadSHA: "sidetip"},
+			},
+		},
+		batch: map[string]forge.ForkDivergence{
+			"o/b": {
+				Resolved: true,
+				Default:  forge.BranchDivergence{Name: "main", TipSHA: "maintip", AheadBy: 0, BehindBy: 1},
+				Sides: []forge.BranchDivergence{
+					{Name: "feature", TipSHA: "sidetip", TipCommittedAt: now, AheadBy: 5, BehindBy: 1},
+				},
+			},
+		},
+		resolvedCalls: &resolved,
+	}
+	ch, err := Stream(context.Background(), ff, "o", "r", Options{Tier: 2})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	r := <-ch
+	if r.Err != nil {
+		t.Fatalf("unexpected error: %+v", r.Err)
+	}
+	if len(order) != 0 {
+		t.Errorf("plain Compare should not be called when the batch chose a branch, got calls: %v", order)
+	}
+	if want := []string{"o/b@feature"}; len(resolved) != 1 || resolved[0] != want[0] {
+		t.Errorf("CompareResolved calls = %v, want exactly one call on the side branch %v", resolved, want)
+	}
+	if r.T2 == nil {
+		t.Fatal("expected T2 from CompareResolved")
+	}
+	if !r.T2.IsBranchWork || r.T2.ActiveBranch != "feature" {
+		t.Errorf("expected T2 to carry the fake's branch-work annotations, got %+v", r.T2)
+	}
+}
+
+func TestStream_batchError_fallsBackToCompareForEveryFork(t *testing.T) {
+	now := time.Now()
+	var order []string
+	summary := &CompareSummary{}
+	ff := &batchFakeForge{
+		fakeForge: &fakeForge{
+			parent: forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
+			forks: []forge.T1Data{
+				{ID: "o/a", Owner: "o", Name: "a", DefaultBranch: "main", PushedAt: now},
+				{ID: "o/b", Owner: "o", Name: "b", DefaultBranch: "main", PushedAt: now},
+			},
+			concurrency:  1,
+			compareOrder: &order,
+			t2: map[string]forge.T2Data{
+				"o/a": {Performed: true, AheadCount: 1},
+				"o/b": {Performed: true, AheadCount: 2},
+			},
+		},
+		batchErr: errors.New("graphql: rate limited"),
+	}
+	ch, err := Stream(context.Background(), ff, "o", "r", Options{Tier: 2, CompareReport: summary})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	count := 0
+	for r := range ch {
+		if r.Err != nil {
+			t.Errorf("unexpected per-fork error: %+v", r.Err)
+		}
+		count++
+	}
+	if count != 2 {
+		t.Fatalf("expected 2 results, got %d", count)
+	}
+	if len(order) != 2 {
+		t.Errorf("expected both forks to go through Compare, got calls: %v", order)
+	}
+	if summary.BatchError == "" {
+		t.Error("expected CompareReport.BatchError to be set on batch error")
+	}
+}
+
+func TestStream_noBatchCompare_neverCallsBatchCompare(t *testing.T) {
+	now := time.Now()
+	var order []string
+	ff := &batchFakeForge{
+		fakeForge: &fakeForge{
+			parent: forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
+			forks: []forge.T1Data{
+				{ID: "o/a", Owner: "o", Name: "a", DefaultBranch: "main", PushedAt: now},
+			},
+			concurrency:  1,
+			compareOrder: &order,
+			t2: map[string]forge.T2Data{
+				"o/a": {Performed: true, AheadCount: 0},
+			},
+		},
+		batch: map[string]forge.ForkDivergence{
+			"o/a": {Resolved: true, Default: forge.BranchDivergence{Name: "main", AheadBy: 0, BehindBy: 0}},
+		},
+	}
+	ch, err := Stream(context.Background(), ff, "o", "r", Options{Tier: 2, NoBatchCompare: true})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	<-ch
+	if ff.batchCalls != 0 {
+		t.Errorf("BatchCompare should never be called when NoBatchCompare is set, got %d calls", ff.batchCalls)
+	}
+	if len(order) != 1 {
+		t.Errorf("expected the fork to go through plain Compare, got calls: %v", order)
+	}
+}
+
+func TestStream_synthesisedZeroAheadMatchesRESTZeroAnnotations(t *testing.T) {
+	now := time.Now()
+	ff := &batchFakeForge{
+		fakeForge: &fakeForge{
+			parent: forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
+			forks: []forge.T1Data{
+				{ID: "o/batch", Owner: "o", Name: "batch", DefaultBranch: "main", PushedAt: now},
+				{ID: "o/rest", Owner: "o", Name: "rest", DefaultBranch: "main", PushedAt: now},
+			},
+			t2: map[string]forge.T2Data{
+				// A REST-path zero-ahead fork: same shape a live Compare would
+				// return for "nothing ahead."
+				"o/rest": {Performed: true, AheadCount: 0, BehindCount: 4, HeadSHA: "resttip"},
+			},
+		},
+		batch: map[string]forge.ForkDivergence{
+			"o/batch": {
+				Resolved: true,
+				Default:  forge.BranchDivergence{Name: "main", TipSHA: "batchtip", AheadBy: 0, BehindBy: 4},
+			},
+			// "o/rest" deliberately absent from the batch result, so it falls
+			// back to the REST path and Compare serves it from f.t2.
+		},
+	}
+	ch, err := Stream(context.Background(), ff, "o", "r", Options{Tier: 2})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	results := map[string]Result{}
+	for r := range ch {
+		results[r.Fork.ID] = r
+	}
+	batchRes, restRes := results["o/batch"], results["o/rest"]
+	if batchRes.T2 == nil || restRes.T2 == nil {
+		t.Fatalf("expected both forks to carry T2, got batch=%v rest=%v", batchRes.T2, restRes.T2)
+	}
+	if batchRes.T2.CompareSource != "graphql_batch" {
+		t.Errorf("expected the batch fork's T2 to be marked graphql_batch, got %q", batchRes.T2.CompareSource)
+	}
+	if restRes.T2.CompareSource != "" {
+		t.Errorf("expected the REST fork's T2 to carry no CompareSource, got %q", restRes.T2.CompareSource)
+	}
+	// The annotations that matter to consumers (rescore's heat penalties and
+	// deriveVisibility's status) must agree between the two zero-ahead
+	// paths: a synthesised zero should read exactly like a REST zero.
+	if !slices.Equal(batchRes.Heat.Penalties, restRes.Heat.Penalties) {
+		t.Errorf("heat penalties differ: batch=%v rest=%v", batchRes.Heat.Penalties, restRes.Heat.Penalties)
+	}
+	if batchRes.Visibility.Status != restRes.Visibility.Status {
+		t.Errorf("visibility status differs: batch=%q rest=%q", batchRes.Visibility.Status, restRes.Visibility.Status)
+	}
+}
+
+func TestStream_compareReportCounts(t *testing.T) {
+	now := time.Now()
+	cachedT2 := forge.T2Data{Performed: true, AheadCount: 9, CompareSource: ""}
+	var resolved []string
+	ff := &batchFakeForge{
+		fakeForge: &fakeForge{
+			parent: forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
+			forks: []forge.T1Data{
+				{ID: "o/cached", Owner: "o", Name: "cached", DefaultBranch: "main", PushedAt: now},
+				{ID: "o/zero", Owner: "o", Name: "zero", DefaultBranch: "main", PushedAt: now},
+				{ID: "o/side", Owner: "o", Name: "side", DefaultBranch: "main", PushedAt: now},
+				{ID: "o/plain", Owner: "o", Name: "plain", DefaultBranch: "main", PushedAt: now},
+				{ID: "o/diff", Owner: "o", Name: "diff", DefaultBranch: "main", PushedAt: now},
+			},
+			t2: map[string]forge.T2Data{
+				"o/side":  {Performed: true, AheadCount: 3, IsBranchWork: true, ActiveBranch: "feature"},
+				"o/plain": {Performed: true, AheadCount: 1},
+				"o/diff":  {Performed: true, AheadCount: 1, FilesComplete: true},
+			},
+		},
+		batch: map[string]forge.ForkDivergence{
+			"o/zero": {Resolved: true, Default: forge.BranchDivergence{Name: "main", AheadBy: 0, BehindBy: 0}},
+			"o/side": {
+				Resolved: true,
+				Default:  forge.BranchDivergence{Name: "main", AheadBy: 0, BehindBy: 0},
+				Sides:    []forge.BranchDivergence{{Name: "feature", AheadBy: 3, BehindBy: 0, TipCommittedAt: now}},
+			},
+			// "o/plain" and "o/diff" absent: not resolved by the batch, fall
+			// through to plain Compare.
+		},
+		batchStats:    forge.BatchStats{Queries: 2, Cost: 7},
+		resolvedCalls: &resolved,
+	}
+	summary := &CompareSummary{}
+	opts := Options{
+		Tier:          2,
+		CompareReport: summary,
+		CachedT2: func(f forge.T1Data) *forge.T2Data {
+			if f.ID == "o/cached" {
+				t2 := cachedT2
+				return &t2
+			}
+			return nil
+		},
+	}
+	ch, err := Stream(context.Background(), ff, "o", "r", opts)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for range ch {
+	}
+	if summary.Cached != 1 {
+		t.Errorf("Cached = %d, want 1", summary.Cached)
+	}
+	if summary.Batch != 1 {
+		t.Errorf("Batch = %d, want 1", summary.Batch)
+	}
+	if summary.REST != 3 {
+		t.Errorf("REST = %d, want 3 (side + plain + diff)", summary.REST)
+	}
+	if summary.DiffFallback != 1 {
+		t.Errorf("DiffFallback = %d, want 1", summary.DiffFallback)
+	}
+	if summary.LastTouchSkipped != 0 {
+		t.Errorf("LastTouchSkipped = %d, want 0 (not wired until task 7)", summary.LastTouchSkipped)
+	}
+	if summary.BatchQueries != 2 || summary.BatchCost != 7 {
+		t.Errorf("BatchQueries/BatchCost = %d/%d, want 2/7", summary.BatchQueries, summary.BatchCost)
+	}
+	if summary.BatchError != "" {
+		t.Errorf("BatchError = %q, want empty", summary.BatchError)
+	}
+}
+
+func TestStream_compareResolvedError_fallsBackToCompareOnce(t *testing.T) {
+	now := time.Now()
+	var order []string
+	var resolved []string
+	ff := &batchFakeForge{
+		fakeForge: &fakeForge{
+			parent: forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
+			forks: []forge.T1Data{
+				{ID: "o/b", Owner: "o", Name: "b", DefaultBranch: "main", PushedAt: now},
+			},
+			concurrency:  1,
+			compareOrder: &order,
+			t2: map[string]forge.T2Data{
+				"o/b": {Performed: true, AheadCount: 5},
+			},
+		},
+		batch: map[string]forge.ForkDivergence{
+			"o/b": {
+				Resolved: true,
+				Default:  forge.BranchDivergence{Name: "main", AheadBy: 0, BehindBy: 0},
+				Sides:    []forge.BranchDivergence{{Name: "feature", AheadBy: 5, BehindBy: 0, TipCommittedAt: now}},
+			},
+		},
+		resolvedCalls: &resolved,
+		resolvedErr:   map[string]error{"o/b": errors.New("compare resolved failed")},
+	}
+	ch, err := Stream(context.Background(), ff, "o", "r", Options{Tier: 2})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	r := <-ch
+	if len(resolved) != 1 {
+		t.Errorf("expected exactly one CompareResolved attempt, got %v", resolved)
+	}
+	if len(order) != 1 {
+		t.Errorf("expected exactly one Compare fallback attempt, got %v", order)
+	}
+	if r.T2 == nil || r.T2.AheadCount != 5 {
+		t.Errorf("expected the fallback Compare's T2 to be used, got %+v", r.T2)
+	}
+	if r.Err != nil {
+		t.Errorf("a CompareResolved failure followed by a successful Compare should not be a fork error, got %+v", r.Err)
 	}
 }

@@ -168,6 +168,19 @@ type Options struct {
 	// do not use Stream() can still observe it.
 	Report *forge.AcquisitionReport
 
+	// NoBatchCompare disables the pre-dispatch GraphQL divergence batch
+	// (see batchcompare.go) even when the provider supports it, forcing
+	// every eligible fork through the per-fork REST Compare path as before
+	// batching existed. Set from a CLI escape hatch; false is the default
+	// (use the batch whenever tier and provider allow it).
+	NoBatchCompare bool
+
+	// CompareReport, when non-nil, receives the run's compare-source tally
+	// (cache hits, batch-synthesised zeros, live REST compares, diff
+	// fallbacks) after the fork channel closes. Caller-owned, like
+	// TouchReport.
+	CompareReport *CompareSummary
+
 	// NetworkScope controls fork-list breadth: "direct" (default) or "all".
 	// When "all", ListForksBounded is used if the provider implements it.
 	NetworkScope string
@@ -564,12 +577,61 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 			tier = 3
 		}
 
+		// Pre-dispatch GraphQL divergence batch (see batchcompare.go): resolve
+		// ahead/behind for every fork that would otherwise get a REST compare,
+		// in one batched call, before any worker starts. A fork the batch finds
+		// has nothing ahead never reaches a REST compare at all; a divergent
+		// fork carries a single pre-chosen branch into the worker instead of
+		// REST's own per-fork branch scan.
+		var pending []forge.T1Data
+		var divergence map[string]forge.ForkDivergence
+		var batchStats forge.BatchStats
+		batchRan := false
+		if tier >= 2 && !opts.NoBatchCompare {
+			for i, s := range all {
+				if !eligible(s.fork.ID, i) {
+					continue
+				}
+				if opts.CachedT2 != nil && opts.CachedT2(s.fork) != nil {
+					continue
+				}
+				pending = append(pending, s.fork)
+			}
+			if bp, ok := provider.(forge.BatchCompareProvider); ok && len(pending) > 0 {
+				var berr error
+				divergence, batchStats, berr = bp.BatchCompare(ctx, pending)
+				switch {
+				case berr == nil:
+					batchRan = true
+				case errors.Is(berr, forge.ErrBatchCompareUnavailable):
+					// Silent fallback: no GraphQL backend available. Not a
+					// batchRan condition -- keep the pre-batch estimate line.
+					divergence = nil
+				default:
+					fmt.Fprintf(logger, "[triage] batch compare degraded: %v; falling back to per-fork REST\n", berr)
+					if opts.CompareReport != nil {
+						opts.CompareReport.BatchError = berr.Error()
+					}
+					// Keep whatever map came back (may be partial or nil) --
+					// forks it did resolve still skip REST or get a chosen
+					// branch; the rest fall back to Compare in the worker.
+					batchRan = true
+				}
+			}
+		}
+
 		// Up-front request estimate + headroom heads-up, so the user sees the
 		// scope without having to count forks. The live reserve floor below, not
 		// this estimate, governs when enrichment actually stops.
 		if tier >= 2 && len(all) > 0 {
-			fmt.Fprintf(logger, "[triage] %d forks; ~%d+ API requests to enrich at tier %d; rate headroom %.0f%%\n",
-				len(all), EstimateRequests(len(all), tier), tier, provider.Headroom()*100)
+			if batchRan {
+				divergent, resolved, restEstimate := batchEstimate(pending, divergence, tier)
+				fmt.Fprintf(logger, "[triage] %d forks; ~%d REST requests (%d divergent of %d resolved by one GraphQL batch); rate headroom %.0f%%\n",
+					len(all), restEstimate, divergent, resolved, provider.Headroom()*100)
+			} else {
+				fmt.Fprintf(logger, "[triage] %d forks; ~%d+ API requests to enrich at tier %d; rate headroom %.0f%%\n",
+					len(all), EstimateRequests(len(all), tier), tier, provider.Headroom()*100)
+			}
 		}
 
 		concurrency := 4
@@ -613,6 +675,12 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 		var wg sync.WaitGroup
 		var budgetSkipped atomic.Int64
 		var ownerProfileCalls atomic.Int64
+		// Compare-source tally for Options.CompareReport; written from
+		// workers, so atomic rather than mutex-guarded like `collected`.
+		var compareCached atomic.Int64
+		var compareBatch atomic.Int64
+		var compareREST atomic.Int64
+		var compareDiffFallback atomic.Int64
 		for w := 0; w < concurrency; w++ {
 			wg.Add(1)
 			go func() {
@@ -724,6 +792,25 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 						if t2 := opts.CachedT2(s.fork); t2 != nil {
 							r.T2 = t2
 							r.T2FromCache = true
+							compareCached.Add(1)
+						}
+					}
+					// Batch-resolved divergence costs no per-fork API budget
+					// either, so it too is consulted before the reserve gate: a
+					// fork the batch found has nothing ahead is fully resolved
+					// here (synthesised T2, no REST needed) and never reaches
+					// the gate at all. A divergent fork keeps its pre-chosen
+					// branch (sel) for the REST step below; the reserve gate
+					// still applies to it like any other REST-bound fork.
+					var sel *forge.BranchSelection
+					if enrich && tier >= 2 && r.T2 == nil && divergence != nil {
+						if res, ok := resolveFromBatch(divergence, s.fork.ID); ok {
+							if res.T2 != nil {
+								r.T2 = res.T2
+								compareBatch.Add(1)
+							} else {
+								sel = res.Selection
+							}
 						}
 					}
 					if enrich && tier >= 2 && r.T2 == nil && !opts.ReserveDisabled && provider.Headroom() < ReserveHeadroom {
@@ -736,7 +823,7 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 						budgetSkipped.Add(1)
 					}
 					if tier >= 2 && enrich && r.T2 == nil {
-						t2, terr := provider.Compare(ctx, s.fork, s.fork.DefaultBranch)
+						t2, terr := compareFork(ctx, provider, s.fork, sel, logger)
 						if terr != nil {
 							var rl *gh.RateLimitError
 							if errors.As(terr, &rl) {
@@ -755,6 +842,10 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 							}
 						} else {
 							r.T2 = &t2
+							compareREST.Add(1)
+							if t2.FilesComplete {
+								compareDiffFallback.Add(1)
+							}
 						}
 					}
 					if tier >= 3 && enrich && r.Err == nil {
@@ -815,6 +906,22 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 		if n := budgetSkipped.Load(); n > 0 {
 			fmt.Fprintf(logger, "[triage] degraded: %d/%d forks left un-enriched at the rate-limit reserve; re-run after the window resets to backfill (cached results resume)\n",
 				n, len(all))
+		}
+
+		if opts.CompareReport != nil {
+			opts.CompareReport.Cached = int(compareCached.Load())
+			opts.CompareReport.Batch = int(compareBatch.Load())
+			opts.CompareReport.REST = int(compareREST.Load())
+			opts.CompareReport.DiffFallback = int(compareDiffFallback.Load())
+			opts.CompareReport.BatchQueries = batchStats.Queries
+			opts.CompareReport.BatchCost = batchStats.Cost
+			// LastTouchSkipped stays 0 here; a later stage (--touching's
+			// last-touch attribution pass) increments it.
+		}
+		if tier >= 2 && len(all) > 0 {
+			fmt.Fprintf(logger, "[triage] compare sources: cached %d · graphql_batch %d · rest %d · diff_fallback %d · last_touch_skipped %d (batch: %d queries, cost %d)\n",
+				compareCached.Load(), compareBatch.Load(), compareREST.Load(), compareDiffFallback.Load(), 0,
+				batchStats.Queries, batchStats.Cost)
 		}
 
 		if !batchMode {
