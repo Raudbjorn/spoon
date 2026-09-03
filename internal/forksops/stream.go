@@ -284,6 +284,10 @@ type Result struct {
 	PriorScore   float64
 	PriorReasons []string
 
+	// Touching is the --touching verdict; nil when the option was not set.
+	// Presentation and CLI filtering only: never feeds heat or rank.
+	Touching *TouchMatch
+
 	Visibility  VisibilityDecision
 	Degraded    []DegradedStage
 	NetworkRank *NetworkRank
