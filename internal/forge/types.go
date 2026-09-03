@@ -110,6 +110,10 @@ func (a AuthInfo) Authenticated() bool {
 type BranchRef struct {
 	Name          string
 	CommittedDate time.Time
+	// TipSHA is the branch's head commit SHA, when the listing source
+	// provided it (the GitHub GraphQL batch-divergence path). Empty when
+	// unknown, e.g. on the REST listing path.
+	TipSHA string
 }
 
 // ParentData holds metadata about the parent (upstream) repository.
@@ -143,6 +147,11 @@ type T1Data struct {
 	Name          string
 	URL           string
 	DefaultBranch string
+	// DefaultTipSHA is the head commit SHA of DefaultBranch as returned by
+	// the listing source. Populated on the GitHub GraphQL batch-divergence
+	// path; empty on the REST listing path, where the tip SHA is not known
+	// until Compare runs.
+	DefaultTipSHA string
 
 	// Surface metrics
 	Stars        int
@@ -287,9 +296,38 @@ type T2Data struct {
 	// TotalDeletions and MNA are then lower bounds. Rows stored before this
 	// field existed decode as false; readers must also treat
 	// len(Diffs) >= CompareFilesCap as truncated.
-	FilesTruncated  bool
-	Commits         []AheadCommit // used by the T3 lone-wolf gate
-	PatchSkipReason string
+	FilesTruncated bool
+	// CompareSource records how this T2Data's divergence was obtained.
+	// "" means the provider's ordinary per-fork REST Compare (today's
+	// default path). "graphql_batch" means it was synthesised from a
+	// BatchCompareProvider's ForkDivergence via SelectDivergentBranch
+	// rather than a REST Compare call.
+	CompareSource string
+	// FilesComplete is true only when a diff-fallback pass confirmed the
+	// full file list despite Diffs sitting at CompareFilesCap -- e.g. a
+	// compare with exactly CompareFilesCap real files, backfilled and
+	// verified complete. False (the zero value, and every row written
+	// before this field existed) means no such fallback ran, or it could
+	// not confirm completeness; see IsFilesTruncated.
+	FilesComplete bool
+	// FilesTruncatedReason explains why a capped file list stayed capped
+	// after a diff-fallback pass was attempted (e.g. the fallback itself
+	// hit a provider limit). Empty when no fallback ran or the fallback
+	// resolved the list.
+	FilesTruncatedReason string
+	Commits              []AheadCommit // used by the T3 lone-wolf gate
+	PatchSkipReason      string
+}
+
+// IsFilesTruncated reports whether Diffs is known or suspected to be
+// missing files. It is true when the provider explicitly capped the list
+// (FilesTruncated), or when Diffs still sits at the cap and no diff-fallback
+// pass confirmed the list complete (!FilesComplete). Rows written before
+// FilesComplete existed decode with it false, so a capped-looking count
+// with no completion signal is correctly treated as truncated rather than
+// assumed exact.
+func (t T2Data) IsFilesTruncated() bool {
+	return t.FilesTruncated || (len(t.Diffs) >= CompareFilesCap && !t.FilesComplete)
 }
 
 // Contributor is a single contributor to a fork.
