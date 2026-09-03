@@ -13,7 +13,8 @@ Reconciled **2026-08-12** against [`design-system/docs/tui-gallery.md:43-71`](..
 | Fork table | `Enter`, `n`, `/`, `R`, `Esc`, `?` | Details, new repository, filter, intent rank, clear filter, help |
 | Fork table | `g`, `s`, `S`, `o`, `d`, `c`, `t`, `f`, `y`, `r`, `Space`, `e`, `E`, `i`, `I`, `,`, `q` | Cluster, sort, reverse, open, compare, enrichment ceiling, theme, chrome, yank, refresh, mark, export marked, export all, embed marked, embed all, settings, quit |
 | Fork details | `Up`/`k`, `Down`/`j`, `PgUp`/`PgDn`, `Home`, `End`/`G` | Scroll |
-| Fork details | `Esc`/`b`/`q`, `o`, `d`, `c`, `t`, `f`, `y` | Back, open, compare, enrichment ceiling, theme, chrome, yank |
+| Fork details | `Esc`/`b`/`q`, `o`, `d`, `c`, `t`, `f`, `y`, `p` | Back, open, compare, enrichment ceiling, theme, chrome, yank, view patch of touched files |
+| Patch view | `Up`/`k`, `Down`/`j`, `PgUp`/`PgDn`, `Home`, `End`/`G`, `Esc`/`b`/`q` | Scroll or return to fork details |
 | Help | `?`/`Esc`/`q`, `Up`/`k`, `Down`/`j`, `PgUp`/`PgDn`, `Home`, `End`/`G` | Close or scroll |
 | Topic picker | `Up`/`k`, `Down`/`j`, `Enter`, `Esc`/`q` | Move, choose, cancel |
 | Export/filter/rank prompt | `Enter` / `Esc` | Apply or cancel |

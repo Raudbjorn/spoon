@@ -42,6 +42,8 @@ const (
 	viewRank
 	// Appended rather than inserted: the enum is positional.
 	viewSettings
+	// Appended rather than inserted: the enum is positional.
+	viewPatch
 )
 
 // ScoredFork holds a fork with its computed heat score.
@@ -167,6 +169,13 @@ type Model struct {
 	// inherit the detail view's scroll position.
 	detailOffset int
 	helpOffset   int
+
+	// Patch view (viewPatch): a live provider.Compare fetched on demand from
+	// the detail view's `p` key, since cached compares carry no patch text.
+	// Not persisted -- view-only, unlike the enrichment sweep's T2 cache.
+	patchBody    string
+	patchOffset  int
+	patchLoading bool
 
 	// Enrichment
 	enriching    bool
@@ -491,6 +500,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tier2ResultMsg:
 		m.pendingUpdates = append(m.pendingUpdates, msg)
+		return m, nil
+
+	case patchResultMsg:
+		m.patchLoading = false
+		// The user may have moved the cursor to a different fork while the
+		// live compare was in flight; a stale result would silently
+		// overwrite whatever the current selection is fetching (or has
+		// already fetched), so it is dropped rather than applied.
+		if m.cursor < 0 || m.cursor >= len(m.forks) || m.forks[m.cursor].Fork.ID != msg.forkID {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.patchBody = "Patch fetch failed: " + msg.err.Error()
+		} else {
+			m.patchBody = renderPatch(m.themeContext(), msg.t2, m.pathFilter, maxPatchChars)
+		}
 		return m, nil
 
 	case enrichBatchTickMsg:
@@ -969,6 +994,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleTableKey(key)
 	case viewDetail:
 		return m.handleDetailKey(key)
+	case viewPatch:
+		return m.handlePatchKey(key)
 	case viewExportPath:
 		return m.handleExportPathKey(key, typed)
 	case viewTopicPicker:
@@ -1200,6 +1227,9 @@ func (m *Model) handleDetailKey(key string) (tea.Model, tea.Cmd) {
 		m.fullscreen = !m.fullscreen
 	case keymap.Yank:
 		return m, m.yankCloneCommand()
+	case keymap.ViewPatch:
+		m.view = viewPatch
+		return m, m.fetchPatchCmd()
 	}
 	return m, nil
 }
@@ -1909,6 +1939,8 @@ func (m Model) View() string {
 		return m.viewTable()
 	case viewDetail:
 		return m.viewDetail()
+	case viewPatch:
+		return m.viewPatch()
 	case viewExportPath:
 		return m.viewExportPath()
 	case viewTopicPicker:

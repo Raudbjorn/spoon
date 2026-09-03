@@ -74,6 +74,16 @@ type tier2ResultMsg struct {
 	fromCache bool
 }
 
+// patchResultMsg carries the outcome of a live provider.Compare call fetched
+// on demand for the patch view (cached compares carry no patch text). forkID
+// lets the receiver ignore a stale result if the user has moved on to a
+// different fork before the round-trip completes.
+type patchResultMsg struct {
+	forkID string
+	t2     forge.T2Data
+	err    error
+}
+
 type startFetchMsg struct{}
 
 type enrichBatchTickMsg struct{}

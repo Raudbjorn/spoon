@@ -74,6 +74,13 @@ func mainStateFixtures(t *testing.T, ctx theme.Context) map[string]func() string
 			m.theme, m.height = ctx, 30
 			return m.View()
 		},
+		"patch": func() string {
+			m := detailTestModel(t, 100)
+			m.theme, m.height = ctx, 30
+			m.view = viewPatch
+			m.patchBody = renderPatch(ctx, *m.forks[m.cursor].T2, nil, maxPatchChars)
+			return m.View()
+		},
 		"help": func() string {
 			m := base()
 			m.view = viewHelp
