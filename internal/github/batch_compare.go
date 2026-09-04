@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
+	ghAPI "github.com/cli/go-gh/v2/pkg/api"
 	"github.com/svnbjrn/spoon/internal/forge"
 )
 
@@ -53,6 +55,12 @@ const (
 	// (its branches fall back to unresolved / listing tip) rather than
 	// split further, so a pathological document can't recurse forever.
 	batchMinChunk = 10
+
+	// batchAliasRetries caps how many times one alias-scoped GraphQL error
+	// (see classifyAliasScopedErrors) is re-queried before that attempt is
+	// given up on -- Phase A marks it dropped, Phase B just leaves it out
+	// of tips -- rather than re-queried forever.
+	batchAliasRetries = 2
 )
 
 // isBatchServerFailure reports whether err is a server-side failure that
@@ -86,6 +94,74 @@ func isBatchServerFailure(err error) bool {
 		return false
 	}
 	return isTransientServerError(err) || isGatewayOrTransportError(err)
+}
+
+// classifyAliasScopedErrors inspects a *ghAPI.GraphQLError's items and, if
+// every one is either NOT_FOUND (already handled by isPartialLookupError
+// before this is ever reached) or scoped to one of the current document's
+// own aliases -- its Path's last element is "cN" for some N in
+// [0, batchSize) -- returns the set of failed alias indexes to re-query.
+// ok is false when any error is neither of those (an empty Path, or a Path
+// naming something other than one of this document's aliases -- e.g.
+// RATE_LIMITED), since no re-query can fix that class and the caller must
+// still abort as before.
+//
+// Observed 2026-09-03 18:37 against pbakaus/impeccable, Phase A chunk of
+// 50: GitHub returned HTTP 200 with data for most aliases plus an errors[]
+// array of items shaped like {"message":"Something went wrong while
+// executing your query on 2026-09-03T18:37:13Z. Please include `7D83:...`
+// when reporting this issue.","path":["repository","ref","c10"]} for a
+// handful of aliases (also c25, c26, c32, c35) -- no "type" field at all,
+// so isPartialLookupError correctly does not tolerate it as NOT_FOUND, but
+// the error is unambiguously scoped to that one alias by its Path, and
+// simply re-querying that alias on its own succeeded. Treating this as a
+// hard failure (the pre-fix behavior) aborted the whole batch over five
+// aliases out of thousands, falling back to REST for the entire network.
+func classifyAliasScopedErrors(err error, batchSize int) (retry map[int]bool, ok bool) {
+	var gqlErr *ghAPI.GraphQLError
+	if !errors.As(err, &gqlErr) || len(gqlErr.Errors) == 0 {
+		return nil, false
+	}
+	retry = make(map[int]bool, len(gqlErr.Errors))
+	for _, item := range gqlErr.Errors {
+		if item.Type == "NOT_FOUND" {
+			continue // tolerated as today; the alias stays null, no retry needed
+		}
+		idx, scoped := aliasIndexFromPath(item.Path, batchSize)
+		if !scoped {
+			return nil, false
+		}
+		retry[idx] = true
+	}
+	if len(retry) == 0 {
+		// Every item was NOT_FOUND after all -- isPartialLookupError should
+		// already have tolerated this before classifyAliasScopedErrors was
+		// ever called, but stay correct if reached some other way.
+		return nil, false
+	}
+	return retry, true
+}
+
+// aliasIndexFromPath extracts N from a GraphQL error Path whose last
+// element is "cN", the alias naming scheme every document in this file
+// uses, and reports whether the path names one of the current document's
+// batchSize aliases at all. Path elements decode from JSON as
+// interface{}; a string element (as opposed to a float64 array index)
+// only ever appears for a named field like "repository", "ref", or one of
+// these aliases.
+func aliasIndexFromPath(path []interface{}, batchSize int) (int, bool) {
+	if len(path) == 0 {
+		return 0, false
+	}
+	last, ok := path[len(path)-1].(string)
+	if !ok || len(last) < 2 || last[0] != 'c' {
+		return 0, false
+	}
+	n, err := strconv.Atoi(last[1:])
+	if err != nil || n < 0 || n >= batchSize {
+		return 0, false
+	}
+	return n, true
 }
 
 // BatchBranch is one branch a BatchTarget offers for divergence resolution,
@@ -132,15 +208,28 @@ type batchAttempt struct {
 	behindBy int
 
 	// dropped is true when this attempt's Phase A chunk failed as a
-	// server-side failure all the way down to batchMinChunk and was
-	// abandoned there: distinct from resolved==false from a definitive
-	// null alias (the branch genuinely doesn't exist), this means Phase A
-	// was never actually answered for this branch at all. Since halving
-	// splits a target's attempts across chunks independently, one branch
-	// of a fork can be dropped while a sibling branch resolves fine --
-	// the fold step must not let that sibling's success stand in for a
-	// clean answer about the whole fork.
+	// server-side failure all the way down to batchMinChunk, or its
+	// alias-scoped GraphQL error persisted past batchAliasRetries
+	// re-queries, and was abandoned: distinct from resolved==false from a
+	// definitive null alias (the branch genuinely doesn't exist), this
+	// means Phase A was never actually answered for this branch at all.
+	// Since halving and alias-scoped retries both operate on arbitrary
+	// sub-slices of a target's attempts independently, one branch of a
+	// fork can be dropped while a sibling branch resolves fine -- the
+	// fold step must not let that sibling's success stand in for a clean
+	// answer about the whole fork.
 	dropped bool
+
+	// aheadBehindRetries/tipRetries count how many times this attempt has
+	// been re-queried after an alias-scoped GraphQL error (see
+	// classifyAliasScopedErrors), separately per phase: the two phases ask
+	// different questions about the same branch and a failure in one says
+	// nothing about the other, so they must not share a retry budget.
+	// Phase B's cap being reached is never fatal (see runTipsChunk) and
+	// does not set dropped -- only Phase A's does, since only Phase A's
+	// resolution feeds into a fork's Resolved verdict.
+	aheadBehindRetries int
+	tipRetries         int
 }
 
 // tipResult is Phase B's answer for one ahead branch: its tip commit and any
@@ -329,16 +418,26 @@ func (c *Client) fetchBatchAheadBehind(
 	return nil
 }
 
-// runAheadBehindChunk sends one Phase A document for batch. On a
-// server-side failure (isBatchServerFailure) it adaptively halves: while
-// len(batch) > batchMinChunk it splits batch in two and retries each half
-// recursively (a half may split again); at or below the floor it drops the
-// chunk instead -- its attempts simply stay unresolved, logged at
-// slog.Debug, and the sweep continues rather than failing outright. A real
-// GraphQL-level error (not NOT_FOUND-only, not a server failure -- e.g.
-// RATE_LIMITED, which a smaller document cannot fix) or an unresolved
-// upstream ref still aborts the whole call, exactly as before this chunk
-// existed.
+// runAheadBehindChunk sends one Phase A document for batch. Three
+// failure classes are handled before falling through to a normal decode:
+//
+//   - A server-side failure (isBatchServerFailure) adaptively halves:
+//     while len(batch) > batchMinChunk it splits batch in two and retries
+//     each half recursively (a half may split again); at or below the
+//     floor it drops the whole chunk instead -- every attempt in it is
+//     marked dropped and stays unresolved, logged at slog.Debug, and the
+//     sweep continues rather than failing outright.
+//   - A GraphQL-level error whose items are all either NOT_FOUND or
+//     scoped to specific aliases (classifyAliasScopedErrors) decodes every
+//     alias that did succeed normally, then re-queues just the failed
+//     aliases as their own follow-up chunk (recursing through this same
+//     function, so a follow-up may itself halve, alias-retry again, or
+//     succeed). An alias re-queried batchAliasRetries times without
+//     succeeding is dropped, same as a halving-floor drop.
+//   - Any other GraphQL-level error (e.g. RATE_LIMITED, which neither
+//     halving nor a per-alias retry can fix) or an unresolved upstream ref
+//     still aborts the whole call, exactly as before either of the above
+//     existed.
 func (c *Client) runAheadBehindChunk(
 	ctx context.Context,
 	baseOwner, baseRepo, qualified string,
@@ -364,6 +463,11 @@ func (c *Client) runAheadBehindChunk(
 	stats.Queries++
 	stats.Cost += resp.RL.Cost
 
+	// retryIdx names the aliases (by their index within this batch) whose
+	// GraphQL error was scoped to just that alias -- decoded normally
+	// below like any other absent/null alias, but also re-queried as
+	// their own follow-up chunk rather than left unresolved outright.
+	var retryIdx map[int]bool
 	if err != nil && !isPartialLookupError(err) {
 		if isBatchServerFailure(err) {
 			if len(batch) > batchMinChunk {
@@ -380,9 +484,17 @@ func (c *Client) runAheadBehindChunk(
 			}
 			return nil
 		}
-		return fmt.Errorf("batch divergence: compare branches: %w", err)
+		idx, ok := classifyAliasScopedErrors(err, len(batch))
+		if !ok {
+			return fmt.Errorf("batch divergence: compare branches: %w", err)
+		}
+		retryIdx = idx
+		// Fall through: go-gh has already decoded data for every alias
+		// that didn't error, so decode those below exactly as on a clean
+		// response, then re-queue retryIdx's aliases as a follow-up chunk.
 	}
-	// Partial NOT_FOUND: the surviving aliases decoded fine, fall through.
+	// Partial NOT_FOUND, or alias-scoped errors with retryIdx set: the
+	// surviving aliases decoded fine, fall through.
 
 	// A resolved ref always yields a non-nil map -- see
 	// divergent_branches.go:303-315 for why a nil map here means ref
@@ -393,7 +505,19 @@ func (c *Client) runAheadBehindChunk(
 		return fmt.Errorf("batch divergence: upstream ref %q did not resolve", qualified)
 	}
 
+	var retryBatch []*batchAttempt
 	for i, a := range batch {
+		if retryIdx[i] {
+			if a.aheadBehindRetries >= batchAliasRetries {
+				slog.Debug("batch divergence: phase A alias-scoped error persisted past retry cap, branch left unresolved",
+					"branch", a.branch, "retries", a.aheadBehindRetries)
+				a.dropped = true
+				continue
+			}
+			a.aheadBehindRetries++
+			retryBatch = append(retryBatch, a)
+			continue
+		}
 		raw, ok := resp.Repository.Ref[fmt.Sprintf("c%d", i)]
 		if !ok || string(raw) == "null" {
 			continue // branch vanished or fork is inaccessible; leave unresolved
@@ -408,6 +532,10 @@ func (c *Client) runAheadBehindChunk(
 		a.resolved = true
 		a.aheadBy = cmp.AheadBy
 		a.behindBy = cmp.BehindBy
+	}
+
+	if len(retryBatch) > 0 {
+		return c.runAheadBehindChunk(ctx, baseOwner, baseRepo, qualified, retryBatch, stats)
 	}
 	return nil
 }
@@ -435,17 +563,19 @@ func (c *Client) fetchBatchTips(
 	return tips
 }
 
-// runTipsChunk sends one Phase B document for batch. On a server-side
-// failure (isBatchServerFailure) it adaptively halves exactly like
-// runAheadBehindChunk: split-and-recurse while len(batch) > batchMinChunk,
-// drop at or below the floor. Any other chunk failure -- a non-NOT_FOUND
-// GraphQL-level error (e.g. RATE_LIMITED, which halving cannot fix), or an
-// upstream ref that somehow failed to resolve here after resolving in
-// Phase A -- is logged and the chunk is dropped the same way, since a
-// Phase B failure of any kind is never fatal to the whole call: its
-// attempts are simply absent from tips, so the caller falls back to their
-// listing-seeded tip with UpstreamedPR == 0 -- their work reads as
-// genuine, mirroring tipUpstreamed's fail-open at branches.go:47-52.
+// runTipsChunk sends one Phase B document for batch, handling the same
+// three failure classes as runAheadBehindChunk (a server-side failure
+// adaptively halves; alias-scoped GraphQL errors decode what succeeded and
+// re-queue only the failed aliases, up to batchAliasRetries; anything else,
+// including an upstream ref that somehow failed to resolve here after
+// resolving in Phase A, gives up on the chunk). The one difference from
+// Phase A: none of these are ever fatal to the whole call here, since
+// Phase B is enrichment on divergence data Phase A already resolved, not
+// the divergence data itself. A chunk (or an alias past its retry cap)
+// that gives up simply leaves its attempts absent from tips, so the
+// caller falls back to their listing-seeded tip with UpstreamedPR == 0 --
+// their work reads as genuine, mirroring tipUpstreamed's fail-open at
+// branches.go:47-52.
 func (c *Client) runTipsChunk(
 	ctx context.Context,
 	baseOwner, baseRepo, qualified, upstream string,
@@ -472,6 +602,11 @@ func (c *Client) runTipsChunk(
 	stats.Queries++
 	stats.Cost += resp.RL.Cost
 
+	// retryIdx names the aliases (by their index within this batch) whose
+	// GraphQL error was scoped to just that alias -- re-queried as their
+	// own follow-up chunk below rather than left on the listing tip
+	// outright, mirroring runAheadBehindChunk.
+	var retryIdx map[int]bool
 	if err != nil && !isPartialLookupError(err) {
 		if isBatchServerFailure(err) && len(batch) > batchMinChunk {
 			mid := len(batch) / 2
@@ -479,11 +614,18 @@ func (c *Client) runTipsChunk(
 			c.runTipsChunk(ctx, baseOwner, baseRepo, qualified, upstream, batch[mid:], stats, tips)
 			return
 		}
-		slog.Debug("batch divergence: phase B chunk failed, branches keep listing tip",
-			"size", len(batch), "err", err)
-		return
+		if idx, ok := classifyAliasScopedErrors(err, len(batch)); ok {
+			retryIdx = idx
+			// Fall through: decode every alias that didn't error below,
+			// then re-queue retryIdx's aliases as a follow-up chunk.
+		} else {
+			slog.Debug("batch divergence: phase B chunk failed, branches keep listing tip",
+				"size", len(batch), "err", err)
+			return
+		}
 	}
-	// Partial NOT_FOUND: decode what did resolve below.
+	// Partial NOT_FOUND, or alias-scoped errors with retryIdx set: decode
+	// what did resolve below.
 
 	if resp.Repository.Ref == nil {
 		slog.Debug("batch divergence: phase B upstream ref unresolved, branches keep listing tip",
@@ -491,7 +633,24 @@ func (c *Client) runTipsChunk(
 		return
 	}
 
+	var retryBatch []*batchAttempt
 	for i, a := range batch {
+		if retryIdx[i] {
+			if a.tipRetries >= batchAliasRetries {
+				// Never fatal: this attempt simply gets no tips[] entry,
+				// and branchDivergenceFor falls back to its listing tip
+				// with UpstreamedPR == 0 -- the same outcome as any other
+				// exhausted Phase B failure. Unlike Phase A's dropped, this
+				// must not affect the fork's Resolved verdict: Phase B is
+				// enrichment on data Phase A already resolved.
+				slog.Debug("batch divergence: phase B alias-scoped error persisted past retry cap, branch keeps listing tip",
+					"branch", a.branch, "retries", a.tipRetries)
+				continue
+			}
+			a.tipRetries++
+			retryBatch = append(retryBatch, a)
+			continue
+		}
 		raw, ok := resp.Repository.Ref[fmt.Sprintf("c%d", i)]
 		if !ok || string(raw) == "null" {
 			continue
@@ -534,6 +693,10 @@ func (c *Client) runTipsChunk(
 			}
 		}
 		tips[a] = res
+	}
+
+	if len(retryBatch) > 0 {
+		c.runTipsChunk(ctx, baseOwner, baseRepo, qualified, upstream, retryBatch, stats, tips)
 	}
 }
 

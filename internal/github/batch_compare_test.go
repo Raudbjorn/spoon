@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -710,4 +711,275 @@ func phaseAAllAheadBody(n int) string {
 	}
 	sb.WriteString(`}},` + rl + `}}`)
 	return sb.String()
+}
+
+// aliasScopedErrorItem builds one GraphQL error item shaped like GitHub's
+// observed 2026-09-03 18:37 failure mode against pbakaus/impeccable: no
+// "type" field at all (so isPartialLookupError correctly does not treat it
+// as NOT_FOUND), just a message and a Path whose last element names the
+// failing alias.
+func aliasScopedErrorItem(alias string) string {
+	return fmt.Sprintf(
+		`{"message":"Something went wrong while executing your query on 2026-09-03T18:37:13Z. Please include `+"`7D83:ABCD1234`"+` when reporting this issue.","path":["repository","ref",%q]}`,
+		alias)
+}
+
+// phaseAWithAliasScopedErrors builds a Phase A response for n aliases where
+// every index in failIdx is omitted from data (as a genuinely errored
+// GraphQL field is) and instead carries an alias-scoped error item, while
+// every other index decodes normally as ahead=0 behind=0.
+func phaseAWithAliasScopedErrors(n int, failIdx []int) string {
+	fail := make(map[int]bool, len(failIdx))
+	for _, i := range failIdx {
+		fail[i] = true
+	}
+	var refs strings.Builder
+	first := true
+	for i := 0; i < n; i++ {
+		if fail[i] {
+			continue
+		}
+		if !first {
+			refs.WriteString(",")
+		}
+		first = false
+		fmt.Fprintf(&refs, `"c%d":{"aheadBy":0,"behindBy":0}`, i)
+	}
+	items := make([]string, 0, len(failIdx))
+	for _, i := range failIdx {
+		items = append(items, aliasScopedErrorItem(fmt.Sprintf("c%d", i)))
+	}
+	return `{"data":{"repository":{"ref":{` + refs.String() + `}},` + rl + `},"errors":[` + strings.Join(items, ",") + `]}`
+}
+
+// An alias-scoped GraphQL error (GitHub answering most of a Phase A
+// document normally but failing a handful of individual aliases with no
+// "type" field, only a Path naming them) must not abort the whole batch:
+// the failed aliases are re-queried as their own follow-up document, and
+// every fork ends up resolved.
+func TestFetchBatchDivergence_PhaseAAliasScopedErrorRetriesJustThatAlias(t *testing.T) {
+	const numTargets = 50
+	failIdx := []int{10, 25}
+
+	var mu sync.Mutex
+	var docs []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			Query string `json:"query"`
+		}
+		_ = json.Unmarshal(body, &req)
+		mu.Lock()
+		docs = append(docs, req.Query)
+		mu.Unlock()
+		n := aliasCount(req.Query)
+		w.Header().Set("Content-Type", "application/json")
+		if n == numTargets {
+			_, _ = w.Write([]byte(phaseAWithAliasScopedErrors(numTargets, failIdx)))
+			return
+		}
+		// The follow-up document, asking only about the two failed
+		// aliases (renumbered c0/c1 within this smaller document),
+		// succeeds.
+		_, _ = w.Write([]byte(phaseAOKBody(n)))
+	}))
+	t.Cleanup(srv.Close)
+	c := newTestClientGQL(t, srv)
+
+	targets := make([]BatchTarget, numTargets)
+	for i := range targets {
+		targets[i] = BatchTarget{ID: fmt.Sprintf("o/repo%d", i), Owner: "o", Name: fmt.Sprintf("repo%d", i), DefaultBranch: "main"}
+	}
+
+	got, stats, err := c.FetchBatchDivergence(context.Background(), "up", "stream", "main", targets)
+	if err != nil {
+		t.Fatalf("an alias-scoped GraphQL error must not fail the whole batch: %v", err)
+	}
+	for _, tg := range targets {
+		fd, ok := got[tg.ID]
+		if !ok || !fd.Resolved {
+			t.Errorf("%s = (%+v, %v), want Resolved=true after the alias-scoped retry", tg.ID, fd, ok)
+		}
+	}
+
+	mu.Lock()
+	nDocs := len(docs)
+	mu.Unlock()
+	if stats.Queries != 2 {
+		t.Errorf("stats.Queries = %d, want 2 (the 50-alias document + a 2-alias follow-up)", stats.Queries)
+	}
+	if nDocs != 2 {
+		t.Errorf("issued %d documents, want 2", nDocs)
+	}
+}
+
+// An alias-scoped error that persists through every retry (rather than
+// resolving on the follow-up, as above) must still not fail the whole
+// batch: after batchAliasRetries follow-ups, those two forks alone come
+// back Resolved=false, the other 48 stay Resolved=true, and the number of
+// documents sent stays bounded rather than retrying forever.
+func TestFetchBatchDivergence_PhaseAAliasScopedErrorDropsAfterRetryCap(t *testing.T) {
+	const numTargets = 50
+	failIdx := []int{10, 25}
+
+	var mu sync.Mutex
+	var docSizes []int
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			Query string `json:"query"`
+		}
+		_ = json.Unmarshal(body, &req)
+		n := aliasCount(req.Query)
+
+		mu.Lock()
+		docSizes = append(docSizes, n)
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		if n == numTargets {
+			_, _ = w.Write([]byte(phaseAWithAliasScopedErrors(numTargets, failIdx)))
+			return
+		}
+		// Every follow-up -- always exactly the two originally-failed
+		// aliases, retried together as a pair -- fails alias-scoped again,
+		// every time, to exercise the retry cap.
+		idx := make([]int, n)
+		for i := range idx {
+			idx[i] = i
+		}
+		_, _ = w.Write([]byte(phaseAWithAliasScopedErrors(n, idx)))
+	}))
+	t.Cleanup(srv.Close)
+	c := newTestClientGQL(t, srv)
+
+	targets := make([]BatchTarget, numTargets)
+	for i := range targets {
+		targets[i] = BatchTarget{ID: fmt.Sprintf("o/repo%d", i), Owner: "o", Name: fmt.Sprintf("repo%d", i), DefaultBranch: "main"}
+	}
+
+	got, stats, err := c.FetchBatchDivergence(context.Background(), "up", "stream", "main", targets)
+	if err != nil {
+		t.Fatalf("a persistently alias-scoped error must not fail the whole batch: %v", err)
+	}
+
+	failSet := map[int]bool{10: true, 25: true}
+	for i, tg := range targets {
+		fd := got[tg.ID]
+		if failSet[i] {
+			if fd.Resolved {
+				t.Errorf("%s Resolved = true, want false (its alias-scoped error persisted past the retry cap)", tg.ID)
+			}
+			continue
+		}
+		if !fd.Resolved {
+			t.Errorf("%s Resolved = false, want true (unaffected by the other two's persistent error)", tg.ID)
+		}
+	}
+
+	// Pin the document shapes, not just the count: the 50-alias document,
+	// then two follow-ups each re-querying exactly the two originally-failed
+	// aliases together (batchAliasRetries=2), before they are dropped. A
+	// server-failure drop of the 2-alias chunk would also land on
+	// stats.Queries==3 by coincidence of the retry cap, so asserting the
+	// count alone doesn't prove the alias-scoped-retry path ran rather than
+	// the halve-and-drop path -- see the malformed-JSON incident in the
+	// Phase B test below, where exactly that ambiguity hid a bug.
+	mu.Lock()
+	gotSizes := append([]int(nil), docSizes...)
+	mu.Unlock()
+	wantSizes := []int{numTargets, len(failIdx), len(failIdx)}
+	if !reflect.DeepEqual(gotSizes, wantSizes) {
+		t.Errorf("document alias-count sequence = %v, want %v (50-alias doc, then two 2-alias follow-ups)", gotSizes, wantSizes)
+	}
+
+	if stats.Queries != 3 {
+		t.Errorf("stats.Queries = %d, want 3 (bounded: no infinite alias retry)", stats.Queries)
+	}
+	// Every one of the 3 documents' rateLimit.cost (1 each, per the rl
+	// fixture) must be counted, including the two follow-ups.
+	if stats.Cost != 3 {
+		t.Errorf("stats.Cost = %d, want 3 (rateLimit.cost from all 3 documents, follow-ups included)", stats.Cost)
+	}
+}
+
+// The Phase B analogue: one alias-scoped error among several successful
+// Phase B aliases triggers a follow-up query for just that alias; when the
+// error persists through the retry cap, that branch falls back to its
+// listing tip with UpstreamedPR left at 0, exactly like any other
+// exhausted Phase B failure -- the fork itself stays Resolved (Phase A
+// already succeeded), since Phase B is enrichment only.
+func TestFetchBatchDivergence_PhaseBAliasScopedErrorRetriesThenFallsBack(t *testing.T) {
+	phaseA := `{"data":{"repository":{"ref":{
+		"c0":{"aheadBy":3,"behindBy":0},
+		"c1":{"aheadBy":3,"behindBy":0},
+		"c2":{"aheadBy":3,"behindBy":0}
+	}},` + rl + `}}`
+
+	seedTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			Query string `json:"query"`
+		}
+		_ = json.Unmarshal(body, &req)
+		w.Header().Set("Content-Type", "application/json")
+		if !strings.Contains(req.Query, "commits(last:") {
+			_, _ = w.Write([]byte(phaseA))
+			return
+		}
+		n := aliasCount(req.Query)
+		if n == 3 {
+			// c1 (repo1) gets an alias-scoped error; c0 and c2 (repo0,
+			// repo2) succeed with real tip data.
+			_, _ = w.Write([]byte(`{"data":{"repository":{"ref":{` +
+				`"c0":{"commits":{"nodes":[{"oid":"tip0","committedDate":"2026-02-02T00:00:00Z","associatedPullRequests":{"nodes":[]}}]}},` +
+				`"c2":{"commits":{"nodes":[{"oid":"tip2","committedDate":"2026-02-02T00:00:00Z","associatedPullRequests":{"nodes":[]}}]}}` +
+				`}},` + rl + `},"errors":[` + aliasScopedErrorItem("c1") + `]}`))
+			return
+		}
+		// Every follow-up -- always the single persistently-failing alias,
+		// renumbered c0 within this smaller document -- fails alias-scoped
+		// again, every time.
+		_, _ = w.Write([]byte(`{"data":{"repository":{"ref":{}},` + rl + `},"errors":[` + aliasScopedErrorItem("c0") + `]}`))
+	}))
+	t.Cleanup(srv.Close)
+	c := newTestClientGQL(t, srv)
+
+	targets := []BatchTarget{
+		{ID: "o/repo0", Owner: "o", Name: "repo0", DefaultBranch: "main", DefaultTipSHA: "seed0", DefaultCommittedAt: seedTime},
+		{ID: "o/repo1", Owner: "o", Name: "repo1", DefaultBranch: "main", DefaultTipSHA: "seed1", DefaultCommittedAt: seedTime},
+		{ID: "o/repo2", Owner: "o", Name: "repo2", DefaultBranch: "main", DefaultTipSHA: "seed2", DefaultCommittedAt: seedTime},
+	}
+
+	got, stats, err := c.FetchBatchDivergence(context.Background(), "up", "stream", "main", targets)
+	if err != nil {
+		t.Fatalf("a Phase B alias-scoped error must not fail the whole batch: %v", err)
+	}
+
+	if fd := got["o/repo0"]; fd.Default.TipSHA != "tip0" {
+		t.Errorf("o/repo0.Default.TipSHA = %q, want \"tip0\"", fd.Default.TipSHA)
+	}
+	if fd := got["o/repo2"]; fd.Default.TipSHA != "tip2" {
+		t.Errorf("o/repo2.Default.TipSHA = %q, want \"tip2\"", fd.Default.TipSHA)
+	}
+
+	fd1 := got["o/repo1"]
+	if !fd1.Resolved || fd1.Default.AheadBy != 3 {
+		t.Fatalf("o/repo1 = %+v, want Resolved=true AheadBy=3 (Phase A succeeded)", fd1)
+	}
+	if fd1.Default.TipSHA != "seed1" || !fd1.Default.TipCommittedAt.Equal(seedTime) {
+		t.Errorf("o/repo1 tip = (%q, %v), want listing fallback (\"seed1\", %v)", fd1.Default.TipSHA, fd1.Default.TipCommittedAt, seedTime)
+	}
+	if fd1.Default.UpstreamedPR != 0 {
+		t.Errorf("o/repo1.UpstreamedPR = %d, want 0 (Phase B never answered)", fd1.Default.UpstreamedPR)
+	}
+
+	// Phase A (1) + Phase B initial (1, 3 aliases) + 2 Phase B follow-ups
+	// (1 alias each, bounded by batchAliasRetries=2) = 4 documents.
+	if stats.Queries != 4 {
+		t.Errorf("stats.Queries = %d, want 4 (phase A + phase B initial + 2 follow-ups)", stats.Queries)
+	}
 }
