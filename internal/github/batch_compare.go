@@ -50,6 +50,16 @@ const (
 	// keeps the same conservative ceiling measured for it directly.
 	batchTipSize = 50
 
+	// batchTipPRPageSize bounds associatedPullRequests per tip commit. The
+	// REST probe this replaces (PullsForCommit, upstreamed.go) reads one
+	// unpaginated page (30) of the same association list; 20 keeps Phase B
+	// documents cheap (50 aliases x 20 nodes ~ cost 10) while covering every
+	// realistic tip. A tip with more associations than this and no merged
+	// upstream PR among the first page is treated as genuine work -- the
+	// same direction the REST path takes when its own list is truncated
+	// (branches.go tipUpstreamed) -- and logged at debug.
+	batchTipPRPageSize = 20
+
 	// batchMinChunk is the floor adaptive halving stops at: a chunk this
 	// size or smaller that still fails as a server-side failure is dropped
 	// (its branches fall back to unresolved / listing tip) rather than
@@ -603,8 +613,8 @@ func (c *Client) runTipsChunk(
 	fmt.Fprintf(&q, "  repository(owner: %s, name: %s) {\n", gqlString(baseOwner), gqlString(baseRepo))
 	fmt.Fprintf(&q, "    ref(qualifiedName: %s) {\n", gqlString(qualified))
 	for i, a := range batch {
-		fmt.Fprintf(&q, "      c%d: compare(headRef: %s) { commits(last: 1) { nodes { oid committedDate associatedPullRequests(first: 5) { nodes { number merged baseRepository { nameWithOwner } } } } } }\n",
-			i, gqlString(a.owner+":"+a.branch))
+		fmt.Fprintf(&q, "      c%d: compare(headRef: %s) { commits(last: 1) { nodes { oid committedDate associatedPullRequests(first: %d) { totalCount nodes { number merged baseRepository { nameWithOwner } } } } } }\n",
+			i, gqlString(a.owner+":"+a.branch), batchTipPRPageSize)
 	}
 	q.WriteString("    }\n  }\n  rateLimit { limit remaining used resetAt cost }\n}")
 
@@ -681,7 +691,8 @@ func (c *Client) runTipsChunk(
 					OID                    string `json:"oid"`
 					CommittedDate          string `json:"committedDate"`
 					AssociatedPullRequests struct {
-						Nodes []struct {
+						TotalCount int `json:"totalCount"`
+						Nodes      []struct {
 							Number         int  `json:"number"`
 							Merged         bool `json:"merged"`
 							BaseRepository struct {
@@ -711,6 +722,13 @@ func (c *Client) runTipsChunk(
 				res.upstreamedPR = pr.Number
 				break
 			}
+		}
+		if res.upstreamedPR == 0 && tip.AssociatedPullRequests.TotalCount > batchTipPRPageSize {
+			// More associations than the page holds and none of the first
+			// page merged upstream: the verdict stays "genuine", which can
+			// differ from an exhaustive probe. Observable, not fatal.
+			slog.Debug("batch divergence: associated PR page truncated; treating tip as genuine",
+				"branch", a.owner+":"+a.branch, "associations", tip.AssociatedPullRequests.TotalCount, "page", batchTipPRPageSize)
 		}
 		tips[a] = res
 	}

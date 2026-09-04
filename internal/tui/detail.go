@@ -188,12 +188,19 @@ func (m Model) detailBody() string {
 		}
 		filesLine := fmt.Sprintf("Ahead: %d (+%d/-%d)  Behind: %d  Files: %d", sf.T2.AheadCount, totalAdds, totalDels, sf.T2.BehindCount, len(sf.T2.Diffs))
 		if sf.T2.IsFilesTruncated() {
-			filesLine += fmt.Sprintf(" (capped at %d)", forge.CompareFilesCap)
+			filesLine += " (incomplete)"
 		}
 		writeLine(filesLine)
 		writeLine(fmt.Sprintf("Authors: %d", len(forge.UniqueAuthors(sf.T2.Commits))))
 		if sf.T2.IsFilesTruncated() {
-			writeLine(styles.warn.Render(fmt.Sprintf(" file list capped at %d by the provider; counts are lower bounds", forge.CompareFilesCap)))
+			// Provider-neutral: GitHub caps compare files at CompareFilesCap,
+			// Gitea's merge-base walk can stop early; either way the list is a
+			// lower bound. The stored FilesTruncatedReason, when present, says why.
+			reason := " file list incomplete (provider cap); counts are lower bounds"
+			if sf.T2.FilesTruncatedReason != "" {
+				reason += ": " + sf.T2.FilesTruncatedReason
+			}
+			writeLine(styles.warn.Render(reason))
 		}
 		if m.pathFilter != nil {
 			var touched []forge.FileDiff

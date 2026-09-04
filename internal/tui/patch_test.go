@@ -63,3 +63,51 @@ func TestPatchKeymap(t *testing.T) {
 		t.Fatal("esc must close the patch view")
 	}
 }
+
+// A patch result from an older fetch (same fork or not) must neither clear
+// the loading flag of the newer in-flight fetch nor overwrite its body
+// (PR #125 review: request generation, not just fork identity).
+func TestPatchResultStaleSeqIgnored(t *testing.T) {
+	m := newTestModel()
+	m.view = viewPatch
+	m.forks = []ScoredFork{{Fork: forge.T1Data{ID: "o/x"}, T2: &forge.T2Data{Performed: true, AheadCount: 1}}}
+	m.cursor = 0
+	m.patchSeq = 2 // a second fetch for the same fork is in flight
+	m.patchLoading = true
+	m.patchBody = "body of fetch #2 (pending)"
+
+	stale := patchResultMsg{seq: 1, forkID: "o/x", t2: forge.T2Data{Performed: true, Diffs: []forge.FileDiff{{Path: "a.go", Patch: "@@ -1 +1 @@\n+x\n"}}}}
+	updated, _ := m.Update(stale)
+	got := updated.(Model)
+	if !got.patchLoading {
+		t.Fatal("stale result cleared patchLoading for the newer fetch")
+	}
+	if got.patchBody != "body of fetch #2 (pending)" {
+		t.Fatalf("stale result overwrote patchBody: %q", got.patchBody)
+	}
+
+	fresh := stale
+	fresh.seq = 2
+	updated, _ = got.Update(fresh)
+	got = updated.(Model)
+	if got.patchLoading {
+		t.Fatal("current result must clear patchLoading")
+	}
+	if !strings.Contains(got.patchBody, "a.go") {
+		t.Fatalf("current result not applied: %q", got.patchBody)
+	}
+}
+
+// One long final line must not carry the rendered body far past the limit:
+// the check is on the prospective length, not the length before the line.
+func TestRenderPatchLongLineRespectsLimit(t *testing.T) {
+	long := "+" + strings.Repeat("x", 10_000)
+	t2 := forge.T2Data{Diffs: []forge.FileDiff{{Path: "big.go", Status: "modified", Patch: "@@ -1 +1 @@\n" + long}}}
+	out := renderPatch(newTestModel().themeContext(), t2, nil, 200)
+	if !strings.Contains(out, "patch truncated at 200") {
+		t.Fatalf("expected truncation marker, got %d chars", len(out))
+	}
+	if len(out) > 600 {
+		t.Fatalf("rendered body is %d chars; a single long line escaped the limit", len(out))
+	}
+}

@@ -79,6 +79,7 @@ type tier2ResultMsg struct {
 // lets the receiver ignore a stale result if the user has moved on to a
 // different fork before the round-trip completes.
 type patchResultMsg struct {
+	seq    int // Model.patchSeq at fetch time; older values are dropped
 	forkID string
 	t2     forge.T2Data
 	err    error

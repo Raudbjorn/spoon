@@ -176,6 +176,11 @@ type Model struct {
 	patchBody    string
 	patchOffset  int
 	patchLoading bool
+	// patchSeq numbers patch fetches; a patchResultMsg whose seq is not the
+	// latest is stale (the user pressed p again, possibly on the same fork)
+	// and is dropped before it can clear the loading flag or overwrite the
+	// newer result.
+	patchSeq int
 
 	// Enrichment
 	enriching    bool
@@ -503,11 +508,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case patchResultMsg:
+		// Only the most recent fetch may clear the loading flag or apply a
+		// body: an older request (same fork or not) resolving after a newer
+		// one must not hide the newer request's loading state or overwrite
+		// its result. The fork check below is the second line of defence.
+		if msg.seq != m.patchSeq {
+			return m, nil
+		}
 		m.patchLoading = false
-		// The user may have moved the cursor to a different fork while the
-		// live compare was in flight; a stale result would silently
-		// overwrite whatever the current selection is fetching (or has
-		// already fetched), so it is dropped rather than applied.
 		if m.cursor < 0 || m.cursor >= len(m.forks) || m.forks[m.cursor].Fork.ID != msg.forkID {
 			return m, nil
 		}

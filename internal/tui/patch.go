@@ -32,10 +32,12 @@ func (m *Model) fetchPatchCmd() tea.Cmd {
 	fork := m.forks[m.cursor].Fork
 	provider := m.provider
 	m.patchLoading = true
+	m.patchSeq++
+	seq := m.patchSeq
 	return func() tea.Msg {
 		// Live call on purpose: cached compares carry no patch text.
 		t2, err := provider.Compare(context.Background(), fork, fork.DefaultBranch)
-		return patchResultMsg{forkID: fork.ID, t2: t2, err: err}
+		return patchResultMsg{seq: seq, forkID: fork.ID, t2: t2, err: err}
 	}
 }
 
@@ -58,20 +60,24 @@ func renderPatch(ctx theme.Context, t2 forge.T2Data, pm *pathmatch.Matcher, limi
 			continue
 		}
 		for _, line := range strings.Split(d.Patch, "\n") {
-			if b.Len() > limit {
+			var rendered string
+			switch {
+			case strings.HasPrefix(line, "+"):
+				rendered = add.Render(line)
+			case strings.HasPrefix(line, "-"):
+				rendered = del.Render(line)
+			case strings.HasPrefix(line, "@@"):
+				rendered = hunk.Render(line)
+			default:
+				rendered = line
+			}
+			// Check the prospective length before appending: a single long
+			// final line must not carry the body far past the limit.
+			if b.Len()+len(rendered)+1 > limit {
 				b.WriteString("\n... patch truncated at " + strconv.Itoa(limit) + " characters\n")
 				return b.String()
 			}
-			switch {
-			case strings.HasPrefix(line, "+"):
-				b.WriteString(add.Render(line))
-			case strings.HasPrefix(line, "-"):
-				b.WriteString(del.Render(line))
-			case strings.HasPrefix(line, "@@"):
-				b.WriteString(hunk.Render(line))
-			default:
-				b.WriteString(line)
-			}
+			b.WriteString(rendered)
 			b.WriteString("\n")
 		}
 		b.WriteString("\n")

@@ -179,6 +179,15 @@ func matchPath(p string, changedPaths []string) bool {
 
 func (s *Spec) normalize() {
 	s.Paths = trimSlice(s.Paths)
+	// Share pathmatch's normalized form (no leading "./", no trailing "/")
+	// with --touching and the TUI path: filter, so "./src/" matches
+	// "src/a.go" here too. A pattern Normalize rejects is kept verbatim;
+	// matchPath then reports no match for it rather than failing the spec.
+	for i, p := range s.Paths {
+		if n, err := pathmatch.Normalize(p); err == nil {
+			s.Paths[i] = n
+		}
+	}
 	s.Keywords = trimSlice(s.Keywords)
 	s.Languages = lowerDedup(s.Languages)
 	s.Owners.Allow = lowerDedup(s.Owners.Allow)

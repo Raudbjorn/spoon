@@ -240,8 +240,12 @@ Nouns and verbs:
         the path (repeatable; ** matches directories). Uses the
         merge-base-relative compare already cached per fork, so re-runs cost
         no API calls. Adds a "touching" block to each record; unmatched
-        forks are omitted. NDJSON only (rejects --csv), and needs compare
-        data (rejects --tier 1).
+        forks are omitted, except two kinds that are printed so the reader
+        can see the gap or the proof: forks whose file list hit the
+        provider's 300-file cap (touching.partial: true) and forks cleared
+        by the last-touch proof without a compare (touching.reason:
+        "last_touch"). Neither is a path match. NDJSON only (rejects --csv),
+        and needs compare data (rejects --tier 1).
         --sibling-sim / --no-sibling-sim toggles P2 distant-relation
         discovery: one /search/repositories + ~50 README fetches + one
         batched embed. The default upstream_readme mode folds the max cosine
