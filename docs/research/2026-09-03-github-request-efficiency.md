@@ -257,17 +257,278 @@ resolve for free anyway.
 
 ## Measured on the live network
 
-Filled in by the verification run (Task 10).
+Task 10 verification, run 2026-09-04 against `pbakaus/impeccable` (binary
+built from commit `8aadff2`, after the Task 10 fix below). All runs used
+`--tier 2 --no-cluster --no-embed`; `SPOON_DEBUG=1` was set from the warm
+`--touching` run onward to surface the `[triage]`/`[touching]` prose lines
+(see caveat under "What SPOON_DEBUG actually gates," below). Full command
+lines, rate-limit before/after, and raw output paths are in the Task 10
+report.
 
-Expected numbers, from the plan's Task 10 verification steps (not yet
-measured):
+### Attempt 1: the batch aborted, not a measurement
 
-| | Before this branch | Expected after |
-|---|---|---|
-| impeccable REST requests | >= 3692 (one compare per fork; reserve stopped the sweep at 2120) | ~ 37 listing + 1 parent + ~69 compares + <= 10 diffs, i.e. < 150 |
-| impeccable GraphQL queries | 0 (no batch existed) | ~ 74 Phase A (3692 branches / 50 per query) + <= 2 Phase B (69 ahead branches / 50), ~ 76 total |
-| litellm REST requests | 3493 (reserve-limited) | ~ 1300 divergent forks + 58 diffs |
-| litellm GraphQL queries | 0 (no batch existed) | ~ 600 Phase A (~30000 branches [10735 forks + 19221 side branches] / 50) + ~ 40 Phase B (1280 ahead branches / 50, plus retries from adaptive halving) |
+The first cold-impeccable run (commit `9600e5c`, before `8aadff2`) is kept
+as the failure record the fix responds to, not a valid measurement: Phase A
+hit alias-scoped GraphQL errors ("Something went wrong while executing your
+query", `repository.ref.c10`/`c25`/`c26`/`c32`/`c35`) that the batch call
+treated as fatal, aborting after 3 queries and falling every one of 3513
+eligible forks back to REST (`compare_summary`: `batch_queries 3 · batch_cost
+3 · graphql_batch 0 · rest 3513 · diff_fallback 8`, `batch_error` carrying
+the five alias errors verbatim). Fixed by commit `8aadff2` (alias-scoped
+errors are re-queried instead of aborting the whole batch). Raw output:
+`attempt1-imp.{ndjson,err}`.
+
+### impeccable, cold (`--refresh`), attempt 2 — commit `8aadff2`
+
+Rate limit before: core 5000, graphql 5000 (15:01:50 UTC). The hourly
+window reset at 15:21:51 UTC, inside this run, so the before/after `gh api
+rate_limit` delta is not a usable request count for this run; the numbers
+below come from the run's own `compare_summary` and `acquisition_report`
+envelopes instead. Finished 15:24:29 UTC (~23 min wall-clock from launch;
+`[triage]` prose unavailable for this run — see caveat below).
+
+| | Before this branch | Expected after (plan) | Measured |
+|---|---|---|---|
+| REST (compare-path) | >= 3692 (1/fork, reserve stopped the sweep at 2120) | ~ 37 listing + 1 parent + ~69 compares + <= 10 diffs, i.e. < 150 | 320 compares + 8 diffs = 328, plus 64 listing pages (mixed GraphQL+REST acquisition, see below) |
+| GraphQL batch queries | 0 (no batch existed) | ~ 74 Phase A + <= 2 Phase B, ~ 76 total | 138 queries, cost 138 |
+| `compare_summary` | n/a | n/a | `cached 0 · graphql_batch 2941 · rest 320 · diff_fallback 8 · last_touch_skipped 0` |
+| `t2==null` records | n/a | 0 | 0 (of 3261 total records) |
+| `t2.source=="graphql_batch"` | n/a | ~3600 | 2941 (exact match to `compare_summary.graphql_batch`) |
+| `t2.ahead>0` | n/a | ~69 | 75 |
+| `t2.files_truncated==true` | n/a | <= 10 | 4 |
+| `budget_skipped` | n/a | 0 | 0 |
+| `[triage] batch compare degraded` | n/a | absent | absent (no `batch_error` in `compare_summary`) |
+
+Measured REST and GraphQL both land well under the "before" baseline (a
+92%+ cut in compare-path REST calls, and the batch never degrades), but
+both are higher than the plan's specific estimates, which were sized
+against the previous day's live-network sample (3692 forks). Two things
+moved between the two days, both visible in the `acquisition_report`
+envelope: `{"method":"graphql+rest","pages":64,"rawRows":5293,"uniqueRows":
+2614,"duplicateRows":2679}` — this run's T1 listing fell back from pure
+GraphQL to a GraphQL+REST hybrid mid-sweep and produced heavy duplication
+(2679 of 5293 raw rows), ending with only 2614 unique forks despite the
+network holding at least 4012 (see "Listing-size variance," below). A
+listing that undercounts the network by roughly a third does not explain
+*higher* REST/GraphQL usage on its own — the more direct driver is that
+320 of the 2614 forks it did find were genuinely divergent (12.2%), well
+above the ~69/3692 (1.9%) the original doc measured; `pbakaus/impeccable`
+is being forked and pushed to continuously (usernames in the listing
+suggest automated/bot forking), so the live divergent fraction is not
+stable day to day. `batch_queries` (138) also exceeds the naive
+`ceil(2614/50) = 53`, consistent with adaptive-halving retries on failed
+chunks, though the specific halving events are not directly observable
+(see caveat below).
+
+### impeccable, warm `--touching cli/engine/registry/antipatterns.mjs`
+
+Rate limit before: core 5000, graphql 5000 (15:26:23 UTC); after: core
+5000, graphql 5000 (15:44:08 UTC) — both full windows, no reset crossing
+this time (~18 min wall-clock).
+
+`[triage] 3999 forks; ~100 REST requests (100 divergent of 1511 resolved by
+one GraphQL batch); rate headroom 93%`
+`[triage] compare sources: cached 2488 · graphql_batch 1411 · rest 97 ·
+diff_fallback 1 · last_touch_skipped 3 (batch: 40 queries, cost 40)`
+`[touching] matched 4 (4 partial: file list capped at 300) · unmatched 3995
+· unknown 0 · never_pushed 0 · centrality="directory" · last_touch: gated 97
+· looked_up 3 · skipped 3 · mismatch 0 · unavailable 0`
+
+Expected: 0 REST; `kaushalrog/impeccable` matched; `tarcisiojr/impeccable-
+flutter` present with `touching.partial: false` and ~1383 rows in
+`compare_files`; `last_touch: looked_up` only for `behind <= CommitsSince`.
+
+Measured: not 0 REST (97 compares + 1 diff + 3 forced last-touch lookups) —
+the network grew between the cold run and this one (2614 → 3999 unique
+forks per `acquisition_report`, a live-network change, not a regression),
+so 1511 forks were newly pending and needed the batch/compare path.
+`kaushalrog/impeccable` is confirmed matched. `tarcisiojr/impeccable-
+flutter`: `compare_files` holds exactly 1383 rows
+(`sqlite3 -readonly ~/.config/spoon/spoon.db "select count(*) from
+compare_files where fork_key like '%tarcisiojr/impeccable-flutter'"` → 1383)
+and its cached `t2.files_truncated` is `false` — the unbounded `.diff`
+fallback did complete it. It does **not** appear in `--touching` output,
+though: its own ahead commits do not touch
+`cli/engine/registry/antipatterns.mjs` (`touching.status: unmatched`), and
+`Emit()` only prints a matched fork or an unmatched-but-partial one
+(`internal/forksops/touching.go:76-79`); a complete, unmatched fork is
+correctly silent. `last_touch: looked_up 3` matches `behind <= 5`
+(`CommitsSince` from the skip-rate sample); `gated 97` covers the rest.
+
+**Two apparent oddities, resolved by inspection, both non-bugs:**
+
+1. **"matched 4 (4 partial: ...)" does not mean the 4 matches are
+   partial.** `TouchSummary.Matched` and `TouchSummary.Partial`
+   (`internal/forksops/touching.go:178-192`) are independent per-fork
+   tallies — `Partial` counts any truncated-file-list fork regardless of
+   match status — and the `[touching]` format string
+   (`internal/forksops/stream.go:1038`) prints them adjacently in a way
+   that reads as related. Per-record check
+   (`jq -c 'select(.touching.status=="matched")'`): the 4 matched forks
+   (`marianif/impeccable-native`, `kaushalrog/impeccable`, `jesse-
+   merhi/impeccable`, `Vedasheersh/impeccable`) all have
+   `touching.partial: false`. The 4 genuinely partial forks are a disjoint,
+   unmatched set (`Raudbjorn/impeccable`, `bgausden/impeccable`, `Git-
+   Dann/impeccable`, `BespokeAgentics/impeccable-microdots`), emitted
+   because `Emit()` also prints an unmatched-but-partial fork (the user
+   must be told that answer is incomplete). The count "4" for each is
+   coincidental. Not a code bug; the log line's phrasing is worth
+   revisiting in a follow-up.
+2. **`tarcisiojr/impeccable-flutter` absent from `--touching` output** is
+   the correct, documented `Emit()` behavior for a complete-but-unmatched
+   fork (see above), not evidence the diff fallback failed — the store
+   numbers (1383 rows, `files_truncated: false`) confirm the fallback
+   worked.
+
+### impeccable, warm `--touching`, `--no-tree-commit-info`
+
+Rate limit before: core 5000, graphql 5000 (15:47:04 UTC); after: core
+5000, graphql 5000 (15:55:35 UTC), ~8.5 min wall-clock.
+
+`[triage] 3293 forks; ~9879+ API requests to enrich at tier 2; rate headroom
+96%` (old pre-batch estimate line: with everything cached, `pending` was
+empty, so the batch never ran this invocation — not a regression, see
+`internal/forksops/stream.go:616-660`)
+`[triage] compare sources: cached 3293 · graphql_batch 0 · rest 0 ·
+diff_fallback 0 · last_touch_skipped 0 (batch: 0 queries, cost 0)`
+`[touching] matched 4 (4 partial: file list capped at 300) · unmatched 3044
+· unknown 245 · never_pushed 0 · centrality="directory" · last_touch: gated
+0 · looked_up 0 · skipped 0 · mismatch 0 · unavailable 0`
+
+Expected and measured agree: 0 REST, and every `last_touch` counter (gated,
+looked_up, skipped, mismatch, unavailable) is exactly 0 — `NoLastTouch`
+correctly stops the gate from being built at all
+(`internal/forksops/lasttouch.go`), so no `tree-commit-info` traffic can
+have occurred (there is no direct request counter for the client; these
+zeros are the indirect evidence, as the plan anticipated). The 245
+`unknown` forks are the acquisition finding more unique forks this pass
+(3052, per `acquisition_report`) than have any cached compare row at all;
+not independently confirmed to be specifically deleted/404 forks in this
+report (that attribution came from the controller's own process
+inspection, not from data this run emits — `--touching` never prints
+`unknown` records, so it cannot be checked from the NDJSON alone).
+
+### impeccable, `--no-batch-compare --top 20` (sanity)
+
+First attempt hung: see "A process hang, reclassified," below. Retry under
+a 15-minute wall-clock guard (`timeout 900`) completed in 7m43s. Rate limit
+before: core 5000, graphql 5000 (16:08:13 UTC); after: core 5000, graphql
+5000 (16:15:56 UTC).
+
+`[triage] 2991 forks; ~8973+ API requests to enrich at tier 2; rate headroom
+88%` (old estimate-line format, confirmed)
+`[triage] compare sources: cached 18 · graphql_batch 0 · rest 2 ·
+diff_fallback 0 · last_touch_skipped 0 (batch: 0 queries, cost 0)`
+
+`graphql_batch: 0` confirms the batch never ran under `--no-batch-compare`.
+Of the 20 deep-scanned forks, 18 were cache hits and 2 got a fresh REST
+compare — roughly "one compare per fork" only for the forks this run
+itself had to fetch; the other 18 were already resolved by earlier
+batch-enabled runs against this same store. Per-record check
+(`jq -c 'select(.t2!=null)|{id,source:.t2.source,ahead:.t2.ahead}'`): every
+`ahead>0` record has no `t2.source` (18/18 correct — `t2.source` is only
+ever set for the batch/last-touch synthesis path, never an ordinary REST
+compare, `internal/forksops/touching.go` doc comment), while cached
+zero-ahead records still carry `"graphql_batch"` from whichever earlier
+run originally computed them. This is expected cache behavior on a store
+this branch's own earlier runs already warmed, not a violation of
+`--no-batch-compare`'s contract — the flag disables the batch for *this*
+invocation's own work, not the provenance tag on rows it reads back
+unchanged.
+
+### litellm scale run: not completed
+
+Two attempts, neither completed; the run was abandoned by controller
+decision, not by a code failure on this branch.
+
+- **Attempt 1** (`--refresh`, `SPOON_DEBUG=1`, rate limit before: core 5000,
+  graphql 5000 at 16:16:42 UTC): ran ~9.5 minutes, then received `SIGQUIT`
+  (external, for diagnosis) and exited with a goroutine dump
+  (`ll-hung.err`). The dump initially read as a hang (main goroutine
+  blocked "9 minutes" on a channel receive at `cmd/spn/forks.go:909`,
+  underneath it a worker blocked inside `doGraphQLWithRetry`'s HTTP/2 round
+  trip at `internal/github/graphql.go:596`, no request deadline visible on
+  that frame). Re-assessed by the controller from independent process
+  observation: not stuck, legitimately slow — GitHub's GraphQL responded in
+  roughly 7-11 s per call that day (one measured 502 on litellm), and
+  Phase A alone needs on the order of 600 sequential batch queries for
+  litellm's ~30000 branches (10735 forks + 19221 side branches), which at
+  that per-call latency projects to well over an hour, before accounting
+  for adaptive-halving retries on any further 5xx. This report did not
+  independently re-measure the 7-11 s per-call figure; the closest
+  corroborating data point from this run's own files is the `--no-batch-
+  compare` sanity run's T1 listing, which averaged roughly 5 s/page (412 s
+  across 81 pages) — same order of magnitude, not an exact match.
+- **Attempt 2**: relaunched to retry under a clean background run; killed
+  almost immediately (`SIGTERM`, exit 143, zero bytes written to either
+  output file) as part of the same controller decision to abandon the
+  litellm run rather than let a multi-hour batch run to completion.
+
+No litellm REST/GraphQL delta, `compare_summary`, or wall-clock is
+reported here as a result — the "before" baseline from the original
+research (`REST 3493, reserve-limited`) stands unchallenged, and this
+branch's effect on a network at litellm's scale remains unmeasured within
+this verification window. See "Not claimed" in the PR body.
+
+### A process hang, reclassified
+
+The first `--no-batch-compare --top 20` attempt sat 11 minutes at zero CPU
+with empty stdout/stderr; `SIGQUIT` produced a goroutine dump
+(`nb-hung.err`) showing the same shape as the litellm attempt 1 dump above:
+the listing goroutine blocked inside an HTTP/2 round trip on a GraphQL
+listing page with no visible deadline
+(`internal/github/graphql.go:824` -> `doGraphQLWithRetry` ->
+`net/http/internal/http2.(*ClientConn).roundTrip`). This was first read as
+a client-side timeout gap; the controller's later, better-informed read
+(from watching the litellm attempt live) is that both dumps are the same
+non-bug — a single slow GraphQL page/query, not an unbounded wait — and
+that read is recorded here as the operative one. Whether a *bounded*
+client-side timeout would still be good defense-in-depth against a truly
+stuck connection is a separate question this verification run did not
+settle either way.
+
+### Listing-size variance (pre-existing, not this branch)
+
+Four T1 acquisitions of the same `pbakaus/impeccable` network, minutes
+apart, returned different fork counts and used different methods:
+
+| Run | Method | Pages | Raw rows | Unique | Duplicate |
+|---|---|---|---|---|---|
+| cold (attempt 1, failed batch) | graphql+rest | 59 | 5028 | 2600 | 2428 |
+| cold (attempt 2) | graphql+rest | 64 | 5293 | 2614 | 2679 |
+| warm `--touching` | **graphql only** | 81 | 4012 | **4012** | **0** |
+| `--touching --no-tree-commit-info` | graphql+rest | 96 | 6893 | 3052 | 3841 |
+| `--no-batch-compare` sanity | graphql+rest | 81 | 6143 | 2614 | 3529 |
+
+Three of five runs silently fell back from GraphQL to a GraphQL+REST hybrid
+(`fallbackChain: ["graphql","rest"]`) and returned heavy duplication and a
+smaller unique-fork count than the one run that stayed pure GraphQL
+(`fallbackChain: ["graphql"]`, zero duplicates, 4012 forks — the largest,
+and probably closest to the network's true size at listing time). No
+error or warning line in any run's stderr explains why the method
+downgrades; the acquisition envelope's `method`/`fallbackChain` fields are
+the only visible signal. This is T1 listing/pagination behavior
+(`internal/github` acquisition, unrelated to this branch's GraphQL batch
+compare or `tree-commit-info` work) on a network under continuous churn;
+it is reported here as observed pre-existing behavior worth a follow-up,
+not something this branch changed or fixed.
+
+### What SPOON_DEBUG actually gates
+
+`SPOON_DEBUG=1` (`cmd/spn/forks.go:702-705`) sets `opts.Logger` to `stderr`
+instead of `io.Discard`, which is what makes the `[triage]`/`[touching]`
+prose lines (`fmt.Fprintf(logger, ...)` in `internal/forksops/stream.go`)
+appear at all — the cold-impeccable run above (attempt 2) was run *without*
+it and correctly shows no such lines, only the always-on NDJSON envelopes
+(`acquisition_report`, `compare_summary`, `touching`). It does **not**
+gate the adaptive-halving `slog.Debug(...)` calls in
+`internal/github/batch_compare.go:376,482,489`: those use the `log/slog`
+package-level default logger, and nothing in `cmd/spn` raises that
+logger's level above the stdlib default (`Info`), with or without
+`SPOON_DEBUG`. Halving events are therefore not observable through any
+documented flag in this build; the only indirect evidence gathered here is
+`batch_queries` exceeding the naive `ceil(pending/50)` chunk count (see the
+cold-impeccable table above).
 
 ## Risks
 
