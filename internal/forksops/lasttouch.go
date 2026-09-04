@@ -25,11 +25,25 @@ import (
 	"io"
 	"path"
 	"sort"
+	"sync"
 	"sync/atomic"
 
 	"github.com/svnbjrn/spoon/internal/forge"
 	"github.com/svnbjrn/spoon/internal/pathmatch"
 )
+
+// lastTouchMaxConsecutiveMisses caps how many consecutive real
+// ForkLastTouch lookups (calls that actually reached the provider, not
+// ones gated out or unresolved) may fail to end in a skip before the
+// stage disables itself for the rest of the run. The tree-commit-info
+// bucket that backs ForkLastTouch is paced far more conservatively (1
+// req/s, burst 3 -- internal/github/treecommitinfo/treecommitinfo.go:45-46,
+// shared by every worker) than the REST compare it stands in for
+// (~5/s), so on a network where lookups mostly mismatch or come back
+// unavailable, the lookups cost more wall-clock time than the compares
+// they were meant to save. A skip resets the counter -- it means the
+// stage is still earning its keep.
+const lastTouchMaxConsecutiveMisses = 8
 
 // lastTouchTarget is one literal --touching pattern resolved against
 // upstream: dir/name split the way ForkLastTouch's directory-listing call
@@ -64,12 +78,20 @@ const (
 type lastTouchGate struct {
 	provider forge.LastTouchProvider
 	targets  []lastTouchTarget
+	logger   io.Writer
 
 	gated       atomic.Int64
 	lookedUp    atomic.Int64
 	skipped     atomic.Int64
 	mismatch    atomic.Int64
 	unavailable atomic.Int64
+
+	// mu guards the consecutive-miss breaker below. It is a compound
+	// check-and-set (increment, compare to the cap, flip a flag, log
+	// once) that the plain atomics above are not a good fit for.
+	mu                  sync.Mutex
+	consecutiveNonSkips int
+	lookupsDisabled     bool
 }
 
 // newLastTouchGate builds the last-touch skip stage for one Stream run. It
@@ -113,17 +135,21 @@ func newLastTouchGate(ctx context.Context, provider forge.Forge, touching []stri
 		return nil
 	}
 
-	g := &lastTouchGate{provider: ltp}
+	g := &lastTouchGate{provider: ltp, logger: logger}
 	var unresolved []string
 	for _, p := range norm {
 		t := lastTouchTarget{path: p, name: path.Base(p)}
 		if dir := path.Dir(p); dir != "." {
 			t.dir = dir
 		}
-		if c, ok := upstream[p]; ok {
+		if c, ok := upstream[p]; ok && c.SHA != "" {
 			t.c = c
 			t.resolved = true
 		} else {
+			// An entry with an empty SHA (present in the map, but with no
+			// resolvable last-touch commit) is unresolved for this target,
+			// same as a wholly absent one -- decide() must never compare a
+			// fork OID against "" and call that equality (M1).
 			unresolved = append(unresolved, p)
 		}
 		g.targets = append(g.targets, t)
@@ -151,9 +177,20 @@ func newLastTouchGate(ctx context.Context, provider forge.Forge, touching []stri
 // C ⇒ misses at most the commits after C"), and (2) the fork's last-touch
 // OID for the target equals C. Equal OIDs mean no commit reachable from the
 // tip after C touched the path, so the merge-base...tip diff cannot include
-// it. A different or missing OID proves nothing and must fall through to
-// the compare. Never treat a differing OID as a signal (mp3wizard case).
+// it. A different, missing, or empty OID proves nothing and must fall
+// through to the compare. Never treat a differing OID -- or an empty one --
+// as a signal (mp3wizard case).
+//
+// CONSECUTIVE-MISS BREAKER. Before any of the above, check whether the
+// stage has disabled itself (lastTouchMaxConsecutiveMisses consecutive real
+// lookups in a row that didn't end in a skip): if so, this and every
+// subsequent decision tallies straight as unavailable without touching
+// g.targets or calling ForkLastTouch at all.
 func (g *lastTouchGate) decide(ctx context.Context, fork forge.T1Data, sel forge.BranchSelection) (bool, lastTouchOutcome) {
+	if g.lookupsSuspended() {
+		g.unavailable.Add(1)
+		return false, lastTouchUnavailableOutcome
+	}
 	for _, t := range g.targets {
 		if !t.resolved {
 			g.unavailable.Add(1)
@@ -187,12 +224,20 @@ func (g *lastTouchGate) decide(ctx context.Context, fork forge.T1Data, sel forge
 		entries, outcome := g.provider.ForkLastTouch(ctx, fork, sel.Branch, dir)
 		if outcome != forge.LastTouchOK {
 			g.unavailable.Add(1)
+			g.recordLookupOutcome(false)
 			return false, lastTouchUnavailableOutcome
 		}
 		for _, t := range byDir[dir] {
 			oid, ok := entries[t.name]
-			if !ok {
+			if !ok || oid == "" {
+				// An empty OID (present entry, no resolvable last-touch
+				// commit) proves nothing, same as a missing one -- it must
+				// never be compared against t.c.SHA, which the gate-build
+				// guard (newLastTouchGate) already guarantees is non-empty
+				// for a resolved target, so an accidental "" == "" match
+				// can never happen here either way.
 				g.unavailable.Add(1)
+				g.recordLookupOutcome(false)
 				return false, lastTouchUnavailableOutcome
 			}
 			if oid != t.c.SHA {
@@ -200,12 +245,47 @@ func (g *lastTouchGate) decide(ctx context.Context, fork forge.T1Data, sel forge
 				// proof; stop spending lookups on the remaining
 				// directories rather than confirming what we already know.
 				g.mismatch.Add(1)
+				g.recordLookupOutcome(false)
 				return false, lastTouchMismatchOutcome
 			}
 		}
 	}
 	g.skipped.Add(1)
+	g.recordLookupOutcome(true)
 	return true, lastTouchSkippedOutcome
+}
+
+// lookupsSuspended reports whether the consecutive-miss breaker has
+// disabled real ForkLastTouch calls for the rest of the run.
+func (g *lastTouchGate) lookupsSuspended() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.lookupsDisabled
+}
+
+// recordLookupOutcome updates the consecutive-miss breaker after a real
+// lookup -- one that reached g.provider.ForkLastTouch, i.e. past the
+// resolved and gated fast-paths above, which never call the provider and
+// so never count towards or against the breaker. skip resets the counter;
+// anything else (mismatch or unavailable) advances it, and hitting
+// lastTouchMaxConsecutiveMisses trips the breaker exactly once, logging
+// why so a stderr reader can tell "lookups stopped early" apart from
+// "the network genuinely had this few divergent forks."
+func (g *lastTouchGate) recordLookupOutcome(skip bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if skip {
+		g.consecutiveNonSkips = 0
+		return
+	}
+	g.consecutiveNonSkips++
+	if g.consecutiveNonSkips < lastTouchMaxConsecutiveMisses || g.lookupsDisabled {
+		return
+	}
+	g.lookupsDisabled = true
+	if g.logger != nil {
+		fmt.Fprintf(g.logger, "[touching] last-touch lookups disabled after %d consecutive non-skips (mismatch/unavailable); remaining forks go straight to compare\n", lastTouchMaxConsecutiveMisses)
+	}
 }
 
 // counts reports the gate's run-wide tallies for the "[touching]" summary

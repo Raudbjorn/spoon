@@ -458,8 +458,19 @@ func (c *Client) runAheadBehindChunk(
 	}
 	q.WriteString("    }\n  }\n  rateLimit { limit remaining used resetAt cost }\n}")
 
+	// Above the halving floor, a server-side failure here is retried by
+	// splitting the batch in two below (halving IS the retry), so paying
+	// doGraphQLWithRetry's own 1s+2s backoff first would double-pay for
+	// the same failure at every node on the way down to the floor. Only
+	// at or below batchMinChunk, where the chunk can no longer be split
+	// further, does doGraphQLWithRetry's backoff earn its cost.
 	var resp compareBatch
-	err := c.doGraphQLWithRetry(ctx, q.String(), nil, &resp)
+	var err error
+	if len(batch) > batchMinChunk {
+		err = c.doGraphQL(ctx, q.String(), nil, &resp)
+	} else {
+		err = c.doGraphQLWithRetry(ctx, q.String(), nil, &resp)
+	}
 	stats.Queries++
 	stats.Cost += resp.RL.Cost
 
@@ -597,8 +608,17 @@ func (c *Client) runTipsChunk(
 	}
 	q.WriteString("    }\n  }\n  rateLimit { limit remaining used resetAt cost }\n}")
 
+	// Same halving-is-the-retry reasoning as runAheadBehindChunk: above the
+	// floor a server-side failure below splits and retries via halving,
+	// so doGraphQLWithRetry's own backoff is only worth paying at or
+	// below batchMinChunk, where there is nothing left to split.
 	var resp compareBatch
-	err := c.doGraphQLWithRetry(ctx, q.String(), nil, &resp)
+	var err error
+	if len(batch) > batchMinChunk {
+		err = c.doGraphQL(ctx, q.String(), nil, &resp)
+	} else {
+		err = c.doGraphQLWithRetry(ctx, q.String(), nil, &resp)
+	}
 	stats.Queries++
 	stats.Cost += resp.RL.Cost
 

@@ -373,7 +373,15 @@ correctly silent. `last_touch: looked_up 3` matches `behind <= 5`
    because `Emit()` also prints an unmatched-but-partial fork (the user
    must be told that answer is incomplete). The count "4" for each is
    coincidental. Not a code bug; the log line's phrasing is worth
-   revisiting in a follow-up.
+   revisiting in a follow-up. **Fixed in the final-review pass (M5):**
+   the format string now reads `matched %d · partial %d (file list capped
+   at %d) · unmatched %d …`, putting `·` between `matched` and `partial`
+   so the two counts no longer read as one being a fraction of the other.
+   The two `[touching]` lines quoted verbatim in this section (above and
+   in the `--no-tree-commit-info` run below) predate that fix and still
+   show the old `matched N (M partial: ...)` phrasing — they are kept
+   as-is because they are direct evidence of an actual run, not a
+   description of current behavior.
 2. **`tarcisiojr/impeccable-flutter` absent from `--touching` output** is
    the correct, documented `Emit()` behavior for a complete-but-unmatched
    fork (see above), not evidence the diff fallback failed — the store
@@ -541,6 +549,22 @@ cold-impeccable table above).
   no throttling observed; neither exercised the thousands-of-calls sweep a
   full network scan could reach. `tree-commit-info`'s own token bucket (1
   req/s, burst 3) is a conservative guess, not a measured ceiling.
+- **The wall-clock cost of that 1 req/s pacing on a mismatch-heavy network
+  is now bounded, but the bound is itself unmeasured live.** A
+  final-review fix disables further last-touch lookups for the rest of
+  the run after `lastTouchMaxConsecutiveMisses = 8` consecutive decisions
+  that didn't end in a skip (mismatch or unavailable), falling straight
+  through to the ordinary compare instead of continuing to pay the 1
+  req/s bucket for lookups that keep not paying off
+  (`internal/forksops/lasttouch.go`). Covered by unit tests only; no live
+  run has driven the breaker to actually trip.
+- **The I3 halving-is-the-retry change was not exercised against a live
+  GitHub failure.** `internal/github/batch_compare.go`'s chunk runners
+  now call bare `doGraphQL` (no local 1s+2s backoff) above
+  `batchMinChunk`, since a server-side failure there is retried by
+  splitting the batch instead, and keep `doGraphQLWithRetry`'s backoff
+  only at or below the floor, where a chunk can no longer be split.
+  Verified against `httptest` fixtures, not a live transient 5xx.
 - **The 32 MiB diff cap is untested above that size.** `maxDiffBytes = 32 <<
   20` in `internal/github/compare_diff.go` was sized against the largest
   real sample seen (10.7 MB); a fork with a genuinely larger unified diff

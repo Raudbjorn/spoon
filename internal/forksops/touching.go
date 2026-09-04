@@ -70,13 +70,21 @@ func centralityMethod(c repo.Centrality) string {
 }
 
 // Emit reports whether the CLI should print this fork under --touching:
-// matches always, and unmatched forks whose file list was truncated (the
-// user must be told the answer is incomplete for them).
+// matches always; unmatched forks whose file list was truncated (the user
+// must be told the answer is incomplete for them); and unmatched forks
+// whose REST compare was skipped by the last-touch proof (Reason ==
+// "last_touch"). Both of the latter two rest on an undocumented endpoint
+// (tree-commit-info for last_touch, GitHub's own 300-file compare cap for
+// partial) rather than a plain scan result, so both are surfaced the same
+// way rather than silently dropped.
 func (t *TouchMatch) Emit() bool {
 	if t == nil {
 		return false
 	}
-	return t.Status == TouchMatched || (t.Status == TouchUnmatched && t.Partial)
+	if t.Status != TouchUnmatched {
+		return t.Status == TouchMatched
+	}
+	return t.Partial || t.Reason == "last_touch"
 }
 
 // TouchSummary is the run-level tally, written to Options.TouchReport.

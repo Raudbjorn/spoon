@@ -200,7 +200,12 @@ Nouns and verbs:
         unstable SPOON_GH_COOKIE-gated HTML fallback, not a supported API.
         Divergence is resolved for the whole network in a few GraphQL
         queries first; REST compares are then made only for forks with
-        ahead work. --no-batch-compare restores one REST compare per fork.
+        ahead work. --no-batch-compare restores one REST compare per fork;
+        it also disables the --touching last-touch skip below, since that
+        gate is only built from the batch's output. SPOON_DEBUG=1 prints
+        the [triage]/[touching] prose summary lines to stderr and raises
+        log/slog's default level to Debug, surfacing the halving/drop/
+        last-touch debug lines that are otherwise discarded.
         --local-branch-scan falls back to git ls-remote/fetch/merge-base
         when the default branch shows no work; the GraphQL batch
         supersedes it whenever the provider supports batching. With

@@ -507,14 +507,18 @@ func TestFetchBatchDivergence_PhaseAHalvingRecoversFromOversizedDocument(t *test
 			t.Errorf("%s = (%+v, %v), want Resolved=true after halving", tg.ID, fd, ok)
 		}
 	}
-	// stats.Queries counts one per document actually sent (a retried
-	// document is still one document, physically resent up to
-	// gqlMaxAttempts times) -- assert that directly against the set of
-	// distinct query strings the stub actually received, rather than a
-	// hand-derived number, so the logical-vs-physical distinction is
-	// explicit: 35 fails once (over threshold, retried 3x physically but
-	// one document), then splits into 17+18, both under threshold and
-	// succeed on the first try -- 3 distinct documents, 5 physical requests.
+	// stats.Queries counts one per document actually sent -- assert that
+	// directly against the set of distinct query strings the stub
+	// actually received, rather than a hand-derived number, so the
+	// logical-vs-physical distinction is explicit. Above batchMinChunk,
+	// halving IS the retry (final-review I3): a server-side failure there
+	// is never resent unchanged via doGraphQLWithRetry's backoff, only
+	// split and resent smaller, so physical requests equal the number of
+	// distinct documents sent. 35 fails once (over threshold) and splits
+	// into 17+18, both under threshold and succeeding on the first try --
+	// 3 distinct documents, 3 physical requests, no wasted retries on the
+	// oversized document (contrast the floor-level retry still exercised
+	// by TestFetchBatchDivergence_PhaseAPersistentFailureDropsWithoutError).
 	mu.Lock()
 	unique := make(map[string]struct{}, len(docs))
 	for _, d := range docs {
@@ -525,8 +529,8 @@ func TestFetchBatchDivergence_PhaseAHalvingRecoversFromOversizedDocument(t *test
 	if stats.Queries != len(unique) {
 		t.Errorf("stats.Queries = %d, want %d (the number of distinct documents sent)", stats.Queries, len(unique))
 	}
-	if physical <= len(unique) {
-		t.Errorf("physical requests = %d, want more than %d distinct documents (the oversized one should have been retried)", physical, len(unique))
+	if physical != len(unique) {
+		t.Errorf("physical requests = %d, want %d (each distinct document above the halving floor is sent exactly once; halving, not doGraphQLWithRetry, is the retry there)", physical, len(unique))
 	}
 }
 

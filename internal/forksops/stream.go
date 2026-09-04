@@ -626,6 +626,7 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 				pending = append(pending, s.fork)
 			}
 			if len(pending) > 0 {
+				fmt.Fprintf(logger, "[triage] resolving divergence for %d forks via GraphQL batch…\n", len(pending))
 				var berr error
 				divergence, batchStats, berr = bp.BatchCompare(ctx, pending)
 				switch {
@@ -1035,7 +1036,7 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 			if opts.TouchReport != nil {
 				*opts.TouchReport = touchSummary
 			}
-			fmt.Fprintf(logger, "[touching] matched %d (%d partial: file list capped at %d) · unmatched %d · unknown %d · never_pushed %d · centrality=%q · last_touch: gated %d · looked_up %d · skipped %d · mismatch %d · unavailable %d\n",
+			fmt.Fprintf(logger, "[touching] matched %d · partial %d (file list capped at %d) · unmatched %d · unknown %d · never_pushed %d · centrality=%q · last_touch: gated %d · looked_up %d · skipped %d · mismatch %d · unavailable %d\n",
 				touchSummary.Matched, touchSummary.Partial, forge.CompareFilesCap, touchSummary.Unmatched, touchSummary.Unknown, touchSummary.NeverPushed, touchSummary.CentralityMethod,
 				touchSummary.LastTouchGated, touchSummary.LastTouchLookedUp, touchSummary.LastTouchSkipped, touchSummary.LastTouchMismatch, touchSummary.LastTouchUnavailable)
 			if touchSummary.Unknown > 0 {

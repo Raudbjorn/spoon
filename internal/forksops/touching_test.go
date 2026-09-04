@@ -118,3 +118,32 @@ func TestSortTouchingLanesByImpact(t *testing.T) {
 		}
 	}
 }
+
+// TestTouchMatchEmit covers Emit() directly (final-review I1): a
+// last-touch skip (Reason == "last_touch") is a TouchUnmatched verdict
+// that never scanned Diffs, same as a partial one -- both rest on an
+// undocumented endpoint's incompleteness rather than a plain scan result,
+// so shouldEmitFork (cmd/spn/forks.go) must surface both, not just partial.
+func TestTouchMatchEmit(t *testing.T) {
+	cases := []struct {
+		name string
+		t    *TouchMatch
+		want bool
+	}{
+		{"nil", nil, false},
+		{"matched", &TouchMatch{Status: TouchMatched}, true},
+		{"unmatched_partial", &TouchMatch{Status: TouchUnmatched, Partial: true}, true},
+		{"unmatched_last_touch", &TouchMatch{Status: TouchUnmatched, Reason: "last_touch"}, true},
+		{"unmatched_plain", &TouchMatch{Status: TouchUnmatched}, false},
+		{"unmatched_other_reason", &TouchMatch{Status: TouchUnmatched, Reason: "cache_no_files"}, false},
+		{"unknown", &TouchMatch{Status: TouchUnknown, Reason: "compare_unavailable"}, false},
+		{"never_pushed", &TouchMatch{Status: TouchNeverPushed}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.t.Emit(); got != tc.want {
+				t.Errorf("Emit() = %v, want %v (%+v)", got, tc.want, tc.t)
+			}
+		})
+	}
+}

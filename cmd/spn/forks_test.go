@@ -877,6 +877,13 @@ func TestShouldEmitForkUnderTouching(t *testing.T) {
 	if !shouldEmitFork(opts, forksops.Result{Touching: &forksops.TouchMatch{Status: forksops.TouchUnmatched, Partial: true}}) {
 		t.Fatal("partial unmatched must be emitted")
 	}
+	// I1: an unmatched verdict from a last-touch skip (Reason ==
+	// "last_touch") must also reach stdout -- it never scanned Diffs, so
+	// the "unmatched" answer rests on the tree-commit-info proof, same as
+	// a partial verdict resting on the 300-file compare cap.
+	if !shouldEmitFork(opts, forksops.Result{Touching: &forksops.TouchMatch{Status: forksops.TouchUnmatched, Reason: "last_touch"}}) {
+		t.Fatal("last-touch-skipped unmatched must be emitted")
+	}
 	if !shouldEmitFork(forksops.Options{}, forksops.Result{}) {
 		t.Fatal("no touching option: everything emits")
 	}
@@ -909,13 +916,18 @@ func TestTouchingWantsTreeCommitInfo(t *testing.T) {
 	}
 }
 
-// t2.source rides only when T2Data.CompareSource is non-empty, and
-// t2.files_unfetched only when Result.T2FilesUnfetched is true — both
-// omit-when-not-computed, matching the rest of the t2 block (task 8).
+// t2.source rides only when T2Data.CompareSource is non-empty,
+// t2.files_unfetched only when Result.T2FilesUnfetched is true, and
+// t2.files_truncated_reason only when T2Data.FilesTruncatedReason is
+// non-empty (final-review M7) — all omit-when-not-computed, matching the
+// rest of the t2 block (task 8).
 func TestForkToJSON_T2SourceAndFilesUnfetched(t *testing.T) {
 	r := forksops.Result{
-		Fork:             forge.T1Data{ID: "o/a"},
-		T2:               &forge.T2Data{Performed: true, CompareSource: "graphql_batch"},
+		Fork: forge.T1Data{ID: "o/a"},
+		T2: &forge.T2Data{
+			Performed: true, CompareSource: "graphql_batch",
+			FilesTruncatedReason: "diff fallback unavailable (compare not renderable as a diff, or exceeded the size cap)",
+		},
 		T2FilesUnfetched: true,
 	}
 	out := forkToJSON(r)
@@ -928,6 +940,9 @@ func TestForkToJSON_T2SourceAndFilesUnfetched(t *testing.T) {
 	}
 	if t2["files_unfetched"] != true {
 		t.Errorf("t2.files_unfetched = %v, want true", t2["files_unfetched"])
+	}
+	if t2["files_truncated_reason"] != r.T2.FilesTruncatedReason {
+		t.Errorf("t2.files_truncated_reason = %v, want %q", t2["files_truncated_reason"], r.T2.FilesTruncatedReason)
 	}
 }
 
@@ -946,6 +961,9 @@ func TestForkToJSON_T2SourceAndFilesUnfetchedOmittedWhenNotComputed(t *testing.T
 	}
 	if _, present := t2["files_unfetched"]; present {
 		t.Errorf("t2.files_unfetched should be omitted when false, got %v", t2["files_unfetched"])
+	}
+	if _, present := t2["files_truncated_reason"]; present {
+		t.Errorf("t2.files_truncated_reason should be omitted when empty, got %v", t2["files_truncated_reason"])
 	}
 }
 

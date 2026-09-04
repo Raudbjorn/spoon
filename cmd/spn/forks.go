@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"os"
 	"strconv"
@@ -699,10 +700,16 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 	// only structured ClusterSkip warnings are emitted on stderr via
 	// emitClusterWarning. The discard is intentional — do not wire stderr
 	// here, prose log lines would interleave with the agent envelopes.
-	// SPOON_DEBUG=1 overrides for troubleshooting.
+	// SPOON_DEBUG=1 overrides for troubleshooting. It also raises the
+	// stdlib log/slog default logger to Debug on stderr, so the
+	// halving/drop/last-touch slog.Debug lines in internal/github and
+	// internal/forksops (previously discarded -- nothing ever called
+	// slog.SetDefault) become observable alongside the [triage]/[touching]
+	// prose lines.
 	opts.Logger = debugDataLogger(io.Discard)
 	if os.Getenv("SPOON_DEBUG") == "1" {
 		opts.Logger = debugDataLogger(stderr)
+		slog.SetDefault(slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	}
 	// Auto-budget reserve is on by default (stop enriching before the rate
 	// window is drained, marking the rest degraded). SPOON_NO_RESERVE=1 opts out
@@ -1417,6 +1424,9 @@ func forkToJSONDetailed(r forksops.Result, details detailOptions) map[string]any
 		}
 		if r.T2FilesUnfetched {
 			t2["files_unfetched"] = true
+		}
+		if r.T2.FilesTruncatedReason != "" {
+			t2["files_truncated_reason"] = r.T2.FilesTruncatedReason
 		}
 		if details.files {
 			t2["files"] = fileDiffsToJSON(r.T2.Diffs)

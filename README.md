@@ -194,7 +194,9 @@ stored compare is reused until its fork is pushed again. Before any
 per-fork compare runs, divergence for the whole network is resolved in a
 few GraphQL queries (the pre-dispatch batch); a REST compare is then made
 only for forks the batch found ahead of upstream, and `--no-batch-compare`
-restores one REST compare per fork. Every compare's 300-file cap is
+restores one REST compare per fork; it also disables the `--touching`
+last-touch skip described below, since that gate is built only from the
+batch's output. Every compare's 300-file cap is
 completed by one unbounded `.diff` fetch, so the emitted file list is a
 lower bound only when that fallback itself could not confirm completeness.
 `--files` and `--commits` opt into detailed wire output without changing

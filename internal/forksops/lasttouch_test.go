@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"testing"
@@ -540,5 +541,215 @@ func TestLastTouchGate_unresolvedTargetNeverSkipsAndLogsOnce(t *testing.T) {
 	}
 	if !strings.Contains(logger.String(), "no upstream history for [src/new.go]") {
 		t.Errorf("expected a one-time log naming the unresolved path, got log:\n%s", logger.String())
+	}
+}
+
+// TestLastTouchGate_emptyUpstreamSHATreatedAsUnresolved (M1) covers an
+// upstream PathLastTouch entry that is present but carries SHA == "" --
+// distinct from a wholly absent key (already covered by
+// TestLastTouchGate_unresolvedTargetNeverSkipsAndLogsOnce), and just as
+// unusable: the gate must treat it as unresolved, never license a skip on
+// it, and log it the same way.
+func TestLastTouchGate_emptyUpstreamSHATreatedAsUnresolved(t *testing.T) {
+	ff := &lastTouchFakeForge{
+		batchFakeForge: &batchFakeForge{fakeForge: &fakeForge{}},
+		upstream: map[string]forge.PathLastTouch{
+			"src/a.go": {SHA: "", CommitsSince: 5}, // present, but no resolvable SHA
+		},
+		forkEntries: map[string]map[string]string{
+			// Would (wrongly) match if the gate ever compared "" == "".
+			"o/x@src": {"a.go": ""},
+		},
+	}
+	var logger bytes.Buffer
+	g := newLastTouchGate(context.Background(), ff, []string{"src/a.go"}, &logger)
+	if g == nil {
+		t.Fatal("gate should still build (PathLastTouch itself did not error)")
+	}
+	sel := forge.BranchSelection{Branch: "main", Behind: 1}
+	ok, outcome := g.decide(context.Background(), forge.T1Data{ID: "o/x"}, sel)
+	if ok || outcome != lastTouchUnavailableOutcome {
+		t.Fatalf("decide = (%v, %v), want (false, unavailable): an empty upstream SHA must never license a skip", ok, outcome)
+	}
+	if ff.callCount() != 0 {
+		t.Errorf("ForkLastTouch should not be called for a target with no resolvable upstream SHA, got calls: %v", ff.calls)
+	}
+	if !strings.Contains(logger.String(), "no upstream history for [src/a.go]") {
+		t.Errorf("expected the unresolved-target log line, got:\n%s", logger.String())
+	}
+}
+
+// TestLastTouchGate_emptyForkOIDNeverMatches (M1) covers decide()'s other
+// half: upstream resolves a real SHA, but the fork's own ForkLastTouch
+// entry comes back with an empty OID for the target (present in the map,
+// but no resolvable commit fork-side). That must classify as unavailable,
+// never as a match (which an unguarded oid != t.c.SHA check would already
+// avoid, since t.c.SHA is guaranteed non-empty by the gate-build guard --
+// but the outcome must specifically be "unavailable", not "mismatch",
+// since nothing was actually disproved).
+func TestLastTouchGate_emptyForkOIDNeverMatches(t *testing.T) {
+	ff := &lastTouchFakeForge{
+		batchFakeForge: &batchFakeForge{fakeForge: &fakeForge{}},
+		upstream: map[string]forge.PathLastTouch{
+			"src/a.go": {SHA: "C1", CommitsSince: 5},
+		},
+		forkEntries: map[string]map[string]string{
+			"o/x@src": {"a.go": ""}, // present entry, empty OID
+		},
+	}
+	g := newLastTouchGate(context.Background(), ff, []string{"src/a.go"}, io.Discard)
+	if g == nil {
+		t.Fatal("gate should build")
+	}
+	sel := forge.BranchSelection{Branch: "main", Behind: 1}
+	ok, outcome := g.decide(context.Background(), forge.T1Data{ID: "o/x"}, sel)
+	if ok || outcome != lastTouchUnavailableOutcome {
+		t.Fatalf("decide = (%v, %v), want (false, unavailable): an empty fork OID must never be treated as equal to upstream's SHA", ok, outcome)
+	}
+	if ff.callCount() != 1 {
+		t.Errorf("ForkLastTouch calls = %d, want 1 (the lookup was attempted, just unusable)", ff.callCount())
+	}
+}
+
+// TestLastTouchGate_consecutiveMissBreaker (I2) drives the gate directly
+// (newLastTouchGate + decide), bypassing Stream: lastTouchMaxConsecutiveMisses
+// consecutive real lookups that never resolve to a skip must disable the
+// stage for the rest of the run -- the next decision tallies straight as
+// unavailable without ever calling ForkLastTouch again, and the disable is
+// logged exactly once. Table-driven over both non-skip outcomes
+// (mismatch and unavailable) so both call sites of recordLookupOutcome(false)
+// -- the oid != t.c.SHA branch and the outcome != forge.LastTouchOK/missing-
+// entry branch -- are actually exercised, not just one of them.
+func TestLastTouchGate_consecutiveMissBreaker(t *testing.T) {
+	cases := []struct {
+		name        string
+		forkEntries map[string]map[string]string
+		wantOutcome lastTouchOutcome
+	}{
+		{
+			name: "mismatch",
+			forkEntries: map[string]map[string]string{
+				"o/x@src": {"a.go": "C2"}, // differs from upstream's C1
+			},
+			wantOutcome: lastTouchMismatchOutcome,
+		},
+		{
+			name:        "unavailable",
+			forkEntries: nil, // "o/x" absent from forkEntries -> ForkLastTouch reports NotFound
+			wantOutcome: lastTouchUnavailableOutcome,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ff := &lastTouchFakeForge{
+				batchFakeForge: &batchFakeForge{fakeForge: &fakeForge{}},
+				upstream: map[string]forge.PathLastTouch{
+					"src/a.go": {SHA: "C1", CommitsSince: 5},
+				},
+				forkEntries: tc.forkEntries,
+			}
+			var logger bytes.Buffer
+			g := newLastTouchGate(context.Background(), ff, []string{"src/a.go"}, &logger)
+			if g == nil {
+				t.Fatal("gate should build: upstream resolved a baseline for src/a.go")
+			}
+			sel := forge.BranchSelection{Branch: "main", Behind: 1}
+			fork := forge.T1Data{ID: "o/x"}
+
+			// Same fork ID every call: decide() carries no per-fork memo, so
+			// this exercises the breaker's own counter, not incidental
+			// per-fork caching.
+			for i := 0; i < lastTouchMaxConsecutiveMisses; i++ {
+				ok, outcome := g.decide(context.Background(), fork, sel)
+				if ok || outcome != tc.wantOutcome {
+					t.Fatalf("miss %d: decide = (%v, %v), want (false, %v)", i, ok, outcome, tc.wantOutcome)
+				}
+			}
+			if got := ff.callCount(); got != lastTouchMaxConsecutiveMisses {
+				t.Fatalf("ForkLastTouch calls = %d, want %d (one real lookup per miss so far)", got, lastTouchMaxConsecutiveMisses)
+			}
+
+			// The next decision: the breaker has tripped, so ForkLastTouch
+			// must not be called again, regardless of which failure kind
+			// tripped it.
+			ok, outcome := g.decide(context.Background(), forge.T1Data{ID: "o/next"}, sel)
+			if ok || outcome != lastTouchUnavailableOutcome {
+				t.Fatalf("post-trip decide = (%v, %v), want (false, unavailable)", ok, outcome)
+			}
+			if got := ff.callCount(); got != lastTouchMaxConsecutiveMisses {
+				t.Fatalf("ForkLastTouch calls after breaker trips = %d, want unchanged %d", got, lastTouchMaxConsecutiveMisses)
+			}
+			wantLog := fmt.Sprintf("last-touch lookups disabled after %d consecutive non-skips (mismatch/unavailable); remaining forks go straight to compare", lastTouchMaxConsecutiveMisses)
+			if strings.Count(logger.String(), wantLog) != 1 {
+				t.Errorf("breaker log line must appear exactly once, got log:\n%s", logger.String())
+			}
+			_, lookedUp, _, mismatch, unavailable := g.counts()
+			if lookedUp != lastTouchMaxConsecutiveMisses {
+				t.Errorf("LastTouchLookedUp = %d, want %d (the post-trip decision never reached the provider)", lookedUp, lastTouchMaxConsecutiveMisses)
+			}
+			if tc.wantOutcome == lastTouchMismatchOutcome {
+				if mismatch != lastTouchMaxConsecutiveMisses {
+					t.Errorf("LastTouchMismatch = %d, want %d", mismatch, lastTouchMaxConsecutiveMisses)
+				}
+				if unavailable != 1 {
+					t.Errorf("LastTouchUnavailable = %d, want 1 (only the post-trip decision)", unavailable)
+				}
+			} else if unavailable != lastTouchMaxConsecutiveMisses+1 {
+				t.Errorf("LastTouchUnavailable = %d, want %d", unavailable, lastTouchMaxConsecutiveMisses+1)
+			}
+		})
+	}
+}
+
+// TestLastTouchGate_skipResetsConsecutiveMissCounter (I2) interleaves a
+// skip among near-breaker-threshold mismatches: the skip must reset the
+// counter, so the breaker never trips and every subsequent fork still gets
+// a real lookup. Uses genuine mismatches (not the "unavailable" outcome)
+// so the reset is proven against the same failure kind the brief's spec
+// names ("a skip resets the counter").
+func TestLastTouchGate_skipResetsConsecutiveMissCounter(t *testing.T) {
+	ff := &lastTouchFakeForge{
+		batchFakeForge: &batchFakeForge{fakeForge: &fakeForge{}},
+		upstream: map[string]forge.PathLastTouch{
+			"src/a.go": {SHA: "C1", CommitsSince: 5},
+		},
+		forkEntries: map[string]map[string]string{
+			"o/skip@src": {"a.go": "C1"}, // equal OID -> skip
+			"o/miss@src": {"a.go": "C2"}, // differs from upstream's C1 -> mismatch
+		},
+	}
+	var logger bytes.Buffer
+	g := newLastTouchGate(context.Background(), ff, []string{"src/a.go"}, &logger)
+	if g == nil {
+		t.Fatal("gate should build")
+	}
+	sel := forge.BranchSelection{Branch: "main", Behind: 1}
+	missFork := forge.T1Data{ID: "o/miss"}
+	skipFork := forge.T1Data{ID: "o/skip"}
+
+	// lastTouchMaxConsecutiveMisses-1 mismatches, then a skip, twice: the
+	// breaker must never trip, since the skip resets the counter back to
+	// zero each round.
+	for round := 0; round < 2; round++ {
+		for i := 0; i < lastTouchMaxConsecutiveMisses-1; i++ {
+			ok, outcome := g.decide(context.Background(), missFork, sel)
+			if ok || outcome != lastTouchMismatchOutcome {
+				t.Fatalf("round %d miss %d: decide = (%v, %v), want (false, mismatch)", round, i, ok, outcome)
+			}
+		}
+		ok, outcome := g.decide(context.Background(), skipFork, sel)
+		if !ok || outcome != lastTouchSkippedOutcome {
+			t.Fatalf("round %d: skip decide = (%v, %v), want (true, skipped)", round, ok, outcome)
+		}
+	}
+	if strings.Contains(logger.String(), "last-touch lookups disabled") {
+		t.Errorf("breaker must never trip when a skip resets the counter each round, got log:\n%s", logger.String())
+	}
+	// One more decision after the last skip: still a real lookup (the
+	// breaker never engaged).
+	before := ff.callCount()
+	g.decide(context.Background(), missFork, sel)
+	if got := ff.callCount(); got != before+1 {
+		t.Errorf("ForkLastTouch calls = %d, want %d (breaker inactive, real lookup still made)", got, before+1)
 	}
 }
