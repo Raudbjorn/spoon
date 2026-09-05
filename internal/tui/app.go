@@ -17,6 +17,7 @@ import (
 	"github.com/svnbjrn/spoon/internal/forge"
 	"github.com/svnbjrn/spoon/internal/forksops"
 	"github.com/svnbjrn/spoon/internal/heat"
+	"github.com/svnbjrn/spoon/internal/pathmatch"
 	"github.com/svnbjrn/spoon/internal/store"
 	"github.com/svnbjrn/spoon/internal/topics"
 	"github.com/svnbjrn/spoon/internal/tui/keymap"
@@ -41,6 +42,8 @@ const (
 	viewRank
 	// Appended rather than inserted: the enum is positional.
 	viewSettings
+	// Appended rather than inserted: the enum is positional.
+	viewPatch
 )
 
 // ScoredFork holds a fork with its computed heat score.
@@ -82,15 +85,27 @@ type ScoredFork struct {
 	SiblingCount     int
 	SiblingPrimary   bool
 	SiblingCandidate string
+
+	// Rank is the shortlist rank summary from the last recomputeShortlist
+	// (P-score, P(rank ≤ k), interval, tie band); nil until ranked or when
+	// the row fell outside the rank pool. See shortlist.go.
+	Rank *forksops.RankStats
 }
 
 // Model is the top-level Bubble Tea model.
 type Model struct {
 	// State
-	view     viewState
-	width    int
-	height   int
-	quitting bool
+	view viewState
+	// shortlist is the pool-level rank report (POTH, cPOTH_k) from the last
+	// recomputeShortlist; nil before the first scoring pass.
+	shortlist *forksops.RankReport
+	// shortlistHash is the signature (fork IDs + heat scores) recomputeShortlist
+	// last ranked. A resort that doesn't change any heat score matches this
+	// hash and skips the O(n³) rank pass instead of repeating it.
+	shortlistHash string
+	width         int
+	height        int
+	quitting      bool
 
 	// fullscreen hides table/detail chrome without changing selection,
 	// scroll offsets, or paging geometry.
@@ -140,6 +155,9 @@ type Model struct {
 	// the table renders and what the cursor may land on; it never reslices
 	// m.forks, which stays the canonical, complete list. See filter.go.
 	filter string
+	// pathFilter is the compiled matcher for a "path:<glob>" filter query, or
+	// nil otherwise. Compiled once in applyFilter rather than per row.
+	pathFilter *pathmatch.Matcher
 	// filterInput is the in-progress prompt text, applied to filter on Enter;
 	// filterCursor is its insertion point as a rune offset, matching the
 	// input/export prompts.
@@ -151,6 +169,18 @@ type Model struct {
 	// inherit the detail view's scroll position.
 	detailOffset int
 	helpOffset   int
+
+	// Patch view (viewPatch): a live provider.Compare fetched on demand from
+	// the detail view's `p` key, since cached compares carry no patch text.
+	// Not persisted -- view-only, unlike the enrichment sweep's T2 cache.
+	patchBody    string
+	patchOffset  int
+	patchLoading bool
+	// patchSeq numbers patch fetches; a patchResultMsg whose seq is not the
+	// latest is stale (the user pressed p again, possibly on the same fork)
+	// and is dropped before it can clear the loading flag or overwrite the
+	// newer result.
+	patchSeq int
 
 	// Enrichment
 	enriching    bool
@@ -477,6 +507,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pendingUpdates = append(m.pendingUpdates, msg)
 		return m, nil
 
+	case patchResultMsg:
+		// Only the most recent fetch may clear the loading flag or apply a
+		// body: an older request (same fork or not) resolving after a newer
+		// one must not hide the newer request's loading state or overwrite
+		// its result. The fork check below is the second line of defence.
+		if msg.seq != m.patchSeq {
+			return m, nil
+		}
+		m.patchLoading = false
+		if m.cursor < 0 || m.cursor >= len(m.forks) || m.forks[m.cursor].Fork.ID != msg.forkID {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.patchBody = "Patch fetch failed: " + msg.err.Error()
+		} else {
+			m.patchBody = renderPatch(m.themeContext(), msg.t2, m.pathFilter, maxPatchChars)
+		}
+		return m, nil
+
 	case enrichBatchTickMsg:
 		return m.processPendingUpdates()
 
@@ -485,7 +534,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case linearHistoryMsg:
 		return m.handleLinearHistory(msg)
-
 
 	case enrichmentDoneMsg:
 		m.enriching = false
@@ -954,6 +1002,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleTableKey(key)
 	case viewDetail:
 		return m.handleDetailKey(key)
+	case viewPatch:
+		return m.handlePatchKey(key)
 	case viewExportPath:
 		return m.handleExportPathKey(key, typed)
 	case viewTopicPicker:
@@ -1117,6 +1167,10 @@ func (m *Model) toggleGroupByCluster() {
 // reapplySort routes through either sortForks (flat) or
 // sortForksByCluster (grouped) depending on the current toggle.
 func (m *Model) reapplySort() {
+	// Every heat change (initial score, per-compare rescore, ceiling rescore,
+	// cluster novelty) ends in a reapplySort, so ranking here keeps the P
+	// column and the precision segment in step with the heat the rows show.
+	m.recomputeShortlist()
 	if m.groupByCluster {
 		m.sortForksByCluster()
 	} else {
@@ -1181,6 +1235,18 @@ func (m *Model) handleDetailKey(key string) (tea.Model, tea.Cmd) {
 		m.fullscreen = !m.fullscreen
 	case keymap.Yank:
 		return m, m.yankCloneCommand()
+	case keymap.ViewPatch:
+		// fetchPatchCmd returns nil when there is no provider or the cursor
+		// is out of range; switching to viewPatch anyway would render
+		// whatever patchBody a previous fork's fetch left behind. Only
+		// commit to the view -- and clear that stale body -- once a real
+		// fetch is in flight.
+		if cmd := m.fetchPatchCmd(); cmd != nil {
+			m.patchBody = ""
+			m.patchOffset = 0
+			m.view = viewPatch
+			return m, cmd
+		}
 	}
 	return m, nil
 }
@@ -1247,7 +1313,7 @@ func (m *Model) startFetch() tea.Cmd {
 		var snap *store.RepoSnapshot
 		if !refresh && db != nil {
 			snap, _ = db.LoadRepoSnapshotExact(context.Background(), storeProvider, storeHost, owner, name,
-			m.auth.APIVersion, m.auth.AuthMode, m.auth.AuthScopeID)
+				m.auth.APIVersion, m.auth.AuthMode, m.auth.AuthScopeID)
 		}
 		if snap != nil && snap.Parent != nil && len(snap.Forks) > 0 && time.Since(snap.ForksSyncedAt) < forkListTTL {
 			// This path returns without calling provider.Parent, which is
@@ -1255,8 +1321,18 @@ func (m *Model) startFetch() tea.Cmd {
 			// Restore it from the snapshot, or every Compare below is issued
 			// against an empty upstream and 404s. The ok-guard only tolerates
 			// test doubles — the real providers implement the setter.
+			baseOwner, baseName := owner, name
+			baseBranch := snap.Parent.DefaultBranch
+			if src := snap.Parent.SourceFullPath; src != "" {
+				if o, n, ok := splitFullName(src); ok {
+					baseOwner, baseName = o, n
+					if snap.Parent.SourceDefaultBranch != "" {
+						baseBranch = snap.Parent.SourceDefaultBranch
+					}
+				}
+			}
 			if setter, ok := provider.(forge.CompareBaselineSetter); ok {
-				setter.SetCompareBaseline(owner, name, snap.Parent.DefaultBranch)
+				setter.SetCompareBaseline(baseOwner, baseName, baseBranch)
 			}
 			forks := make([]forge.T1Data, 0, len(snap.Forks))
 			for _, cf := range snap.Forks {
@@ -1297,16 +1373,16 @@ func (m *Model) storeRepoRecord(withParent bool, syncedAt time.Time) (store.Repo
 	providerName, host := m.storeIdentity()
 	now := time.Now().UTC()
 	rec := store.RepoRecord{
-		Provider:           providerName,
-		Host:               host,
-		Owner:              parts[0],
-		Name:               parts[1],
-		FirstSeen:          now,
-		LastSeen:           now,
-		ForksSyncedAt:      syncedAt,
-		APIVersion:         m.auth.APIVersion,
-		AcquisitionMethod:   m.auth.AuthMode,
-		AuthScopeID:        m.auth.AuthScopeID,
+		Provider:          providerName,
+		Host:              host,
+		Owner:             parts[0],
+		Name:              parts[1],
+		FirstSeen:         now,
+		LastSeen:          now,
+		ForksSyncedAt:     syncedAt,
+		APIVersion:        m.auth.APIVersion,
+		AcquisitionMethod: m.auth.AuthMode,
+		AuthScopeID:       m.auth.AuthScopeID,
 	}
 	if withParent {
 		p := *m.parent
@@ -1839,8 +1915,15 @@ func (m *Model) openCompare() tea.Cmd {
 		return nil
 	}
 	fork := m.forks[m.cursor].Fork
+	compareBase, compareBranch := m.parent.FullName, m.parent.DefaultBranch
+	if m.parent.SourceFullPath != "" {
+		compareBase = m.parent.SourceFullPath
+		if m.parent.SourceDefaultBranch != "" {
+			compareBranch = m.parent.SourceDefaultBranch
+		}
+	}
 	url := forge.CompareURL(m.auth.Provider, m.auth.Host,
-		m.parent.FullName, m.parent.DefaultBranch,
+		compareBase, compareBranch,
 		fork.Owner, fork.DefaultBranch)
 	return func() tea.Msg {
 		b := browser.New("", os.Stdout, os.Stderr)
@@ -1873,6 +1956,8 @@ func (m Model) View() string {
 		return m.viewTable()
 	case viewDetail:
 		return m.viewDetail()
+	case viewPatch:
+		return m.viewPatch()
 	case viewExportPath:
 		return m.viewExportPath()
 	case viewTopicPicker:

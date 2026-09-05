@@ -57,6 +57,10 @@ type Model struct {
 	pendingCandidate *config.Config
 	pending          Field
 	pendingAction    ActionID
+	selecting        bool
+	selectIndex      int
+	selectOptions    []embed.FastEmbedOption
+	pendingInstall   string
 	systemLayer      bool
 	readOnly         string
 	noConfig         bool
@@ -239,8 +243,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.setAlert(result.err.Error())
 			}
 		} else {
+			if result.id == ActionFastEmbedInstall {
+				m.refreshEffective()
+			}
 			m.setAlert(result.text)
 		}
+		m.pendingInstall = ""
+		m.pendingCandidate = nil
+		m.pending = Field{}
+		m.selecting = false
 		return m, nil
 	}
 	if _, ok := msg.(spinnerMsg); ok {
@@ -271,6 +282,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if m.editing {
 		return m.updateEdit(key)
+	}
+	if m.selecting {
+		return m.updateSelect(key)
 	}
 	if m.busy {
 		return m, nil
@@ -321,6 +335,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if !m.canEdit() {
 			m.setAlert(m.readOnly)
+			return m, nil
+		}
+		if field.Key == "embedder.model" {
+			m.selecting = true
+			m.selectOptions = embed.ListFastEmbedOptions(m.fastEmbedCacheDir())
+			m.selectIndex = 0
+			current := normalizeFastEmbedModel(field.Get(m.Config))
+			for i, opt := range m.selectOptions {
+				if opt.Name == current {
+					m.selectIndex = i
+					break
+				}
+			}
 			return m, nil
 		}
 		m.editing = true
@@ -477,6 +504,9 @@ func (m *Model) clearEditor() {
 	m.input = ""
 	m.cursor = 0
 	m.secret.Clear()
+	m.selecting = false
+	m.selectIndex = 0
+	m.selectOptions = nil
 }
 
 func (m Model) updateConfirmation(key tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -486,9 +516,15 @@ func (m Model) updateConfirmation(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.pending = Field{}
 		m.pendingCandidate = nil
 		m.pendingAction = ""
+		m.pendingInstall = ""
 		m.clearEditor()
 		return m, nil
 	case "enter", "y":
+		if m.pendingInstall != "" {
+			m.confirming = false
+			m.selecting = false
+			return m, m.startAction(ActionFastEmbedInstall)
+		}
 		if m.pending.Consequence == Hostwide && !m.pending.Editable {
 			action := m.pendingAction
 			if action == "" {
@@ -541,8 +577,87 @@ func (m Model) View() string { return render(m) }
 func (m Model) hasSystemPath() bool { return m.systemLayer || m.Path == config.SystemPath() }
 func (m Model) isSystemWrite() bool { return m.hasSystemPath() && m.canEdit() }
 func (m Model) modalText() string {
+	if m.pendingInstall != "" {
+		if normalizeFastEmbedModel(m.Config.Embedder.Model) == m.pendingInstall {
+			return "Download and install " + m.pendingInstall + " into the FastEmbed cache. The active model identity does not change."
+		}
+		return "Download and install " + m.pendingInstall + " from Qdrant GCS and switch the local embedder to it. Existing FastEmbed rows keep the old identity; documents become pending under the new identity."
+	}
 	if m.pending.Consequence == Hostwide || m.isSystemWrite() {
 		return ConsequenceMessage(Field{Consequence: Hostwide})
 	}
 	return ConsequenceMessage(m.pending)
+}
+
+func (m Model) updateSelect(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.String() == "esc":
+		m.selecting = false
+		return m, nil
+	case keymap.Dispatch(keymap.MainSettings, key.String()) == keymap.Up:
+		if len(m.selectOptions) > 0 {
+			m.selectIndex = (m.selectIndex + len(m.selectOptions) - 1) % len(m.selectOptions)
+		}
+	case keymap.Dispatch(keymap.MainSettings, key.String()) == keymap.Down:
+		if len(m.selectOptions) > 0 {
+			m.selectIndex = (m.selectIndex + 1) % len(m.selectOptions)
+		}
+	case key.String() == "enter":
+		return m.acceptSelect()
+	}
+	return m, nil
+}
+
+func (m Model) acceptSelect() (tea.Model, tea.Cmd) {
+	if m.selectIndex < 0 || m.selectIndex >= len(m.selectOptions) {
+		return m, nil
+	}
+	opt := m.selectOptions[m.selectIndex]
+	field, ok := m.selected()
+	if !ok {
+		m.setAlert("no field selected")
+		return m, nil
+	}
+	candidate, err := Candidate(field, m.Config, opt.Name)
+	if err != nil {
+		m.setAlert(err.Error())
+		return m, nil
+	}
+	same := normalizeFastEmbedModel(m.Config.Embedder.Model) == opt.Name
+	switch {
+	case same && opt.Present:
+		m.selecting = false
+	case same && !opt.Present:
+		m.pendingInstall = opt.Name
+		m.pendingCandidate = candidate
+		m.confirming = true
+	case !same && opt.Present:
+		m.pending = field
+		m.pendingCandidate = candidate
+		m.pendingInstall = ""
+		m.confirming = true
+	default:
+		m.pendingInstall = opt.Name
+		m.pending = field
+		m.pendingCandidate = candidate
+		m.confirming = true
+	}
+	return m, nil
+}
+
+func (m Model) fastEmbedCacheDir() string {
+	if m.Config != nil {
+		if dir := strings.TrimSpace(m.Config.Embedder.CacheDir); dir != "" {
+			return dir
+		}
+	}
+	if m.Effective != nil {
+		if dir := strings.TrimSpace(m.Effective.FastEmbed.CacheDir.Value); dir != "" {
+			return dir
+		}
+	}
+	if dir, err := embed.DefaultFastEmbedCacheDir(); err == nil {
+		return dir
+	}
+	return ""
 }

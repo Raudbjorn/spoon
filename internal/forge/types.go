@@ -36,24 +36,24 @@ func (p Provider) String() string {
 // It is emitted as a terminal message on the ForkMsg channel and copied to
 // the caller-owned Report field in forksops.Options after the channel closes.
 type AcquisitionReport struct {
-	Method        string    `json:"method"`                  // "graphql" | "graphql+rest" | "rest"
-	Scope         string    `json:"scope"`                   // "direct" in step 2
-	APIVersion    string    `json:"apiVersion"`              // pinned REST version e.g. "2022-11-28"
-	AuthMode      string    `json:"authMode"`                // "authenticated" | "anonymous"
-	FallbackChain []string  `json:"fallbackChain"`            // e.g. ["graphql"] or ["graphql","rest"]
-	Pages         int       `json:"pages"`                   // upstream page callbacks (raw count)
-	RawRows       int       `json:"rawRows"`                 // total fork records before dedup
-	UniqueRows    int       `json:"uniqueRows"`              // unique database IDs
-	DuplicateRows int       `json:"duplicateRows"`           // raw - unique
-	CaptureAt     time.Time `json:"captureAt"`               // when the report was generated
-	AuthScopeID   string    `json:"authScopeId"`             // non-reversible; never logged with tokens
-	Error         string    `json:"error,omitempty"`         // set when REST fallback fails
+	Method        string    `json:"method"`          // "graphql" | "graphql+rest" | "rest"
+	Scope         string    `json:"scope"`           // "direct" in step 2
+	APIVersion    string    `json:"apiVersion"`      // pinned REST version e.g. "2022-11-28"
+	AuthMode      string    `json:"authMode"`        // "authenticated" | "anonymous"
+	FallbackChain []string  `json:"fallbackChain"`   // e.g. ["graphql"] or ["graphql","rest"]
+	Pages         int       `json:"pages"`           // upstream page callbacks (raw count)
+	RawRows       int       `json:"rawRows"`         // total fork records before dedup
+	UniqueRows    int       `json:"uniqueRows"`      // unique database IDs
+	DuplicateRows int       `json:"duplicateRows"`   // raw - unique
+	CaptureAt     time.Time `json:"captureAt"`       // when the report was generated
+	AuthScopeID   string    `json:"authScopeId"`     // non-reversible; never logged with tokens
+	Error         string    `json:"error,omitempty"` // set when REST fallback fails
 
 	// VisitedNodes is the number of distinct repos the bounded traversal visited.
 	VisitedNodes int    `json:"visitedNodes"`
 	MaxNodes     int    `json:"maxNodes"`
 	MaxDepth     int    `json:"maxDepth"`
-	CapReason    string `json:"capReason,omitempty"` // "max_nodes"|"max_depth"|"max_pages"|"max_elapsed"|""
+	CapReason    string `json:"capReason,omitempty"`  // "max_nodes"|"max_depth"|"max_pages"|"max_elapsed"|""
 	Unresolved   int    `json:"unresolved,omitempty"` // discovered nodes not visited
 }
 
@@ -110,6 +110,10 @@ func (a AuthInfo) Authenticated() bool {
 type BranchRef struct {
 	Name          string
 	CommittedDate time.Time
+	// TipSHA is the branch's head commit SHA, when the listing source
+	// provided it (the GitHub GraphQL batch-divergence path). Empty when
+	// unknown, e.g. on the REST listing path.
+	TipSHA string
 }
 
 // ParentData holds metadata about the parent (upstream) repository.
@@ -125,9 +129,11 @@ type ParentData struct {
 	URL           string
 	Language      string
 	Topics        []string
-
-	// SourceFullPath is the network root — same as FullName for non-forks.
+	// SourceFullPath is the network-root owner/repo Compare must use when the
+	// named seed is a mid-chain fork. Empty means "same as FullName / unknown".
 	SourceFullPath string
+	// SourceDefaultBranch is that root's default branch. Empty means use DefaultBranch.
+	SourceDefaultBranch string
 	// DirectParentFullPath is the immediate parent's full name. Empty for non-forks.
 	DirectParentFullPath string
 }
@@ -141,6 +147,11 @@ type T1Data struct {
 	Name          string
 	URL           string
 	DefaultBranch string
+	// DefaultTipSHA is the head commit SHA of DefaultBranch as returned by
+	// the listing source. Populated on the GitHub GraphQL batch-divergence
+	// path; empty on the REST listing path, where the tip SHA is not known
+	// until Compare runs.
+	DefaultTipSHA string
 
 	// Surface metrics
 	Stars        int
@@ -178,9 +189,9 @@ type T1Data struct {
 	SourceFullPath        string // network root used for compare baseline; never the direct parent.
 	ParentFullPath        string // direct parent
 	IsForkOfFork          bool
-	DepthFromRoot         int    // edges from root: 1=direct child, 0=unknown
-	DirectTotalCount      int    // root forks.totalCount (direct children only)
-	WholeNetworkForkCount int    // root forkCount (whole network)
+	DepthFromRoot         int // edges from root: 1=direct child, 0=unknown
+	DirectTotalCount      int // root forks.totalCount (direct children only)
+	WholeNetworkForkCount int // root forkCount (whole network)
 
 	// Topics is the repository's topic set as returned by the provider.
 	// Empty/nil means "no signal" (e.g. provider lacks topic support, or
@@ -251,6 +262,11 @@ type AheadCommit struct {
 	Files       []FileDiff // per-commit file changes; may be nil if not fetched at this tier
 }
 
+// CompareFilesCap is the largest file list a single GitHub compare response
+// carries (300). A T2 whose Diffs hit it may be missing files; see
+// T2Data.FilesTruncated.
+const CompareFilesCap = 300
+
 // T2Data is code-divergence data from comparing the fork to its upstream source.
 type T2Data struct {
 	// Performed reports whether the comparison actually ran against the
@@ -275,8 +291,43 @@ type T2Data struct {
 	BaseSHA            string  // merge-base commit used for the comparison
 	HeadSHA            string  // resolved tip of the compared fork branch
 	Diffs              []FileDiff
-	Commits            []AheadCommit // used by the T3 lone-wolf gate
-	PatchSkipReason    string
+	// FilesTruncated is true when the provider capped the file list (GitHub:
+	// 300 entries per compare, unpaginated here). Diffs, TotalAdditions,
+	// TotalDeletions and MNA are then lower bounds. Rows stored before this
+	// field existed decode as false; readers must also treat
+	// len(Diffs) >= CompareFilesCap as truncated.
+	FilesTruncated bool
+	// CompareSource records how this T2Data's divergence was obtained.
+	// "" means the provider's ordinary per-fork REST Compare (today's
+	// default path). "graphql_batch" means it was synthesised from a
+	// BatchCompareProvider's ForkDivergence via SelectDivergentBranch
+	// rather than a REST Compare call.
+	CompareSource string
+	// FilesComplete is true only when a diff-fallback pass confirmed the
+	// full file list despite Diffs sitting at CompareFilesCap -- e.g. a
+	// compare with exactly CompareFilesCap real files, backfilled and
+	// verified complete. False (the zero value, and every row written
+	// before this field existed) means no such fallback ran, or it could
+	// not confirm completeness; see IsFilesTruncated.
+	FilesComplete bool
+	// FilesTruncatedReason explains why a capped file list stayed capped
+	// after a diff-fallback pass was attempted (e.g. the fallback itself
+	// hit a provider limit). Empty when no fallback ran or the fallback
+	// resolved the list.
+	FilesTruncatedReason string
+	Commits              []AheadCommit // used by the T3 lone-wolf gate
+	PatchSkipReason      string
+}
+
+// IsFilesTruncated reports whether Diffs is known or suspected to be
+// missing files. It is true when the provider explicitly capped the list
+// (FilesTruncated), or when Diffs still sits at the cap and no diff-fallback
+// pass confirmed the list complete (!FilesComplete). Rows written before
+// FilesComplete existed decode with it false, so a capped-looking count
+// with no completion signal is correctly treated as truncated rather than
+// assumed exact.
+func (t T2Data) IsFilesTruncated() bool {
+	return t.FilesTruncated || (len(t.Diffs) >= CompareFilesCap && !t.FilesComplete)
 }
 
 // Contributor is a single contributor to a fork.
@@ -300,7 +351,7 @@ type T3Data struct {
 // on the channel (when the provider supplies one) and is never nil when set.
 type ForkMsg struct {
 	Fork   T1Data
-	Err    error             // non-nil means this item is an error; Fork is zero.
+	Err    error              // non-nil means this item is an error; Fork is zero.
 	Report *AcquisitionReport // terminal acquisition metadata (last item on channel)
 }
 
@@ -381,6 +432,70 @@ type LinearHistoryProvider interface {
 type CompareBaselineSetter interface {
 	SetCompareBaseline(owner, repo, defaultBranch string)
 }
+
+// PathLastTouch is the upstream last-touch resolution for one path: the most
+// recent commit on the upstream default branch that changed it, and how many
+// commits landed on that branch afterward (CommitsSince). A fork whose own
+// last-touch commit for the same path equals SHA has never itself changed
+// the path -- everything the fork carries there came from upstream.
+type PathLastTouch struct {
+	SHA          string
+	CommittedAt  time.Time
+	CommitsSince int
+}
+
+// LastTouchOutcome classifies a ForkLastTouch call. GitHub's tree-commit-info
+// endpoint is undocumented and best-effort (see internal/github/treecommitinfo),
+// so every value other than LastTouchOK means "no information" -- callers
+// must treat it as a skip, never as evidence a path is untouched.
+type LastTouchOutcome int
+
+const (
+	LastTouchOK LastTouchOutcome = iota
+	LastTouchNotFound
+	LastTouchDisabled
+	LastTouchError
+)
+
+// String renders o for logging.
+func (o LastTouchOutcome) String() string {
+	switch o {
+	case LastTouchOK:
+		return "ok"
+	case LastTouchNotFound:
+		return "not_found"
+	case LastTouchDisabled:
+		return "disabled"
+	case LastTouchError:
+		return "error"
+	default:
+		return "unknown"
+	}
+}
+
+// LastTouchProvider is an optional provider capability that lets a caller
+// compare a fork's own last-touch commit for a path against upstream's,
+// skipping a REST compare when they agree (proof the fork never changed the
+// path itself). PathLastTouch resolves the upstream side in one bounded
+// batch; ForkLastTouch is the fork-side counterpart, called per fork/ref/dir.
+//
+// Providers that do not implement it remain valid Forge values -- callers
+// fall back to their normal compare path when this capability is absent.
+type LastTouchProvider interface {
+	// PathLastTouch resolves, for each of paths, the most recent commit on
+	// the upstream default branch that touched it. A path absent from the
+	// returned map has no history on that branch at all -- distinct from a
+	// present entry with CommitsSince == 0.
+	PathLastTouch(ctx context.Context, paths []string) (map[string]PathLastTouch, error)
+
+	// ForkLastTouch queries the fork's own last-touch commit for every entry
+	// name in dir at ref (dir == "" addresses the repository root), the same
+	// listing GitHub's file browser shows. The returned map is keyed by
+	// entry name (not full path); it is nil whenever the outcome is not
+	// LastTouchOK.
+	ForkLastTouch(ctx context.Context, fork T1Data, ref, dir string) (map[string]string, LastTouchOutcome)
+}
+
 type TopicLane string
 
 const (

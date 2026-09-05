@@ -97,12 +97,15 @@ func median(v []float64) float64 {
 // clamped); on false the fit carries only M, Tau2 and Regime.
 func fitNormalNormal(y, sigma []float64, priorScale float64) (ebFit, bool) {
 	k := len(y)
-	if k < ebMinPool {
+	if k < ebMinPool || len(sigma) < k {
 		return ebFit{Regime: EBRegimeInsufficient}, false
 	}
 	// DerSimonian–Laird: fixed-effect weights w = σ⁻².
 	sumW, sumW2, sumWY := 0.0, 0.0, 0.0
 	for i := range y {
+		if !(sigma[i] > 0) || math.IsInf(sigma[i], 0) {
+			return ebFit{Regime: EBRegimePooled}, false
+		}
 		w := 1 / (sigma[i] * sigma[i])
 		sumW += w
 		sumW2 += w * w
@@ -114,7 +117,14 @@ func fitNormalNormal(y, sigma []float64, priorScale float64) (ebFit, bool) {
 		d := y[i] - yw
 		q += d * d / (sigma[i] * sigma[i])
 	}
-	tau2 := (q - float64(k-1)) / (sumW - sumW2/sumW)
+	// denom can suffer catastrophic cancellation and round to ~0 when a few
+	// forks' sigmas are near-zero (weights orders of magnitude apart), which
+	// would otherwise divide-by-near-zero and propagate NaN/Inf into tau2.
+	denom := sumW - sumW2/sumW
+	if denom <= 1e-9 || math.IsNaN(denom) {
+		return ebFit{M: yw, Regime: EBRegimePooled}, false
+	}
+	tau2 := (q - float64(k-1)) / denom
 	if tau2 <= 0 {
 		return ebFit{M: yw, Regime: EBRegimePooled}, false
 	}

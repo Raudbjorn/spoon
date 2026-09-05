@@ -20,7 +20,12 @@ const (
 func PrepareFastEmbed(cfg *config.Config, cacheDir string) (embed.FastEmbedConfig, error) {
 	prepared := cfg.Embedder
 	prepared.Backend = embed.BackendFastEmbed
-	prepared.Model = DefaultFastEmbedModel
+	if prepared.Model == "" {
+		prepared.Model = DefaultFastEmbedModel
+	} else if !embed.KnownFastEmbedModel(prepared.Model) {
+		return embed.FastEmbedConfig{}, fmt.Errorf("FastEmbed model %q is not supported", prepared.Model)
+	}
+	profile, _ := embed.LookupFastEmbedProfile(prepared.Model)
 	prepared.CacheDir = cacheDir
 	if prepared.CacheDir == "" {
 		var err error
@@ -29,7 +34,9 @@ func PrepareFastEmbed(cfg *config.Config, cacheDir string) (embed.FastEmbedConfi
 			return embed.FastEmbedConfig{}, err
 		}
 	}
-	prepared.MaxLength = DefaultFastEmbedMaxLength
+	if prepared.MaxLength == 0 {
+		prepared.MaxLength = profile.MaxLength
+	}
 	prepared.BatchSize = DefaultFastEmbedBatchSize
 	cfg.Embedder = prepared
 	return embed.FastEmbedConfig{
@@ -44,11 +51,12 @@ func ValidateFastEmbed(cfg config.EmbedderConfig) error {
 	if cfg.Backend != "" && cfg.Backend != embed.BackendFastEmbed {
 		return fmt.Errorf("unsupported FastEmbed backend %q", cfg.Backend)
 	}
-	if cfg.Model != "" && cfg.Model != DefaultFastEmbedModel {
-		return fmt.Errorf("FastEmbed model is fixed at %q", DefaultFastEmbedModel)
+	if cfg.Model != "" && !embed.KnownFastEmbedModel(cfg.Model) {
+		return fmt.Errorf("FastEmbed model %q is not supported", cfg.Model)
 	}
-	if cfg.MaxLength != 0 && cfg.MaxLength != DefaultFastEmbedMaxLength {
-		return fmt.Errorf("FastEmbed max length is fixed at %d", DefaultFastEmbedMaxLength)
+	profile, _ := embed.LookupFastEmbedProfile(cfg.Model)
+	if cfg.MaxLength != 0 && cfg.MaxLength != profile.MaxLength {
+		return fmt.Errorf("FastEmbed max length for %s is %d", profile.Name, profile.MaxLength)
 	}
 	if cfg.BatchSize < 0 {
 		return fmt.Errorf("FastEmbed batch size must not be negative")

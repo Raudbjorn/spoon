@@ -83,7 +83,7 @@ query($owner: String!, $name: String!, $cursor: String) {
         forkCount
         diskUsage
         primaryLanguage { name }
-        defaultBranchRef { name }
+        defaultBranchRef { name target { ... on Commit { oid committedDate } } }
         owner { login avatarUrl }
         pullRequests(states: OPEN, first: 1) { totalCount }
         releases(first: 1) { totalCount }
@@ -92,7 +92,7 @@ query($owner: String!, $name: String!, $cursor: String) {
           nodes {
             name
             target {
-              ... on Commit { committedDate }
+              ... on Commit { oid committedDate }
             }
           }
         }
@@ -138,7 +138,11 @@ type gqlForkNode struct {
 		Name string `json:"name"`
 	} `json:"primaryLanguage"`
 	DefaultBranchRef *struct {
-		Name string `json:"name"`
+		Name   string `json:"name"`
+		Target struct {
+			OID           string `json:"oid"`
+			CommittedDate string `json:"committedDate"`
+		} `json:"target"`
 	} `json:"defaultBranchRef"`
 	Owner struct {
 		Login     string `json:"login"`
@@ -174,6 +178,7 @@ type gqlForkNode struct {
 type gqlRefNode struct {
 	Name   string `json:"name"`
 	Target struct {
+		OID           string `json:"oid"`
 		CommittedDate string `json:"committedDate"`
 	} `json:"target"`
 }
@@ -559,12 +564,12 @@ func buildBatchedForksQuery(aliases []string) string {
 	forkFrag := `forkCount forks(first:50)` +
 		`{totalCount nodes{databaseId nameWithOwner name description stargazerCount` +
 		` pushedAt createdAt isArchived isDisabled forkCount diskUsage` +
-		` primaryLanguage{name} defaultBranchRef{name} owner{login avatarUrl}` +
+		` primaryLanguage{name} defaultBranchRef{name target{... on Commit{oid committedDate}}} owner{login avatarUrl}` +
 		` pullRequests(states:OPEN,first:1){totalCount}` +
 		` releases(first:1){totalCount}` +
 		` repositoryTopics(first:20){nodes{topic{name}}}` +
 		` refs(refPrefix:"refs/heads/",first:10,orderBy:{field:ALPHABETICAL,direction:ASC})` +
-		`{nodes{name target{... on Commit{committedDate}}}}` +
+		`{nodes{name target{... on Commit{oid committedDate}}}}` +
 		` parent{nameWithOwner databaseId}}}`
 	for i := range aliases {
 		sb.WriteString(fmt.Sprintf(` r%d: repository(owner: $owner%d, name: $name%d) {%s}`, i, i, i, forkFrag))
@@ -643,8 +648,10 @@ func isTransientServerError(err error) bool {
 // acquisition that produced this record.
 func gqlForkToForkInfo(node gqlForkNode, repoForkCount, directTotalCount int, authMode, apiVersion string) (ForkInfo, T1Extra) {
 	defaultBranch := "main"
+	defaultTipSHA := ""
 	if node.DefaultBranchRef != nil {
 		defaultBranch = node.DefaultBranchRef.Name
+		defaultTipSHA = node.DefaultBranchRef.Target.OID
 	}
 
 	language := ""
@@ -693,6 +700,7 @@ func gqlForkToForkInfo(node gqlForkNode, repoForkCount, directTotalCount int, au
 		WholeNetworkForkCount: repoForkCount,
 		AuthMode:              authMode,
 		APIVersion:            apiVersion,
+		DefaultTipSHA:         defaultTipSHA,
 	}
 
 	if node.Parent != nil {
@@ -719,7 +727,7 @@ func annotateDepths(forks []ForkInfo, extras []T1Extra, root string) []T1Extra {
 	children := make(map[int64][]int, len(forks))
 	queue := make([]int, 0, len(forks))
 	for i := range extras {
-		if extras[i].ParentFullPath == root {
+		if strings.EqualFold(extras[i].ParentFullPath, root) {
 			extras[i].DirectParent = 1
 			extras[i].DepthFromRoot = 1
 			queue = append(queue, i)
@@ -780,6 +788,7 @@ func sortBranches(refs []gqlRefNode, defaultBranch string) []BranchInfo {
 		branches = append(branches, BranchInfo{
 			Name:         ref.Name,
 			LastCommitAt: ref.Target.CommittedDate,
+			TipSHA:       ref.Target.OID,
 		})
 	}
 

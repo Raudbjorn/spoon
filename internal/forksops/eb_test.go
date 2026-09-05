@@ -123,3 +123,19 @@ func sumFloat(v []float64) float64 {
 	}
 	return s
 }
+
+func TestFitNormalNormal_InvalidSigma(t *testing.T) {
+	for _, sigma := range []float64{0, -1, math.NaN(), math.Inf(1)} {
+		fit, ok := fitNormalNormal([]float64{10, 20, 30}, []float64{1, sigma, 1}, 0)
+		if ok || fit.Regime != EBRegimePooled || math.IsNaN(fit.M) || math.IsInf(fit.M, 0) {
+			t.Fatalf("sigma=%v: ok=%v fit=%+v", sigma, ok, fit)
+		}
+	}
+}
+
+func TestFitNormalNormalDegenerateWeights(t *testing.T) {
+	fit, ok := fitNormalNormal([]float64{10, 20, 30}, []float64{1e-6, 1e6, 1e6}, 0)
+	if ok || fit.Regime != EBRegimePooled || math.IsNaN(fit.M) || math.IsInf(fit.M, 0) {
+		t.Fatalf("degenerate fixed-effect denominator: ok=%v fit=%+v", ok, fit)
+	}
+}

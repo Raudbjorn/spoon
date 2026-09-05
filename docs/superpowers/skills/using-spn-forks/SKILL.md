@@ -60,6 +60,16 @@ Detection works on REST API paths. GitHub's GraphQL endpoint (used by the forks-
 
 `spn search "<query>"` is a different operation: vector retrieval over the persistent index built by `forks list`, rather than scoring an already-enumerated set. With a Voyage key it also reranks its candidates, adding `rerankScore`/`rerankModel` while `score` stays the retrieval cosine; `--voyage` ranks against the Voyage index instead of the fastembed one. `--voyage` or `--rerank` without a key exits 2 rather than silently answering from the other index.
 
+## Touched-path filtering (`--touching`)
+
+`spn forks list <repo> --touching '<path|glob>'` (repeatable) prints only forks whose **own ahead commits** changed a matching path, reading the merge-base-relative compare (`base...head`) already cached per fork — a re-run against a scanned network costs no API calls. Patterns are repo-relative; `**` spans directories, `*` does not. Every printed record gains a `touching` block with `status` and `partial`; a matched record additionally carries `impact`, `centrality_method`, and `files[]` (`path`/`previousPath`/`status`/`additions`/`deletions`/`pattern`/`centrality`), and is pinned into the output (`visibility.status: "pinned"`, `profile: "touches_target"`) — `impact` and `centrality_method` are omitted entirely, not zero-valued, on unmatched/unknown records, since there is nothing to score. `touching.partial: true` marks a fork whose file list hit GitHub's 300-file compare cap; such a fork is still printed even when unmatched, so the gap in coverage is visible.
+
+Before any compare runs, `spn` resolves the whole network's ahead/behind status in a GraphQL batch; forks with nothing ahead never pay a compare call, and every literal (non-glob) `--touching` target on a still-divergent fork is checked against GitHub's `tree-commit-info` page first — a matching last-touch commit skips that fork's REST compare too (`touching.reason: "last_touch"` on the resulting `unmatched` verdict, and `t2.files_unfetched: true`). A stderr summary tallies matched/unmatched/unknown/never_pushed, plus a `last_touch` sub-object (`gated`/`looked_up`/`skipped`/`mismatch`/`unavailable`); since zero-ahead forks are already resolved by the batch before dispatch, `unknown` now mostly means the rate reserve was hit for a fork that still needed a REST compare — re-run to resolve. `--no-batch-compare` also disables this last-touch skip entirely, since the gate is built only from the batch's output — every fork falls through to its ordinary REST compare. NDJSON only — `--csv` and `--tier 1` are both rejected since `--touching` needs compare data.
+
+## Prior-biased ordering (`--priors`)
+
+`spn forks list <repo> --priors PATH` scores every fork against a JSON interest spec (`paths`, `keywords`, `languages`, `owners.allow`/`owners.deny`) from data already fetched, at zero extra API cost. Each record gains `priorScore` (0–1) and `priorReasons` (e.g. `path:internal/auth`, `keyword:oauth`, `owner_deny:fork-farmer`); when neither `--query` nor `--shortlist` is active, matched forks list before unmatched ones (heat order within each lane). Priors never hide a fork or change its heat — a denied owner scores 0 but is still emitted. Path entries follow the same matcher as `--touching`: exact/directory-prefix without a glob, single-segment `path.Match` for a glob without `**`, and `**` for a segment wildcard spanning any depth.
+
 ## Shortlist with rank uncertainty
 
 `spn forks list <repo> --shortlist N` buffers the run, ranks the strongest 200 forks by heat under a Gaussian utility model (mu = heat score, sigma from tier confidence), and emits the top N by Robbins expected rank. Each record gains:
@@ -95,4 +105,7 @@ Every shortlist run writes one `{"info":{"code":"rank_report",...}}` line to std
 | --- | --- |
 | `spn forks list <repo>` | NDJSON stream of enriched forks |
 | `spn forks list <repo> --csv` | Batched CSV with fixed 18-column header |
+| `spn forks list <repo> --touching PATH` | Only forks whose own ahead commits changed a matching path |
+| `spn forks list <repo> --no-batch-compare` | Restore one REST compare per fork instead of the pre-dispatch GraphQL batch |
+| `spn forks list <repo> --no-tree-commit-info` | Disable the `tree-commit-info` last-touch skip (default: on only with `--touching` and literal paths) |
 | `spn repo centrality <owner/repo>` | Per-directory centrality JSON for the upstream repo |

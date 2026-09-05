@@ -37,7 +37,7 @@
   },
   {
     "name": "three_identical_forks",
-    "note": "Analytic. Every pair is a coin flip: rank\u22121 ~ Binomial(2, \u00bd) so P(rank=1)=0.25, P(rank\u22642)=0.75, E=2, PScore=0.5, 95% interval [1,3]; POTH = 0; expected rule breaks ties by index.",
+    "note": "Analytic. Identically distributed continuous utilities have uniform ranks by symmetry: P(rank=1)=1/3, P(rank<=2)=2/3, E=2, PScore=0.5, 95% interval [1,3]; POTH=0; expected rule breaks ties by index.",
     "mu": [
       5,
       5,
@@ -54,24 +54,24 @@
       {
         "expectedRank": 2,
         "pScore": 0.5,
-        "pTopK": 0.75,
-        "pFirst": 0.25,
+        "pTopK": 0.6666666666666666,
+        "pFirst": 0.3333333333333333,
         "lo": 1,
         "hi": 3
       },
       {
         "expectedRank": 2,
         "pScore": 0.5,
-        "pTopK": 0.75,
-        "pFirst": 0.25,
+        "pTopK": 0.6666666666666666,
+        "pFirst": 0.3333333333333333,
         "lo": 1,
         "hi": 3
       },
       {
         "expectedRank": 2,
         "pScore": 0.5,
-        "pTopK": 0.75,
-        "pFirst": 0.25,
+        "pTopK": 0.6666666666666666,
+        "pFirst": 0.3333333333333333,
         "lo": 1,
         "hi": 3
       }
@@ -84,7 +84,7 @@
   },
   {
     "name": "recorded_mixed_tiers_k3_membership",
-    "note": "Recorded from the implementation at commit 230e003 (regression lock, gemtc validate-tier style). Orca-like pool: two confirmed leaders (\u03c3=1), a noisy tier-1 at 45 (\u03c3=7), a confirmed 30, a tier-2 29.5, a noisy 6.2. k=3 membership rule.",
+    "note": "Independent reference from SciPy quad_vec integration of conditional Gaussian rank probabilities (absolute and relative tolerance 1e-12). Orca-like pool: two confirmed leaders (sigma=1), a noisy tier-1 at 45 (sigma=7), a confirmed 30, a tier-2 29.5, a noisy 6.2. k=3 membership rule.",
     "mu": [
       53.9,
       51.8,
@@ -107,48 +107,48 @@
       {
         "expectedRank": 1.1728603235553194,
         "pScore": 0.9654279352889361,
-        "pTopK": 0.9999999999999455,
-        "pFirst": 0.8342983898239027,
+        "pTopK": 0.9999999999997395,
+        "pFirst": 0.8369184565418287,
         "lo": 1,
         "hi": 2
       },
       {
         "expectedRank": 2.0993269517316167,
         "pScore": 0.7801346096536766,
-        "pTopK": 0.9999999999910382,
-        "pFirst": 0.057219089603498634,
+        "pTopK": 0.9999999999884335,
+        "pFirst": 0.06030873422034569,
         "lo": 1,
         "hi": 3
       },
       {
         "expectedRank": 2.765717414679208,
         "pScore": 0.6468565170641585,
-        "pTopK": 0.9719302200676669,
-        "pFirst": 0.016839532033110997,
-        "lo": 2,
+        "pTopK": 0.9732950120230316,
+        "pFirst": 0.10277280923163701,
+        "lo": 1,
         "hi": 4
       },
       {
         "expectedRank": 4.420617674821637,
         "pScore": 0.3158764650356726,
-        "pTopK": 0.009534651360892609,
-        "pFirst": 0,
+        "pTopK": 0.010269845408080422,
+        "pFirst": 0.0,
         "lo": 4,
         "hi": 5
       },
       {
         "expectedRank": 4.543012349046348,
         "pScore": 0.29139753019073034,
-        "pTopK": 0.00913262821495633,
-        "pFirst": 4.832558568148723e-29,
+        "pTopK": 0.01642577994131008,
+        "pFirst": 2.5751578226282197e-15,
         "lo": 4,
         "hi": 5
       },
       {
         "expectedRank": 5.998465286165872,
         "pScore": 0.00030694276682563526,
-        "pTopK": 1.8778528400767784e-11,
-        "pFirst": 8.054048533084187e-33,
+        "pTopK": 9.362639404959041e-06,
+        "pFirst": 6.185974517072229e-12,
         "lo": 6,
         "hi": 6
       }

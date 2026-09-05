@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/svnbjrn/spoon/internal/forge"
+	"github.com/svnbjrn/spoon/internal/github/treecommitinfo"
 	"github.com/svnbjrn/spoon/internal/heat"
 )
 
@@ -19,6 +21,7 @@ type GHProvider struct {
 	status AuthStatus
 
 	// Cached after Parent() call; used by Compare().
+	mu                  sync.RWMutex
 	sourceOwner         string
 	sourceRepo          string
 	sourceDefaultBranch string
@@ -81,7 +84,12 @@ func (p *GHProvider) DivergentBranchCounts(ctx context.Context, forks []forge.T1
 	for _, f := range forks {
 		targets = append(targets, ForkTarget{ID: f.ID, Owner: f.Owner, Name: f.Name})
 	}
-	counts, err := p.client.FetchDivergentBranchCounts(ctx, p.sourceOwner, p.sourceRepo, p.sourceDefaultBranch, targets)
+	p.mu.RLock()
+	sourceOwner := p.sourceOwner
+	sourceRepo := p.sourceRepo
+	sourceDefaultBranch := p.sourceDefaultBranch
+	p.mu.RUnlock()
+	counts, err := p.client.FetchDivergentBranchCounts(ctx, sourceOwner, sourceRepo, sourceDefaultBranch, targets)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -89,6 +97,49 @@ func (p *GHProvider) DivergentBranchCounts(ctx context.Context, forks []forge.T1
 }
 
 var _ forge.BranchDivergenceProvider = (*GHProvider)(nil)
+
+// BatchCompare implements forge.BatchCompareProvider: it resolves ahead/
+// behind (and, for ahead branches, tip + upstreamed-PR status) for every
+// fork's default and side branches against the network root in two GraphQL
+// passes, replacing a per-fork REST branch scan.
+//
+// Returns forge.ErrBatchCompareUnavailable when the client has no working
+// GraphQL backend, so callers fall back to the REST path silently rather
+// than treating it as a hard failure.
+func (p *GHProvider) BatchCompare(ctx context.Context, forks []forge.T1Data) (map[string]forge.ForkDivergence, forge.BatchStats, error) {
+	if !p.client.HasGraphQL() {
+		return nil, forge.BatchStats{}, forge.ErrBatchCompareUnavailable
+	}
+	p.mu.RLock()
+	sourceOwner := p.sourceOwner
+	sourceRepo := p.sourceRepo
+	sourceDefaultBranch := p.sourceDefaultBranch
+	p.mu.RUnlock()
+
+	targets := make([]BatchTarget, 0, len(forks))
+	for _, f := range forks {
+		sides := make([]BatchBranch, 0, len(f.Branches))
+		for _, b := range f.Branches {
+			sides = append(sides, BatchBranch{
+				Name:        b.Name,
+				TipSHA:      b.TipSHA,
+				CommittedAt: b.CommittedDate,
+			})
+		}
+		targets = append(targets, BatchTarget{
+			ID:                 f.ID,
+			Owner:              f.Owner,
+			Name:               f.Name,
+			DefaultBranch:      f.DefaultBranch,
+			DefaultTipSHA:      f.DefaultTipSHA,
+			DefaultCommittedAt: f.PushedAt,
+			Sides:              sides,
+		})
+	}
+	return p.client.FetchBatchDivergence(ctx, sourceOwner, sourceRepo, sourceDefaultBranch, targets)
+}
+
+var _ forge.BatchCompareProvider = (*GHProvider)(nil)
 
 // MergeCommitHistory implements forge.LinearHistoryProvider. The whole batch
 // costs one GraphQL compare query per linearHistoryBatchSize forks; the
@@ -112,14 +163,61 @@ func (p *GHProvider) MergeCommitHistory(ctx context.Context, forks []forge.T1Dat
 
 var _ forge.LinearHistoryProvider = (*GHProvider)(nil)
 
+// PathLastTouch implements forge.LastTouchProvider. It resolves the upstream
+// side of the last-touch comparison: for each path, the most recent commit
+// on the network root's default branch that touched it, and how many
+// commits landed there since. See DivergentBranchCounts for why the baseline
+// is read under p.mu rather than taken from a field directly.
+func (p *GHProvider) PathLastTouch(ctx context.Context, paths []string) (map[string]forge.PathLastTouch, error) {
+	p.mu.RLock()
+	sourceOwner := p.sourceOwner
+	sourceRepo := p.sourceRepo
+	sourceDefaultBranch := p.sourceDefaultBranch
+	p.mu.RUnlock()
+	return p.client.FetchPathLastTouch(ctx, sourceOwner, sourceRepo, sourceDefaultBranch, paths)
+}
+
+// ForkLastTouch implements forge.LastTouchProvider. It is the fork side of
+// the last-touch comparison: a thin wrapper over the opt-in, best-effort
+// tree-commit-info client. Reports LastTouchDisabled (and a nil map) when
+// EnableTreeCommitInfo was never called, the same "capability not turned on"
+// signal a disabled client would produce live.
+func (p *GHProvider) ForkLastTouch(ctx context.Context, fork forge.T1Data, ref, dir string) (map[string]string, forge.LastTouchOutcome) {
+	tci := p.client.TreeCommitInfo()
+	if tci == nil {
+		return nil, forge.LastTouchDisabled
+	}
+	entries, outcome := tci.LastTouch(ctx, fork.Owner, fork.Name, ref, dir)
+	return entries, forgeLastTouchOutcome(outcome)
+}
+
+// forgeLastTouchOutcome translates treecommitinfo's package-local Outcome to
+// forge.LastTouchOutcome, the shared vocabulary Task 7 consumes.
+func forgeLastTouchOutcome(o treecommitinfo.Outcome) forge.LastTouchOutcome {
+	switch o {
+	case treecommitinfo.OK:
+		return forge.LastTouchOK
+	case treecommitinfo.NotFound:
+		return forge.LastTouchNotFound
+	case treecommitinfo.Disabled:
+		return forge.LastTouchDisabled
+	default:
+		return forge.LastTouchError
+	}
+}
+
+var _ forge.LastTouchProvider = (*GHProvider)(nil)
+
 // SetCompareBaseline implements forge.CompareBaselineSetter. Parent() calls it
 // on the live path; a caller that serves the fork list from a local cache must
 // call it explicitly, or every Compare that follows has no upstream to compare
 // against.
 func (p *GHProvider) SetCompareBaseline(owner, repo, defaultBranch string) {
+	p.mu.Lock()
 	p.sourceOwner = owner
 	p.sourceRepo = repo
 	p.sourceDefaultBranch = defaultBranch
+	p.mu.Unlock()
 }
 
 // Parent implements forge.Forge.
@@ -129,19 +227,14 @@ func (p *GHProvider) Parent(ctx context.Context, owner, repo string) (forge.Pare
 		return forge.ParentData{}, err
 	}
 
-	// Cache for Compare() calls.
-	p.SetCompareBaseline(owner, repo, info.DefaultBranch)
+	baseOwner, baseRepo, baseBranch := repoCompareBaseline(info, owner, repo)
+	p.SetCompareBaseline(baseOwner, baseRepo, baseBranch)
 
 	pushed, _ := time.Parse(time.RFC3339, info.PushedAt)
 
-	// Resolve the default-branch tip SHA so the MDG cache (cluster
-	// pipeline's CentralityHeadSHA) can pin entries. Soft-fail: a missing
-	// SHA disables cache persistence (and the 24h fast path) but does not
-	// fail the parent fetch — change-impact still computes via the
-	// directory proxy.
-	headSHA, _ := p.client.defaultBranchTipSHA(ctx, owner, repo)
+	headSHA, _ := p.client.defaultBranchTipSHA(ctx, baseOwner, baseRepo)
 
-	return forge.ParentData{
+	parent := forge.ParentData{
 		FullName:             info.FullName,
 		Description:          info.Description,
 		DefaultBranch:        info.DefaultBranch,
@@ -153,9 +246,13 @@ func (p *GHProvider) Parent(ctx context.Context, owner, repo string) (forge.Pare
 		URL:                  info.HTMLURL,
 		Language:             info.Language,
 		Topics:               info.Topics,
-		SourceFullPath:       sourceFullPath(info),
 		DirectParentFullPath: directParentFullPath(info),
-	}, nil
+	}
+	if baseOwner != owner || baseRepo != repo {
+		parent.SourceFullPath = baseOwner + "/" + baseRepo
+		parent.SourceDefaultBranch = baseBranch
+	}
+	return parent, nil
 }
 
 // ListForks implements forge.Forge.
@@ -191,7 +288,13 @@ func (p *GHProvider) ListForks(ctx context.Context, owner, repo string) (<-chan 
 					extra = &e
 				}
 			}
-			t1 := forkInfoToT1(f, extra, owner+"/"+repo)
+			sourcePath := owner + "/" + repo
+			p.mu.RLock()
+			if p.sourceOwner != "" && p.sourceRepo != "" {
+				sourcePath = p.sourceOwner + "/" + p.sourceRepo
+			}
+			p.mu.RUnlock()
+			t1 := forkInfoToT1(f, extra, owner+"/"+repo, sourcePath)
 			select {
 			case out <- forge.ForkMsg{Fork: t1}:
 			case <-ctx.Done():
@@ -236,7 +339,17 @@ func (p *GHProvider) ListForksBounded(ctx context.Context, owner, repo string, o
 					extra = &e
 				}
 			}
-			t1 := forkInfoToT1(f, extra, owner+"/"+repo)
+			sourcePath := owner + "/" + repo
+			p.mu.RLock()
+			if p.sourceOwner != "" && p.sourceRepo != "" {
+				sourcePath = p.sourceOwner + "/" + p.sourceRepo
+			}
+			p.mu.RUnlock()
+			// parentFullPath is left unknown here: the bounded walk can surface
+			// forks nested at any depth, so the requested owner/repo is not
+			// necessarily this node's direct parent (only extra's GraphQL
+			// lineage, when present, can say that accurately).
+			t1 := forkInfoToT1(f, extra, "", sourcePath)
 			select {
 			case out <- forge.ForkMsg{Fork: t1}:
 			case <-ctx.Done():
@@ -279,11 +392,16 @@ func (p *GHProvider) Compare(ctx context.Context, fork forge.T1Data, branch stri
 	// which 404s for every fork and — because a 404 is not a run-ending error —
 	// used to surface as a fork list where everything is 0 ahead / 0 behind.
 	// Fail loudly instead; the gitea provider already guards this the same way.
-	if p.sourceOwner == "" || p.sourceRepo == "" {
+	p.mu.RLock()
+	sourceOwner := p.sourceOwner
+	sourceRepo := p.sourceRepo
+	sourceDefaultBranch := p.sourceDefaultBranch
+	p.mu.RUnlock()
+	if sourceOwner == "" || sourceRepo == "" {
 		return forge.T2Data{}, fmt.Errorf("compare %s@%s: upstream not resolved (Parent not called)", fork.ID, branch)
 	}
 
-	parentBranch := p.sourceDefaultBranch
+	parentBranch := sourceDefaultBranch
 	if parentBranch == "" {
 		parentBranch = "HEAD"
 	}
@@ -305,14 +423,69 @@ func (p *GHProvider) Compare(ctx context.Context, fork forge.T1Data, branch stri
 	}
 
 	scan, err := p.client.FetchCompareWithBranchScan(
-		ctx, p.sourceOwner, p.sourceRepo, parentBranch,
+		ctx, sourceOwner, sourceRepo, parentBranch,
 		ghFork, ghBranches,
 	)
 	if err != nil {
 		return forge.T2Data{}, fmt.Errorf("compare %s@%s: %w", fork.ID, branch, err)
 	}
 
+	return p.finishT2(ctx, sourceOwner, sourceRepo, scan, fork), nil
+}
+
+// CompareResolved implements forge.ResolvedCompareProvider. The branch to
+// attribute the fork's work to, and its upstreamed verdict, were already
+// decided by forge.SelectDivergentBranch from a batch-resolved
+// forge.ForkDivergence -- so unlike Compare, this issues exactly one REST
+// compare against sel.Branch and never scans side branches or probes
+// commits/{sha}/pulls.
+func (p *GHProvider) CompareResolved(ctx context.Context, fork forge.T1Data, sel forge.BranchSelection) (forge.T2Data, error) {
+	// Same baseline guard as Compare: without it the compare path degrades to
+	// "repos///compare/HEAD...", which 404s and would otherwise launder into
+	// a false "0 ahead, 0 behind" result.
+	p.mu.RLock()
+	sourceOwner := p.sourceOwner
+	sourceRepo := p.sourceRepo
+	sourceDefaultBranch := p.sourceDefaultBranch
+	p.mu.RUnlock()
+	if sourceOwner == "" || sourceRepo == "" {
+		return forge.T2Data{}, fmt.Errorf("compare resolved %s@%s: upstream not resolved (Parent not called)", fork.ID, sel.Branch)
+	}
+
+	parentBranch := sourceDefaultBranch
+	if parentBranch == "" {
+		parentBranch = "HEAD"
+	}
+
+	result, err := p.client.FetchCompare(ctx, sourceOwner, sourceRepo, parentBranch, fork.Owner, sel.Branch)
+	if err != nil {
+		return forge.T2Data{}, fmt.Errorf("compare resolved %s@%s: %w", fork.ID, sel.Branch, err)
+	}
+
+	scan := BranchScan{
+		Compare:      result,
+		Branch:       sel.Branch,
+		Upstreamed:   sel.Upstreamed,
+		UpstreamedPR: sel.UpstreamedPR,
+	}
+
+	return p.finishT2(ctx, sourceOwner, sourceRepo, scan, fork), nil
+}
+
+var _ forge.ResolvedCompareProvider = (*GHProvider)(nil)
+
+// finishT2 completes a compare into forge.T2Data: converts the REST compare
+// result, fills in patches the compare response omitted via the cookie
+// web-diff client when one is configured, and applies the branch-work and
+// upstreamed flags carried by scan. Compare (full branch scan) and
+// CompareResolved (single pre-selected branch) differ only in how scan is
+// produced; from here on they finish identically.
+func (p *GHProvider) finishT2(ctx context.Context, sourceOwner, sourceRepo string, scan BranchScan, fork forge.T1Data) forge.T2Data {
 	t2 := compareToT2(scan.Compare)
+
+	if t2.FilesTruncated {
+		p.fillTruncatedFiles(ctx, sourceOwner, sourceRepo, scan, fork, &t2)
+	}
 
 	if p.client.webDiff != nil {
 		missing := false
@@ -333,7 +506,7 @@ func (p *GHProvider) Compare(ctx context.Context, fork forge.T1Data, branch stri
 			}
 			if base == "" || head == "" {
 				t2.PatchSkipReason = "web diff unavailable: compare response omitted base/head SHA"
-			} else if patches, truncated, webErr := p.client.webDiff.Fetch(ctx, p.sourceOwner, p.sourceRepo, base, head); webErr != nil {
+			} else if patches, truncated, webErr := p.client.webDiff.Fetch(ctx, sourceOwner, sourceRepo, base, head); webErr != nil {
 				t2.PatchSkipReason = webErr.Error()
 			} else if truncated {
 				// A later page failed to parse: the collected patches are
@@ -367,7 +540,72 @@ func (p *GHProvider) Compare(ctx context.Context, fork forge.T1Data, branch stri
 		t2.UpstreamedPR = scan.UpstreamedPR
 	}
 
-	return t2, nil
+	return t2
+}
+
+// fillTruncatedFiles attempts to recover the files a JSON compare lost past
+// forge.CompareFilesCap by re-fetching the same compare as an unbounded
+// unified diff (FetchCompareDiff). It mutates t2 in place and never returns
+// an error: a Performed=true T2Data must stay Performed=true no matter how
+// this fallback goes, so every non-success path just records why in
+// t2.FilesTruncatedReason and leaves t2.Diffs (and the truncated flag) as
+// compareToT2 left them.
+//
+// Called before the web-diff patch-fill step in finishT2 so that step still
+// runs afterward and can top up any file — from the original 300 or from the
+// newly recovered ones — that still lacks a patch (binary files, oversize
+// patches).
+func (p *GHProvider) fillTruncatedFiles(ctx context.Context, sourceOwner, sourceRepo string, scan BranchScan, fork forge.T1Data, t2 *forge.T2Data) {
+	forkBranch := scan.Branch
+	if forkBranch == "" {
+		forkBranch = fork.DefaultBranch
+	}
+	// The same baseline compareToT2/Compare/CompareResolved already used —
+	// re-read here rather than threaded through BranchScan because both
+	// callers derive it identically from p.sourceDefaultBranch and this is
+	// the only place downstream of them that needs it a second time.
+	p.mu.RLock()
+	parentBranch := p.sourceDefaultBranch
+	p.mu.RUnlock()
+	if parentBranch == "" {
+		parentBranch = "HEAD"
+	}
+
+	files, complete, err := p.client.FetchCompareDiff(ctx, sourceOwner, sourceRepo, parentBranch, fork.Owner, forkBranch)
+	switch {
+	case err == nil && complete && len(files) >= len(t2.Diffs):
+		// REST's patch is authoritative for files it covered (the diff's hunk
+		// text should be identical, but there is no reason to discard a
+		// value already known good); files beyond the original cap have no
+		// REST patch to carry over and keep whatever unidiff.Parse gave them.
+		restPatches := make(map[string]forge.FileDiff, len(t2.Diffs))
+		for _, d := range t2.Diffs {
+			if d.Patch != "" {
+				restPatches[d.Path] = d
+			}
+		}
+		var totalAdd, totalDel int
+		for i := range files {
+			if rd, ok := restPatches[files[i].Path]; ok {
+				files[i].Patch = rd.Patch
+				files[i].PatchSource = rd.PatchSource
+			}
+			totalAdd += files[i].Additions
+			totalDel += files[i].Deletions
+		}
+		t2.Diffs = files
+		t2.TotalAdditions = totalAdd
+		t2.TotalDeletions = totalDel
+		t2.MNA = computeMNAFromDiffs(files)
+		t2.FilesTruncated = false
+		t2.FilesComplete = true
+	case err != nil:
+		t2.FilesTruncatedReason = err.Error()
+	case !complete:
+		t2.FilesTruncatedReason = "diff fallback unavailable (compare not renderable as a diff, or exceeded the size cap)"
+	default:
+		t2.FilesTruncatedReason = fmt.Sprintf("diff fallback returned %d files, fewer than the %d-file compare JSON", len(files), len(t2.Diffs))
+	}
 }
 
 // Contributors implements forge.Forge.
@@ -417,7 +655,10 @@ func directParentFullPath(info RepoInfo) string {
 	return ""
 }
 
-func forkInfoToT1(f ForkInfo, extra *T1Extra, networkRoot string) forge.T1Data {
+func forkInfoToT1(f ForkInfo, extra *T1Extra, parentFullPath, sourceFullPath string) forge.T1Data {
+	if sourceFullPath == "" {
+		sourceFullPath = parentFullPath
+	}
 	pushed, _ := time.Parse(time.RFC3339, f.PushedAt)
 	created, _ := time.Parse(time.RFC3339, f.CreatedAt)
 
@@ -437,7 +678,11 @@ func forkInfoToT1(f ForkInfo, extra *T1Extra, networkRoot string) forge.T1Data {
 		OpenIssues:     f.OpenIssues,
 		CreatedAt:      created,
 		Topics:         f.Topics,
-		SourceFullPath: networkRoot,
+		SourceFullPath: sourceFullPath,
+	}
+	if parentFullPath != "" {
+		t1.ParentFullPath = parentFullPath
+		t1.IsForkOfFork = parentFullPath != sourceFullPath
 	}
 
 	if extra != nil {
@@ -453,6 +698,7 @@ func forkInfoToT1(f ForkInfo, extra *T1Extra, networkRoot string) forge.T1Data {
 		t1.IsForkOfFork = extra.DepthFromRoot > 1
 		t1.DirectTotalCount = extra.DirectTotalCount
 		t1.WholeNetworkForkCount = extra.WholeNetworkForkCount
+		t1.DefaultTipSHA = extra.DefaultTipSHA
 
 		branches := make([]forge.BranchRef, 0, len(extra.TopBranches))
 		for _, br := range extra.TopBranches {
@@ -460,6 +706,7 @@ func forkInfoToT1(f ForkInfo, extra *T1Extra, networkRoot string) forge.T1Data {
 			branches = append(branches, forge.BranchRef{
 				Name:          br.Name,
 				CommittedDate: cd,
+				TipSHA:        br.TipSHA,
 			})
 		}
 		t1.Branches = branches
@@ -524,6 +771,7 @@ func compareToT2(r CompareResult) forge.T2Data {
 		BaseSHA:            baseSHA,
 		HeadSHA:            headSHA,
 		Diffs:              diffs,
+		FilesTruncated:     len(r.Files) >= forge.CompareFilesCap,
 		Commits:            ahead,
 	}
 }
@@ -583,6 +831,25 @@ func isMergeOrSyncMsg(msg string) bool {
 		}
 	}
 	return false
+}
+
+// repoCompareBaseline returns the owner/repo/branch Compare and
+// DivergentBranchCounts must use. Named seed wins unless GET /repos says
+// this is a fork and source.full_name is a well-formed owner/repo.
+func repoCompareBaseline(info RepoInfo, namedOwner, namedRepo string) (owner, repo, branch string) {
+	owner, repo, branch = namedOwner, namedRepo, info.DefaultBranch
+	if !info.Fork || info.Source == nil {
+		return owner, repo, branch
+	}
+	so, sr, ok := splitFullName(info.Source.FullName)
+	if !ok {
+		return owner, repo, branch
+	}
+	owner, repo = so, sr
+	if info.Source.DefaultBranch != "" {
+		branch = info.Source.DefaultBranch
+	}
+	return owner, repo, branch
 }
 
 // SearchTopicRepos implements the optional topics.TopicSearcher capability:

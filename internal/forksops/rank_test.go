@@ -122,7 +122,7 @@ func TestRankDistribution_SumsToOneAndMeanIsExpectedRank(t *testing.T) {
 		p := winProbs(mu, sigma)
 		er := expectedRanksFrom(p)
 		for i := range mu {
-			d := rankDistribution(p, i)
+			d := rankDistribution(mu, sigma, i)
 			if len(d) != len(mu) {
 				t.Fatalf("len(dist)=%d want %d", len(d), len(mu))
 			}
@@ -166,7 +166,7 @@ func TestRankInterval_ContainsRoundedExpectedRank(t *testing.T) {
 		p := winProbs(mu, sigma)
 		er := expectedRanksFrom(p)
 		for i := range mu {
-			lo, hi := rankInterval(rankDistribution(p, i), 0.95)
+			lo, hi := rankInterval(rankDistribution(mu, sigma, i), 0.95)
 			r := int(math.Round(er[i]))
 			trials++
 			if r >= lo && r <= hi {
@@ -439,5 +439,47 @@ func TestTieBands_SingletonAndEmpty(t *testing.T) {
 	}
 	if b := tieBands(nil, nil, nil, tieBandFactor); len(b) != 0 {
 		t.Errorf("empty: %v", b)
+	}
+}
+
+// For three equal-mean normals the two differences have correlation rho.
+// Their positive orthant probability independently checks the integral.
+func TestRankDistributionGaussianOrthant(t *testing.T) {
+	mu := []float64{0, 0, 0}
+	for _, sigma := range [][]float64{{1, 1, 1}, {1e-6, 1, 7}, {0, 0, 0}} {
+		stats := computeRankStats(mu, sigma, 2)
+		for i, got := range stats {
+			si := math.Max(sigma[i], 1e-9)
+			sj := math.Max(sigma[(i+1)%3], 1e-9)
+			sk := math.Max(sigma[(i+2)%3], 1e-9)
+			rho := si * si / (math.Hypot(si, sj) * math.Hypot(si, sk))
+			first := 0.25 + math.Asin(rho)/(2*math.Pi)
+			if math.Abs(got.PFirst-first) > 1e-8 || math.Abs(got.PTopK-(1-first)) > 1e-8 {
+				t.Fatalf("sigma=%v i=%d: %+v want first=%v top2=%v", sigma, i, got, first, 1-first)
+			}
+		}
+	}
+}
+
+func TestRankKeepAllPreservesMembershipSelection(t *testing.T) {
+	scores, tiers := []float64{10, 9.9, 9.8, 7}, []int{3, 3, 1, 3}
+	for _, keepAll := range []bool{false, true} {
+		got, _ := RankResults(syntheticPool(scores, tiers), Options{ShortlistN: 1, ShortlistRule: ShortlistRuleMembership, RankKeepAll: keepAll})
+		want := []string{"o/f2"}
+		if keepAll {
+			want = append(want, "o/f0", "o/f1", "o/f3")
+		}
+		if len(got) != len(want) {
+			t.Fatalf("keepAll=%v: got %d rows, want %d", keepAll, len(got), len(want))
+		}
+		for i, id := range want {
+			if got[i].Fork.ID != id {
+				t.Fatalf("keepAll=%v: position %d = %s, want %s", keepAll, i, got[i].Fork.ID, id)
+			}
+		}
+	}
+	expected, _ := RankResults(syntheticPool(scores, tiers), Options{ShortlistN: 1, RankKeepAll: true})
+	if expected[0].Fork.ID != "o/f0" {
+		t.Fatalf("expected-rank ordering lost: %s", expected[0].Fork.ID)
 	}
 }

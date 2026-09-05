@@ -7,7 +7,12 @@ package github
 // forks that share a base and their first N ahead-commits, then diverge later,
 // collide on an identity neither of them actually has at that position.
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+
+	"github.com/svnbjrn/spoon/internal/forge"
+)
 
 func TestCompareToT2_HeadSHAOmittedWhenCommitListTruncated(t *testing.T) {
 	r := CompareResult{
@@ -57,5 +62,20 @@ func TestCompareToT2_HeadSHAOmittedWhenTotalCommitsUnset(t *testing.T) {
 
 	if t2.HeadSHA != "" {
 		t.Errorf("HeadSHA = %q, want empty — TotalCommits is unset, so completeness is unknown", t2.HeadSHA)
+	}
+}
+
+func TestCompareToT2FlagsTruncatedFileList(t *testing.T) {
+	files := make([]FileChange, forge.CompareFilesCap)
+	for i := range files {
+		files[i] = FileChange{Filename: fmt.Sprintf("f%d", i), Status: "modified"}
+	}
+	got := compareToT2(CompareResult{Performed: true, AheadBy: 1, Files: files})
+	if !got.FilesTruncated {
+		t.Fatal("300 files must set FilesTruncated")
+	}
+	got = compareToT2(CompareResult{Performed: true, AheadBy: 1, Files: files[:299]})
+	if got.FilesTruncated {
+		t.Fatal("299 files must not set FilesTruncated")
 	}
 }

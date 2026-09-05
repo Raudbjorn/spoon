@@ -80,6 +80,7 @@ func (p *Provider) Compare(ctx context.Context, fork forge.T1Data, branch string
 		AheadCount:         len(aheadCommits),
 		FeatureCommitRatio: featureCommitRatio(aheadCommits),
 		Commits:            aheadCommits,
+		FilesTruncated:     capped,
 	}
 	if capped {
 		t2.AheadCount = len(commits) // lower bound: at least this many

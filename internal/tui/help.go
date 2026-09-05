@@ -49,6 +49,7 @@ func helpBody(ctx theme.Context) string {
 		{"Repository input", []keymap.Scope{keymap.MainInput}},
 		{"Fork table", []keymap.Scope{keymap.MainTable}},
 		{"Fork details", []keymap.Scope{keymap.MainDetail}},
+		{"Patch view", []keymap.Scope{keymap.MainPatch}},
 		{"Export path", []keymap.Scope{keymap.MainExport}},
 		{"Topic picker", []keymap.Scope{keymap.MainTopics}},
 		{"Filter prompt", []keymap.Scope{keymap.MainFilter}},

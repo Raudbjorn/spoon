@@ -1,5 +1,5 @@
 
-  Filter 4 forks by owner/name
+  Filter 4 forks by owner/name, or path:<glob> for touched files
 
   Match: [1;38;2;211;211;211m> owner█[0m
 

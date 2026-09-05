@@ -26,6 +26,13 @@ func TestVisibilityPolicyFixture(t *testing.T) {
 				OwnerProfile string `json:"owner_profile"`
 				SiblingSim   string `json:"sibling_sim"`
 			} `json:"skips"`
+			Touching *struct {
+				Status string `json:"status"`
+				Files  []struct {
+					Path    string `json:"path"`
+					Pattern string `json:"pattern"`
+				} `json:"files"`
+			} `json:"touching"`
 			WantVisibility VisibilityDecision `json:"wantVisibility"`
 			WantDegraded   []DegradedStage    `json:"wantDegraded"`
 		} `json:"cases"`
@@ -54,6 +61,13 @@ func TestVisibilityPolicyFixture(t *testing.T) {
 			}
 			if tc.Skips.Cluster != "" {
 				result.ClusterSkip = &ClusterSkip{Message: tc.Skips.Cluster}
+			}
+			if tc.Touching != nil {
+				tm := TouchMatch{Status: TouchStatus(tc.Touching.Status)}
+				for _, f := range tc.Touching.Files {
+					tm.Files = append(tm.Files, TouchedFile{Path: f.Path, Pattern: f.Pattern})
+				}
+				result.Touching = &tm
 			}
 
 			gotVisibility := DeriveVisibility(result)

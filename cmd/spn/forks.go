@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"os"
 	"strconv"
@@ -23,6 +24,7 @@ import (
 	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/gitlab"
 	"github.com/svnbjrn/spoon/internal/heat"
+	"github.com/svnbjrn/spoon/internal/pathmatch"
 	"github.com/svnbjrn/spoon/internal/priors"
 	"github.com/svnbjrn/spoon/internal/semantic"
 	"github.com/svnbjrn/spoon/internal/store"
@@ -34,6 +36,13 @@ import (
 // cluster pipeline deterministically. Production code leaves this nil so the
 // built-in embedder runs as usual.
 var embedderHookForTest embed.Embedder
+
+// noLastTouchHookForTest, when non-nil, is called with the value
+// opts.NoLastTouch was set to, right after that decision is made (once per
+// provider-creation site: topic mode and single-repo). Tests use it to
+// observe the --no-tree-commit-info wiring reaching forksops.Options without
+// needing a real *gh.GHProvider fixture. Production code leaves this nil.
+var noLastTouchHookForTest func(bool)
 
 type githubRPMContextKey struct{}
 
@@ -143,6 +152,10 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 	// a new failure mode (missing binary, unreachable merge-base) that the
 	// REST/GraphQL-only branch scan doesn't have. REST stays the default.
 	localBranchScanEnabled := os.Getenv("SPOON_LOCAL_BRANCH_SCAN") == "1"
+	// noTreeCommitInfo is the CLI escape hatch for the tree-commit-info
+	// client (see touchingWantsTreeCommitInfo): it always wins over the
+	// default auto-enable, and is harmless without --touching.
+	noTreeCommitInfo := false
 	csvMode := false
 	var acquisitionReport forge.AcquisitionReport
 	opts := forksops.Options{
@@ -221,6 +234,10 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 			webDiffEnabled = true
 		case "--local-branch-scan":
 			localBranchScanEnabled = true
+		case "--no-batch-compare":
+			opts.NoBatchCompare = true
+		case "--no-tree-commit-info":
+			noTreeCommitInfo = true
 		case "--tier":
 			if i+1 >= len(args) {
 				return agentio.NewError(agentio.CodeBadInput, "--tier requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
@@ -390,6 +407,12 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 				return agentio.NewError(agentio.CodeBadInput, "--priors: "+perr.Error(), agentio.RemediationBadInput("forks", "list")).Emit(stderr)
 			}
 			opts.Priors = spec
+		case "--touching":
+			if i+1 >= len(args) {
+				return agentio.NewError(agentio.CodeBadInput, "--touching requires a path or glob (repeatable)", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+			}
+			i++
+			opts.Touching = append(opts.Touching, args[i])
 		case "--query":
 			if i+1 >= len(args) {
 				return agentio.NewError(agentio.CodeBadInput, "--query requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
@@ -548,6 +571,19 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 	if priorScaleSet && !opts.EB {
 		return agentio.NewError(agentio.CodeBadInput, "--prior-scale requires --eb", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
 	}
+	if len(opts.Touching) > 0 {
+		if _, err := pathmatch.Compile(opts.Touching); err != nil {
+			return agentio.NewError(agentio.CodeBadInput, "--touching: "+err.Error()+" (repo-relative path or glob; ** matches directories)", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+		}
+		if opts.Tier == 1 {
+			return agentio.NewError(agentio.CodeBadInput, "--touching needs compare data; drop --tier 1", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+		}
+		if csvMode {
+			return agentio.NewError(agentio.CodeBadInput, "--touching emits NDJSON only; drop --csv", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
+		}
+		opts.TouchReport = &forksops.TouchSummary{}
+	}
+	treeCommitInfoEnabled := touchingWantsTreeCommitInfo(opts.Touching, noTreeCommitInfo)
 	var rankReport forksops.RankReport
 	if opts.ShortlistN > 0 {
 		opts.RankReport = &rankReport
@@ -664,10 +700,16 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 	// only structured ClusterSkip warnings are emitted on stderr via
 	// emitClusterWarning. The discard is intentional — do not wire stderr
 	// here, prose log lines would interleave with the agent envelopes.
-	// SPOON_DEBUG=1 overrides for troubleshooting.
+	// SPOON_DEBUG=1 overrides for troubleshooting. It also raises the
+	// stdlib log/slog default logger to Debug on stderr, so the
+	// halving/drop/last-touch slog.Debug lines in internal/github and
+	// internal/forksops (previously discarded -- nothing ever called
+	// slog.SetDefault) become observable alongside the [triage]/[touching]
+	// prose lines.
 	opts.Logger = debugDataLogger(io.Discard)
 	if os.Getenv("SPOON_DEBUG") == "1" {
 		opts.Logger = debugDataLogger(stderr)
+		slog.SetDefault(slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	}
 	// Auto-budget reserve is on by default (stop enriching before the rate
 	// window is drained, marking the rest degraded). SPOON_NO_RESERVE=1 opts out
@@ -746,6 +788,13 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 		}
 		enableWebDiffIfRequested(provider, webDiffEnabled)
 		enableLocalBranchScanIfRequested(provider, localBranchScanEnabled)
+		// One provider is shared by every repo topic mode evaluates, so this
+		// decision is made once here rather than per repo; opts (passed by
+		// value into each streamAndEmit call below) carries it to all of them.
+		opts.NoLastTouch = !enableTreeCommitInfoIfRequested(provider, treeCommitInfoEnabled)
+		if noLastTouchHookForTest != nil {
+			noLastTouchHookForTest(opts.NoLastTouch)
+		}
 		parsedLanes, perr := topics.ParseLanes(topicLanesRaw)
 		if perr != nil {
 			return agentio.NewError(agentio.CodeBadInput, perr.Error(),
@@ -795,6 +844,10 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 	}
 	enableWebDiffIfRequested(provider, webDiffEnabled)
 	enableLocalBranchScanIfRequested(provider, localBranchScanEnabled)
+	opts.NoLastTouch = !enableTreeCommitInfoIfRequested(provider, treeCommitInfoEnabled)
+	if noLastTouchHookForTest != nil {
+		noLastTouchHookForTest(opts.NoLastTouch)
+	}
 	owner, name := splitRepoArg(repoArg)
 	warnDuplicateIdentityFor(provider, stderr)
 	if owner == "" || name == "" {
@@ -807,6 +860,16 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 		}
 	}
 	opts.CachedT2 = storeCachedT2(ctx, db, auth, owner, name, opts.Refresh)
+	// CompareReport is allocated fresh here rather than shared like
+	// TouchReport (set once, above): stream.go sets its BatchError field
+	// only on failure and never clears it, so one struct reused across
+	// topic mode's per-repo streamAndEmit calls would leak a prior repo's
+	// batch error into a later repo whose batch succeeded. Tier 1 never
+	// compares, so leave it nil there -- emitCompareSummary's nil check
+	// then skips the envelope instead of printing an all-zero report.
+	if opts.Tier != 1 {
+		opts.CompareReport = &forksops.CompareSummary{}
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	if opts.Report != nil {
@@ -839,6 +902,9 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 		if code == 0 {
 			emitAcquisitionReport(stderr, opts.Report)
 			emitRankReport(stderr, opts.RankReport)
+			// compare_summary is independent of --touching (rejected under
+			// --csv above), so it belongs beside the other CSV-path reports.
+			emitCompareSummary(stderr, opts.CompareReport)
 			// CSV scans persist documents too; index them like the NDJSON path.
 			emitSemanticIndexWarning(ctx, db, searchEmbedders, stderr)
 		}
@@ -876,6 +942,9 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 			degraded++
 		}
 		persistSnapshotBestEffort(ctx, db, auth, owner, name, semanticModelID, r, &storeWarned, &truncWarned, stderr)
+		if !shouldEmitFork(opts, r) {
+			continue
+		}
 		if err := emitForkRecord(stdout, r, details, ""); err != nil {
 			return agentio.NewError(agentio.CodeInternal, err.Error(), agentio.RemediationInternal()).Emit(stderr)
 		}
@@ -889,6 +958,8 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 	}
 	emitAcquisitionReport(stderr, opts.Report)
 	emitRankReport(stderr, opts.RankReport)
+	emitTouchReport(stderr, opts.TouchReport)
+	emitCompareSummary(stderr, opts.CompareReport)
 	emitSemanticIndexWarning(ctx, db, searchEmbedders, stderr)
 	return 0
 }
@@ -953,7 +1024,10 @@ func persistForkSnapshot(ctx context.Context, db *store.Store, auth forge.AuthIn
 		// compare rows so later runs can serve the compare from the store.
 		T1: &r.Fork,
 	}
-	if r.T2 != nil && !r.T2FromCache {
+	// r.T2FilesUnfetched marks a T2 synthesised by the last-touch skip stage:
+	// scalars only, no file diffs or commits fetched. Persisting it would
+	// replace any previously stored full compare with an incomplete one.
+	if r.T2 != nil && !r.T2FromCache && !r.T2FilesUnfetched {
 		// T2 was fetched live: its compare/commit data is authoritative and
 		// replaces any stored rows. A degraded scan (r.T2 == nil) leaves
 		// T2Present false so UpsertSnapshot preserves previously stored
@@ -1006,6 +1080,44 @@ func enableLocalBranchScanIfRequested(provider forge.Forge, enabled bool) {
 	if ghp, ok := provider.(*gh.GHProvider); ok && ghp.Client() != nil {
 		ghp.Client().EnableLocalBranchScan()
 	}
+}
+
+// touchingWantsTreeCommitInfo reports whether the anonymous, best-effort
+// tree-commit-info client should be turned on for this run: --touching was
+// used, every pattern is pathmatch.IsLiteral (a wildcard can match many
+// paths, so there is no single upstream commit to prove a fork never
+// touched -- mirrors newLastTouchGate's own precondition), and
+// --no-tree-commit-info was not passed. Extracted as a pure function so it
+// is unit-testable without any CLI or provider plumbing.
+func touchingWantsTreeCommitInfo(touching []string, noTreeCommitInfo bool) bool {
+	if len(touching) == 0 || noTreeCommitInfo {
+		return false
+	}
+	for _, p := range touching {
+		if !pathmatch.IsLiteral(p) {
+			return false
+		}
+	}
+	return true
+}
+
+// enableTreeCommitInfoIfRequested turns on the anonymous, best-effort
+// tree-commit-info lookup (see touchingWantsTreeCommitInfo) for GitHub
+// providers, and reports whether it actually did. Non-GitHub forges have no
+// equivalent and are left alone (reported as not enabled). This return value
+// is the single source of truth for opts.NoLastTouch: a caller sets
+// NoLastTouch to its negation so forksops.Stream never builds the
+// last-touch gate when the client it would depend on was not turned on here.
+func enableTreeCommitInfoIfRequested(provider forge.Forge, enabled bool) bool {
+	if !enabled {
+		return false
+	}
+	ghp, ok := provider.(*gh.GHProvider)
+	if !ok || ghp.Client() == nil {
+		return false
+	}
+	ghp.Client().EnableTreeCommitInfo()
+	return true
 }
 
 // warnDuplicateIdentityFor emits the duplicate-token warning for GitHub
@@ -1261,7 +1373,6 @@ func forkToJSONDetailed(r forksops.Result, details detailOptions) map[string]any
 			"depthFromRoot": r.Lineage.DepthFromRoot,
 		}
 	}
-
 	// Linear-history fields. linearHistory itself stays nil when the
 	// provider never computed it (the three-state semantics matter for
 	// downstream tools). The scalar count and the raw vector ride only
@@ -1276,10 +1387,11 @@ func forkToJSONDetailed(r forksops.Result, details detailOptions) map[string]any
 		out["mergeCommitTruncated"] = r.Fork.MergeCommitTruncated
 	}
 
+	// Coverage reports how completely the fork list covers the network.
+	// Emit when either count is known (non-zero from GraphQL); a known
+	// zero unresolved gap (e.g. direct=whole=5) is still emitted. The
+	// REST path leaves both at zero and produces no entry.
 	if r.Coverage.DirectTotalCount > 0 || r.Coverage.WholeNetworkForkCount > 0 {
-		// Emit when either count is known (non-zero from GraphQL); a known
-		// zero unresolved gap (e.g. direct=whole=5) is still emitted. The
-		// REST path leaves both at zero and produces no entry.
 		out["coverage"] = map[string]any{
 			"directTotalCount":      r.Coverage.DirectTotalCount,
 			"wholeNetworkForkCount": r.Coverage.WholeNetworkForkCount,
@@ -1293,15 +1405,28 @@ func forkToJSONDetailed(r forksops.Result, details detailOptions) map[string]any
 		out["priorScore"] = r.PriorScore
 		out["priorReasons"] = r.PriorReasons
 	}
+	if r.Touching != nil {
+		out["touching"] = touchingToJSON(*r.Touching)
+	}
 	if r.Heat.Category != "" {
 		out["category"] = r.Heat.Category
 		out["categoryScore"] = r.Heat.CategoryScore
 	}
 	if r.T2 != nil {
 		t2 := map[string]any{
-			"ahead":  r.T2.AheadCount,
-			"behind": r.T2.BehindCount,
-			"mna":    r.T2.MNA,
+			"ahead":           r.T2.AheadCount,
+			"behind":          r.T2.BehindCount,
+			"mna":             r.T2.MNA,
+			"files_truncated": r.T2.IsFilesTruncated(),
+		}
+		if r.T2.CompareSource != "" {
+			t2["source"] = r.T2.CompareSource
+		}
+		if r.T2FilesUnfetched {
+			t2["files_unfetched"] = true
+		}
+		if r.T2.FilesTruncatedReason != "" {
+			t2["files_truncated_reason"] = r.T2.FilesTruncatedReason
 		}
 		if details.files {
 			t2["files"] = fileDiffsToJSON(r.T2.Diffs)
@@ -1469,6 +1594,29 @@ func degradedToJSON(r forksops.Result) []map[string]any {
 			"stage":  d.Stage,
 			"reason": d.Reason,
 		})
+	}
+	return out
+}
+
+func touchingToJSON(t forksops.TouchMatch) map[string]any {
+	out := map[string]any{"status": string(t.Status), "partial": t.Partial}
+	if t.Reason != "" {
+		out["reason"] = t.Reason
+	}
+	if t.Status == forksops.TouchMatched {
+		out["impact"] = t.Impact
+		out["centrality_method"] = t.CentralityMethod
+	}
+	if len(t.Files) > 0 {
+		files := make([]map[string]any, 0, len(t.Files))
+		for _, f := range t.Files {
+			files = append(files, map[string]any{
+				"path": f.Path, "previousPath": f.PreviousPath, "status": f.Status,
+				"additions": f.Additions, "deletions": f.Deletions, "pattern": f.Pattern,
+				"centrality": f.Centrality,
+			})
+		}
+		out["files"] = files
 	}
 	return out
 }
@@ -1658,6 +1806,43 @@ func emitRankReport(stderr io.Writer, report *forksops.RankReport) {
 	}})
 }
 
+func emitTouchReport(stderr io.Writer, s *forksops.TouchSummary) {
+	if s == nil {
+		return
+	}
+	_ = agentio.WriteNDJSON(stderr, map[string]any{"touching": map[string]any{
+		"matched": s.Matched, "partial": s.Partial, "unmatched": s.Unmatched,
+		"unknown": s.Unknown, "never_pushed": s.NeverPushed, "centrality_method": s.CentralityMethod,
+		"last_touch": map[string]any{
+			"gated": s.LastTouchGated, "looked_up": s.LastTouchLookedUp, "skipped": s.LastTouchSkipped,
+			"mismatch": s.LastTouchMismatch, "unavailable": s.LastTouchUnavailable,
+		},
+		"note": "unknown = no usable compare (rate reserve, 404, or cached rows missing); re-run to backfill. never_pushed = pushed_at <= created_at, compared last.",
+	}})
+}
+
+// emitCompareSummary writes the compare_summary NDJSON envelope on stderr,
+// tallying how each eligible fork's T2 compare was obtained during the run:
+// served from the store cache, synthesised from the pre-dispatch GraphQL
+// batch, fetched live over REST, completed by the unbounded .diff fallback,
+// or skipped by the --touching last-touch proof. Mirrors emitTouchReport's
+// shape and nil-handling: s is nil for a tier-1 run (no compares at all) or
+// a caller that never wired Options.CompareReport, and nothing is emitted.
+func emitCompareSummary(stderr io.Writer, s *forksops.CompareSummary) {
+	if s == nil {
+		return
+	}
+	envelope := map[string]any{
+		"cached": s.Cached, "graphql_batch": s.Batch, "rest": s.REST,
+		"diff_fallback": s.DiffFallback, "last_touch_skipped": s.LastTouchSkipped,
+		"batch_queries": s.BatchQueries, "batch_cost": s.BatchCost,
+	}
+	if s.BatchError != "" {
+		envelope["batch_error"] = s.BatchError
+	}
+	_ = agentio.WriteNDJSON(stderr, map[string]any{"compare_summary": envelope})
+}
+
 // nanToNil maps NaN to nil so JSON encoding never fails on an undefined
 // statistic.
 func nanToNil(v float64) any {
@@ -1737,6 +1922,12 @@ func streamAndEmit(ctx context.Context, db *store.Store, auth forge.AuthInfo, pr
 		}
 	}
 	opts.CachedT2 = storeCachedT2(ctx, db, auth, owner, name, opts.Refresh)
+	// Fresh per call, not shared -- see the doForksListWithDeps call site's
+	// comment on why a reused CompareSummary would leak BatchError across
+	// topic mode's repos.
+	if opts.Tier != 1 {
+		opts.CompareReport = &forksops.CompareSummary{}
+	}
 	// Cancel on any early return so the background goroutine spawned by
 	// forksops.Stream doesn't keep consuming API rate limit after we stop
 	// draining ch (e.g. a stdout write failure below).
@@ -1802,6 +1993,9 @@ func streamAndEmit(ctx context.Context, db *store.Store, auth forge.AuthInfo, pr
 			degraded++
 		}
 		persistSnapshotBestEffort(ctx, db, auth, owner, name, modelID, r, &storeWarned, &truncWarned, stderr)
+		if !shouldEmitFork(opts, r) {
+			continue
+		}
 		if err := emitForkRecord(stdout, r, details, upstream); err != nil {
 			return agentio.NewError(agentio.CodeInternal, err.Error(), agentio.RemediationInternal()).Emit(stderr)
 		}
@@ -1817,7 +2011,20 @@ func streamAndEmit(ctx context.Context, db *store.Store, auth forge.AuthInfo, pr
 	}
 	emitAcquisitionReport(stderr, opts.Report)
 	emitRankReport(stderr, opts.RankReport)
+	emitTouchReport(stderr, opts.TouchReport)
+	emitCompareSummary(stderr, opts.CompareReport)
 	return 0
+}
+
+// shouldEmitFork applies the --touching output filter. It runs after the
+// snapshot is persisted so a live compare for an unmatched fork is never
+// thrown away: the next --touching run with another pattern reads it from
+// the store.
+func shouldEmitFork(opts forksops.Options, r forksops.Result) bool {
+	if len(opts.Touching) == 0 {
+		return true
+	}
+	return r.Touching.Emit()
 }
 
 // forkToJSONUpstream is forkToJSON plus an optional upstream tag (topic mode).

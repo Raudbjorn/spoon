@@ -39,6 +39,7 @@ func runEvalWith(args []string, stdout, stderr io.Writer) int {
 func runEvalWithEffective(args []string, stdout, stderr io.Writer, effective config.EffectiveConfig, env map[string]string) int {
 	var repoArg, judgmentsPath, exportPath, rankVariant string
 	shortlistN := evalDefaultShortlistN
+	shortlistSet := false
 	priorScale := 0.0
 	forgeFlag := strings.ToLower(effective.Forge.Provider.Value)
 	forgeHost := effective.Forge.Host.Value
@@ -84,6 +85,7 @@ func runEvalWithEffective(args []string, stdout, stderr io.Writer, effective con
 				return agentio.NewError(agentio.CodeBadInput, "--shortlist must be a positive integer", agentio.RemediationBadInput("forks", "eval")).Emit(stderr)
 			}
 			shortlistN = n
+			shortlistSet = true
 		case "--prior-scale":
 			if i+1 >= len(args) {
 				return agentio.NewError(agentio.CodeBadInput, "--prior-scale requires a value", agentio.RemediationBadInput("forks", "eval")).Emit(stderr)
@@ -147,12 +149,23 @@ func runEvalWithEffective(args []string, stdout, stderr io.Writer, effective con
 	if err != nil {
 		return agentio.NewError(agentio.CodeBadInput, err.Error(), agentio.RemediationBadInput("forks", "eval")).Emit(stderr)
 	}
-	if rankVariant != "" && exportPath == "" {
-		return agentio.NewError(agentio.CodeBadInput, "--rank-variant requires --from-export", agentio.RemediationBadInput("forks", "eval")).Emit(stderr)
+	if exportPath == "" {
+		if rankVariant != "" {
+			return agentio.NewError(agentio.CodeBadInput, "--rank-variant requires --from-export", agentio.RemediationBadInput("forks", "eval")).Emit(stderr)
+		}
+		if shortlistSet {
+			return agentio.NewError(agentio.CodeBadInput, "--shortlist requires --from-export", agentio.RemediationBadInput("forks", "eval")).Emit(stderr)
+		}
+		if priorScale != 0.0 {
+			return agentio.NewError(agentio.CodeBadInput, "--prior-scale requires --from-export", agentio.RemediationBadInput("forks", "eval")).Emit(stderr)
+		}
 	}
 	if exportPath != "" {
 		if rankVariant == "" {
 			rankVariant = rankVariantHeat
+		}
+		if priorScale > 0 && rankVariant != rankVariantEB {
+			return agentio.NewError(agentio.CodeBadInput, "--prior-scale requires --rank-variant eb", agentio.RemediationBadInput("forks", "eval")).Emit(stderr)
 		}
 		pool, err := loadExportPool(exportPath)
 		if err != nil {
@@ -377,7 +390,8 @@ func evalOffline(upstream string, pool []forksops.Result, jtmt eval.Judgments, v
 		out.RankReport = &report
 	}
 	rows := make([]eval.ScoredFork, 0, len(ranked))
-	for pos, r := range ranked {
+	for pos := range ranked {
+		r := &ranked[pos]
 		key := r.Heat.Score
 		rf := rankedFork{ID: r.Fork.ID, Heat: r.Heat.Score, Tier: r.Heat.Tier}
 		if r.Rank != nil {
@@ -402,6 +416,7 @@ func evalOffline(upstream string, pool []forksops.Result, jtmt eval.Judgments, v
 		out.Ranked = append(out.Ranked, rf)
 		rows = append(rows, eval.ScoredFork{ID: r.Fork.ID, Score: key})
 	}
-	out.Report = eval.Compute(upstream, rows, jtmt)
+	metrics := eval.Compute(upstream, rows, jtmt)
+	out.Report = eval.Report{Upstream: upstream, RankingNDCG: metrics.RankingNDCG, RankingROCAUC: metrics.RankingROCAUC}
 	return out
 }

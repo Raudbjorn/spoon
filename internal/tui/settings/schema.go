@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/svnbjrn/spoon/internal/config"
+	"github.com/svnbjrn/spoon/internal/embed"
 )
 
 type Section string
@@ -103,7 +104,18 @@ var Registry = []Field{
 	}},
 	stringField("github.proxy.cacheTtl", "Proxy cache TTL", ProxySection, "Go duration, such as 5m.", "", func(c *config.Config) string { return c.GitHub.Proxy.CacheTTL }, func(c *config.Config, v string) { c.GitHub.Proxy.CacheTTL = strings.TrimSpace(v) }),
 	stringField("embedder.backend", "Backend", EmbedderSection, "fastembed or empty.", "fastembed", func(c *config.Config) string { return c.Embedder.Backend }, func(c *config.Config, v string) { c.Embedder.Backend = strings.ToLower(strings.TrimSpace(v)) }),
-	{Key: "embedder.model", Label: "Model", Section: EmbedderSection, Help: "FastEmbed model name.", Editable: true, Default: "fast-bge-small-en-v1.5", Environment: []string{"SPOON_FASTEMBED_MODEL"}, Get: func(c *config.Config) string { return c.Embedder.Model }, Set: func(c *config.Config, v string) error { c.Embedder.Model = strings.TrimSpace(v); return nil }},
+	{Key: "embedder.model", Label: "Model", Section: EmbedderSection, Help: "Bundled FastEmbed model. ready = cached; download = not installed.", Editable: true, Consequence: Reindex, Default: "fast-bge-small-en-v1.5", Environment: []string{"SPOON_FASTEMBED_MODEL"}, Get: func(c *config.Config) string { return c.Embedder.Model }, Set: func(c *config.Config, v string) error {
+		name := strings.TrimSpace(v)
+		if name != "" {
+			profile, ok := embed.LookupFastEmbedProfile(name)
+			if !ok {
+				return fmt.Errorf("embedder.model %q is not a supported FastEmbed model", name)
+			}
+			c.Embedder.MaxLength = profile.MaxLength
+		}
+		c.Embedder.Model = name
+		return nil
+	}},
 	{Key: "embedder.cacheDir", Label: "Cache directory", Section: EmbedderSection, Help: "FastEmbed cache directory.", Editable: true, Environment: []string{"SPOON_FASTEMBED_CACHE"}, Get: func(c *config.Config) string { return c.Embedder.CacheDir }, Set: func(c *config.Config, v string) error { c.Embedder.CacheDir = strings.TrimSpace(v); return nil }},
 	{Key: "embedder.maxLength", Label: "Maximum length", Section: EmbedderSection, Help: "FastEmbed input limit.", Editable: true, Get: func(c *config.Config) string { return strconv.Itoa(c.Embedder.MaxLength) }, Set: func(c *config.Config, v string) error {
 		n, err := strconv.Atoi(strings.TrimSpace(v))

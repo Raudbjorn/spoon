@@ -122,3 +122,11 @@ func TestDeriveProfile(t *testing.T) {
 		})
 	}
 }
+
+func TestDeriveProfilePinned(t *testing.T) {
+	r := Result{Visibility: VisibilityDecision{Status: VisibilityPinned, Reasons: []string{"touching:a.go", "upstreamed"}}}
+	label, facts := DeriveProfile(r)
+	if label != "touches_target" || len(facts) != 2 {
+		t.Fatalf("got %q %v", label, facts)
+	}
+}

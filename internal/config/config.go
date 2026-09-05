@@ -58,8 +58,8 @@ type UIConfig struct {
 type EmbedderConfig struct {
 	// Backend is "fastembed" (the default) or empty, which means fastembed.
 	Backend string `json:"backend,omitempty"`
-	// FastEmbed settings. The persistent semantic model remains fixed; these
-	// fields record its cache and batching configuration.
+	// Model selects one closed FastEmbed profile (see embed.FastEmbedProfiles);
+	// empty means the default.
 	Model     string `json:"model,omitempty"`
 	CacheDir  string `json:"cacheDir,omitempty"`
 	MaxLength int    `json:"maxLength,omitempty"`
@@ -532,6 +532,15 @@ var (
 	// Mirrors the output widths voyage-code-3 accepts. Kept here rather than
 	// imported from internal/embed so the config package stays dependency-free.
 	validVoyageDimensions = map[int]bool{256: true, 512: true, 1024: true, 2048: true}
+	validFastEmbedModels  = map[string]bool{
+		"":                       true,
+		"fast-bge-small-en-v1.5": true,
+		"fast-bge-small-en":      true,
+		"fast-bge-base-en-v1.5":  true,
+		"fast-bge-base-en":       true,
+		"fast-bge-small-zh-v1.5": true,
+		"fast-all-MiniLM-L6-v2":  true,
+	}
 )
 
 // Validate checks enum fields. Empty values are allowed (mean "unset").
@@ -558,6 +567,9 @@ func (c *Config) Validate() error {
 		if _, err := time.ParseDuration(c.GitHub.Proxy.CacheTTL); err != nil {
 			return fmt.Errorf("github.proxy.cacheTtl: %w", err)
 		}
+	}
+	if c.Embedder.Model != "" && !validFastEmbedModels[c.Embedder.Model] {
+		return fmt.Errorf("embedder.model %q is not a supported FastEmbed model", c.Embedder.Model)
 	}
 	if d := c.Embedder.Voyage.OutputDimension; d != 0 && !validVoyageDimensions[d] {
 		return fmt.Errorf("embedder.voyage.outputDimension %d must be 256, 512, 1024 or 2048 (or unset)", d)

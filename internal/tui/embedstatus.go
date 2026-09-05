@@ -34,8 +34,9 @@ func (m *Model) refreshEmbedStatus() {
 	if env == nil {
 		env = map[string]string{}
 	}
+	model := strings.TrimSpace(effective.FastEmbed.Model.Value)
 	m.embedProbe = embedStatus{
-		fastEmbed: embed.ProbeFastEmbed(fastEmbedCacheDir(*effective), env),
+		fastEmbed: embed.ProbeFastEmbedProfile(fastEmbedCacheDir(*effective), model, env),
 		voyage:    embed.DiagnoseVoyageKey(*effective, false, env),
 		resolved:  true,
 	}

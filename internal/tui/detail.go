@@ -77,6 +77,21 @@ func (m Model) detailBody() string {
 	writeLine(ui.StatCard(ctx, "heat "+m.renderHeatBar(sf.Heat.Score), scoreStr, true, boxWidth-4))
 	divider()
 
+	// Shortlist rank: where this fork sits under uncertainty, relative to the
+	// ranked pool (docs/ranking.md). P-score is the probability of beating a
+	// random other fork; P(top k) says whether it belongs in a shortlist of
+	// that size; the interval is the 95% range of its true rank.
+	if r := sf.Rank; r != nil {
+		writeLine(styles.warn.Render(fmt.Sprintf("Rank (of %d ranked):", m.shortlistPoolSize())))
+		writeLine(fmt.Sprintf(" expected rank %.1f   P-score %.0f%%   P(top %d) %.0f%%", r.ExpectedRank, r.PScore*100, m.shortlistTopK(), r.PTopK*100))
+		band := ""
+		if r.TieBand {
+			band = "   tied with a neighbour"
+		}
+		writeLine(fmt.Sprintf(" 95%% rank interval %d-%d%s", r.Lo, r.Hi, band))
+		divider()
+	}
+
 	// The former width-two fire pictograph becomes a text label in both glyph
 	// profiles, so string composition can never leave an unrecoverable cell.
 	writeLine(styles.warn.Render("Why it is hot:"))
@@ -171,8 +186,43 @@ func (m Model) detailBody() string {
 			totalAdds += diff.Additions
 			totalDels += diff.Deletions
 		}
-		writeLine(fmt.Sprintf("Ahead: %d (+%d/-%d)  Behind: %d  Files: %d", sf.T2.AheadCount, totalAdds, totalDels, sf.T2.BehindCount, len(sf.T2.Diffs)))
+		filesLine := fmt.Sprintf("Ahead: %d (+%d/-%d)  Behind: %d  Files: %d", sf.T2.AheadCount, totalAdds, totalDels, sf.T2.BehindCount, len(sf.T2.Diffs))
+		if sf.T2.IsFilesTruncated() {
+			filesLine += " (incomplete)"
+		}
+		writeLine(filesLine)
 		writeLine(fmt.Sprintf("Authors: %d", len(forge.UniqueAuthors(sf.T2.Commits))))
+		if sf.T2.IsFilesTruncated() {
+			// Provider-neutral: GitHub caps compare files at CompareFilesCap,
+			// Gitea's merge-base walk can stop early; either way the list is a
+			// lower bound. The stored FilesTruncatedReason, when present, says why.
+			reason := " file list incomplete (provider cap); counts are lower bounds"
+			if sf.T2.FilesTruncatedReason != "" {
+				reason += ": " + sf.T2.FilesTruncatedReason
+			}
+			writeLine(styles.warn.Render(reason))
+		}
+		if m.pathFilter != nil {
+			var touched []forge.FileDiff
+			for _, d := range sf.T2.Diffs {
+				if diffMatches(d, *m.pathFilter) {
+					touched = append(touched, d)
+				}
+			}
+			if len(touched) > 0 {
+				divider()
+				writeLine(styles.warn.Render("Touches " + strings.Join(m.pathFilter.Patterns(), ", ") + ":"))
+				const maxShown = 20
+				for i, d := range touched {
+					if i == maxShown {
+						writeLine(fmt.Sprintf("   ... and %d more", len(touched)-maxShown))
+						break
+					}
+					writeLine(fmt.Sprintf(" %s %s (+%d/-%d)", d.Status, d.Path, d.Additions, d.Deletions))
+				}
+				writeLine("   [p] View patch for these files")
+			}
+		}
 	}
 
 	var badges []string

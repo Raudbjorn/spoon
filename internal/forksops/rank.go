@@ -1,6 +1,7 @@
 package forksops
 
 import (
+	"encoding/json"
 	"math"
 	"sort"
 )
@@ -107,30 +108,105 @@ func expectedRanks(mu, sigma []float64) []float64 {
 	return expectedRanksFrom(winProbs(mu, sigma))
 }
 
-// rankDistribution returns P(rank_i = r) for r = 1..n as a slice indexed
-// r−1. With independent utilities, rank_i − 1 is the number of j ≠ i that
-// beat i: a Poisson-binomial over Bernoulli(1 − p[i][j]). Exact O(n²)
-// dynamic programme; probabilities are clamped at 0 against float drift.
-func rankDistribution(p [][]float64, i int) []float64 {
-	n := len(p)
-	dist := make([]float64, n)
-	dist[0] = 1
-	for j := 0; j < n; j++ {
+// rankDistribution integrates the conditional Poisson-binomial distribution
+// over the focal normal utility. Comparisons are independent only conditional
+// on that utility; multiplying marginal win probabilities loses their dependence.
+func rankDistribution(mu, sigma []float64, i int) []float64 {
+	n := len(mu)
+	if n == 0 {
+		return nil
+	}
+	if n == 1 {
+		return []float64{1}
+	}
+	// Vanishing uncertainties use the continuous limit, including uniform ranks
+	// for identical point masses, consistent with pairwise half-wins on ties.
+	sd := func(j int) float64 { return math.Max(sigma[j], 1e-9) }
+	si := sd(i)
+	conditional := func(z float64) []float64 {
+		d := make([]float64, n)
+		d[0] = math.Exp(-z*z/2) / math.Sqrt(2*math.Pi)
+		count := 0
+		for j := range mu {
+			if j == i {
+				continue
+			}
+			q := normalCDF(((mu[j] - mu[i]) - si*z) / sd(j))
+			count++
+			for r := count; r > 0; r-- {
+				d[r] = d[r]*(1-q) + d[r-1]*q
+			}
+			d[0] *= 1 - q
+		}
+		return d
+	}
+	// Eight-point Gauss-Legendre quadrature, refined by comparing two halves.
+	quad := func(a, b float64) []float64 {
+		out := make([]float64, n)
+		nodes := [...]float64{0.1834346424956498, 0.5255324099163290, 0.7966664774136267, 0.9602898564975363}
+		weights := [...]float64{0.3626837833783620, 0.3137066458778873, 0.2223810344533745, 0.1012285362903763}
+		mid, half := (a+b)/2, (b-a)/2
+		for k, x := range nodes {
+			for _, sign := range []float64{-1, 1} {
+				d := conditional(mid + sign*half*x)
+				for r := range out {
+					out[r] += half * weights[k] * d[r]
+				}
+			}
+		}
+		return out
+	}
+	var integrate func(float64, float64, []float64, float64, int) []float64
+	integrate = func(a, b float64, whole []float64, tol float64, depth int) []float64 {
+		mid := (a + b) / 2
+		left, right := quad(a, mid), quad(mid, b)
+		err := 0.0
+		for r := range whole {
+			err += math.Abs(left[r] + right[r] - whole[r])
+		}
+		if err > tol && depth > 0 {
+			left = integrate(a, mid, left, tol/2, depth-1)
+			right = integrate(mid, b, right, tol/2, depth-1)
+		}
+		for r := range left {
+			left[r] += right[r]
+		}
+		return left
+	}
+	// Split at competitors' transitions so even narrow uncertainties are seen.
+	// Outside eight focal standard deviations the omitted mass is < 1.3e-15.
+	knots := []float64{-8, 0, 8}
+	for j := range mu {
 		if j == i {
 			continue
 		}
-		q := 1 - p[i][j] // P(j beats i)
-		for r := n - 1; r >= 1; r-- {
-			dist[r] = dist[r]*(1-q) + dist[r-1]*q
-		}
-		dist[0] *= 1 - q
-	}
-	for r := range dist {
-		if dist[r] < 0 {
-			dist[r] = 0
+		for _, offset := range []float64{-8, 0, 8} {
+			z := ((mu[j] - mu[i]) + offset*sd(j)) / si
+			if z > -8 && z < 8 {
+				knots = append(knots, z)
+			}
 		}
 	}
-	return dist
+	sort.Float64s(knots)
+	out := make([]float64, n)
+	for k := 1; k < len(knots); k++ {
+		a, b := knots[k-1], knots[k]
+		if a == b {
+			continue
+		}
+		part := integrate(a, b, quad(a, b), 1e-10*(b-a)/16, 12)
+		for r := range out {
+			out[r] += part[r]
+		}
+	}
+	sum := 0.0
+	for _, v := range out {
+		sum += v
+	}
+	for r := range out {
+		out[r] /= sum
+	}
+	return out
 }
 
 // rankInterval returns the narrowest central credible interval [lo, hi]
@@ -139,6 +215,9 @@ func rankDistribution(p [][]float64, i int) []float64 {
 // side of the mass.
 func rankInterval(dist []float64, level float64) (lo, hi int) {
 	n := len(dist)
+	if n == 0 {
+		return 1, 1
+	}
 	tail := (1 - level) / 2
 	lo, hi = 1, n
 	acc := 0.0
@@ -201,6 +280,22 @@ type RankReport struct {
 	PD         float64 `json:"pD,omitempty"`         // effective parameters = Σ leverage
 }
 
+// MarshalJSON keeps undefined precision statistics representable in every export.
+func (r RankReport) MarshalJSON() ([]byte, error) {
+	type plain RankReport
+	finite := func(v float64) *float64 {
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return nil
+		}
+		return &v
+	}
+	return json.Marshal(struct {
+		plain
+		POTH   *float64 `json:"poth"`
+		CPOTHk *float64 `json:"cpothK"`
+	}{plain(r), finite(r.POTH), finite(r.CPOTHk)})
+}
+
 // EBStats is the per-fork empirical-Bayes summary (Result.EB), set only for
 // forks with heat > 0 when Options.EB is on and the fit applied.
 type EBStats struct {
@@ -223,11 +318,11 @@ const rankIntervalLevel = 0.95
 // computeRankStats computes RankStats for every item in the pool, with the
 // shortlist size k used for PTopK (clamped to [1, n]).
 func computeRankStats(mu, sigma []float64, k int) []RankStats {
-	return computeRankStatsFrom(winProbs(mu, sigma), k)
+	return computeRankStatsFrom(mu, sigma, winProbs(mu, sigma), k)
 }
 
 // computeRankStatsFrom is computeRankStats over a precomputed win matrix.
-func computeRankStatsFrom(p [][]float64, k int) []RankStats {
+func computeRankStatsFrom(mu, sigma []float64, p [][]float64, k int) []RankStats {
 	n := len(p)
 	if k < 1 {
 		k = 1
@@ -238,7 +333,7 @@ func computeRankStatsFrom(p [][]float64, k int) []RankStats {
 	er := expectedRanksFrom(p)
 	out := make([]RankStats, n)
 	for i := 0; i < n; i++ {
-		dist := rankDistribution(p, i)
+		dist := rankDistribution(mu, sigma, i)
 		top := 0.0
 		for r := 0; r < k; r++ {
 			top += dist[r]
@@ -249,6 +344,11 @@ func computeRankStatsFrom(p [][]float64, k int) []RankStats {
 		ps := 1.0
 		if n > 1 {
 			ps = (float64(n) - er[i]) / float64(n-1)
+			if ps < 0 {
+				ps = 0
+			} else if ps > 1 {
+				ps = 1
+			}
 		}
 		lo, hi := rankInterval(dist, rankIntervalLevel)
 		out[i] = RankStats{ExpectedRank: er[i], PScore: ps, PTopK: top, PFirst: dist[0], Lo: lo, Hi: hi}
@@ -271,6 +371,9 @@ const (
 // ordered by expected rank ascending (index ascending on exact ties). k
 // larger than the pool returns the whole pool ordered.
 func selectShortlist(rs []RankStats, rule string, k int) []int {
+	if k < 0 {
+		k = 0
+	}
 	n := len(rs)
 	idx := make([]int, n)
 	for i := range idx {
@@ -310,11 +413,19 @@ const pothMinPool = 3
 // recomputed within the subset: P̄_i = mean_{j∈T, j≠i} p[i][j] and
 // POTH_T = 12(m−1)/(m+1) · (1/m) Σ_{i∈T} (P̄_i − ½)², which lies in [0, 1]
 // (0 = every pair a coin flip, 1 = a certain total order). NaN when the
-// subset has fewer than pothMinPool members.
+// subset has fewer than pothMinPool members, or when idx references a row
+// outside p's bounds (defensive: p and idx are internal to this package but
+// helper functions like this are reused from multiple entry points).
 func subsetPoth(p [][]float64, idx []int) float64 {
 	m := len(idx)
 	if m < pothMinPool {
 		return math.NaN()
+	}
+	n := len(p)
+	for _, i := range idx {
+		if i < 0 || i >= n || len(p[i]) < n {
+			return math.NaN()
+		}
 	}
 	s2 := 0.0
 	for _, i := range idx {
@@ -370,10 +481,20 @@ const tieBandFactor = 0.4
 // tieBands reports, for each position in order (indices into mu/sigma),
 // whether the fork is indistinguishable from at least one adjacent fork in
 // the ordering under the band rule. Both members of a close pair are marked.
+// Indices in order that fall outside mu/sigma's bounds are skipped rather
+// than indexed, matching subsetPoth's defensive posture for the same reason:
+// this helper is reused from more than one entry point.
 func tieBands(mu, sigma []float64, order []int, c float64) []bool {
 	out := make([]bool, len(order))
+	n := len(mu)
+	if len(sigma) < n {
+		n = len(sigma)
+	}
 	for k := 1; k < len(order); k++ {
 		i, j := order[k-1], order[k]
+		if i < 0 || i >= n || j < 0 || j >= n {
+			continue
+		}
 		if math.Abs(mu[i]-mu[j]) < c*math.Hypot(sigma[i], sigma[j]) {
 			out[k-1] = true
 			out[k] = true

@@ -36,8 +36,11 @@ type embedCoverageMsg struct {
 // without constructing either embedder -- fastembed is cgo over a dlopened
 // runtime, and Voyage is billed.
 func (m *Model) resolveEmbedModels() {
-	models := embedModels{fastEmbed: embed.FastEmbedModelID}
+	models := embedModels{}
 	if effective := m.settings.Effective; effective != nil {
+		if profile, ok := embed.LookupFastEmbedProfile(effective.FastEmbed.Model.Value); ok {
+			models.fastEmbed = profile.Identity()
+		}
 		dimension := embed.VoyageDefaultDimension
 		if parsed, err := strconv.Atoi(effective.Voyage.OutputDimension.Value); err == nil && parsed > 0 {
 			dimension = parsed

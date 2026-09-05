@@ -40,9 +40,15 @@ func TestAcceptedEditRecomputesCandidateEffectiveFromStartupSnapshot(t *testing.
 	if got := m.Environment["GH_TOKEN"]; got != "startup-token" {
 		t.Fatalf("environment snapshot changed: %q", got)
 	}
-	m = applySettingsEdit(t, m, "embedder.model", "candidate-model")
-	if _, err := runActionWithDeps(ActionFastEmbedCheck, &m, ActionDeps{}); err == nil || !strings.Contains(err.Error(), "fixed") {
-		t.Fatalf("FastEmbed action ignored candidate model: %v", err)
+	field := FieldByMust("embedder.model")
+	candidate, err := Candidate(field, m.Config, "fast-bge-base-en-v1.5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	*m.Config = *candidate
+	m.refreshEffective()
+	if _, err := runActionWithDeps(ActionFastEmbedCheck, &m, ActionDeps{}); err != nil {
+		t.Fatalf("FastEmbed action rejected a supported model: %v", err)
 	}
 	m = applySettingsEdit(t, m, "ui.theme", "amber")
 	appearance := m.resolve(FieldByMust("ui.theme"))
@@ -68,7 +74,7 @@ func TestAcceptedEditRecomputesCandidateEffectiveFromStartupSnapshot(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reloaded.Forge.Provider != "gitlab" || reloaded.Embedder.Model != "candidate-model" || reloaded.UI.Theme != "amber" {
+	if reloaded.Forge.Provider != "gitlab" || reloaded.Embedder.Model != "fast-bge-base-en-v1.5" || reloaded.UI.Theme != "amber" {
 		t.Fatalf("saved config did not preserve candidate edits: %#v", reloaded)
 	}
 }

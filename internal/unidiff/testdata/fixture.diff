@@ -1,0 +1,62 @@
+diff --git a/binary.dat b/binary.dat
+index 5da9b40..4f35a20 100644
+Binary files a/binary.dat and b/binary.dat differ
+diff --git "a/caf\303\251.txt" "b/caf\303\251.txt"
+index a11fa5d..a871035 100644
+--- "a/caf\303\251.txt"
++++ "b/caf\303\251.txt"
+@@ -1 +1,2 @@
+ café content v1
++café line two
+diff --git a/copysrc.go b/copysrc_copy.go
+similarity index 100%
+copy from copysrc.go
+copy to copysrc_copy.go
+diff --git a/deleteme.txt b/deleteme.txt
+deleted file mode 100644
+index e5c5c55..0000000
+--- a/deleteme.txt
++++ /dev/null
+@@ -1,2 +0,0 @@
+-line one
+-line two
+diff --git a/modme.go b/modme.go
+index 61babbe..48f5594 100644
+--- a/modme.go
++++ b/modme.go
+@@ -1,5 +1,9 @@
+ package main
+ 
+ func Foo() int {
+-	return 1
++	return 2
++}
++
++func Bar() int {
++	return 3
+ }
+diff --git a/new_added.go b/new_added.go
+new file mode 100644
+index 0000000..1fb71f4
+--- /dev/null
++++ b/new_added.go
+@@ -0,0 +1,5 @@
++package util
++
++func New() int {
++	return 42
++}
+diff --git a/old_name.go b/new_name.go
+similarity index 72%
+rename from old_name.go
+rename to new_name.go
+index 88dc03c..a516799 100644
+--- a/old_name.go
++++ b/new_name.go
+@@ -1,5 +1,5 @@
+ package util
+ 
+ func Old() string {
+-	return "old"
++	return "new"
+ }
