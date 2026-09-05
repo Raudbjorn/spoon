@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/svnbjrn/spoon/internal/forge"
+	"github.com/svnbjrn/spoon/internal/tui/theme"
 )
 
 // filterModel builds a table with predictable, distinguishable fork IDs.
@@ -69,7 +71,7 @@ func TestFilteredCursorSelectsRenderedRow(t *testing.T) {
 	_, _ = m.handleTableKey("down")
 
 	selected := m.forks[m.cursor].Fork.ID
-	if !matchesFilter(m.forks[m.cursor], m.filter) {
+	if !matchesFilter(m.forks[m.cursor], m.filter, m.pathFilter) {
 		t.Fatalf("cursor landed on %q, which the filter hides", selected)
 	}
 
@@ -102,7 +104,7 @@ func TestFilterSnapsCursorOffHiddenFork(t *testing.T) {
 	if m.cursor < 0 {
 		t.Fatal("cursor went to -1 despite matching forks existing")
 	}
-	if !matchesFilter(m.forks[m.cursor], m.filter) {
+	if !matchesFilter(m.forks[m.cursor], m.filter, m.pathFilter) {
 		t.Errorf("cursor on %q, which the filter hides", m.forks[m.cursor].Fork.ID)
 	}
 }
@@ -206,7 +208,7 @@ func TestFilterComposesWithSort(t *testing.T) {
 		t.Errorf("selection moved from %q to %q across a resort", selected, got)
 	}
 	for _, i := range m.visibleIdx() {
-		if !matchesFilter(m.forks[i], m.filter) {
+		if !matchesFilter(m.forks[i], m.filter, m.pathFilter) {
 			t.Errorf("resort admitted a non-matching fork %q", m.forks[i].Fork.ID)
 		}
 	}
@@ -334,5 +336,71 @@ func TestSlashDoesNotOpenRepoSearch(t *testing.T) {
 	_, _ = m.handleTableKey("/")
 	if m.view == viewInput {
 		t.Error("`/` still opens the repo-search prompt")
+	}
+}
+
+func TestPathFilterMatchesTouchedFiles(t *testing.T) {
+	hit := ScoredFork{Fork: forge.T1Data{ID: "o/hit"}, T2: &forge.T2Data{Performed: true, AheadCount: 1, Diffs: []forge.FileDiff{{Path: "cli/registry/antipatterns.mjs"}}}}
+	miss := ScoredFork{Fork: forge.T1Data{ID: "o/miss"}, T2: &forge.T2Data{Performed: true, AheadCount: 1, Diffs: []forge.FileDiff{{Path: "README.md"}}}}
+	none := ScoredFork{Fork: forge.T1Data{ID: "o/none"}}
+	m := Model{forks: []ScoredFork{hit, miss, none}}
+	m.applyFilter("path:**/antipatterns.mjs")
+	if got := m.visibleIdx(); len(got) != 1 || got[0] != 0 {
+		t.Fatalf("visible = %v", got)
+	}
+	m.applyFilter("o/m")
+	if got := m.visibleIdx(); len(got) != 1 || got[0] != 1 {
+		t.Fatalf("substring filter regressed: %v", got)
+	}
+}
+
+// A bad path: pattern must report an error the user can actually see. The
+// footer only renders errMsg while time.Since(errMsgTime) < 5s (table.go), so
+// setting errMsg without errMsgTime -- the exact bug refresh_test.go guards
+// against for the fetch-error path -- would leave this message unrenderable.
+func TestPathFilterBadPatternIsVisible(t *testing.T) {
+	m := &Model{forks: []ScoredFork{{Fork: forge.T1Data{ID: "o/x"}}}}
+	m.applyFilter("path:/etc")
+	if m.errMsg == "" {
+		t.Fatal("bad path pattern did not set errMsg")
+	}
+	if m.errMsgTime.IsZero() {
+		t.Fatal("errMsg set without errMsgTime, so the footer can never render it")
+	}
+}
+
+// TestRenameConsistentAcrossFilterDetailAndPatch guards diffMatches (added in
+// filter.go): a fork that renamed a file away from a matched pattern -- the
+// old path matches, the new Path does not -- must still pass the
+// "path:<glob>" filter (touchesPath), still list the file in the detail
+// view's Touches block, and still include it in the rendered patch. Before
+// diffMatches, touchesPath alone checked PreviousPath, so a rename could
+// pass the filter yet show nothing in the detail view or the patch.
+func TestRenameConsistentAcrossFilterDetailAndPatch(t *testing.T) {
+	renamed := forge.FileDiff{
+		Path:         "cli/registry/newname.mjs",
+		PreviousPath: "cli/registry/antipatterns.mjs",
+		Status:       "renamed",
+		Additions:    2,
+		Deletions:    1,
+		Patch:        "@@ -1 +1 @@\n-old\n+new\n",
+	}
+	sf := ScoredFork{Fork: forge.T1Data{ID: "o/renamer"}, T2: &forge.T2Data{Performed: true, AheadCount: 1, Diffs: []forge.FileDiff{renamed}}}
+	m := &Model{forks: []ScoredFork{sf}}
+	m.applyFilter("path:**/antipatterns.mjs")
+
+	if got := m.visibleIdx(); len(got) != 1 || got[0] != 0 {
+		t.Fatalf("filter did not admit the renamed fork: visible = %v", got)
+	}
+
+	m.cursor = 0
+	body := m.detailBody()
+	if !strings.Contains(body, "renamed cli/registry/newname.mjs") {
+		t.Errorf("detail Touches block missing the renamed file:\n%s", body)
+	}
+
+	out := renderPatch(theme.Context{}, *sf.T2, m.pathFilter, 200_000)
+	if !strings.Contains(out, "cli/registry/newname.mjs") {
+		t.Errorf("renderPatch dropped the renamed file:\n%s", out)
 	}
 }

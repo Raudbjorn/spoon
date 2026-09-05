@@ -58,6 +58,39 @@ func isForbidden(err error) bool {
 	return strings.Contains(err.Error(), "403")
 }
 
+// isNotAcceptable reports whether err represents a 406 from the GitHub API.
+// FetchCompareDiff treats it as fail-soft alongside 404: the compare exists,
+// but this fork/branch pair cannot be rendered as a diff (GitHub returns 406
+// for a small number of pathological compares that its diff renderer
+// refuses, distinct from the 200 "Binary files ... differ" it gives for an
+// ordinary binary file).
+func isNotAcceptable(err error) bool {
+	if err == nil {
+		return false
+	}
+	var httpErr *ghAPI.HTTPError
+	if ok := asHTTPError(err, &httpErr); ok {
+		return httpErr.StatusCode == http.StatusNotAcceptable
+	}
+	return strings.Contains(err.Error(), "406")
+}
+
+// isUnprocessableEntity reports whether err represents a 422 from the GitHub
+// API. FetchCompareDiff treats it as fail-soft alongside 404/406: GitHub
+// returns 422 for a compare it cannot compute at all (e.g. one side of the
+// comparison is unreachable), which is unrelated to forge.CompareFilesCap
+// and not worth escalating as an error.
+func isUnprocessableEntity(err error) bool {
+	if err == nil {
+		return false
+	}
+	var httpErr *ghAPI.HTTPError
+	if ok := asHTTPError(err, &httpErr); ok {
+		return httpErr.StatusCode == http.StatusUnprocessableEntity
+	}
+	return strings.Contains(err.Error(), "422")
+}
+
 // asHTTPError attempts to extract an HTTPError from the error chain.
 func asHTTPError(err error, target **ghAPI.HTTPError) bool {
 	type httpErrorer interface {

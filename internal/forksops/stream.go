@@ -20,6 +20,7 @@ import (
 	"github.com/svnbjrn/spoon/internal/forge"
 	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/heat"
+	"github.com/svnbjrn/spoon/internal/pathmatch"
 	"github.com/svnbjrn/spoon/internal/priors"
 )
 
@@ -103,6 +104,16 @@ type Options struct {
 	// into a matched-then-unmatched lane. Forces collect-then-emit semantics.
 	Priors *priors.Spec
 
+	// Touching, when non-empty, annotates every result with a TouchMatch
+	// (see touching.go) computed from T2.Diffs — merge-base-relative by
+	// construction, never tip-vs-tip. Forces collect-then-emit. Stream never
+	// drops a result; the CLI decides what to print. Under Touching the
+	// dispatch order compares pushed-after-fork forks before never-pushed
+	// ones so the rate reserve is spent where a match is possible.
+	Touching []string
+	// TouchReport, when non-nil, receives the run tally.
+	TouchReport *TouchSummary
+
 	// ReserveDisabled turns off the automatic rate-limit reserve floor
 	// (ReserveHeadroom). By default the pipeline stops enriching when the forge's
 	// headroom drops below the reserve and marks the remaining forks degraded
@@ -157,6 +168,33 @@ type Options struct {
 	// do not use Stream() can still observe it.
 	Report *forge.AcquisitionReport
 
+	// NoBatchCompare disables the pre-dispatch GraphQL divergence batch
+	// (see batchcompare.go) even when the provider supports it, forcing
+	// every eligible fork through the per-fork REST Compare path as before
+	// batching existed. Set from a CLI escape hatch; false is the default
+	// (use the batch whenever tier and provider allow it).
+	NoBatchCompare bool
+
+	// CompareReport, when non-nil, receives the run's compare-source tally
+	// (cache hits, batch-synthesised zeros, live REST compares, diff
+	// fallbacks) after the fork channel closes. Caller-owned, like
+	// TouchReport.
+	CompareReport *CompareSummary
+
+	// NoLastTouch disables the --touching last-touch skip stage
+	// (lasttouch.go) entirely: newLastTouchGate is never called, so no
+	// upstream PathLastTouch lookup is made and every TouchSummary
+	// last-touch counter stays zero. Set by a caller that has not enabled
+	// a last-touch source on the provider (e.g. the CLI's
+	// --no-tree-commit-info, or --touching using a non-literal pattern) --
+	// without it, the gate still builds and spends the upstream lookup even
+	// though every fork's ForkLastTouch call is guaranteed to report the
+	// capability as off, which reads as a lookup failure rather than a
+	// feature that was never turned on. False is the default (build the
+	// gate whenever the ordinary preconditions in newLastTouchGate allow
+	// it).
+	NoLastTouch bool
+
 	// NetworkScope controls fork-list breadth: "direct" (default) or "all".
 	// When "all", ListForksBounded is used if the provider implements it.
 	NetworkScope string
@@ -175,6 +213,12 @@ type Options struct {
 // the most-promising fork owners in a typical run, low enough to
 // leave the 5000/h rate budget untouched for the rest of the pipeline.
 const ownerProfileDefaultCap = 30
+
+// touchingNeverPushedDemotion pushes never-pushed forks behind every pushed
+// one in dispatch order under --touching: they are still compared if
+// headroom remains, but the rate reserve is spent where a match is
+// possible first.
+const touchingNeverPushedDemotion = 1e6
 
 // ClusterOptions is the spn-side options struct for the cluster pipeline.
 // Mirrors cluster.PipelineOptions but keeps the test seam unexported.
@@ -260,6 +304,16 @@ type Result struct {
 	// re-persisting them would overwrite full rows with patch-less ones.
 	T2FromCache bool
 
+	// T2FilesUnfetched marks a T2 synthesised by the last-touch skip stage
+	// (lasttouch.go): AheadCount/BehindCount/HeadSHA come from the
+	// batch-resolved BranchSelection and are real, but Diffs was never
+	// fetched -- avoiding exactly that REST call is the stage's purpose. A
+	// scalars-only T2 like this must never be persisted as if it were a
+	// real "compare ran, no files changed" result -- a caller that
+	// persists T2 rows must gate on this field the same way it already
+	// gates on T2FromCache.
+	T2FilesUnfetched bool
+
 	// ExpectedRank / RankConfidence are set only when ShortlistN > 0 (Robbins
 	// expected-rank shortlist). Lower ExpectedRank ≈ more likely the best fork;
 	// RankConfidence mirrors Heat.Confidence (tier reached).
@@ -283,6 +337,10 @@ type Result struct {
 	// spec was given. Never affects heat.
 	PriorScore   float64
 	PriorReasons []string
+
+	// Touching is the --touching verdict; nil when the option was not set.
+	// Presentation and CLI filtering only: never feeds heat or rank.
+	Touching *TouchMatch
 
 	Visibility  VisibilityDecision
 	Degraded    []DegradedStage
@@ -370,6 +428,16 @@ type Error struct {
 // cluster pipeline runs over the batch, and each Result is then emitted with
 // its cluster fields populated. See Options.Cluster for the trade-off rationale.
 func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts Options) (<-chan Result, error) {
+	touching := len(opts.Touching) > 0
+	var touchMatcher pathmatch.Matcher
+	if touching {
+		m, err := pathmatch.Compile(opts.Touching)
+		if err != nil {
+			return nil, fmt.Errorf("--touching: %w", err)
+		}
+		touchMatcher = m
+	}
+
 	parent, err := provider.Parent(ctx, owner, repo)
 	if err != nil {
 		var rl *gh.RateLimitError
@@ -533,12 +601,85 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 			tier = 3
 		}
 
+		// Pre-dispatch GraphQL divergence batch (see batchcompare.go): resolve
+		// ahead/behind for every fork that would otherwise get a REST compare,
+		// in one batched call, before any worker starts. A fork the batch finds
+		// has nothing ahead never reaches a REST compare at all; a divergent
+		// fork carries a single pre-chosen branch into the worker instead of
+		// REST's own per-fork branch scan.
+		var pending []forge.T1Data
+		var divergence map[string]forge.ForkDivergence
+		var batchStats forge.BatchStats
+		batchRan := false
+		// Type-assert before building `pending`: on a provider that can't
+		// batch at all (gitea, gitlab, or a plain REST-only GitHub client),
+		// this skips the loop entirely rather than calling opts.CachedT2
+		// once per eligible fork only to discard the result unused.
+		if bp, hasBatch := provider.(forge.BatchCompareProvider); tier >= 2 && !opts.NoBatchCompare && hasBatch {
+			for i, s := range all {
+				if !eligible(s.fork.ID, i) {
+					continue
+				}
+				if opts.CachedT2 != nil && opts.CachedT2(s.fork) != nil {
+					continue
+				}
+				pending = append(pending, s.fork)
+			}
+			if len(pending) > 0 {
+				fmt.Fprintf(logger, "[triage] resolving divergence for %d forks via GraphQL batch…\n", len(pending))
+				var berr error
+				divergence, batchStats, berr = bp.BatchCompare(ctx, pending)
+				switch {
+				case berr == nil:
+					batchRan = true
+				case errors.Is(berr, forge.ErrBatchCompareUnavailable):
+					// Silent fallback: no GraphQL backend available. Not a
+					// batchRan condition -- keep the pre-batch estimate line.
+					divergence = nil
+				default:
+					fmt.Fprintf(logger, "[triage] batch compare degraded: %v; falling back to per-fork REST\n", berr)
+					if opts.CompareReport != nil {
+						opts.CompareReport.BatchError = berr.Error()
+					}
+					// Keep whatever map came back (may be partial or nil) --
+					// forks it did resolve still skip REST or get a chosen
+					// branch; the rest fall back to Compare in the worker.
+					batchRan = true
+				}
+			}
+		}
+
 		// Up-front request estimate + headroom heads-up, so the user sees the
 		// scope without having to count forks. The live reserve floor below, not
 		// this estimate, governs when enrichment actually stops.
 		if tier >= 2 && len(all) > 0 {
-			fmt.Fprintf(logger, "[triage] %d forks; ~%d+ API requests to enrich at tier %d; rate headroom %.0f%%\n",
-				len(all), EstimateRequests(len(all), tier), tier, provider.Headroom()*100)
+			if batchRan {
+				divergent, resolved, restEstimate := batchEstimate(pending, divergence, tier)
+				fmt.Fprintf(logger, "[triage] %d forks; ~%d REST requests (%d divergent of %d resolved by one GraphQL batch); rate headroom %.0f%%\n",
+					len(all), restEstimate, divergent, resolved, provider.Headroom()*100)
+			} else {
+				fmt.Fprintf(logger, "[triage] %d forks; ~%d+ API requests to enrich at tier %d; rate headroom %.0f%%\n",
+					len(all), EstimateRequests(len(all), tier), tier, provider.Headroom()*100)
+			}
+		}
+
+		// Last-touch skip gate (lasttouch.go): a cheap negative proof that
+		// lets the worker below skip the REST compare entirely for a fork
+		// whose selected branch cannot have touched any --touching target.
+		// Only meaningful once the batch has produced BranchSelection
+		// values for the worker to test (see decide()'s guard for the
+		// proof); building it when the batch didn't run would spend the
+		// once-per-run upstream lookup for a stage no fork could reach.
+		// opts.NoLastTouch skips it for the same reason: without a
+		// last-touch source enabled on the provider, every fork's
+		// ForkLastTouch call is guaranteed to report the capability off, so
+		// building the gate would spend the upstream lookup and then tally
+		// every fork as "unavailable" for a stage that could never do
+		// anything -- checked before any provider call, per opts.NoLastTouch's
+		// doc comment.
+		var ltGate *lastTouchGate
+		if touching && batchRan && !opts.NoLastTouch {
+			ltGate = newLastTouchGate(ctx, provider, opts.Touching, logger)
 		}
 
 		concurrency := 4
@@ -556,6 +697,9 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 		priorities := make([]float64, len(all))
 		for i, s := range all {
 			priorities[i] = DispatchPriority(s.fork, parent.PushedAt, s.res.Score)
+			if touching && NeverPushed(s.fork) {
+				priorities[i] -= touchingNeverPushedDemotion
+			}
 		}
 		dispatchOrder := make([]int, len(all))
 		for i := range dispatchOrder {
@@ -571,7 +715,7 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 		// them into `collected` (mu-guarded) and emit at the end.
 		// Clustering and the expected-rank shortlist both require all enriched
 		// results in hand, so either forces collect-then-emit.
-		batchMode := opts.Cluster.Enabled || opts.ShortlistN > 0 || opts.Query != "" || opts.Priors != nil || opts.CommitFiles
+		batchMode := opts.Cluster.Enabled || opts.ShortlistN > 0 || opts.Query != "" || opts.Priors != nil || opts.CommitFiles || len(opts.Touching) > 0
 		var (
 			collectedMu sync.Mutex
 			collected   []Result
@@ -579,6 +723,12 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 		var wg sync.WaitGroup
 		var budgetSkipped atomic.Int64
 		var ownerProfileCalls atomic.Int64
+		// Compare-source tally for Options.CompareReport; written from
+		// workers, so atomic rather than mutex-guarded like `collected`.
+		var compareCached atomic.Int64
+		var compareBatch atomic.Int64
+		var compareREST atomic.Int64
+		var compareDiffFallback atomic.Int64
 		for w := 0; w < concurrency; w++ {
 			wg.Add(1)
 			go func() {
@@ -690,6 +840,25 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 						if t2 := opts.CachedT2(s.fork); t2 != nil {
 							r.T2 = t2
 							r.T2FromCache = true
+							compareCached.Add(1)
+						}
+					}
+					// Batch-resolved divergence costs no per-fork API budget
+					// either, so it too is consulted before the reserve gate: a
+					// fork the batch found has nothing ahead is fully resolved
+					// here (synthesised T2, no REST needed) and never reaches
+					// the gate at all. A divergent fork keeps its pre-chosen
+					// branch (sel) for the REST step below; the reserve gate
+					// still applies to it like any other REST-bound fork.
+					var sel *forge.BranchSelection
+					if enrich && tier >= 2 && r.T2 == nil && divergence != nil {
+						if res, ok := resolveFromBatch(divergence, s.fork.ID); ok {
+							if res.T2 != nil {
+								r.T2 = res.T2
+								compareBatch.Add(1)
+							} else {
+								sel = res.Selection
+							}
 						}
 					}
 					if enrich && tier >= 2 && r.T2 == nil && !opts.ReserveDisabled && provider.Headroom() < ReserveHeadroom {
@@ -701,8 +870,31 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 						}
 						budgetSkipped.Add(1)
 					}
+					// Last-touch skip: consult the gate only when the batch
+					// gave this fork a BranchSelection to test (sel != nil)
+					// and no earlier stage already resolved T2. See
+					// lasttouch.go's decide() for the proof this relies on.
+					if enrich && tier >= 2 && r.T2 == nil && ltGate != nil && sel != nil {
+						if skip, _ := ltGate.decide(ctx, s.fork, *sel); skip {
+							t2 := forge.T2Data{
+								Performed:     true,
+								AheadCount:    sel.Ahead,
+								BehindCount:   sel.Behind,
+								HeadSHA:       sel.TipSHA,
+								IsBranchWork:  sel.IsSide,
+								Upstreamed:    sel.Upstreamed,
+								UpstreamedPR:  sel.UpstreamedPR,
+								CompareSource: "graphql_batch",
+							}
+							if sel.IsSide {
+								t2.ActiveBranch = sel.Branch
+							}
+							r.T2 = &t2
+							r.T2FilesUnfetched = true
+						}
+					}
 					if tier >= 2 && enrich && r.T2 == nil {
-						t2, terr := provider.Compare(ctx, s.fork, s.fork.DefaultBranch)
+						t2, terr := compareFork(ctx, provider, s.fork, sel, logger)
 						if terr != nil {
 							var rl *gh.RateLimitError
 							if errors.As(terr, &rl) {
@@ -721,6 +913,10 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 							}
 						} else {
 							r.T2 = &t2
+							compareREST.Add(1)
+							if t2.FilesComplete {
+								compareDiffFallback.Add(1)
+							}
 						}
 					}
 					if tier >= 3 && enrich && r.Err == nil {
@@ -783,6 +979,22 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 				n, len(all))
 		}
 
+		_, _, ltSkipped, _, _ := ltGate.counts()
+		if opts.CompareReport != nil {
+			opts.CompareReport.Cached = int(compareCached.Load())
+			opts.CompareReport.Batch = int(compareBatch.Load())
+			opts.CompareReport.REST = int(compareREST.Load())
+			opts.CompareReport.DiffFallback = int(compareDiffFallback.Load())
+			opts.CompareReport.LastTouchSkipped = ltSkipped
+			opts.CompareReport.BatchQueries = batchStats.Queries
+			opts.CompareReport.BatchCost = batchStats.Cost
+		}
+		if tier >= 2 && len(all) > 0 {
+			fmt.Fprintf(logger, "[triage] compare sources: cached %d · graphql_batch %d · rest %d · diff_fallback %d · last_touch_skipped %d (batch: %d queries, cost %d)\n",
+				compareCached.Load(), compareBatch.Load(), compareREST.Load(), compareDiffFallback.Load(), ltSkipped,
+				batchStats.Queries, batchStats.Cost)
+		}
+
 		if !batchMode {
 			return
 		}
@@ -801,6 +1013,35 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 
 		if skip != nil && len(collected) > 0 {
 			collected[0].ClusterSkip = skip
+		}
+
+		var touchSummary TouchSummary
+		if touching {
+			// Same backend and caches as the cluster pass: a hit is free, a
+			// miss costs what clustering would have paid. Failure degrades
+			// to zero centrality, never to a missing verdict.
+			// NB: Stream's parameter named `repo` shadows the internal/repo
+			// package here, so do not name the repo.Centrality type in this
+			// scope; take the interface value straight from the call.
+			envInputs, envOpts := clusterEnv(ctx, provider, &parent, owner, repo, opts.Cluster)
+			centrality, ok, cerr := cluster.LoadOrComputeCentrality(ctx, envOpts, envInputs, logger)
+			if !ok {
+				centrality = nil
+				if cerr != nil {
+					fmt.Fprintf(logger, "[touching] centrality unavailable (%v); files reported without impact\n", cerr)
+				}
+			}
+			touchSummary = scoreTouching(touchMatcher, centrality, collected)
+			touchSummary.LastTouchGated, touchSummary.LastTouchLookedUp, touchSummary.LastTouchSkipped, touchSummary.LastTouchMismatch, touchSummary.LastTouchUnavailable = ltGate.counts()
+			if opts.TouchReport != nil {
+				*opts.TouchReport = touchSummary
+			}
+			fmt.Fprintf(logger, "[touching] matched %d · partial %d (file list capped at %d) · unmatched %d · unknown %d · never_pushed %d · centrality=%q · last_touch: gated %d · looked_up %d · skipped %d · mismatch %d · unavailable %d\n",
+				touchSummary.Matched, touchSummary.Partial, forge.CompareFilesCap, touchSummary.Unmatched, touchSummary.Unknown, touchSummary.NeverPushed, touchSummary.CentralityMethod,
+				touchSummary.LastTouchGated, touchSummary.LastTouchLookedUp, touchSummary.LastTouchSkipped, touchSummary.LastTouchMismatch, touchSummary.LastTouchUnavailable)
+			if touchSummary.Unknown > 0 {
+				fmt.Fprintf(logger, "[touching] %d forks have no usable compare; re-run after the rate window resets to backfill\n", touchSummary.Unknown)
+			}
 		}
 
 		for i := range collected {
@@ -825,9 +1066,17 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 
 		if opts.ShortlistN > 0 {
 			// Robbins expected-rank shortlist: compute over the final heat (after
-			// clustering, so novelty is included).
+			// clustering, so novelty is included). Under --touching the rank pool
+			// is the matched subset; unmatched results are appended after it —
+			// Stream still emits them, the CLI decides what to print.
 			var report RankReport
-			collected, report = RankResults(collected, opts)
+			if touching {
+				matched, rest := splitTouching(collected)
+				matched, report = RankResults(matched, opts)
+				collected = append(matched, rest...)
+			} else {
+				collected, report = RankResults(collected, opts)
+			}
 			if opts.RankReport != nil {
 				*opts.RankReport = report
 			}
@@ -855,6 +1104,10 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 			sort.SliceStable(collected, func(i, j int) bool {
 				return collected[i].Heat.Score > collected[j].Heat.Score
 			})
+		}
+
+		if touching {
+			sortTouchingLanes(collected)
 		}
 
 		for _, r := range collected {
@@ -949,30 +1202,20 @@ func enrichCommitFiles(ctx context.Context, provider forge.Forge, collected []Re
 	}
 }
 
-func runForksClusterPipeline(
-	ctx context.Context,
-	provider forge.Forge,
-	parent *forge.ParentData,
-	owner, repoName string,
-	collected []Result,
-	opts ClusterOptions,
-	logger io.Writer,
-) *ClusterSkip {
-	enriched := make([]cluster.EnrichedFork, len(collected))
-	for i := range collected {
-		enriched[i] = cluster.EnrichedFork{
-			T1:   collected[i].Fork,
-			T2:   collected[i].T2,
-			Heat: &collected[i].Heat,
-		}
-	}
-
+// clusterEnv builds the cluster.PipelineInputs / cluster.PipelineOptions
+// shared by the cluster pass (runForksClusterPipeline) and the --touching
+// centrality lookup: same provider/tree/commit sources, same MDG cache pin,
+// so a centrality fetch made for --touching alone is a cache hit once
+// clustering has already run, and costs the same as clustering would have
+// paid otherwise. The caller sets inputs.Forks and inputs.Upstream —
+// clusterEnv doesn't have a collected-forks slice to draw Forks from, and
+// leaving Upstream to the caller keeps this function usable from a context
+// that only wants centrality, not a full cluster pass.
+func clusterEnv(ctx context.Context, provider forge.Forge, parent *forge.ParentData, owner, repoName string, opts ClusterOptions) (cluster.PipelineInputs, cluster.PipelineOptions) {
 	inputs := cluster.PipelineInputs{
 		Provider:      providerName(ctx, provider),
 		UpstreamOwner: owner,
 		UpstreamRepo:  repoName,
-		Upstream:      *parent,
-		Forks:         enriched,
 	}
 	if ghp, ok := provider.(*gh.GHProvider); ok {
 		client := ghp.Client()
@@ -1005,6 +1248,31 @@ func runForksClusterPipeline(
 		CentralityHeadSHA: pin,
 		StrictMDG:         opts.StrictMDG,
 	}
+	return inputs, pipelineOpts
+}
+
+func runForksClusterPipeline(
+	ctx context.Context,
+	provider forge.Forge,
+	parent *forge.ParentData,
+	owner, repoName string,
+	collected []Result,
+	opts ClusterOptions,
+	logger io.Writer,
+) *ClusterSkip {
+	enriched := make([]cluster.EnrichedFork, len(collected))
+	for i := range collected {
+		enriched[i] = cluster.EnrichedFork{
+			T1:   collected[i].Fork,
+			T2:   collected[i].T2,
+			Heat: &collected[i].Heat,
+		}
+	}
+
+	inputs, pipelineOpts := clusterEnv(ctx, provider, parent, owner, repoName, opts)
+	inputs.Forks = enriched
+	inputs.Upstream = *parent
+
 	// Forward the optional embedder / categorizer / label-polisher hooks
 	// from the spn-side options into the cluster pipeline. When fastembed is
 	// active it is passed here (clustering + zero-shot categories use it);

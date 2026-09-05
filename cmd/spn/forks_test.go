@@ -868,3 +868,230 @@ func TestSplitRepoArgAgreesWithForgeParse(t *testing.T) {
 		})
 	}
 }
+
+func TestShouldEmitForkUnderTouching(t *testing.T) {
+	opts := forksops.Options{Touching: []string{"a.go"}}
+	if shouldEmitFork(opts, forksops.Result{Touching: &forksops.TouchMatch{Status: forksops.TouchUnmatched}}) {
+		t.Fatal("unmatched must be suppressed")
+	}
+	if !shouldEmitFork(opts, forksops.Result{Touching: &forksops.TouchMatch{Status: forksops.TouchUnmatched, Partial: true}}) {
+		t.Fatal("partial unmatched must be emitted")
+	}
+	// I1: an unmatched verdict from a last-touch skip (Reason ==
+	// "last_touch") must also reach stdout -- it never scanned Diffs, so
+	// the "unmatched" answer rests on the tree-commit-info proof, same as
+	// a partial verdict resting on the 300-file compare cap.
+	if !shouldEmitFork(opts, forksops.Result{Touching: &forksops.TouchMatch{Status: forksops.TouchUnmatched, Reason: "last_touch"}}) {
+		t.Fatal("last-touch-skipped unmatched must be emitted")
+	}
+	if !shouldEmitFork(forksops.Options{}, forksops.Result{}) {
+		t.Fatal("no touching option: everything emits")
+	}
+}
+
+// touchingWantsTreeCommitInfo gates the tree-commit-info client: on only for
+// literal --touching patterns, off for no patterns, a wildcard, or an
+// explicit --no-tree-commit-info (task 8).
+func TestTouchingWantsTreeCommitInfo(t *testing.T) {
+	cases := []struct {
+		name     string
+		touching []string
+		noFlag   bool
+		want     bool
+	}{
+		{"no touching", nil, false, false},
+		{"single literal", []string{"a/b.go"}, false, true},
+		{"multiple literal", []string{"a/b.go", "c.go"}, false, true},
+		{"one wildcard among literals", []string{"a/b.go", "**/*.go"}, false, false},
+		{"wildcard only", []string{"**/*.go"}, false, false},
+		{"literal but disabled by flag", []string{"a/b.go"}, true, false},
+		{"no touching and disabled by flag", nil, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := touchingWantsTreeCommitInfo(tc.touching, tc.noFlag); got != tc.want {
+				t.Errorf("touchingWantsTreeCommitInfo(%v, %v) = %v, want %v", tc.touching, tc.noFlag, got, tc.want)
+			}
+		})
+	}
+}
+
+// t2.source rides only when T2Data.CompareSource is non-empty,
+// t2.files_unfetched only when Result.T2FilesUnfetched is true, and
+// t2.files_truncated_reason only when T2Data.FilesTruncatedReason is
+// non-empty (final-review M7) — all omit-when-not-computed, matching the
+// rest of the t2 block (task 8).
+func TestForkToJSON_T2SourceAndFilesUnfetched(t *testing.T) {
+	r := forksops.Result{
+		Fork: forge.T1Data{ID: "o/a"},
+		T2: &forge.T2Data{
+			Performed: true, CompareSource: "graphql_batch",
+			FilesTruncatedReason: "diff fallback unavailable (compare not renderable as a diff, or exceeded the size cap)",
+		},
+		T2FilesUnfetched: true,
+	}
+	out := forkToJSON(r)
+	t2, ok := out["t2"].(map[string]any)
+	if !ok {
+		t.Fatalf("t2 missing or wrong type: %#v", out["t2"])
+	}
+	if t2["source"] != "graphql_batch" {
+		t.Errorf("t2.source = %v, want graphql_batch", t2["source"])
+	}
+	if t2["files_unfetched"] != true {
+		t.Errorf("t2.files_unfetched = %v, want true", t2["files_unfetched"])
+	}
+	if t2["files_truncated_reason"] != r.T2.FilesTruncatedReason {
+		t.Errorf("t2.files_truncated_reason = %v, want %q", t2["files_truncated_reason"], r.T2.FilesTruncatedReason)
+	}
+}
+
+func TestForkToJSON_T2SourceAndFilesUnfetchedOmittedWhenNotComputed(t *testing.T) {
+	r := forksops.Result{
+		Fork: forge.T1Data{ID: "o/a"},
+		T2:   &forge.T2Data{Performed: true},
+	}
+	out := forkToJSON(r)
+	t2, ok := out["t2"].(map[string]any)
+	if !ok {
+		t.Fatalf("t2 missing or wrong type: %#v", out["t2"])
+	}
+	if _, present := t2["source"]; present {
+		t.Errorf("t2.source should be omitted when CompareSource is empty, got %v", t2["source"])
+	}
+	if _, present := t2["files_unfetched"]; present {
+		t.Errorf("t2.files_unfetched should be omitted when false, got %v", t2["files_unfetched"])
+	}
+	if _, present := t2["files_truncated_reason"]; present {
+		t.Errorf("t2.files_truncated_reason should be omitted when empty, got %v", t2["files_truncated_reason"])
+	}
+}
+
+// touchingToJSON already emits reason unconditionally on any non-empty
+// Reason (not just TouchUnknown); this pins the last-touch skip's verdict
+// specifically so a regression is caught (task 8).
+func TestTouchingToJSON_EmitsReasonForLastTouch(t *testing.T) {
+	out := touchingToJSON(forksops.TouchMatch{Status: forksops.TouchUnmatched, Reason: "last_touch"})
+	if out["reason"] != "last_touch" {
+		t.Errorf("reason = %v, want last_touch", out["reason"])
+	}
+	if out["status"] != string(forksops.TouchUnmatched) {
+		t.Errorf("status = %v, want %v", out["status"], forksops.TouchUnmatched)
+	}
+}
+
+func TestEmitTouchReport_IncludesLastTouchCounters(t *testing.T) {
+	var stderr bytes.Buffer
+	emitTouchReport(&stderr, &forksops.TouchSummary{
+		Matched: 1, LastTouchGated: 2, LastTouchLookedUp: 3, LastTouchSkipped: 4,
+		LastTouchMismatch: 5, LastTouchUnavailable: 6,
+	})
+	var line map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(stderr.Bytes()), &line); err != nil {
+		t.Fatalf("invalid NDJSON: %v (%s)", err, stderr.String())
+	}
+	touching, ok := line["touching"].(map[string]any)
+	if !ok {
+		t.Fatalf("touching envelope missing or wrong type: %#v", line)
+	}
+	lastTouch, ok := touching["last_touch"].(map[string]any)
+	if !ok {
+		t.Fatalf("touching.last_touch missing or wrong type: %#v", touching)
+	}
+	want := map[string]float64{"gated": 2, "looked_up": 3, "skipped": 4, "mismatch": 5, "unavailable": 6}
+	for k, v := range want {
+		if lastTouch[k] != v {
+			t.Errorf("touching.last_touch.%s = %v, want %v", k, lastTouch[k], v)
+		}
+	}
+}
+
+// emitCompareSummary mirrors emitTouchReport: nil emits nothing, a non-nil
+// report emits the compare_summary envelope, and batch_error rides only
+// when set (task 8).
+func TestEmitCompareSummary(t *testing.T) {
+	t.Run("nil emits nothing", func(t *testing.T) {
+		var stderr bytes.Buffer
+		emitCompareSummary(&stderr, nil)
+		if stderr.Len() != 0 {
+			t.Fatalf("expected no output for a nil report, got %q", stderr.String())
+		}
+	})
+	t.Run("populated report", func(t *testing.T) {
+		var stderr bytes.Buffer
+		emitCompareSummary(&stderr, &forksops.CompareSummary{
+			Cached: 1, Batch: 2, REST: 3, DiffFallback: 4, LastTouchSkipped: 5,
+			BatchQueries: 6, BatchCost: 7,
+		})
+		var line map[string]any
+		if err := json.Unmarshal(bytes.TrimSpace(stderr.Bytes()), &line); err != nil {
+			t.Fatalf("invalid NDJSON: %v (%s)", err, stderr.String())
+		}
+		cs, ok := line["compare_summary"].(map[string]any)
+		if !ok {
+			t.Fatalf("compare_summary missing or wrong type: %#v", line)
+		}
+		want := map[string]float64{
+			"cached": 1, "graphql_batch": 2, "rest": 3, "diff_fallback": 4,
+			"last_touch_skipped": 5, "batch_queries": 6, "batch_cost": 7,
+		}
+		for k, v := range want {
+			if cs[k] != v {
+				t.Errorf("compare_summary.%s = %v, want %v", k, cs[k], v)
+			}
+		}
+		if _, present := cs["batch_error"]; present {
+			t.Errorf("batch_error should be omitted when empty, got %v", cs["batch_error"])
+		}
+	})
+	t.Run("batch_error rides when non-empty", func(t *testing.T) {
+		var stderr bytes.Buffer
+		emitCompareSummary(&stderr, &forksops.CompareSummary{BatchError: "boom"})
+		var line map[string]any
+		if err := json.Unmarshal(bytes.TrimSpace(stderr.Bytes()), &line); err != nil {
+			t.Fatalf("invalid NDJSON: %v (%s)", err, stderr.String())
+		}
+		cs := line["compare_summary"].(map[string]any)
+		if cs["batch_error"] != "boom" {
+			t.Errorf("batch_error = %v, want boom", cs["batch_error"])
+		}
+	})
+}
+
+// enableTreeCommitInfoIfRequested is the single source of truth
+// cmd/spn/forks.go negates into opts.NoLastTouch: it must report false
+// (never touching the provider) both when the caller didn't ask for it and
+// when the provider isn't GitHub, even if the caller did ask (task 8 fix
+// round 1).
+func TestEnableTreeCommitInfoIfRequested(t *testing.T) {
+	if got := enableTreeCommitInfoIfRequested(&fakeForge{}, false); got {
+		t.Error("enabled=false must return false")
+	}
+	if got := enableTreeCommitInfoIfRequested(&fakeForge{}, true); got {
+		t.Error("a non-GitHub provider must return false even when enabled=true")
+	}
+}
+
+// --no-tree-commit-info must reach forksops.Options as NoLastTouch == true
+// once dispatch creates the provider. Without this wiring, the last-touch
+// gate still engaged and spent an upstream lookup even though the CLI never
+// enabled a last-touch source on the provider, misreporting every fork as
+// "unavailable" (task 8 fix round 1).
+func TestForksListNoTreeCommitInfoSetsNoLastTouch(t *testing.T) {
+	blockEmbedderCache(t)
+	stubTwoForkProvider(t)
+
+	var got []bool
+	noLastTouchHookForTest = func(v bool) { got = append(got, v) }
+	defer func() { noLastTouchHookForTest = nil }()
+
+	var stdout, stderr bytes.Buffer
+	runForksWith([]string{"list", "o/r", "--no-cluster", "--touching", "a.go", "--no-tree-commit-info"}, &stdout, &stderr)
+
+	if len(got) != 1 {
+		t.Fatalf("noLastTouchHookForTest fired %d times, want 1 (stderr:\n%s)", len(got), stderr.String())
+	}
+	if !got[0] {
+		t.Errorf("opts.NoLastTouch = %v, want true with --no-tree-commit-info", got[0])
+	}
+}

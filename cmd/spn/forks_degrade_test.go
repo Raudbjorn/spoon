@@ -144,6 +144,37 @@ func TestForksListWebDiffWarnsAndSucceeds(t *testing.T) {
 	}
 }
 
+// --no-batch-compare and --no-tree-commit-info must both be accepted flags:
+// neither trips a bad-input rejection, whether or not --touching is present
+// (--no-tree-commit-info is inert without --touching — task 8).
+func TestForksListNoBatchCompareAndNoTreeCommitInfoAccepted(t *testing.T) {
+	blockEmbedderCache(t)
+	prev := providerFactory
+	defer func() { providerFactory = prev }()
+	providerFactory = func(context.Context, string, string, string) (forge.Forge, string, *agentio.Error) {
+		return nil, "", agentio.NewError(agentio.CodeUpstream, "STUB_REACHED", "x")
+	}
+
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"no-batch-compare alone", []string{"list", "o/r", "--no-batch-compare"}},
+		{"no-tree-commit-info without touching", []string{"list", "o/r", "--no-tree-commit-info"}},
+		{"no-tree-commit-info with touching", []string{"list", "o/r", "--touching", "a.go", "--no-tree-commit-info"}},
+		{"both flags with touching", []string{"list", "o/r", "--touching", "a.go", "--no-batch-compare", "--no-tree-commit-info"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			runForksWith(tc.args, &stdout, &stderr)
+			if !strings.Contains(stderr.String(), "STUB_REACHED") {
+				t.Fatalf("parsing did not reach dispatch for %v:\n%s", tc.args, stderr.String())
+			}
+		})
+	}
+}
+
 // --no-embed opts out of embedding entirely: the run must succeed with NDJSON
 // output and, crucially, must NOT emit embed_unavailable — the user asked to
 // skip embedding, so a missing runtime is expected, not a degradation (#87).

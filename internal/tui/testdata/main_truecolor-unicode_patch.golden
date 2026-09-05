@@ -1,0 +1,12 @@
+[1m===  a.go (+10/-2)[0m
+  (no patch text from provider — binary, too large, or omitted)
+
+[1m===  b.go (+4/-7)[0m
+  (no patch text from provider — binary, too large, or omitted)
+
+[1m===  c.go (+0/-0)[0m
+  (no patch text from provider — binary, too large, or omitted)
+
+
+[38;2;211;211;211;48;2;25;25;25m[ctrl+c][0m [3;2;38;2;133;133;133mQuit[0m [38;2;211;211;211;48;2;25;25;25m[Esc/b/q][0m [3;2;38;2;133;133;133mReturn to fork details[0m [38;2;211;211;211;48;2;25;25;25m[Up/k][0m [3;2;38;2;133;133;133mScroll up[0m [38;2;211;211;211;48;2;25;25;25m[Down/j][0m [3;2;38;2;133;133;133mScroll down[0m
+[38;2;211;211;211;48;2;25;25;25m[PgUp][0m [3;2;38;2;133;133;133mPage up[0m [38;2;211;211;211;48;2;25;25;25m[PgDn][0m [3;2;38;2;133;133;133mPage down[0m [38;2;211;211;211;48;2;25;25;25m[home][0m [3;2;38;2;133;133;133mGo to top[0m [38;2;211;211;211;48;2;25;25;25m[G/end][0m [3;2;38;2;133;133;133mGo to bottom[0m
