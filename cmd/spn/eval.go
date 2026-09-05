@@ -164,6 +164,9 @@ func runEvalWithEffective(args []string, stdout, stderr io.Writer, effective con
 		if rankVariant == "" {
 			rankVariant = rankVariantHeat
 		}
+		if priorScale > 0 && rankVariant != rankVariantEB {
+			return agentio.NewError(agentio.CodeBadInput, "--prior-scale requires --rank-variant eb", agentio.RemediationBadInput("forks", "eval")).Emit(stderr)
+		}
 		pool, err := loadExportPool(exportPath)
 		if err != nil {
 			return agentio.NewError(agentio.CodeBadInput, err.Error(), agentio.RemediationBadInput("forks", "eval")).Emit(stderr)
@@ -387,7 +390,8 @@ func evalOffline(upstream string, pool []forksops.Result, jtmt eval.Judgments, v
 		out.RankReport = &report
 	}
 	rows := make([]eval.ScoredFork, 0, len(ranked))
-	for pos, r := range ranked {
+	for pos := range ranked {
+		r := &ranked[pos]
 		key := r.Heat.Score
 		rf := rankedFork{ID: r.Fork.ID, Heat: r.Heat.Score, Tier: r.Heat.Tier}
 		if r.Rank != nil {
@@ -412,6 +416,7 @@ func evalOffline(upstream string, pool []forksops.Result, jtmt eval.Judgments, v
 		out.Ranked = append(out.Ranked, rf)
 		rows = append(rows, eval.ScoredFork{ID: r.Fork.ID, Score: key})
 	}
-	out.Report = eval.Compute(upstream, rows, jtmt)
+	metrics := eval.Compute(upstream, rows, jtmt)
+	out.Report = eval.Report{Upstream: upstream, RankingNDCG: metrics.RankingNDCG, RankingROCAUC: metrics.RankingROCAUC}
 	return out
 }

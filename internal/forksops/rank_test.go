@@ -460,3 +460,26 @@ func TestRankDistributionGaussianOrthant(t *testing.T) {
 		}
 	}
 }
+
+func TestRankKeepAllPreservesMembershipSelection(t *testing.T) {
+	scores, tiers := []float64{10, 9.9, 9.8, 7}, []int{3, 3, 1, 3}
+	for _, keepAll := range []bool{false, true} {
+		got, _ := RankResults(syntheticPool(scores, tiers), Options{ShortlistN: 1, ShortlistRule: ShortlistRuleMembership, RankKeepAll: keepAll})
+		want := []string{"o/f2"}
+		if keepAll {
+			want = append(want, "o/f0", "o/f1", "o/f3")
+		}
+		if len(got) != len(want) {
+			t.Fatalf("keepAll=%v: got %d rows, want %d", keepAll, len(got), len(want))
+		}
+		for i, id := range want {
+			if got[i].Fork.ID != id {
+				t.Fatalf("keepAll=%v: position %d = %s, want %s", keepAll, i, got[i].Fork.ID, id)
+			}
+		}
+	}
+	expected, _ := RankResults(syntheticPool(scores, tiers), Options{ShortlistN: 1, RankKeepAll: true})
+	if expected[0].Fork.ID != "o/f0" {
+		t.Fatalf("expected-rank ordering lost: %s", expected[0].Fork.ID)
+	}
+}

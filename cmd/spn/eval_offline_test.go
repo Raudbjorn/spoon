@@ -92,7 +92,11 @@ func TestSpnForksEval_fromExport_variantChangesOrderingKey(t *testing.T) {
 	keys := map[string][]string{}
 	for _, variant := range []string{"heat", "eb"} {
 		var stdout, stderr bytes.Buffer
-		if exit := runEvalWith([]string{"o/r", "--from-export", exportPath, "--judgments", judgmentsPath, "--rank-variant", variant, "--shortlist", "6", "--prior-scale", "2"}, &stdout, &stderr); exit != 0 {
+		args := []string{"o/r", "--from-export", exportPath, "--judgments", judgmentsPath, "--rank-variant", variant, "--shortlist", "6"}
+		if variant == "eb" {
+			args = append(args, "--prior-scale", "2")
+		}
+		if exit := runEvalWith(args, &stdout, &stderr); exit != 0 {
 			t.Fatalf("%s: exit=%d stderr=%s", variant, exit, stderr.String())
 		}
 		var rep struct {
@@ -123,12 +127,25 @@ func TestSpnForksEval_fromExport_flagValidation(t *testing.T) {
 		args []string
 		want string
 	}{
+		{[]string{"o/r", "--judgments", judgmentsPath, "--prior-scale", "2"}, "--prior-scale requires --from-export"},
+		{[]string{"o/r", "--from-export", exportPath, "--judgments", judgmentsPath, "--prior-scale", "2"}, "--prior-scale requires --rank-variant eb"},
+
 		{[]string{"o/r", "--judgments", judgmentsPath, "--shortlist", "10"}, "--shortlist requires --from-export"},
 		{[]string{"o/r", "--judgments", judgmentsPath, "--shortlist", "3"}, "--shortlist requires --from-export"},
 		{[]string{"o/r", "--from-export", exportPath, "--judgments", judgmentsPath, "--rank-variant", "bogus"}, "--rank-variant must be one of"},
 		{[]string{"o/r", "--judgments", judgmentsPath, "--rank-variant", "pscore"}, "--rank-variant requires --from-export"},
 		{[]string{"o/r", "--from-export", filepath.Join(t.TempDir(), "missing.json"), "--judgments", judgmentsPath}, "read export file"},
 	}
+	for _, variant := range []string{"heat", "erank", "pscore", "membership"} {
+		cases = append(cases, struct {
+			args []string
+			want string
+		}{
+			[]string{"o/r", "--from-export", exportPath, "--judgments", judgmentsPath, "--rank-variant", variant, "--prior-scale", "2"},
+			"--prior-scale requires --rank-variant eb",
+		})
+	}
+
 	for _, c := range cases {
 		var stdout, stderr bytes.Buffer
 		if exit := runEvalWith(c.args, &stdout, &stderr); exit != 2 {
@@ -212,6 +229,27 @@ func TestSpnForksEvalSmallRankPoolJSON(t *testing.T) {
 			if value, ok := report.RankReport[key]; !ok || value != nil {
 				t.Fatalf("%s should be null: %s", key, stdout.String())
 			}
+		}
+	}
+}
+
+func TestOfflineEvaluationOmitsUnavailableMetrics(t *testing.T) {
+	exportPath, judgmentsPath := writeOfflineFixtures(t)
+	pool, err := loadExportPool(exportPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	judgments, err := loadJudgments(judgmentsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, variant := range rankVariants {
+		report := evalOffline("o/r", pool, judgments, variant, 3, 0)
+		if report.RankingNDCG <= 0 || report.RankingROCAUC <= 0 {
+			t.Fatalf("%s: ranking metrics lost: %+v", variant, report.Report)
+		}
+		if report.NoveltyPrecision != 0 || report.NoveltyRecall != 0 || report.NoveltyF1 != 0 || report.BalancedAccuracy != 0 || report.ARI != 0 || len(report.NoveltyDist) != 0 {
+			t.Fatalf("%s: fabricated unavailable metrics: %+v", variant, report.Report)
 		}
 	}
 }

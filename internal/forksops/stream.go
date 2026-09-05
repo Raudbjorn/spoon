@@ -1540,14 +1540,14 @@ func applyEB(pool []Result, mu, sigma []float64, priorScale float64) RankReport 
 	report.DBarOverK = fit.DBarOverK
 	report.PD = fit.PD
 	for k, i := range idx {
-		st := EBStats{
+		st := &EBStats{
 			Theta:     fit.Theta[k],
 			PostSigma: fit.PostSigma[k],
 			Residual:  fit.Residual[k],
 			Leverage:  fit.B[k],
 		}
 		st.Flag = st.Residual*st.Residual+st.Leverage > ebFlagContour
-		pool[i].EB = &st
+		pool[i].EB = st
 		mu[i] = st.Theta
 		sigma[i] = st.PostSigma
 	}
@@ -1590,12 +1590,11 @@ func RankResults(pool []Result, opts Options) ([]Result, RankReport) {
 		residuals = pothResiduals(p)
 	}
 	for i := range pool {
-		rs := stats[i]
+		rs := &stats[i]
 		if residuals != nil {
-			r := residuals[i]
-			rs.PothResidual = &r
+			rs.PothResidual = &residuals[i]
 		}
-		pool[i].Rank = &rs
+		pool[i].Rank = rs
 		pool[i].ExpectedRank = rs.ExpectedRank
 		pool[i].RankConfidence = pool[i].Heat.Confidence
 	}

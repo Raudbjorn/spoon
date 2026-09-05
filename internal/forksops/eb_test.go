@@ -132,3 +132,10 @@ func TestFitNormalNormal_InvalidSigma(t *testing.T) {
 		}
 	}
 }
+
+func TestFitNormalNormalDegenerateWeights(t *testing.T) {
+	fit, ok := fitNormalNormal([]float64{10, 20, 30}, []float64{1e-6, 1e6, 1e6}, 0)
+	if ok || fit.Regime != EBRegimePooled || math.IsNaN(fit.M) || math.IsInf(fit.M, 0) {
+		t.Fatalf("degenerate fixed-effect denominator: ok=%v fit=%+v", ok, fit)
+	}
+}
