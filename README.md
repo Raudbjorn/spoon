@@ -53,7 +53,6 @@ Unauthenticated requests work but hit much lower rate limits.
 
 GitHub REST calls pin `X-GitHub-Api-Version: 2022-11-28`. Fork lists are **direct children** by default; `--network-scope=all` is an opt-in bounded walk of the wider network. Cached fork lists are scoped to API version and credential identity so a broader login cannot be replayed as a narrower one. Private `/network/meta` and related undocumented routes are not used — see [docs/research/2026-08-19-spoon-endpoint-networking.md](docs/research/2026-08-19-spoon-endpoint-networking.md).
 
-
 Optionally, set `VOYAGE_AI_API_KEY` to add [Voyage AI](https://docs.voyageai.com)
 code embeddings and reranking on top of the local models — see
 [Embedding, clustering & semantic search](#embedding-clustering--semantic-search).
@@ -453,7 +452,6 @@ spn search "oauth refresh" --no-rerank  # retrieval only
 Full detail, including cost control and the degradation rules, is in
 [docs/embedders.md](docs/embedders.md).
 
-
 ## Development
 
 The normal local verification path builds both command entry points and runs
@@ -468,7 +466,10 @@ go build ./cmd/...
 Tests live beside the package they exercise. Integration tests use the same
 layout and keep external credentials, paid services, and native runtimes
 opt-in. Long-form operational references live under `docs/`; development
-designs and plans live under `docs/superpowers/`.
+designs and plans live under `docs/superpowers/`. Architecture
+decisions are recorded as ADRs under `docs/adr/` (e.g. Zoekt
+evaluation: [`docs/adr/0005-zoekt-integration-evaluation.md`](docs/adr/0005-zoekt-integration-evaluation.md); Glean
+evaluation: [`docs/adr/0006-glean-integration-evaluation.md`](docs/adr/0006-glean-integration-evaluation.md)).
 
 ## Project layout
 
