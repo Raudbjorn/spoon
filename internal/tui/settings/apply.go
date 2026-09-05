@@ -84,6 +84,9 @@ func nonEmpty(values []string) []string {
 func RequiresConfirmationFor(field Field, before, after *config.Config) bool {
 	switch field.Consequence {
 	case Reindex:
+		if field.Key == "embedder.model" {
+			return normalizeFastEmbedModel(before.Embedder.Model) != normalizeFastEmbedModel(after.Embedder.Model)
+		}
 		return before.Embedder.Voyage.OutputDimension != after.Embedder.Voyage.OutputDimension
 	case Billing:
 		return (before.Embedder.Voyage.Disabled && !after.Embedder.Voyage.Disabled) ||
@@ -104,10 +107,17 @@ func ConsequenceMessage(field Field) string {
 	case Billing:
 		return "This change can enable Voyage, an external service billed per token."
 	case Reindex:
-		return "This changes vector/index partitioning. Existing Voyage rows keep the old identity and documents become pending."
+		return "This changes vector/index partitioning. Existing rows keep the old model identity; documents become pending under the new identity."
 	case Hostwide:
 		return "This saves the system configuration and affects every user on this machine."
 	default:
 		return ""
 	}
+}
+
+func normalizeFastEmbedModel(name string) string {
+	if strings.TrimSpace(name) == "" {
+		return "fast-bge-small-en-v1.5"
+	}
+	return name
 }

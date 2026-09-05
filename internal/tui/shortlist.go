@@ -30,7 +30,7 @@ const pscoreSortCol = "pscore"
 // called after every reapplySort — including a plain resort with unchanged
 // heat (cycling the sort column, reversing direction) — so it first checks
 // a signature of the fork set against the last ranked one and skips the
-// O(n³) pass when nothing has actually changed. The signature sorts fork
+// numerical rank pass when nothing has actually changed. The signature sorts fork
 // IDs first: reapplySort calls recomputeShortlist before reordering
 // m.forks, so consecutive calls see the rows in whatever order the
 // previous sort left them, and an order-dependent signature would treat
@@ -38,16 +38,16 @@ const pscoreSortCol = "pscore"
 // forksops.RankPoolCap keep Rank nil and render "-".
 func (m *Model) recomputeShortlist() {
 	ids := make([]string, len(m.forks))
-	heat := make(map[string]float64, len(m.forks))
+	heat := make(map[string][2]float64, len(m.forks))
 	for i, sf := range m.forks {
 		ids[i] = sf.Fork.ID
-		heat[sf.Fork.ID] = sf.Heat.Score
+		heat[sf.Fork.ID] = [2]float64{sf.Heat.Score, sf.Heat.Confidence}
 	}
 	sort.Strings(ids)
 	var sb strings.Builder
 	for _, id := range ids {
 		sb.WriteString(id)
-		fmt.Fprintf(&sb, ":%.6f;", heat[id])
+		fmt.Fprintf(&sb, ":%g:%g;", heat[id][0], heat[id][1])
 	}
 	sig := sb.String()
 	if sig == m.shortlistHash {
@@ -82,7 +82,7 @@ func (m *Model) recomputeShortlist() {
 // non-compare variant has no badge column, which is why the mark lives
 // here. Unranked rows render "  -".
 func pscoreCell(sf ScoredFork) string {
-	if sf.Rank == nil {
+	if sf.Rank == nil || math.IsNaN(sf.Rank.PScore) {
 		return "  -"
 	}
 	pct := int(sf.Rank.PScore*100 + 0.5)

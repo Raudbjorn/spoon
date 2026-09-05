@@ -240,12 +240,20 @@ type T1Extra struct {
 	// APIVersion is the pinned REST version that backs this client. It is
 	// informational only; the GraphQL endpoint does not negotiate versions.
 	APIVersion string `json:"APIVersion,omitempty"`
+
+	// DefaultTipSHA is the head commit SHA of the default branch, from the
+	// listing query's defaultBranchRef.target.oid. Populated only on the
+	// GraphQL path; empty on the REST path.
+	DefaultTipSHA string `json:"DefaultTipSHA,omitempty"`
 }
 
 // BranchInfo describes a branch with its last commit timestamp.
 type BranchInfo struct {
 	Name         string
 	LastCommitAt string // RFC3339 timestamp
+	// TipSHA is the branch's head commit SHA, from the listing query's
+	// target.oid. Populated only on the GraphQL path.
+	TipSHA string
 }
 
 // HasScope reports whether the authenticated token includes the given OAuth scope.

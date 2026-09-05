@@ -34,3 +34,14 @@ func TestPrepareFastEmbedDoesNotMutateConfigWhenDefaultsFail(t *testing.T) {
 		t.Fatalf("config mutated on failure:\n got: %#v\nwant: %#v", *cfg, before)
 	}
 }
+
+func TestPrepareFastEmbedKeepsSelectedProfile(t *testing.T) {
+	cfg := &config.Config{Embedder: config.EmbedderConfig{Model: "fast-bge-base-en-v1.5"}}
+	got, err := PrepareFastEmbed(cfg, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Model != "fast-bge-base-en-v1.5" || cfg.Embedder.Model != "fast-bge-base-en-v1.5" {
+		t.Fatalf("model rewritten: got=%#v cfg=%#v", got, cfg.Embedder)
+	}
+}

@@ -84,6 +84,8 @@ func matrixValue(key string) string {
 		return "ascii"
 	case "embedder.backend":
 		return "fastembed"
+	case "embedder.model":
+		return "fast-bge-base-en-v1.5"
 	case "forge.provider":
 		return "gitlab"
 	case "github.proxy.cacheTtl":

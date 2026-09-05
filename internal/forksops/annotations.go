@@ -8,6 +8,8 @@ const (
 	VisibilityVisible VisibilityStatus = "visible"
 	VisibilityDemoted VisibilityStatus = "demoted"
 	VisibilityHidden  VisibilityStatus = "hidden"
+	// pinned: an explicit --touching match; overrides hidden/demoted for display only.
+	VisibilityPinned VisibilityStatus = "pinned"
 )
 
 type VisibilityDecision struct {
@@ -65,6 +67,18 @@ type MomentumInfo struct {
 }
 
 func deriveVisibility(r Result) VisibilityDecision {
+	if r.Touching != nil && r.Touching.Status == TouchMatched {
+		reasons := make([]string, 0, len(r.Touching.Files)+len(r.Heat.Penalties))
+		seen := map[string]bool{}
+		for _, f := range r.Touching.Files {
+			if !seen[f.Pattern] {
+				seen[f.Pattern] = true
+				reasons = append(reasons, "touching:"+f.Pattern)
+			}
+		}
+		reasons = append(reasons, r.Heat.Penalties...)
+		return VisibilityDecision{Status: VisibilityPinned, Reasons: reasons}
+	}
 	if len(r.Heat.Penalties) == 0 {
 		return VisibilityDecision{Status: VisibilityVisible}
 	}

@@ -10,6 +10,7 @@ const (
 	MainInput     Scope = "main-input"
 	MainTable     Scope = "main-table"
 	MainDetail    Scope = "main-detail"
+	MainPatch     Scope = "main-patch"
 	MainHelp      Scope = "main-help"
 	MainExport    Scope = "main-export"
 	MainTopics    Scope = "main-topics"
@@ -71,6 +72,7 @@ const (
 	OpenSettings     Action = "open-settings"
 	EmbedMarked      Action = "embed-marked"
 	EmbedAll         Action = "embed-all"
+	ViewPatch        Action = "view-patch"
 )
 
 type Binding struct {
@@ -138,6 +140,14 @@ var Registry = []Binding{
 	{MainDetail, []string{"t"}, ToggleTheme, "Toggle dark/light theme", ""},
 	{MainDetail, []string{"f"}, ToggleFullscreen, "Hide or restore chrome", ""},
 	{MainDetail, []string{"y"}, Yank, "Yank clone command", "No upstream counterpart"},
+	{MainDetail, []string{"p"}, ViewPatch, "View patch of touched files", "No upstream counterpart"},
+	{MainPatch, []string{"esc", "b", "q"}, Back, "Return to fork details", ""},
+	{MainPatch, []string{"up", "k"}, Up, "Scroll up", "Spoon adds vi navigation"},
+	{MainPatch, []string{"down", "j"}, Down, "Scroll down", "Spoon adds vi navigation"},
+	{MainPatch, []string{"pgup"}, PageUp, "Page up", ""},
+	{MainPatch, []string{"pgdown"}, PageDown, "Page down", ""},
+	{MainPatch, []string{"home"}, Home, "Go to top", ""},
+	{MainPatch, []string{"G", "end"}, End, "Go to bottom", "Spoon adds vi navigation"},
 	{MainHelp, []string{"?", "esc", "q"}, Back, "Close help", ""},
 	{MainHelp, []string{"up", "k"}, Up, "Scroll up", ""},
 	{MainHelp, []string{"down", "j"}, Down, "Scroll down", ""},

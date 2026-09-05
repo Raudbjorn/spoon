@@ -2,11 +2,13 @@ package tui
 
 import (
 	"encoding/json"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/svnbjrn/spoon/internal/forksops"
 	"github.com/svnbjrn/spoon/internal/tui/theme"
 )
 
@@ -161,6 +163,56 @@ func TestExport_IncludesRankAndReport(t *testing.T) {
 	for _, f := range data.Forks {
 		if f.Rank == nil {
 			t.Errorf("%s export lacks rank block", f.FullName)
+		}
+	}
+}
+
+func TestPScoreCellUndefined(t *testing.T) {
+	if got := pscoreCell(ScoredFork{Rank: &forksops.RankStats{PScore: math.NaN()}}); got != "  -" {
+		t.Fatalf("undefined P-score cell = %q", got)
+	}
+}
+
+func TestShortlistCacheIncludesConfidence(t *testing.T) {
+	m := shortlistModel(t)
+	m.forks[0].Heat.Score = 41
+	m.recomputeShortlist()
+	before := m.forks[0].Rank
+	m.recomputeShortlist()
+	if m.forks[0].Rank != before {
+		t.Fatal("unchanged inputs missed cache")
+	}
+	m.forks[0].Heat.Confidence = 0.3
+	m.recomputeShortlist()
+	if m.forks[0].Rank == before || m.forks[0].Rank.PScore == before.PScore {
+		t.Fatal("confidence change left stale rank statistics")
+	}
+}
+
+func TestExportSmallRankPools(t *testing.T) {
+	for _, n := range []int{1, 2} {
+		m := shortlistModel(t)
+		m.forks = m.forks[:n]
+		m.recomputeShortlist()
+		path := filepath.Join(t.TempDir(), "out.json")
+		msg := m.doExport(m.forks, path)()
+		if dm, ok := msg.(exportDoneMsg); !ok || dm.err != nil {
+			t.Fatalf("n=%d: %#v", n, msg)
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var data struct {
+			RankReport map[string]any `json:"rank_report"`
+		}
+		if err := json.Unmarshal(raw, &data); err != nil {
+			t.Fatal(err)
+		}
+		for _, key := range []string{"poth", "cpothK"} {
+			if v, ok := data.RankReport[key]; !ok || v != nil {
+				t.Fatalf("n=%d: %s=%v (present=%v)", n, key, v, ok)
+			}
 		}
 	}
 }

@@ -114,3 +114,27 @@ func TestLoad_lowercasesAndDedupsLanguagesAndOwners(t *testing.T) {
 		t.Errorf("Paths = %#v, want [internal/auth] (blank trimmed)", got.Paths)
 	}
 }
+
+// A spec path in a form pathmatch.Normalize accepts ("./src/") must match
+// the same changed paths --touching would match, so all three consumers of
+// internal/pathmatch agree on semantics (PR #125 review).
+func TestNormalizePathsSharePathmatchForm(t *testing.T) {
+	s := &Spec{Paths: []string{"./src/", "docs/*.md", "/abs"}}
+	s.normalize()
+	if s.Paths[0] != "src" {
+		t.Fatalf("normalized path = %q, want %q", s.Paths[0], "src")
+	}
+	if !matchPath(s.Paths[0], []string{"src/a.go"}) {
+		t.Fatal("\"./src/\" must match src/a.go after normalization")
+	}
+	if s.Paths[1] != "docs/*.md" {
+		t.Fatalf("glob pattern altered: %q", s.Paths[1])
+	}
+	// A pattern Normalize rejects is kept verbatim and simply never matches.
+	if s.Paths[2] != "/abs" {
+		t.Fatalf("invalid pattern altered: %q", s.Paths[2])
+	}
+	if matchPath(s.Paths[2], []string{"abs/x"}) {
+		t.Fatal("absolute pattern must not match")
+	}
+}

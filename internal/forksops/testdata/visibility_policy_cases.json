@@ -4,36 +4,70 @@
       "name": "visible_complete",
       "penalties": [],
       "skips": {},
-      "wantVisibility": {"status": "visible"},
+      "wantVisibility": {
+        "status": "visible"
+      },
       "wantDegraded": []
     },
     {
       "name": "archived_low_recency_demoted",
-      "penalties": ["archived", "low_recency"],
+      "penalties": [
+        "archived",
+        "low_recency"
+      ],
       "skips": {},
-      "wantVisibility": {"status": "demoted", "reasons": ["archived", "low_recency"]},
+      "wantVisibility": {
+        "status": "demoted",
+        "reasons": [
+          "archived",
+          "low_recency"
+        ]
+      },
       "wantDegraded": []
     },
     {
       "name": "no_ahead_hidden",
-      "penalties": ["no_ahead"],
+      "penalties": [
+        "no_ahead"
+      ],
       "skips": {},
-      "wantVisibility": {"status": "hidden", "reasons": ["no_ahead"]},
+      "wantVisibility": {
+        "status": "hidden",
+        "reasons": [
+          "no_ahead"
+        ]
+      },
       "wantDegraded": []
     },
     {
       "name": "upstreamed_hidden",
-      "penalties": ["upstreamed"],
+      "penalties": [
+        "upstreamed"
+      ],
       "skips": {},
-      "wantVisibility": {"status": "hidden", "reasons": ["upstreamed"]},
+      "wantVisibility": {
+        "status": "hidden",
+        "reasons": [
+          "upstreamed"
+        ]
+      },
       "wantDegraded": []
     },
     {
       "name": "budget_skip_visible_degraded",
       "penalties": [],
-      "skips": {"budget": "rate reserve reached"},
-      "wantVisibility": {"status": "visible"},
-      "wantDegraded": [{"stage": "compare", "reason": "rate reserve reached"}]
+      "skips": {
+        "budget": "rate reserve reached"
+      },
+      "wantVisibility": {
+        "status": "visible"
+      },
+      "wantDegraded": [
+        {
+          "stage": "compare",
+          "reason": "rate reserve reached"
+        }
+      ]
     },
     {
       "name": "all_skips_ordered",
@@ -45,14 +79,72 @@
         "owner_profile": "owner cap reached",
         "sibling_sim": "disabled"
       },
-      "wantVisibility": {"status": "visible"},
+      "wantVisibility": {
+        "status": "visible"
+      },
       "wantDegraded": [
-        {"stage": "cluster", "reason": "embedder failed"},
-        {"stage": "compare", "reason": "rate reserve reached"},
-        {"stage": "contributors", "reason": "tier < 3"},
-        {"stage": "owner_profile", "reason": "owner cap reached"},
-        {"stage": "sibling_sim", "reason": "disabled"}
+        {
+          "stage": "cluster",
+          "reason": "embedder failed"
+        },
+        {
+          "stage": "compare",
+          "reason": "rate reserve reached"
+        },
+        {
+          "stage": "contributors",
+          "reason": "tier < 3"
+        },
+        {
+          "stage": "owner_profile",
+          "reason": "owner cap reached"
+        },
+        {
+          "stage": "sibling_sim",
+          "reason": "disabled"
+        }
       ]
+    },
+    {
+      "name": "touching_match_pins_even_upstreamed",
+      "penalties": [
+        "upstreamed"
+      ],
+      "skips": {},
+      "touching": {
+        "status": "matched",
+        "files": [
+          {
+            "path": "a/b.mjs",
+            "pattern": "**/*.mjs"
+          }
+        ]
+      },
+      "wantVisibility": {
+        "status": "pinned",
+        "reasons": [
+          "touching:**/*.mjs",
+          "upstreamed"
+        ]
+      },
+      "wantDegraded": []
+    },
+    {
+      "name": "touching_unmatched_does_not_pin",
+      "penalties": [
+        "no_ahead"
+      ],
+      "skips": {},
+      "touching": {
+        "status": "unmatched"
+      },
+      "wantVisibility": {
+        "status": "hidden",
+        "reasons": [
+          "no_ahead"
+        ]
+      },
+      "wantDegraded": []
     }
   ]
 }

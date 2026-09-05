@@ -100,6 +100,13 @@
       "owner": "trusted",
       "wantScore": 1,
       "wantReasons": ["keyword:oauth", "language:go", "owner_allow:trusted", "path:a/dir", "path:z/dir"]
+    },
+    {
+      "name": "path_double_star_recursive_glob",
+      "spec": {"paths": ["**/registry/*.mjs"]},
+      "changedPaths": ["a/b/registry/x.mjs"],
+      "wantScore": 1,
+      "wantReasons": ["path:**/registry/*.mjs"]
     }
   ]
 }

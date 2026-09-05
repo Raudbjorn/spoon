@@ -6,7 +6,7 @@ Layer: user  Path: /settings-golden/config.json
 +------------------------------------------------------------------------------+
 | > Backend: fastembed [DEFAULT]                                               |
 | fastembed or empty.                                                          |
-|   Model: fast-bge-small-en-v1.5 [DEFAULT]                                    |
+|   Model: fast-bge-small-en-v1.5 . download [DEFAULT] [v]                     |
 |   Cache directory: /home/svnbjrn/.cache/spoon/models/fastembed [DEFAULT]     |
 |   Maximum length: 512 [DEFAULT]                                              |
 |   Batch size: 32 [DEFAULT]                                                   |

@@ -14,7 +14,7 @@ func TestRawV1AndV2RoundTripAreLossless(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(dir, "config.json")
-	raw := `{"version":1,"forge":{"provider":"gitlab","host":"forge.test"},"github":{"tokens":["one","two"],"requestsPerMinute":300,"proxy":{"enabled":true,"apiKeyFile":"` + key + `","staticFile":"` + key + `","whitelistPublicIp":false,"cacheTtl":"5m"}},"embedder":{"backend":"fastembed","model":"bge","cacheDir":"` + dir + `","maxLength":512,"batchSize":32,"voyage":{"apiKeyFile":"` + key + `","embedModel":"embed","rerankModel":"rerank","outputDimension":1024,"baseUrl":"https://example.test"}}}`
+	raw := `{"version":1,"forge":{"provider":"gitlab","host":"forge.test"},"github":{"tokens":["one","two"],"requestsPerMinute":300,"proxy":{"enabled":true,"apiKeyFile":"` + key + `","staticFile":"` + key + `","whitelistPublicIp":false,"cacheTtl":"5m"}},"embedder":{"backend":"fastembed","model":"fast-bge-small-en-v1.5","cacheDir":"` + dir + `","maxLength":512,"batchSize":32,"voyage":{"apiKeyFile":"` + key + `","embedModel":"embed","rerankModel":"rerank","outputDimension":1024,"baseUrl":"https://example.test"}}}`
 	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
 		t.Fatal(err)
 	}

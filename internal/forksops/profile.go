@@ -12,6 +12,10 @@ import (
 // Precedence is first-match-wins; "standard" is the floor, so the label is
 // always non-empty.
 func DeriveProfile(r Result) (string, []string) {
+	// 0. Pinned wins: the user asked for forks touching a path; say so.
+	if r.Visibility.Status == VisibilityPinned {
+		return "touches_target", sortedCopy(r.Visibility.Reasons)
+	}
 	// 1. Hidden wins outright: an upstreamed / no-ahead fork is non-actionable.
 	if r.Visibility.Status == VisibilityHidden {
 		return "hidden", sortedCopy(r.Visibility.Reasons)

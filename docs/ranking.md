@@ -31,7 +31,7 @@ P(i beats j) = Φ((μ_i − μ_j) / √(σ_i² + σ_j²))
 | `expectedRank` | `1 + Σ_{j≠i} P(j beats i)` (Robbins / Laird–Louis posterior expected rank) | lower = more likely near the top; shrinks toward (n+1)/2 for wide-σ forks |
 | `rankConfidence` | tier confidence used for σ | 0.3 / 0.7 / 0.9 |
 | `pScore` | `(n − expectedRank)/(n − 1)` = SUCRA / P-score | 1 = certainly best of the pool, 0.5 = coin flip, 0 = certainly worst |
-| `pTopK` | `P(rank ≤ N)`, exact Poisson-binomial over the win probabilities | probability the fork genuinely belongs in the shortlist |
+| `pTopK` | `P(rank ≤ N)`, conditional Poisson-binomial integrated over the focal Gaussian utility | probability the fork genuinely belongs in the shortlist |
 | `pFirst` | `P(rank = 1)` | |
 | `rankLo`, `rankHi` | 95% central rank interval | `[1, 3]` vs `[1, 40]` is the difference between a result and a guess |
 | `tieBand` | true when `|μ_i − μ_j| < 0.4·√(σ_i²+σ_j²)` for an adjacent fork in the emitted order | treat the run of banded forks as one cluster; the order inside it is not evidence |

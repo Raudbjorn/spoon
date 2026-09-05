@@ -139,6 +139,10 @@ func TestForksListParseErrors(t *testing.T) {
 		{"rpm too high", []string{"list", "--rpm", "901", "o/r"}},
 		{"rpm non-numeric", []string{"list", "--rpm", "abc", "o/r"}},
 		{"cluster-epsilon negative", []string{"list", "--cluster-epsilon", "-1", "o/r"}},
+		{"touching without value", []string{"list", "o/r", "--touching"}},
+		{"touching bad pattern", []string{"list", "o/r", "--touching", "["}},
+		{"touching with tier 1", []string{"list", "o/r", "--touching", "a.go", "--tier", "1"}},
+		{"touching with csv", []string{"list", "o/r", "--touching", "a.go", "--csv"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -148,6 +152,33 @@ func TestForksListParseErrors(t *testing.T) {
 			}
 			if stdout.Len() != 0 {
 				t.Fatalf("stdout must be empty, got %q", stdout.String())
+			}
+		})
+	}
+}
+
+// TestForksListTouchingParseErrorMessages pins the exact --touching error
+// text from the pairing/parse rules, since TestForksListParseErrors only
+// checks the exit code.
+func TestForksListTouchingParseErrorMessages(t *testing.T) {
+	cases := []struct {
+		name       string
+		args       []string
+		wantSubstr string
+	}{
+		{"touching without value", []string{"list", "o/r", "--touching"}, "--touching requires"},
+		{"touching bad pattern", []string{"list", "o/r", "--touching", "["}, "--touching: "},
+		{"touching with tier 1", []string{"list", "o/r", "--touching", "a.go", "--tier", "1"}, "--touching needs compare data"},
+		{"touching with csv", []string{"list", "o/r", "--touching", "a.go", "--csv"}, "--touching emits NDJSON only"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if exit := runForksWith(tc.args, &stdout, &stderr); exit != 2 {
+				t.Fatalf("exit = %d, want 2 (stderr: %s)", exit, stderr.String())
+			}
+			if !strings.Contains(stderr.String(), tc.wantSubstr) {
+				t.Fatalf("stderr = %q, want substring %q", stderr.String(), tc.wantSubstr)
 			}
 		})
 	}

@@ -159,10 +159,11 @@ Nouns and verbs:
         --shortlist-rule / --eb defaults.
   forks list <repo|topic:NAME> [--tier 1|2|3] [--top N] [--budget N] [--shortlist N] [--shortlist-rule expected|membership] [--rank-diagnostics] [--eb [--prior-scale F]] [--bot-allowlist L] [--refresh|--no-cache] [--csv] [--forge github|gitlab] [--forge-host H]
                     [--rpm N] [--files] [--commits] [--commit-files]
-                    [--commit-file-budget N] [--web-diff]
+                    [--commit-file-budget N] [--web-diff] [--local-branch-scan]
+                    [--no-batch-compare] [--no-tree-commit-info]
                     [--no-cluster] [--cluster-top N] [--cluster-epsilon F] [--cluster-min-size N]
                     [--no-embed] [--heat-weights W] [--strict-mdg] [--full-mdg] [--no-mdg]
-                    [--query "intent"] [--priors PATH]
+                    [--query "intent"] [--priors PATH] [--touching PATH]
                     [--sibling-sim | --no-sibling-sim] [--sibling-sim-mode MODE] [--owner-cache-ttl DUR]
                     [--topic-repos N] [--topic-lanes LIST] [--topic-lane-budget N]
         --budget N caps the expensive per-fork compare/contributors calls to N.
@@ -197,6 +198,21 @@ Nouns and verbs:
         semantic indexing and 'spn search'. --commit-files implies --files and
         --commits and defaults to a 100-commit run budget. --web-diff is an
         unstable SPOON_GH_COOKIE-gated HTML fallback, not a supported API.
+        Divergence is resolved for the whole network in a few GraphQL
+        queries first; REST compares are then made only for forks with
+        ahead work. --no-batch-compare restores one REST compare per fork;
+        it also disables the --touching last-touch skip below, since that
+        gate is only built from the batch's output. SPOON_DEBUG=1 prints
+        the [triage]/[touching] prose summary lines to stderr and raises
+        log/slog's default level to Debug, surfacing the halving/drop/
+        last-touch debug lines that are otherwise discarded.
+        --local-branch-scan falls back to git ls-remote/fetch/merge-base
+        when the default branch shows no work; the GraphQL batch
+        supersedes it whenever the provider supports batching. With
+        --touching and literal paths, GitHub's undocumented
+        tree-commit-info page is consulted anonymously to skip compares
+        for forks whose last commit touching the target equals upstream's;
+        best-effort, off the API budgets. --no-tree-commit-info disables it.
         topic:NAME evaluates the fork networks of the best repositories
         representing a GitHub topic (selection by stars + fork-network size +
         recency; cap with --topic-repos N, default 5). Each record gains an
@@ -220,6 +236,16 @@ Nouns and verbs:
         priorScore/priorReasons and, when neither --query nor --shortlist
         is set, lists matched forks before unmatched (heat order within
         each lane); never hides forks or changes heat.
+        --touching PATH|GLOB only lists forks whose own ahead commits touched
+        the path (repeatable; ** matches directories). Uses the
+        merge-base-relative compare already cached per fork, so re-runs cost
+        no API calls. Adds a "touching" block to each record; unmatched
+        forks are omitted, except two kinds that are printed so the reader
+        can see the gap or the proof: forks whose file list hit the
+        provider's 300-file cap (touching.partial: true) and forks cleared
+        by the last-touch proof without a compare (touching.reason:
+        "last_touch"). Neither is a path match. NDJSON only (rejects --csv),
+        and needs compare data (rejects --tier 1).
         --sibling-sim / --no-sibling-sim toggles P2 distant-relation
         discovery: one /search/repositories + ~50 README fetches + one
         batched embed. The default upstream_readme mode folds the max cosine

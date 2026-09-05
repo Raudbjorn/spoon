@@ -12,6 +12,7 @@ import (
 )
 
 func TestGoldenSettingsSectionsAt80x24(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	profiles := []struct {
 		name, color, glyph string
 		termenv            termenv.Profile

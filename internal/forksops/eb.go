@@ -103,6 +103,9 @@ func fitNormalNormal(y, sigma []float64, priorScale float64) (ebFit, bool) {
 	// DerSimonian–Laird: fixed-effect weights w = σ⁻².
 	sumW, sumW2, sumWY := 0.0, 0.0, 0.0
 	for i := range y {
+		if !(sigma[i] > 0) || math.IsInf(sigma[i], 0) {
+			return ebFit{Regime: EBRegimePooled}, false
+		}
 		w := 1 / (sigma[i] * sigma[i])
 		sumW += w
 		sumW2 += w * w
