@@ -123,6 +123,8 @@ func TestSpnForksEval_fromExport_flagValidation(t *testing.T) {
 		args []string
 		want string
 	}{
+		{[]string{"o/r", "--judgments", judgmentsPath, "--shortlist", "10"}, "--shortlist requires --from-export"},
+		{[]string{"o/r", "--judgments", judgmentsPath, "--shortlist", "3"}, "--shortlist requires --from-export"},
 		{[]string{"o/r", "--from-export", exportPath, "--judgments", judgmentsPath, "--rank-variant", "bogus"}, "--rank-variant must be one of"},
 		{[]string{"o/r", "--judgments", judgmentsPath, "--rank-variant", "pscore"}, "--rank-variant requires --from-export"},
 		{[]string{"o/r", "--from-export", filepath.Join(t.TempDir(), "missing.json"), "--judgments", judgmentsPath}, "read export file"},
@@ -173,6 +175,43 @@ func TestSpnForksEval_fromExport_heatVariantUsesSamePoolAsRankModel(t *testing.T
 		}
 		if len(rep.Ranked) != forksops.RankPoolCap {
 			t.Errorf("%s: ranked rows=%d want %d", variant, len(rep.Ranked), forksops.RankPoolCap)
+		}
+	}
+}
+
+func TestSpnForksEvalSmallRankPoolJSON(t *testing.T) {
+	isolateSpoonRun(t)
+	exportPath, judgmentsPath := writeOfflineFixtures(t)
+	var ex struct {
+		Forks []json.RawMessage `json:"forks"`
+	}
+	if err := json.Unmarshal([]byte(offlineExport), &ex); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []int{1, 2} {
+		raw, err := json.Marshal(struct {
+			Forks []json.RawMessage `json:"forks"`
+		}{ex.Forks[:n]})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(exportPath, raw, 0600); err != nil {
+			t.Fatal(err)
+		}
+		var stdout, stderr bytes.Buffer
+		if code := runEvalWith([]string{"o/r", "--from-export", exportPath, "--judgments", judgmentsPath, "--rank-variant", "erank"}, &stdout, &stderr); code != 0 {
+			t.Fatalf("n=%d: exit=%d: %s", n, code, stderr.String())
+		}
+		var report struct {
+			RankReport map[string]any `json:"rankReport"`
+		}
+		if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+			t.Fatal(err)
+		}
+		for _, key := range []string{"poth", "cpothK"} {
+			if value, ok := report.RankReport[key]; !ok || value != nil {
+				t.Fatalf("%s should be null: %s", key, stdout.String())
+			}
 		}
 	}
 }

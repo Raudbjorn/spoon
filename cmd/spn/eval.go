@@ -39,6 +39,7 @@ func runEvalWith(args []string, stdout, stderr io.Writer) int {
 func runEvalWithEffective(args []string, stdout, stderr io.Writer, effective config.EffectiveConfig, env map[string]string) int {
 	var repoArg, judgmentsPath, exportPath, rankVariant string
 	shortlistN := evalDefaultShortlistN
+	shortlistSet := false
 	priorScale := 0.0
 	forgeFlag := strings.ToLower(effective.Forge.Provider.Value)
 	forgeHost := effective.Forge.Host.Value
@@ -84,6 +85,7 @@ func runEvalWithEffective(args []string, stdout, stderr io.Writer, effective con
 				return agentio.NewError(agentio.CodeBadInput, "--shortlist must be a positive integer", agentio.RemediationBadInput("forks", "eval")).Emit(stderr)
 			}
 			shortlistN = n
+			shortlistSet = true
 		case "--prior-scale":
 			if i+1 >= len(args) {
 				return agentio.NewError(agentio.CodeBadInput, "--prior-scale requires a value", agentio.RemediationBadInput("forks", "eval")).Emit(stderr)
@@ -151,7 +153,7 @@ func runEvalWithEffective(args []string, stdout, stderr io.Writer, effective con
 		if rankVariant != "" {
 			return agentio.NewError(agentio.CodeBadInput, "--rank-variant requires --from-export", agentio.RemediationBadInput("forks", "eval")).Emit(stderr)
 		}
-		if shortlistN != evalDefaultShortlistN {
+		if shortlistSet {
 			return agentio.NewError(agentio.CodeBadInput, "--shortlist requires --from-export", agentio.RemediationBadInput("forks", "eval")).Emit(stderr)
 		}
 		if priorScale != 0.0 {

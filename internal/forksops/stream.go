@@ -1559,7 +1559,7 @@ func applyEB(pool []Result, mu, sigma []float64, priorScale float64) RankReport 
 // the whole of the --shortlist path, exposed so offline evaluation can
 // rank synthetic Results (heat score + confidence) without a Stream.
 //
-// The O(n²)–O(n³) rank pass is bounded to the strongest rankPoolCap forks
+// The numerical rank pass is bounded to the strongest rankPoolCap forks
 // by heat — a fork outside that pool would not make a small shortlist
 // anyway. Options fields read: ShortlistN, ShortlistRule, RankDiagnostics,
 // EB, PriorScale. Entries of pool within the cap are mutated (Rank, EB,
@@ -1584,7 +1584,7 @@ func RankResults(pool []Result, opts Options) ([]Result, RankReport) {
 		ebReport = applyEB(pool, mu, sigma, opts.PriorScale)
 	}
 	p := winProbs(mu, sigma)
-	stats := computeRankStatsFrom(p, opts.ShortlistN)
+	stats := computeRankStatsFrom(mu, sigma, p, opts.ShortlistN)
 	var residuals []float64
 	if opts.RankDiagnostics {
 		residuals = pothResiduals(p)

@@ -48,7 +48,7 @@ func TestRankGolden(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.Name, func(t *testing.T) {
 			p := winProbs(c.Mu, c.Sigma)
-			got := computeRankStatsFrom(p, c.K)
+			got := computeRankStatsFrom(c.Mu, c.Sigma, p, c.K)
 			if len(got) != len(c.Want) {
 				t.Fatalf("len=%d want %d", len(got), len(c.Want))
 			}
