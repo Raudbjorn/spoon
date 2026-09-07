@@ -19,3 +19,11 @@ experiments/**/*_vectors.json
 
 # Isolated implementation worktrees
 .worktrees/
+
+# makepkg build output (PKGBUILD source/pkg dirs, git source cache, packages, logs)
+packaging/arch/src/
+packaging/arch/pkg/
+packaging/arch/spoon/
+packaging/arch/*.old/
+packaging/arch/*.pkg.tar.zst
+packaging/arch/*.log

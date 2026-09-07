@@ -7,7 +7,7 @@
 
 pkgname=spoon-git
 _pkgname=spoon
-pkgver=r225.907fcfd
+pkgver=r349.cc4d44b
 pkgrel=1
 pkgdesc="Find useful forks of a Git repo (spoon) + agent-shaped CLI (spn)"
 arch=('x86_64' 'aarch64')
@@ -18,10 +18,11 @@ makedepends=('go>=1.26' 'git')
 optdepends=(
     'github-cli: GitHub authentication for spoon/spn'
     'glab: GitLab authentication for spoon'
+    'onnxruntime: local semantic search via FastEmbed'
 )
 provides=("spoon=${pkgver}" "spn=${pkgver}")
 conflicts=('spoon' 'spn')
-source=("${_pkgname}::git+${url}.git#branch=main")
+source=("${_pkgname}::git+ssh://git@github.com/Raudbjorn/${_pkgname}.git#branch=main")
 sha256sums=('SKIP')
 install="${pkgname}.install"
 

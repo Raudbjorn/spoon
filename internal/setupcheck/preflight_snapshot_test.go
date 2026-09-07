@@ -132,6 +132,93 @@ func TestProviderConfigPathUsesSnapshotPlatformPrecedence(t *testing.T) {
 	}
 }
 
+func TestLocalProviderProbeFallsBackToGHAuthTokenForKeyringCredentials(t *testing.T) {
+	configHome := t.TempDir()
+	hostsPath := filepath.Join(configHome, "gh", "hosts.yml")
+	if err := os.MkdirAll(filepath.Dir(hostsPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// A keyring-backed gh login: the host is configured but hosts.yml carries
+	// no oauth_token anywhere, since the real credential lives in the OS
+	// keyring rather than on disk.
+	config := "github.com:\n  users:\n    octocat:\n"
+	if err := os.WriteFile(hostsPath, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	binDir := writeFakeExecutable(t, "gh", "#!/bin/sh\necho keyring-token\n")
+
+	auth, err := LocalProviderProbe(context.Background(), ProviderInput{
+		Provider:    forge.ProviderGitHub,
+		Environment: map[string]string{"XDG_CONFIG_HOME": configHome, "PATH": binDir},
+	}, DenyHTTPTransport{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !auth.Configured {
+		t.Fatalf("did not fall back to gh auth token for a keyring-backed login: %+v", auth)
+	}
+}
+
+func TestLocalProviderProbeGHAuthTokenFallbackFailsClosed(t *testing.T) {
+	configHome := t.TempDir()
+	hostsPath := filepath.Join(configHome, "gh", "hosts.yml")
+	if err := os.MkdirAll(filepath.Dir(hostsPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	config := "github.com:\n  users:\n    octocat:\n"
+	if err := os.WriteFile(hostsPath, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	binDir := writeFakeExecutable(t, "gh", "#!/bin/sh\nexit 1\n")
+
+	auth, err := LocalProviderProbe(context.Background(), ProviderInput{
+		Provider:    forge.ProviderGitHub,
+		Environment: map[string]string{"XDG_CONFIG_HOME": configHome, "PATH": binDir},
+	}, DenyHTTPTransport{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if auth.Configured {
+		t.Fatal("a failing gh auth token call was treated as a configured credential")
+	}
+}
+
+func TestLocalProviderProbeSkipsGHAuthTokenWhenHostNotConfigured(t *testing.T) {
+	sentinel := filepath.Join(t.TempDir(), "executed")
+	binDir := writeFakeExecutable(t, "gh", "#!/bin/sh\n: > \""+sentinel+"\"\necho token\n")
+
+	// hosts.yml has no github.com entry at all -- there is nothing to fall
+	// back on, so gh must not be invoked.
+	auth, err := LocalProviderProbe(context.Background(), ProviderInput{
+		Provider:    forge.ProviderGitHub,
+		Environment: map[string]string{"XDG_CONFIG_HOME": t.TempDir(), "PATH": binDir},
+	}, DenyHTTPTransport{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if auth.Configured {
+		t.Fatal("reported configured with no hosts.yml entry and no env token")
+	}
+	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+		t.Fatal("gh auth token was invoked despite no host entry to fall back from")
+	}
+}
+
+// writeFakeExecutable writes an executable script named command into a
+// fresh temp directory and returns that directory, for use as a PATH entry
+// in an injected environment snapshot.
+func writeFakeExecutable(t *testing.T, command, script string) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("fake executable requires a POSIX executable")
+	}
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, command), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return binDir
+}
+
 func installProviderCLITrap(t *testing.T, command string) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {

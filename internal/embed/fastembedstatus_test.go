@@ -3,6 +3,7 @@ package embed
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -69,7 +70,9 @@ func TestFastEmbedStatusReportsModelAndRuntimeSeparately(t *testing.T) {
 		}
 	})
 
-	t.Run("unset ONNX_PATH is unknown, never claimed ready", func(t *testing.T) {
+	t.Run("unset ONNX_PATH with no default candidate is unknown, never claimed ready", func(t *testing.T) {
+		restore := stubDefaultONNXRuntimePaths(t, nil)
+		defer restore()
 		got := ProbeFastEmbed(cacheDir, map[string]string{})
 		if got.RuntimeFound {
 			t.Fatal("claimed to have found a runtime without looking at one")
@@ -80,6 +83,59 @@ func TestFastEmbedStatusReportsModelAndRuntimeSeparately(t *testing.T) {
 			t.Errorf("summary %q does not tell the user what to set: ", got.Summary)
 		}
 	})
+
+	t.Run("unset ONNX_PATH with a default candidate present is auto-detected", func(t *testing.T) {
+		lib := filepath.Join(cacheDir, "default-libonnxruntime.so")
+		if err := os.WriteFile(lib, []byte("not really a library"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		restore := stubDefaultONNXRuntimePaths(t, []string{lib})
+		defer restore()
+		got := ProbeFastEmbed(cacheDir, map[string]string{})
+		if !got.RuntimeFound {
+			t.Fatalf("did not auto-detect default runtime at %s: %q", lib, got.Summary)
+		}
+		if got.RuntimePath != lib {
+			t.Errorf("RuntimePath = %q, want %q", got.RuntimePath, lib)
+		}
+		if !got.RuntimeAutoDetected {
+			t.Error("auto-detected runtime not flagged as such")
+		}
+		if !strings.Contains(got.Summary, "default search path") {
+			t.Errorf("summary %q does not say the path was auto-detected", got.Summary)
+		}
+		if !got.Ready() {
+			t.Errorf("model present and runtime auto-detected but Ready() is false: %q", got.Summary)
+		}
+	})
+
+	t.Run("explicit ONNX_PATH takes precedence over a default candidate", func(t *testing.T) {
+		defaultLib := filepath.Join(cacheDir, "default-libonnxruntime.so")
+		explicitLib := filepath.Join(cacheDir, "explicit-libonnxruntime.so")
+		for _, lib := range []string{defaultLib, explicitLib} {
+			if err := os.WriteFile(lib, []byte("not really a library"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		restore := stubDefaultONNXRuntimePaths(t, []string{defaultLib})
+		defer restore()
+		got := ProbeFastEmbed(cacheDir, map[string]string{"ONNX_PATH": explicitLib})
+		if got.RuntimePath != explicitLib {
+			t.Errorf("RuntimePath = %q, want explicit %q", got.RuntimePath, explicitLib)
+		}
+		if got.RuntimeAutoDetected {
+			t.Error("explicit ONNX_PATH incorrectly flagged as auto-detected")
+		}
+	})
+}
+
+// stubDefaultONNXRuntimePaths overrides the default candidate search paths
+// for the current GOOS and returns a func restoring the original value.
+func stubDefaultONNXRuntimePaths(t *testing.T, candidates []string) func() {
+	t.Helper()
+	original := defaultONNXRuntimePaths[runtime.GOOS]
+	defaultONNXRuntimePaths[runtime.GOOS] = candidates
+	return func() { defaultONNXRuntimePaths[runtime.GOOS] = original }
 }
 
 func TestProbeFastEmbedProfileAndListOptions(t *testing.T) {
