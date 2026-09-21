@@ -177,7 +177,8 @@ type PenaltyInput struct {
 	ParentTopics []string
 	// OwnerProfile is the fork-owner's farmer signal (P3). Nil means
 	// "no signal" — the fetch was skipped, failed, or the provider
-	// does not implement the owner-profile path.
+	// does not implement the owner-profile path. A profile whose
+	// Complete flag is false is a partial sample and never penalizes.
 	OwnerProfile *forge.OwnerProfile
 }
 
@@ -336,8 +337,8 @@ func ApplyPenalties(result *HeatResult, p PenaltyInput, weights map[string]float
 
 	// P3 fork-farmer penalty: owner has many mostly-fork repos and few
 	// of their own. Cached upstream (FetchUserRepos) with a hard cap
-	// of 30 distinct owners per run; nil OwnerProfile means "no
-	// signal" → no penalty.
+	// of 30 live fetches per run; nil OwnerProfile means "no signal"
+	// → no penalty, and so does a partial (incomplete) sample.
 	if pen := forkFarmerFromWeights(p.OwnerProfile, weights); pen < 0 {
 		result.Score += pen
 		if result.Score < 0 {

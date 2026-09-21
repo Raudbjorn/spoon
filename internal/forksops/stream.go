@@ -137,7 +137,9 @@ type Options struct {
 	// run will make (P3). 0 → ownerProfileDefaultCap (30). The cap
 	// protects the 5000/h rate budget on popular repos (3000+ forks
 	// imply 3000+ distinct owners). When the cap is hit, remaining
-	// forks are scored with OwnerProfile == nil (no penalty).
+	// forks are scored with OwnerProfile == nil (no penalty), unless a
+	// fresh cached profile exists: cache hits cost nothing and do not
+	// count against the cap.
 	OwnerProfileCap int
 
 	// OwnerCacheTTL overrides the owner-profile on-disk cache TTL.
@@ -766,11 +768,12 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 					// degraded (BudgetSkip), not silently zeroed.
 					enrich := eligible(s.fork.ID, i)
 					// Owner-profile fetch (P3): best-first dispatch, capped at
-					// OwnerProfileCap calls per run. The remaining forks are
-					// scored with Fork.OwnerProfile == nil (no penalty).
-					// The fetch is gated on the same headroom floor as
-					// compare/contributors; a low-headroom run skips owner
-					// hard bound; headroom is the courtesy floor.
+					// OwnerProfileCap live calls per run. A fresh cached profile
+					// is used first and costs neither a cap slot nor headroom.
+					// Forks left without a profile are scored with
+					// Fork.OwnerProfile == nil (no penalty). The live fetch is
+					// gated on the same headroom floor as compare/contributors;
+					// the cap is the hard bound, headroom is the courtesy floor.
 					if s.fork.Owner != "" {
 						ownerCap := opts.OwnerProfileCap
 						if ownerCap <= 0 {
@@ -783,6 +786,13 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 								ForkID: s.fork.ID,
 								Reason: "owner profile fetch only implemented for the GitHub provider",
 							}
+						} else if rec := gh.LoadCachedOwnerProfile(s.fork.Owner, opts.OwnerCacheTTL); rec != nil {
+							// A fresh stored profile costs no API budget, so it is read before
+							// the cap, reserve and client gates, the same rule the stored
+							// compare follows below: an exhausted cap or drained window still
+							// serves cached evidence, and a hit never spends a cap slot.
+							s.fork.OwnerProfile = rec.Profile()
+							r.Fork.OwnerProfile = s.fork.OwnerProfile
 						} else if int(ownerProfileCalls.Load()) >= ownerCap {
 							r.OwnerProfileSkip = &StageSkip{
 								Stage:  "owner_profile",
@@ -806,14 +816,7 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 								ctx, s.fork.Owner, opts.OwnerCacheTTL,
 							)
 							if rec != nil {
-								s.fork.OwnerProfile = &forge.OwnerProfile{
-									Login:            rec.Login,
-									TotalPublicRepos: rec.TotalPublicRepos,
-									ForkCount:        rec.ForkCount,
-									SignalForkCount:  rec.SignalForkCount,
-									NonForkRepoCount: rec.NonForkRepoCount,
-									FetchedAt:        rec.FetchedAt,
-								}
+								s.fork.OwnerProfile = rec.Profile()
 								// Mirror onto r.Fork so the emitted Result
 								// matches what scoring saw. The worker
 								// snapshot for the result was already taken

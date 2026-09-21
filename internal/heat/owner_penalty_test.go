@@ -14,10 +14,16 @@ func TestComputeForkFarmerPenalty_NilProfile(t *testing.T) {
 	}
 }
 
+// Every fixture below that reads a whole-account outcome sets
+// Complete: true. The penalty now requires a complete sample (see
+// TestComputeForkFarmerPenalty_PartialSampleNoPenalty), so without it
+// the zero-penalty cases would pass on the completeness gate instead
+// of on the rule each one names, and the penalized cases would be 0.
+
 // TestComputeForkFarmerPenalty_TooFewForks covers the floor: a user
 // with < 5 forks is too small to characterize. 0 penalty.
 func TestComputeForkFarmerPenalty_TooFewForks(t *testing.T) {
-	prof := &forge.OwnerProfile{ForkCount: 3, SignalForkCount: 0, NonForkRepoCount: 0}
+	prof := &forge.OwnerProfile{ForkCount: 3, SignalForkCount: 0, NonForkRepoCount: 0, Complete: true}
 	if got := ComputeForkFarmerPenalty(prof); got != 0 {
 		t.Errorf("too-few-forks: got %v, want 0", got)
 	}
@@ -27,9 +33,27 @@ func TestComputeForkFarmerPenalty_TooFewForks(t *testing.T) {
 // maintainer path: a user with ≥ 2 non-fork repos is probably a
 // developer, not a farmer. 0 penalty.
 func TestComputeForkFarmerPenalty_LooksLikeMaintainer(t *testing.T) {
-	prof := &forge.OwnerProfile{ForkCount: 15, SignalForkCount: 8, NonForkRepoCount: 5}
+	prof := &forge.OwnerProfile{ForkCount: 15, SignalForkCount: 8, NonForkRepoCount: 5, Complete: true}
 	if got := ComputeForkFarmerPenalty(prof); got != 0 {
 		t.Errorf("maintainer: got %v, want 0", got)
+	}
+}
+
+// TestComputeForkFarmerPenalty_PartialSampleNoPenalty reproduces the
+// research report's fixture at the scoring layer: 500 stale forks
+// fill the retained sample and the owner's two original repositories
+// fall outside it, so the sample shows 0 non-fork repos. That absence
+// is an artifact of the page cap, not evidence, so the penalty must be
+// 0. The same counts on a complete sample are the -10 case.
+func TestComputeForkFarmerPenalty_PartialSampleNoPenalty(t *testing.T) {
+	partial := &forge.OwnerProfile{ForkCount: 500, SignalForkCount: 0, NonForkRepoCount: 0, Complete: false}
+	if got := ComputeForkFarmerPenalty(partial); got != 0 {
+		t.Errorf("partial sample: got %v, want 0", got)
+	}
+	complete := *partial
+	complete.Complete = true
+	if got := ComputeForkFarmerPenalty(&complete); got != -10 {
+		t.Errorf("same counts, complete sample: got %v, want -10", got)
 	}
 }
 
@@ -37,7 +61,7 @@ func TestComputeForkFarmerPenalty_LooksLikeMaintainer(t *testing.T) {
 // farmer signal: 15 forks, 0 maintained, 0 non-fork repos.
 // signalFraction = 0/15 = 0 → magnitude = 1 - 0/0.4 = 1 → -10.
 func TestComputeForkFarmerPenalty_FarmerFull(t *testing.T) {
-	prof := &forge.OwnerProfile{ForkCount: 15, SignalForkCount: 0, NonForkRepoCount: 0}
+	prof := &forge.OwnerProfile{ForkCount: 15, SignalForkCount: 0, NonForkRepoCount: 0, Complete: true}
 	if got := ComputeForkFarmerPenalty(prof); got != -10 {
 		t.Errorf("full farmer: got %v, want -10", got)
 	}
@@ -47,7 +71,7 @@ func TestComputeForkFarmerPenalty_FarmerFull(t *testing.T) {
 // signal: 15 forks, 3 maintained, 0 non-fork.
 // signalFraction = 3/15 = 0.2 → magnitude = 1 - 0.2/0.4 = 0.5 → -5.
 func TestComputeForkFarmerPenalty_FarmerPartial(t *testing.T) {
-	prof := &forge.OwnerProfile{ForkCount: 15, SignalForkCount: 3, NonForkRepoCount: 0}
+	prof := &forge.OwnerProfile{ForkCount: 15, SignalForkCount: 3, NonForkRepoCount: 0, Complete: true}
 	if got := ComputeForkFarmerPenalty(prof); got != -5 {
 		t.Errorf("partial farmer: got %v, want -5", got)
 	}
@@ -57,7 +81,7 @@ func TestComputeForkFarmerPenalty_FarmerPartial(t *testing.T) {
 // 15 forks, 6 maintained, 0 non-fork.
 // signalFraction = 6/15 = 0.4 → no penalty.
 func TestComputeForkFarmerPenalty_AboveThreshold(t *testing.T) {
-	prof := &forge.OwnerProfile{ForkCount: 15, SignalForkCount: 6, NonForkRepoCount: 0}
+	prof := &forge.OwnerProfile{ForkCount: 15, SignalForkCount: 6, NonForkRepoCount: 0, Complete: true}
 	if got := ComputeForkFarmerPenalty(prof); got != 0 {
 		t.Errorf("above threshold: got %v, want 0", got)
 	}
@@ -68,7 +92,7 @@ func TestComputeForkFarmerPenalty_AboveThreshold(t *testing.T) {
 // by 10.
 func TestApplyPenalties_ForkFarmerRecorded(t *testing.T) {
 	result := HeatResult{Score: 60}
-	prof := &forge.OwnerProfile{ForkCount: 15, SignalForkCount: 0, NonForkRepoCount: 0}
+	prof := &forge.OwnerProfile{ForkCount: 15, SignalForkCount: 0, NonForkRepoCount: 0, Complete: true}
 	ApplyPenalties(&result, PenaltyInput{
 		AheadKnown:       true,
 		AheadAllBranches: 5,
@@ -94,7 +118,7 @@ func TestApplyPenalties_ForkFarmerRecorded(t *testing.T) {
 // path: weight 0 disables the penalty.
 func TestApplyPenalties_ForkFarmerDisabledByWeight(t *testing.T) {
 	result := HeatResult{Score: 60}
-	prof := &forge.OwnerProfile{ForkCount: 15, SignalForkCount: 0, NonForkRepoCount: 0}
+	prof := &forge.OwnerProfile{ForkCount: 15, SignalForkCount: 0, NonForkRepoCount: 0, Complete: true}
 	ApplyPenalties(&result, PenaltyInput{
 		AheadKnown:       true,
 		AheadAllBranches: 5,

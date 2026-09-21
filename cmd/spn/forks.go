@@ -1398,6 +1398,11 @@ func forkToJSONDetailed(r forksops.Result, details detailOptions) map[string]any
 			"unresolved":            r.Coverage.Unresolved,
 		}
 	}
+	// ownerEvidence is the owner sample behind the fork_farmer penalty.
+	// A nil profile means the fetch was skipped or failed, so no block.
+	if r.Fork.OwnerProfile != nil {
+		out["ownerEvidence"] = ownerEvidenceToJSON(r.Fork.OwnerProfile)
+	}
 	// priorScore/priorReasons are emitted only when --priors ran (a match
 	// scored > 0, or a deny-only match left reasons). NDJSON-only, like
 	// visibility/momentum/networkRank; CSV is intentionally unchanged.

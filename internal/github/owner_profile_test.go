@@ -3,10 +3,15 @@ package github
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"regexp"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -39,11 +44,14 @@ func newTestClientREST(t *testing.T, srv *httptest.Server) *Client {
 // resulting record has the expected totals. Cache TTL of -1 forces
 // a live fetch.
 func TestFetchUserRepos_BuildsProfileFromPages(t *testing.T) {
+	// FetchUserRepos writes the cache even for a live fetch; keep it out
+	// of the real ~/.cache/spoon.
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	recent := time.Now().Add(-30 * 24 * time.Hour).UTC().Format(time.RFC3339)
 	ancient := time.Now().Add(-3 * 365 * 24 * time.Hour).UTC().Format(time.RFC3339)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasSuffix(r.URL.Path, "/users/alice/repos") {
-			t.Errorf("unexpected path: %s", r.URL.Path)
+		if r.URL.Path != "/users/alice/repos" {
+			t.Errorf("unexpected path: %q, want /users/alice/repos (no leading //)", r.URL.Path)
 		}
 		switch r.URL.Query().Get("page") {
 		case "", "1":
@@ -51,7 +59,7 @@ func TestFetchUserRepos_BuildsProfileFromPages(t *testing.T) {
 			q := next.Query()
 			q.Set("page", "2")
 			next.RawQuery = q.Encode()
-			w.Header().Set("Link", "<"+next.String()+">; rel=\"next\"")
+			w.Header().Set("Link", "<https://api.github.com"+next.String()+">; rel=\"next\"")
 			_, _ = w.Write([]byte(`[
 				{"fork": true,  "pushed_at": "` + recent + `"},
 				{"fork": true,  "pushed_at": "` + ancient + `"},
@@ -94,6 +102,9 @@ func TestFetchUserRepos_BuildsProfileFromPages(t *testing.T) {
 	}
 	if rec.FetchedAt.IsZero() {
 		t.Error("FetchedAt should be set")
+	}
+	if !rec.Complete {
+		t.Error("Complete: got false, want true for a two-page account")
 	}
 }
 
@@ -279,5 +290,217 @@ func TestOwnerProfileCache_CaseInsensitive(t *testing.T) {
 	}
 	if got := loadOwnerProfile("alice", ownerProfileTTL); got == nil {
 		t.Error("case-insensitive lookup failed")
+	}
+}
+
+// ownerReposPath is the only shape the owner-repos request may take.
+var ownerReposPath = regexp.MustCompile(`^/users/[^/]+/repos$`)
+
+// ownerPageJSON renders n repos sharing one fork flag and pushed_at.
+func ownerPageJSON(n int, fork bool, pushedAt string) string {
+	var b strings.Builder
+	b.WriteString("[")
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		fmt.Fprintf(&b, `{"fork": %t, "pushed_at": %q}`, fork, pushedAt)
+	}
+	b.WriteString("]")
+	return b.String()
+}
+
+// newPagedOwnerServer serves pages[i] for page i+1 and advertises
+// rel="next" on every page except the last, counting each request.
+// Link headers are absolute, as GitHub sends them; a relative one would be
+// re-joined onto the API root by the client and gain a second slash.
+// It also asserts the request asks for newest-push-first ordering:
+// without an explicit sort GitHub returns full_name ascending, which
+// would make the retained window alphabetical rather than recent.
+func newPagedOwnerServer(t *testing.T, pages []string, requests *atomic.Int32) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		// Exact match, not HasSuffix: a leading slash in the client path
+		// becomes "//users/..." on the wire, which GitHub answers with 404
+		// (read by the caller as "no signal"), and a suffix check hides it.
+		if !ownerReposPath.MatchString(r.URL.Path) {
+			t.Errorf("owner repos request path = %q, want /users/<login>/repos", r.URL.Path)
+		}
+		q := r.URL.Query()
+		if q.Get("sort") != "pushed" || q.Get("direction") != "desc" {
+			t.Errorf("owner repos must be requested newest-push first; got query %q", r.URL.RawQuery)
+		}
+		page := 1
+		if p := q.Get("page"); p != "" {
+			page, _ = strconv.Atoi(p)
+		}
+		if page < 1 || page > len(pages) {
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
+		if page < len(pages) {
+			next := *r.URL
+			nq := next.Query()
+			nq.Set("page", strconv.Itoa(page+1))
+			next.RawQuery = nq.Encode()
+			w.Header().Set("Link", "<https://api.github.com"+next.String()+">; rel=\"next\"")
+		}
+		_, _ = w.Write([]byte(pages[page-1]))
+	}))
+}
+
+// TestFetchUserRepos_StopsAtPageCapWithoutExtraRequest reproduces the
+// report's fixture: 500 stale forks fill the first five pages and two
+// original repos sit on page six. The walker must stop after page five
+// without downloading page six.
+func TestFetchUserRepos_StopsAtPageCapWithoutExtraRequest(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	ancient := time.Now().Add(-3 * 365 * 24 * time.Hour).UTC().Format(time.RFC3339)
+	recent := time.Now().Add(-24 * time.Hour).UTC().Format(time.RFC3339)
+	pages := make([]string, 0, ownerProfilePaginationCap+1)
+	for i := 0; i < ownerProfilePaginationCap; i++ {
+		pages = append(pages, ownerPageJSON(100, true, ancient))
+	}
+	pages = append(pages, ownerPageJSON(2, false, recent))
+
+	var requests atomic.Int32
+	srv := newPagedOwnerServer(t, pages, &requests)
+	defer srv.Close()
+
+	c := newTestClientREST(t, srv)
+	rec, _, err := c.FetchUserRepos(context.Background(), "farmerish", -1)
+	if err != nil {
+		t.Fatalf("FetchUserRepos: %v", err)
+	}
+	if rec == nil {
+		t.Fatal("expected non-nil record")
+	}
+	if got := requests.Load(); got != ownerProfilePaginationCap {
+		t.Errorf("requests: got %d, want %d (page %d must not be fetched)", got, ownerProfilePaginationCap, ownerProfilePaginationCap+1)
+	}
+	if rec.TotalPublicRepos != 500 || rec.ForkCount != 500 || rec.NonForkRepoCount != 0 {
+		t.Errorf("sample: got total=%d forks=%d nonfork=%d, want 500/500/0", rec.TotalPublicRepos, rec.ForkCount, rec.NonForkRepoCount)
+	}
+	// The two originals were never seen, so the record must say the
+	// sample is partial; otherwise "0 non-fork repos" reads as fact.
+	if rec.Complete {
+		t.Error("Complete: got true, want false for an account with a sixth page")
+	}
+	if rec.SampleOrder != ownerProfileSampleOrder {
+		t.Errorf("SampleOrder: got %q, want %q", rec.SampleOrder, ownerProfileSampleOrder)
+	}
+}
+
+// TestOwnerProfileRecord_ProfileCarriesEveryField pins the conversion
+// the pipeline uses for both cached and live records. A dropped field
+// here would silently turn a partial sample back into a "complete" one
+// (Complete defaults to false, but the counts and order would be lost).
+func TestOwnerProfileRecord_ProfileCarriesEveryField(t *testing.T) {
+	fetched := time.Now().UTC().Truncate(time.Second)
+	rec := &ownerProfileRecord{
+		Login:            "alice",
+		TotalPublicRepos: 9,
+		ForkCount:        6,
+		SignalForkCount:  2,
+		NonForkRepoCount: 3,
+		Complete:         true,
+		SampleOrder:      ownerProfileSampleOrder,
+		FetchedAt:        fetched,
+	}
+	got := rec.Profile()
+	if got == nil {
+		t.Fatal("Profile() returned nil")
+	}
+	if got.Login != "alice" || got.TotalPublicRepos != 9 || got.ForkCount != 6 ||
+		got.SignalForkCount != 2 || got.NonForkRepoCount != 3 ||
+		!got.Complete || got.SampleOrder != ownerProfileSampleOrder || !got.FetchedAt.Equal(fetched) {
+		t.Errorf("Profile() dropped or changed a field: %+v", got)
+	}
+	if (*ownerProfileRecord)(nil).Profile() != nil {
+		t.Error("nil record must convert to a nil profile")
+	}
+}
+
+// TestOwnerProfileCache_PreCompletenessFileIsMiss covers invalidation:
+// a cache file written before records carried a schema version cannot
+// say whether its sample was complete, so it must be refetched rather
+// than trusted.
+func TestOwnerProfileCache_PreCompletenessFileIsMiss(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	path, err := ownerProfileCachePath("alice")
+	if err != nil {
+		t.Fatalf("ownerProfileCachePath: %v", err)
+	}
+	legacy := `{"login":"alice","total_public_repos":500,"fork_count":500,` +
+		`"signal_fork_count":0,"non_fork_repo_count":0,"fetched_at":"` +
+		time.Now().UTC().Format(time.RFC3339) + `"}`
+	if err := os.WriteFile(path, []byte(legacy), 0o644); err != nil {
+		t.Fatalf("write legacy record: %v", err)
+	}
+	if got := loadOwnerProfile("alice", ownerProfileTTL); got != nil {
+		t.Errorf("pre-completeness record must be a cache miss, got %+v", got)
+	}
+}
+
+// TestFetchUserRepos_ExactlyCapPagesIssuesCapRequests pins the other
+// side of the boundary: an account of exactly 500 repos has no next
+// link on page five and needs exactly five requests.
+func TestFetchUserRepos_ExactlyCapPagesIssuesCapRequests(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	ancient := time.Now().Add(-3 * 365 * 24 * time.Hour).UTC().Format(time.RFC3339)
+	pages := make([]string, 0, ownerProfilePaginationCap)
+	for i := 0; i < ownerProfilePaginationCap; i++ {
+		pages = append(pages, ownerPageJSON(100, true, ancient))
+	}
+
+	var requests atomic.Int32
+	srv := newPagedOwnerServer(t, pages, &requests)
+	defer srv.Close()
+
+	c := newTestClientREST(t, srv)
+	rec, _, err := c.FetchUserRepos(context.Background(), "exactly500", -1)
+	if err != nil {
+		t.Fatalf("FetchUserRepos: %v", err)
+	}
+	if rec == nil {
+		t.Fatal("expected non-nil record")
+	}
+	if got := requests.Load(); got != ownerProfilePaginationCap {
+		t.Errorf("requests: got %d, want %d", got, ownerProfilePaginationCap)
+	}
+	if rec.TotalPublicRepos != 500 {
+		t.Errorf("TotalPublicRepos: got %d, want 500", rec.TotalPublicRepos)
+	}
+	if !rec.Complete {
+		t.Error("Complete: got false, want true when page five has no next link")
+	}
+}
+
+// TestOwnerProfileCache_RoundTripKeepsCompleteness covers both flag
+// values: a partial sample must not come back from disk looking
+// complete, and a complete one must not be downgraded.
+func TestOwnerProfileCache_RoundTripKeepsCompleteness(t *testing.T) {
+	for _, complete := range []bool{true, false} {
+		t.Setenv("XDG_CACHE_HOME", t.TempDir())
+		rec := &ownerProfileRecord{
+			Login:       "alice",
+			Complete:    complete,
+			SampleOrder: ownerProfileSampleOrder,
+			FetchedAt:   time.Now().UTC(),
+		}
+		if err := saveOwnerProfile(rec); err != nil {
+			t.Fatalf("complete=%v: saveOwnerProfile: %v", complete, err)
+		}
+		got := LoadCachedOwnerProfile("alice", ownerProfileTTL)
+		if got == nil {
+			t.Fatalf("complete=%v: expected a cache hit", complete)
+		}
+		if got.Complete != complete || got.SampleOrder != ownerProfileSampleOrder {
+			t.Errorf("complete=%v: got Complete=%v SampleOrder=%q", complete, got.Complete, got.SampleOrder)
+		}
+		if got.SchemaVersion != ownerProfileSchemaVersion {
+			t.Errorf("complete=%v: SchemaVersion: got %d, want %d", complete, got.SchemaVersion, ownerProfileSchemaVersion)
+		}
 	}
 }

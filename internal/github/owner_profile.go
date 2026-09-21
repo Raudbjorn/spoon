@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/svnbjrn/spoon/internal/forge"
 )
 
 // ownerProfileRecord is the on-disk cache shape. The fetch function
@@ -17,12 +19,42 @@ import (
 // the persistence shape in this package to avoid pulling forge into
 // the cache-key path.
 type ownerProfileRecord struct {
-	Login            string    `json:"login"`
-	TotalPublicRepos int       `json:"total_public_repos"`
-	ForkCount        int       `json:"fork_count"`
-	SignalForkCount  int       `json:"signal_fork_count"`
-	NonForkRepoCount int       `json:"non_fork_repo_count"`
-	FetchedAt        time.Time `json:"fetched_at"`
+	// SchemaVersion lets loadOwnerProfile reject files written under
+	// older sampling semantics; saveOwnerProfile stamps it.
+	SchemaVersion int    `json:"schema_version"`
+	Login         string `json:"login"`
+	// TotalPublicRepos counts the repositories observed in the sample,
+	// not GitHub's public_repos; it equals the account total only when
+	// Complete is true.
+	TotalPublicRepos int `json:"total_public_repos"`
+	ForkCount        int `json:"fork_count"`
+	SignalForkCount  int `json:"signal_fork_count"`
+	NonForkRepoCount int `json:"non_fork_repo_count"`
+	// Complete is false when the account had more repositories than the
+	// page cap allowed us to read, so the counts describe only the
+	// SampleOrder-ordered prefix.
+	Complete    bool      `json:"complete"`
+	SampleOrder string    `json:"sample_order"`
+	FetchedAt   time.Time `json:"fetched_at"`
+}
+
+// Profile converts the cached record into the provider-neutral
+// forge.OwnerProfile, carrying the completeness and sample-order
+// fields so consumers can tell a full account from a window of one.
+func (r *ownerProfileRecord) Profile() *forge.OwnerProfile {
+	if r == nil {
+		return nil
+	}
+	return &forge.OwnerProfile{
+		Login:            r.Login,
+		TotalPublicRepos: r.TotalPublicRepos,
+		ForkCount:        r.ForkCount,
+		SignalForkCount:  r.SignalForkCount,
+		NonForkRepoCount: r.NonForkRepoCount,
+		Complete:         r.Complete,
+		SampleOrder:      r.SampleOrder,
+		FetchedAt:        r.FetchedAt,
+	}
 }
 
 // ownerProfileTTL bounds the on-disk cache freshness. 24h is the
@@ -30,13 +62,22 @@ type ownerProfileRecord struct {
 // Options.OwnerCacheTTL.
 const ownerProfileTTL = 24 * time.Hour
 
+// ownerProfileSchemaVersion is bumped when the sampling semantics
+// change in a way that makes older cache files untrustworthy. v2 added
+// the explicit sample order and the Complete flag.
+const ownerProfileSchemaVersion = 2
+
+// ownerProfileSampleOrder names the ordering requested from GitHub,
+// recorded with the sample so a reader knows which window was kept.
+const ownerProfileSampleOrder = "pushed_desc"
+
 // ownerProfilePaginationCap bounds how many pages the FetchUserRepos
 // walker reads. 5 pages × 100 = 500 repos, which is enough to
 // characterize the vast majority of GitHub users' fork-farmer signal
-// before the cost outweighs the value. Larger accounts see the
-// partial-window approximation; the deviation vs the full history is
-// empirically small because the farmer signal is dominated by the
-// top of the recent-pushed ordering.
+// before the cost outweighs the value. Larger accounts keep only the
+// 500 most recently pushed repositories and are recorded as
+// incomplete: the counts are a window, so consumers must not infer
+// that repositories outside it do not exist.
 const ownerProfilePaginationCap = 5
 
 // loadOwnerProfile returns the cached record for login (case-insensitive)
@@ -61,6 +102,11 @@ func loadOwnerProfile(login string, ttl time.Duration) *ownerProfileRecord {
 	if err := json.Unmarshal(data, &rec); err != nil {
 		return nil
 	}
+	if rec.SchemaVersion != ownerProfileSchemaVersion {
+		// Written under older sampling semantics (no completeness or
+		// sample order): refetch rather than trust it as a full history.
+		return nil
+	}
 	if ttl < 0 {
 		// negative TTL = "expired"; reserved for tests.
 		return nil
@@ -83,7 +129,9 @@ func saveOwnerProfile(rec *ownerProfileRecord) error {
 	if err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(rec, "", "  ")
+	stamped := *rec
+	stamped.SchemaVersion = ownerProfileSchemaVersion
+	data, err := json.MarshalIndent(&stamped, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal owner profile: %w", err)
 	}
@@ -106,6 +154,15 @@ func ownerProfileCachePath(login string) (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, strings.ToLower(login)+".json"), nil
+}
+
+// LoadCachedOwnerProfile returns the fresh on-disk record for login, or
+// nil on a miss (absent, stale, unreadable, or written under an older
+// schema). It performs no network I/O, so callers can consult it
+// without spending rate budget or a per-run fetch cap. A ttl of 0
+// disables the read.
+func LoadCachedOwnerProfile(login string, ttl time.Duration) *ownerProfileRecord {
+	return loadOwnerProfile(login, ttl)
 }
 
 // FetchUserRepos returns the owner profile for the given login,
@@ -140,21 +197,23 @@ func (c *Client) FetchUserRepos(ctx context.Context, login string, ttl time.Dura
 	return rec, false, nil
 }
 
-// fetchOwnerProfileLive walks /users/{login}/repos?type=owner paginated
-// and tallies the farmer signal. Returns (nil, *RateLimitError) on
-// rate-limit so the caller can decide to skip or retry; (nil, nil) on
-// 404 (private/renamed user); (nil, err) for any other failure.
+// fetchOwnerProfileLive walks /users/{login}/repos?type=owner, newest
+// push first, for at most ownerProfilePaginationCap pages and tallies
+// the farmer signal. The sort is explicit because GitHub's default is
+// full_name ascending, which would keep an alphabetical window rather
+// than the recent one. When more pages existed the record is marked
+// incomplete. Returns (nil, *RateLimitError) on rate-limit so the
+// caller can decide to skip or retry; (nil, nil) on 404
+// (private/renamed user); (nil, err) for any other failure.
 func (c *Client) fetchOwnerProfileLive(ctx context.Context, login string) (*ownerProfileRecord, error) {
-	rec := &ownerProfileRecord{Login: login}
+	rec := &ownerProfileRecord{Login: login, SampleOrder: ownerProfileSampleOrder}
 	called := false
-	path := fmt.Sprintf("/users/%s/repos?type=owner&per_page=100", login)
-	pages := 0
-	err := c.GetPaginated(ctx, path, func(raw json.RawMessage) error {
+	// No leading slash: go-gh joins it onto the API root, so "/users/..."
+	// goes out as "//users/..." and GitHub answers 404, which this fetch
+	// reads as "no signal" -- the profile would silently never load.
+	path := fmt.Sprintf("users/%s/repos?type=owner&sort=pushed&direction=desc&per_page=100", login)
+	truncated, err := c.getPaginated(ctx, path, ownerProfilePaginationCap, func(raw json.RawMessage) error {
 		called = true
-		pages++
-		if pages > ownerProfilePaginationCap {
-			return errStopPagination
-		}
 		var page []struct {
 			Fork     bool   `json:"fork"`
 			PushedAt string `json:"pushed_at"`
@@ -175,7 +234,7 @@ func (c *Client) fetchOwnerProfileLive(ctx context.Context, login string) (*owne
 		}
 		return nil
 	})
-	if err != nil && err != errStopPagination {
+	if err != nil {
 		// GetPaginated already converts rate-limit HTTP errors into
 		// *RateLimitError. Pass them through unchanged.
 		if called {
@@ -199,6 +258,7 @@ func (c *Client) fetchOwnerProfileLive(ctx context.Context, login string) (*owne
 		// No pages returned: empty user. Not an error.
 		return nil, nil
 	}
+	rec.Complete = !truncated
 	rec.FetchedAt = time.Now().UTC()
 	return rec, nil
 }
@@ -207,7 +267,8 @@ func (c *Client) fetchOwnerProfileLive(ctx context.Context, login string) (*owne
 // within the last year. The pushed_at field on /users/{login}/repos
 // reflects the most-recent push to ANY branch, which is the
 // "is the fork actually being maintained" signal the farmer
-// detection relies on.
+// detection relies on. It shows the repository is active, not who
+// authored the pushed changes.
 func isRecentPush(pushedAt string) bool {
 	if pushedAt == "" {
 		return false
