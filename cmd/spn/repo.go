@@ -63,12 +63,14 @@ func runRepoWith(args []string, stdout, stderr io.Writer) int {
 
 func runRepoWithEffective(args []string, stdout, stderr io.Writer, effective config.EffectiveConfig) int {
 	if len(args) == 0 {
-		return agentio.NewError(agentio.CodeBadInput, "missing verb (centrality)", agentio.RemediationBadInput("repo", "")).Emit(stderr)
+		return agentio.NewError(agentio.CodeBadInput, "missing verb (centrality|search)", agentio.RemediationBadInput("repo", "")).Emit(stderr)
 	}
 	verb, rest := args[0], args[1:]
 	switch verb {
 	case "centrality":
 		return doRepoCentrality(rest, stdout, stderr, effective)
+	case "search":
+		return doRepoSearch(rest, stdout, stderr, effective)
 	default:
 		return agentio.NewError(agentio.CodeBadInput, "unknown verb: "+verb, agentio.RemediationBadInput("repo", "")).Emit(stderr)
 	}

@@ -1,6 +1,6 @@
 ---
 name: using-spn-forks
-description: Use when discovering or scoring forks of a repository, comparing fork novelty, clustering forks by novelty, ranking forks against a free-text intent, or fetching directory centrality data for a repo. Applies when the `spn` CLI is on PATH (`command -v spn`). Output is NDJSON streaming by default; pass `--csv` for batched tabular output.
+description: Use when discovering or scoring forks of a repository, finding candidate repositories to prospect with a GitHub search query, comparing fork novelty, clustering forks by novelty, ranking forks against a free-text intent, or fetching directory centrality data for a repo. Applies when the `spn` CLI is on PATH (`command -v spn`). Output is NDJSON streaming by default; pass `--csv` for batched tabular output.
 ---
 
 # Using `spn` for Fork Discovery and Clustering
@@ -13,8 +13,9 @@ description: Use when discovering or scoring forks of a repository, comparing fo
 - Bulk-scoring forks for triage
 - Clustering forks by novelty (runs in-process; no service required)
 - Per-directory centrality for a repo (which directories drive activity)
+- Finding candidate repositories to prospect (`spn repo search`), then scanning their fork networks
 
-Do NOT use for: PR review work (see the `using-spn` skill for that) or non-fork repository analysis.
+Do NOT use for: PR review work (see the `using-spn` skill for that) or non-fork repository analysis. `spn repo search` only finds repositories to scan; it reports GitHub search metadata (stars, topics, `pushed_at`), not fork-network evidence.
 
 **First check:** `command -v spn`. If absent, fall back to hand-rolled `gh api` calls; otherwise prefer spn for streamed, scored output.
 
@@ -33,6 +34,22 @@ spn forks list owner/repo --csv > forks.csv
 ```
 
 Collects all enriched forks and emits a single CSV blob on stdout with a fixed header (24 columns covering identity, T1, T2, T3, cluster, and shortlist rank fields — the six rank columns are empty without `--shortlist`). Per-fork enrichment errors still go to stderr as compact JSON. Use this when downstream tooling expects tabular data; use the default NDJSON when streaming or jq pipelines fit better.
+
+## Finding candidate repositories (`spn repo search`)
+
+`spn repo search '<github-query>'` makes one search request and prints one JSON envelope: `query`, `total_count`, `incomplete_results`, `fetched`, `page`, `next_page`, `items[]` (`full_name`, `url`, `description`, `language`, `stars`, `forks_count`, `is_fork`, `archived`, `pushed_at`, `topics`). `--limit` is 1-100 (default 30), `--sort` is `best-match` (default), `stars`, `forks` or `updated`. It never pages by itself: pass `--page N` to follow `next_page`.
+
+- GitHub serves only the first 1,000 results, so `page * limit` must not exceed 1,000 and `next_page` is `null` at the boundary. `total_count` can exceed 1,000; `incomplete_results: true` means GitHub timed out and the page may be missing matches.
+- The query is sent as written. Forks are excluded by GitHub unless the query says `fork:true` (include) or `fork:only`.
+- Search has its own, smaller rate window than the core API; exhausting it yields `rate_limited` with `retry_after_seconds`. A malformed query is `bad_input` (exit 2, do not retry). Zero results is exit 0 with a stderr warning and an empty `items`.
+
+```bash
+spn repo search 'terminal language:Go' --limit 30 \
+  | jq -r '.items[] | select(.forks_count > 0) | .full_name' \
+  | xargs -n1 spn forks list
+```
+
+A hit is a candidate, not network coverage. For a fork hit (`is_fork: true`), `spn forks list <fork>` compares against the network root but enumerates that fork's own children; pass the source repository to evaluate the network. Search items carry no `parent`/`source`, so resolve it yourself (`gh api repos/<owner>/<repo> --jq .source.full_name`).
 
 ## Output Contract (shared with the PR-review skill)
 
@@ -109,3 +126,4 @@ Every shortlist run writes one `{"info":{"code":"rank_report",...}}` line to std
 | `spn forks list <repo> --no-batch-compare` | Restore one REST compare per fork instead of the pre-dispatch GraphQL batch |
 | `spn forks list <repo> --no-tree-commit-info` | Disable the `tree-commit-info` last-touch skip (default: on only with `--touching` and literal paths) |
 | `spn repo centrality <owner/repo>` | Per-directory centrality JSON for the upstream repo |
+| `spn repo search '<github-query>' [--limit N] [--page N] [--sort S]` | One bounded GitHub repository search; one JSON envelope of candidates |
