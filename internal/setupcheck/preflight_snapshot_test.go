@@ -205,6 +205,127 @@ func TestLocalProviderProbeSkipsGHAuthTokenWhenHostNotConfigured(t *testing.T) {
 	}
 }
 
+// On Windows a command is runnable by its extension, not a permission bit
+// (os.Stat reports none), and the binary is "gh.exe" rather than "gh". These run
+// on any host by passing goos explicitly, like providerConfigPathForOS.
+func TestLookupInPathForOS(t *testing.T) {
+	type file struct {
+		name string
+		mode os.FileMode
+		dir  bool // create a directory instead of a regular file
+	}
+	tests := []struct {
+		name    string
+		goos    string
+		files   []file
+		pathKey string            // key holding the search directory in the snapshot
+		env     map[string]string // extra snapshot entries
+		want    string            // base name expected to resolve; "" means not found
+	}{
+		{
+			name: "windows resolves gh.exe with no execute bit, PATH keyed as Path",
+			goos: "windows", pathKey: "Path",
+			files: []file{{name: "gh.exe", mode: 0o600}},
+			want:  "gh.exe",
+		},
+		{
+			name: "windows does not run an extensionless file",
+			goos: "windows", pathKey: "Path",
+			files: []file{{name: "gh", mode: 0o755}},
+		},
+		{
+			name: "windows honours PATHEXT from the snapshot",
+			goos: "windows", pathKey: "Path",
+			files: []file{{name: "gh.cmd", mode: 0o600}},
+			env:   map[string]string{"PATHEXT": ".COM;.EXE;.CMD"},
+			want:  "gh.cmd",
+		},
+		{
+			name: "windows PATHEXT limits the extensions tried",
+			goos: "windows", pathKey: "Path",
+			files: []file{{name: "gh.cmd", mode: 0o600}},
+			env:   map[string]string{"PATHEXT": ".EXE"},
+		},
+		{
+			name: "windows falls back to the default extensions without PATHEXT",
+			goos: "windows", pathKey: "PATH",
+			files: []file{{name: "gh.bat", mode: 0o600}},
+			want:  "gh.bat",
+		},
+		{
+			name: "windows skips a directory named like the command",
+			goos: "windows", pathKey: "Path",
+			files: []file{{name: "gh.exe", dir: true}},
+		},
+		{
+			name: "unix runs an executable file",
+			goos: "linux", pathKey: "PATH",
+			files: []file{{name: "gh", mode: 0o755}},
+			want:  "gh",
+		},
+		{
+			name: "unix requires an execute bit",
+			goos: "linux", pathKey: "PATH",
+			files: []file{{name: "gh", mode: 0o644}},
+		},
+		{
+			name: "unix does not append Windows extensions",
+			goos: "linux", pathKey: "PATH",
+			files: []file{{name: "gh.exe", mode: 0o755}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.goos != "windows" && runtime.GOOS == "windows" {
+				t.Skip("execute bits are not meaningful on a Windows host")
+			}
+			dir := t.TempDir()
+			for _, f := range tt.files {
+				path := filepath.Join(dir, f.name)
+				if f.dir {
+					if err := os.Mkdir(path, 0o755); err != nil {
+						t.Fatal(err)
+					}
+				} else if err := os.WriteFile(path, nil, f.mode); err != nil {
+					t.Fatal(err)
+				}
+			}
+			env := map[string]string{tt.pathKey: dir}
+			for name, value := range tt.env {
+				env[name] = value
+			}
+
+			got, ok := lookupInPathForOS(env, "gh", tt.goos)
+			if tt.want == "" {
+				if ok {
+					t.Fatalf("resolved %q, want not found", got)
+				}
+				return
+			}
+			if want := filepath.Join(dir, tt.want); !ok || got != want {
+				t.Fatalf("resolved (%q, %v), want (%q, true)", got, ok, want)
+			}
+		})
+	}
+}
+
+// A PATH entry without the command must not end the search: the extension
+// loop added for Windows is nested inside the directory loop, so a later entry
+// still has to be reached.
+func TestLookupInPathForOSSearchesEveryPathEntry(t *testing.T) {
+	empty, dir := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "gh.exe"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{"Path": empty + string(filepath.ListSeparator) + dir}
+
+	got, ok := lookupInPathForOS(env, "gh", "windows")
+	if want := filepath.Join(dir, "gh.exe"); !ok || got != want {
+		t.Fatalf("resolved (%q, %v), want (%q, true)", got, ok, want)
+	}
+}
+
 // keyringLoginEnvironment returns an environment snapshot for a keyring-backed
 // gh login: hosts.yml names github.com but holds no oauth_token, and a gh
 // executable is on PATH so the probe reaches the ghAuthToken fallback.

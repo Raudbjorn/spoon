@@ -45,24 +45,65 @@ func environSlice(env map[string]string) []string {
 	return out
 }
 
-// lookupInPath resolves name against the PATH recorded in the given
-// environment snapshot, not the live process environment, so the probe
-// stays a function of its inputs and is stubbable in tests.
+// lookupInPath resolves the bare command name against the PATH recorded in
+// the given environment snapshot, not the live process environment, so the
+// probe stays a function of its inputs and is stubbable in tests.
 func lookupInPath(env map[string]string, name string) (string, bool) {
-	pathValue := environmentValueForOS(env, "PATH", runtime.GOOS)
+	return lookupInPathForOS(env, name, runtime.GOOS)
+}
+
+// lookupInPathForOS applies goos's rule for what is runnable. On Windows that
+// is an extension from the snapshot's PATHEXT ("gh" is installed as gh.exe),
+// because os.Stat reports no execute permission bits there; elsewhere the file
+// needs one. name must be a bare command name without an extension.
+func lookupInPathForOS(env map[string]string, name, goos string) (string, bool) {
+	pathValue := environmentValueForOS(env, "PATH", goos)
 	if pathValue == "" {
 		return "", false
+	}
+	names := []string{name}
+	if goos == "windows" {
+		names = nil
+		for _, ext := range windowsPathExts(env) {
+			names = append(names, name+ext)
+		}
 	}
 	for _, dir := range filepath.SplitList(pathValue) {
 		if dir == "" {
 			continue
 		}
-		candidate := filepath.Join(dir, name)
-		if info, err := os.Stat(candidate); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
-			return candidate, true
+		for _, candidateName := range names {
+			candidate := filepath.Join(dir, candidateName)
+			info, err := os.Stat(candidate)
+			if err != nil || info.IsDir() {
+				continue
+			}
+			if goos == "windows" || info.Mode()&0o111 != 0 {
+				return candidate, true
+			}
 		}
 	}
 	return "", false
+}
+
+// windowsPathExts returns the executable extensions from the snapshot's
+// PATHEXT, lowercased and dot-prefixed, or the defaults exec.LookPath uses
+// when the snapshot names none.
+func windowsPathExts(env map[string]string) []string {
+	var exts []string
+	for _, ext := range strings.Split(strings.ToLower(environmentValueForOS(env, "PATHEXT", "windows")), ";") {
+		if ext == "" {
+			continue
+		}
+		if ext[0] != '.' {
+			ext = "." + ext
+		}
+		exts = append(exts, ext)
+	}
+	if len(exts) == 0 {
+		return []string{".com", ".exe", ".bat", ".cmd"}
+	}
+	return exts
 }
 
 // DenyHTTPTransport is the fail-closed transport passed to local preflights.
