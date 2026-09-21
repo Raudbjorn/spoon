@@ -22,7 +22,7 @@ optdepends=(
 )
 provides=("spoon=${pkgver}" "spn=${pkgver}")
 conflicts=('spoon' 'spn')
-source=("${_pkgname}::git+ssh://git@github.com/Raudbjorn/${_pkgname}.git#branch=main")
+source=("${_pkgname}::git+${url}.git#branch=main")
 sha256sums=('SKIP')
 install="${pkgname}.install"
 
