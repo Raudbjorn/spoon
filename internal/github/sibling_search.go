@@ -31,9 +31,9 @@ type siblingSearchResponse struct {
 // GitHub /search/repositories endpoint. It picks the first topic from
 // the upstream's topic set as the search key, fetches the top
 // candidateCandidateLimit (default 50) non-fork repos matching that
-// topic, embeds their READMEs alongside the upstream's README, and
-// returns the max cosine of the upstream README to any candidate
-// README.
+// topic (minus the seed's own lineage, see siblingExclusions), embeds
+// their READMEs alongside the upstream's README, and returns the max
+// cosine of the upstream README to any candidate README.
 //
 // The implementation is intentionally bounded: one /search call +
 // one batched Embed call + N README fetches, regardless of
@@ -139,7 +139,17 @@ func (s *GHSiblingSearcher) siblingReadmes(ctx context.Context, parent forge.Par
 	}
 	texts := make([]string, 0, len(resp.Items))
 	kept := 0
+	excluded := siblingExclusions(parent)
+	seen := make(map[string]struct{}, len(resp.Items))
 	for _, hit := range resp.Items {
+		key := strings.ToLower(hit.FullName)
+		if _, skip := excluded[key]; skip {
+			continue
+		}
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
 		owner, name, ok := splitFullName(hit.FullName)
 		if !ok {
 			continue
@@ -155,6 +165,21 @@ func (s *GHSiblingSearcher) siblingReadmes(ctx context.Context, parent forge.Par
 		return nil, 0, nil
 	}
 	return texts, kept, nil
+}
+
+// siblingExclusions returns the lowercase full names a search hit must not
+// match: the seed, its network root, and its direct parent. The search is
+// keyed on the seed's own first topic, so a non-fork seed always finds
+// itself, and a fork's README is a near-copy of its lineage's. Either would
+// score ~1.0 as a "distant relation".
+func siblingExclusions(parent forge.ParentData) map[string]struct{} {
+	out := make(map[string]struct{}, 3)
+	for _, name := range []string{parent.FullName, parent.SourceFullPath, parent.DirectParentFullPath} {
+		if name != "" {
+			out[strings.ToLower(name)] = struct{}{}
+		}
+	}
+	return out
 }
 
 func (s *GHSiblingSearcher) SearchForkIntentSiblings(
