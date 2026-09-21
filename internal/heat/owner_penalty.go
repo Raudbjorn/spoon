@@ -27,6 +27,9 @@ const ownerFarmerMaxPenalty = -10.0
 // The penalty is 0 when:
 //
 //   - profile == nil (no signal available)
+//   - !profile.Complete (the sample is a window of the account; "few
+//     non-fork repos" cannot be shown from part of it, so a negative
+//     classification is not supported)
 //   - profile.ForkCount < ownerFarmerForkFloor (too few forks to characterize)
 //   - profile.NonForkRepoCount >= 2 (likely a maintainer, not a farmer)
 //
@@ -42,6 +45,9 @@ const ownerFarmerMaxPenalty = -10.0
 // penalty when the user has 50 stale forks sitting in their account.
 func ComputeForkFarmerPenalty(profile *forge.OwnerProfile) float64 {
 	if profile == nil {
+		return 0
+	}
+	if !profile.Complete {
 		return 0
 	}
 	if profile.ForkCount < ownerFarmerForkFloor {

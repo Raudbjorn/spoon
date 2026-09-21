@@ -200,8 +200,9 @@ type T1Data struct {
 	Topics []string
 
 	// OwnerProfile is the owner-farmer signal (P3). Populated by the fork
-	// pipeline after a GitHub owner-history fetch (capped at 30 distinct
-	// owners per run). Nil means "no signal" — see OwnerProfile's doc.
+	// pipeline from a fresh cached profile or a GitHub owner-history
+	// fetch (live fetches capped at 30 distinct owners per run). Nil
+	// means "no signal" — see OwnerProfile's doc.
 	OwnerProfile *OwnerProfile
 	// LinearHistory is true when the fork's tip is reachable from upstream's
 	// tip without crossing a merge commit. False (or nil) when the fork has
@@ -232,13 +233,27 @@ type T1Data struct {
 // skipped (rate cap reached), failed (404/403), or the provider does
 // not implement the owner-profile path (GitLab, Gitea). Consumers
 // must treat nil as "no penalty", not as "owner is a farmer".
+//
+// The counts describe the repositories that were sampled, in
+// SampleOrder. They describe the whole account only when Complete is
+// true; a partial sample can show that an owner has original work but
+// can never show that they have none.
 type OwnerProfile struct {
-	Login            string
+	Login string
+	// TotalPublicRepos is the number of repositories observed in the
+	// sample, not GitHub's public_repos count.
 	TotalPublicRepos int
 	ForkCount        int
 	SignalForkCount  int // forks pushed within 1 year AND fork: true
 	NonForkRepoCount int // public non-fork repos
-	FetchedAt        time.Time
+	// Complete is true when the whole account fit inside the sample.
+	// False means partial or unknown, which includes profiles persisted
+	// before this field existed.
+	Complete bool
+	// SampleOrder names the order the sample was drawn in, e.g.
+	// "pushed_desc" (most recently pushed first).
+	SampleOrder string
+	FetchedAt   time.Time
 }
 
 // FileDiff is a single file's change statistics from a compare call.

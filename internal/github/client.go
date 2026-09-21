@@ -602,22 +602,35 @@ func (c *Client) GetRaw(ctx context.Context, path string) (*http.Response, error
 }
 
 func (c *Client) GetPaginated(ctx context.Context, path string, onPage func(json.RawMessage) error) error {
-	for path != "" {
+	_, err := c.getPaginated(ctx, path, 0, onPage)
+	return err
+}
+
+// getPaginated walks rel="next" links like GetPaginated but, when
+// maxPages > 0, stops after that many pages without requesting the
+// next one. truncated reports whether a next link was still on offer
+// at the stop, so a caller can tell "exactly maxPages of results" from
+// "more results existed". maxPages <= 0 means unbounded.
+func (c *Client) getPaginated(ctx context.Context, path string, maxPages int, onPage func(json.RawMessage) error) (truncated bool, err error) {
+	for pages := 1; path != ""; pages++ {
 		resp, err := c.doGet(ctx, path)
 		if err != nil {
-			return err
+			return false, err
 		}
 		body, readErr := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if readErr != nil {
-			return fmt.Errorf("reading response: %w", readErr)
+			return false, fmt.Errorf("reading response: %w", readErr)
 		}
 		if err := onPage(body); err != nil {
-			return err
+			return false, err
 		}
 		path = nextPageURL(resp.Header.Get("Link"))
+		if maxPages > 0 && pages >= maxPages {
+			return path != "", nil
+		}
 	}
-	return nil
+	return false, nil
 }
 
 func (c *Client) updateRateLimitFor(b *backend, resp *http.Response) {
