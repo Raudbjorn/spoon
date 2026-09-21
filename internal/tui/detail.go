@@ -226,14 +226,18 @@ func (m Model) detailBody() string {
 	}
 
 	var badges []string
+	// OpenPRCount is open PRs/MRs targeting this fork, not upstream, and
+	// SubForkCount is descendants, already shown in the row above.
 	if sf.Fork.OpenPRCount > 0 {
-		badges = append(badges, "Has open PR to upstream")
+		badges = append(badges, fmt.Sprintf("%d open PR(s) on this fork", sf.Fork.OpenPRCount))
 	}
 	if sf.Fork.ReleaseCount > 0 {
 		badges = append(badges, fmt.Sprintf("%d release(s)", sf.Fork.ReleaseCount))
 	}
-	if sf.Fork.SubForkCount > 0 {
-		badges = append(badges, "Fork of fork")
+	// Ancestry needs a known depth: IsForkOfFork is unreliable on the REST
+	// fallback (seed != root, true for every fork there).
+	if sf.Fork.DepthFromRoot > 1 && sf.Fork.ParentFullPath != "" {
+		badges = append(badges, "Fork of "+sf.Fork.ParentFullPath)
 	}
 	if len(badges) > 0 {
 		writeLine("")

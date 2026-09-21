@@ -238,7 +238,7 @@ surface signals up to 40 pts, T2 divergence up to 40, T3 behavior up to 20):
 
 - `recency` — exp-decay since last push, half-life adapted to upstream pace
 - `stars` — independent star count (log-scaled)
-- `sub_forks` — fork-of-fork activity
+- `sub_forks` — forks of this fork (descendants)
 - `releases` — tagged releases
 - `mna` — meaningful net additions (lines added beyond upstream)
 - `sync_ratio` — how much of the divergence is the fork's own work
