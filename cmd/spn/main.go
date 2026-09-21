@@ -272,6 +272,20 @@ Nouns and verbs:
         A reranker outage degrades to cosine order with a warning; --voyage or
         --rerank without a key is an error, not a silent fallback.
   repo centrality <owner/repo> [--forge github] [--forge-host H]
+  repo search "<github-query>" [--limit N] [--page N] [--sort S] [--forge github]
+        One bounded GitHub repository search (one request; never pages on its
+        own). Prints one JSON envelope {query, total_count, incomplete_results,
+        fetched, page, next_page, items[]}; each item carries full_name, url,
+        description, language, stars, forks_count, is_fork, archived, pushed_at
+        and topics. --limit N is results per page (1-100, default 30); --page N
+        starts at 1. page*limit must not exceed GitHub's 1000-result cap, and
+        next_page is null once no further page is reachable. --sort is
+        best-match (default), stars, forks or updated.
+        The query is sent as written and forks are excluded by GitHub unless it
+        says fork:true (include) or fork:only. Zero results is exit 0 with a
+        stderr warning. A hit is a candidate, not fork-network coverage: chain
+        it into 'spn forks list <owner/repo>'. Search has its own, smaller rate
+        window than the core API.
 
 Output:
   Success: bare JSON on stdout (single value for reads; NDJSON for forks list).

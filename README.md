@@ -182,9 +182,31 @@ spn forks list topic:zig [--topic-repos 5] [...]
 spn search "oauth rate limiting" [--repo owner/repo] [--top N] [--voyage]
 spn forks eval <repo> --judgments FILE [--from-export EXPORT --rank-variant V]
 spn repo centrality <owner/repo>
+spn repo search "<github-query>" [--limit N] [--page N] [--sort S]
 ```
 
 Run `spn --help` for the complete flag surface and mutation policy.
+
+`spn repo search` is one bounded GitHub repository search: a single request,
+never paged on its own, that finds candidates for the fork pipeline. It prints
+one JSON envelope (`query`, `total_count`, `incomplete_results`, `fetched`,
+`page`, `next_page`, `items[]`); follow `next_page` yourself for more. GitHub
+serves only the first 1,000 results of any query, so `next_page` is `null` once
+no further page is reachable, and search draws on its own, smaller rate window
+than the core API. The query is sent as written, so forks are excluded unless it
+says `fork:true` or `fork:only`.
+
+```sh
+spn repo search 'terminal language:Go' --limit 30 \
+  | jq -r '.items[] | select(.forks_count > 0) | .full_name' \
+  | xargs -n1 spn forks list
+```
+
+A hit is a candidate, not fork-network coverage. When a hit is itself a fork
+(`is_fork: true`, reachable only with `fork:true` or `fork:only`),
+`spn forks list <fork>` compares against the network root but enumerates that
+fork's own children; pass the source repository to evaluate the network. Search
+items carry no `parent` or `source`, so `repo search` does not resolve one.
 
 `spn forks list` writes every emitted fork snapshot to the global store at
 `$XDG_CONFIG_HOME/spoon/spoon.db` (default `~/.config/spoon/spoon.db`;
