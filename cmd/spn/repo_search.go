@@ -41,65 +41,102 @@ type repoSearchArgs struct {
 }
 
 // parseRepoSearchArgs parses the hand-rolled flag grammar: one positional
-// query and value-taking flags. Limits that belong to GitHub's search API are
-// enforced by gh.ValidateRepoSearch in the caller, not repeated here.
+// query and value-taking flags (`--limit N` or `--limit=N`). `--` ends
+// flags so a query may start with a dash. Limits that belong to GitHub's
+// search API are enforced by gh.ValidateRepoSearch in the caller, not
+// repeated here; cliRepoSearchValidation rewrites per_page to --limit so
+// the user sees the flag they typed.
 func parseRepoSearchArgs(args []string) (repoSearchArgs, error) {
 	out := repoSearchArgs{perPage: gh.RepoSearchDefaultPerPage, page: 1}
 	haveQuery := false
 	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--limit":
+		arg := args[i]
+		if arg == "--" {
+			rest := args[i+1:]
+			if haveQuery && len(rest) > 0 {
+				return out, errors.New("unexpected positional: " + rest[0])
+			}
+			if len(rest) > 1 {
+				return out, errors.New("unexpected positional: " + rest[1])
+			}
+			if len(rest) == 1 {
+				out.query, haveQuery = rest[0], true
+			}
+			break
+		}
+		name, inline, hasInline := arg, "", false
+		if strings.HasPrefix(arg, "--") {
+			name, inline, hasInline = strings.Cut(arg, "=")
+		}
+		take := func(flag string) (string, error) {
+			if hasInline {
+				return inline, nil
+			}
 			if i+1 >= len(args) {
-				return out, errors.New("--limit requires a value")
+				return "", fmt.Errorf("%s requires a value", flag)
 			}
 			i++
-			n, err := strconv.Atoi(args[i])
+			return args[i], nil
+		}
+		switch name {
+		case "--limit":
+			raw, err := take("--limit")
+			if err != nil {
+				return out, err
+			}
+			n, err := strconv.Atoi(raw)
 			if err != nil || n < 1 {
 				return out, errors.New("--limit must be a positive integer")
 			}
 			out.perPage = n
 		case "--page":
-			if i+1 >= len(args) {
-				return out, errors.New("--page requires a value")
+			raw, err := take("--page")
+			if err != nil {
+				return out, err
 			}
-			i++
-			n, err := strconv.Atoi(args[i])
+			n, err := strconv.Atoi(raw)
 			if err != nil || n < 1 {
 				return out, errors.New("--page must be a positive integer")
 			}
 			out.page = n
 		case "--sort":
-			if i+1 >= len(args) {
-				return out, errors.New("--sort requires a value")
+			raw, err := take("--sort")
+			if err != nil {
+				return out, err
 			}
-			i++
-			apiSort, ok := repoSearchSorts[strings.ToLower(args[i])]
+			apiSort, ok := repoSearchSorts[strings.ToLower(raw)]
 			if !ok {
-				return out, fmt.Errorf("unsupported --sort %q (want best-match, stars, forks or updated)", args[i])
+				return out, fmt.Errorf("unsupported --sort %q (want best-match, stars, forks or updated)", raw)
 			}
 			out.sort = apiSort
 		case "--forge":
-			if i+1 >= len(args) {
-				return out, errors.New("--forge requires a value")
+			raw, err := take("--forge")
+			if err != nil {
+				return out, err
 			}
-			i++
-			if forge := strings.ToLower(args[i]); forge != "github" {
+			if forge := strings.ToLower(raw); forge != "github" {
 				return out, errors.New("repo search only supports GitHub; got --forge=" + forge)
 			}
 		default:
-			if strings.HasPrefix(args[i], "--") {
-				return out, errors.New("unknown flag: " + args[i])
+			if strings.HasPrefix(arg, "--") {
+				return out, errors.New("unknown flag: " + arg)
 			}
 			if haveQuery {
-				return out, errors.New("unexpected positional: " + args[i])
+				return out, errors.New("unexpected positional: " + arg)
 			}
-			out.query, haveQuery = args[i], true
+			out.query, haveQuery = arg, true
 		}
 	}
 	if strings.TrimSpace(out.query) == "" {
 		return out, errors.New("missing search query")
 	}
 	return out, nil
+}
+
+// cliRepoSearchValidation rewrites GitHub-API parameter names in a
+// ValidateRepoSearch error so the CLI talks about the flags the user typed.
+func cliRepoSearchValidation(err error) string {
+	return strings.ReplaceAll(err.Error(), "per_page", "--limit")
 }
 
 // repoSearchItemJSON is one candidate in the envelope. Field names follow spn's
@@ -147,7 +184,8 @@ func newRepoSearchEnvelope(query string, page, perPage int, res *gh.RepoSearchRe
 	// Non-nil slices throughout: an agent iterating .items[] or .topics[] must
 	// never meet null.
 	items := make([]repoSearchItemJSON, 0, len(res.Items))
-	for _, it := range res.Items {
+	for i := range res.Items {
+		it := &res.Items[i]
 		topics := it.Topics
 		if topics == nil {
 			topics = []string{}
@@ -219,7 +257,7 @@ func doRepoSearch(args []string, stdout, stderr io.Writer, effective config.Effe
 	// Validated before auth: a typo should not need credentials to surface, and
 	// the search window is too small to spend on a request that cannot succeed.
 	if err := gh.ValidateRepoSearch(parsed.query, opts); err != nil {
-		return badInput(err.Error())
+		return badInput(cliRepoSearchValidation(err))
 	}
 
 	client, _, err := repoCheckAuthWithEffective(effective)

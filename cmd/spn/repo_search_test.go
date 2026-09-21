@@ -154,6 +154,35 @@ func TestSpnRepoSearch_DefaultsAndSortMapping(t *testing.T) {
 	}
 }
 
+func TestSpnRepoSearch_EqualsFormAndEndOfFlags(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		args     []string
+		wantQ    string
+		wantSort string
+		wantPage int
+		wantPer  int
+	}{
+		{"limit equals", []string{"terminal", "--limit=2"}, "terminal", "", 1, 2},
+		{"page and sort equals", []string{"--page=2", "--sort=stars", "terminal", "--limit=10"}, "terminal", "stars", 2, 10},
+		{"forge equals", []string{"terminal", "--forge=GitHub"}, "terminal", "", 1, 30},
+		{"end of flags", []string{"--", "terminal language:Go"}, "terminal language:Go", "", 1, 30},
+		{"end of flags after limit", []string{"--limit=5", "--", "fork:true"}, "fork:true", "", 1, 5},
+		{"dashed query after end of flags", []string{"--", "--sort"}, "--sort", "", 1, 30},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := stubRepoSearch(t, resultWith(1, gh.RepoSearchItem{FullName: "a/b"}))
+			exit, _, stderr := runRepoSearch(t, tc.args...)
+			if exit != 0 {
+				t.Fatalf("exit=%d stderr=%s", exit, stderr)
+			}
+			if rec.query != tc.wantQ || rec.opts.Sort != tc.wantSort || rec.opts.Page != tc.wantPage || rec.opts.PerPage != tc.wantPer {
+				t.Errorf("query=%q opts=%+v, want q=%q sort=%q page=%d per=%d", rec.query, rec.opts, tc.wantQ, tc.wantSort, tc.wantPage, tc.wantPer)
+			}
+		})
+	}
+}
+
 func TestSpnRepoSearch_BadInputNeverReachesGitHub(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -181,6 +210,9 @@ func TestSpnRepoSearch_BadInputNeverReachesGitHub(t *testing.T) {
 		{"sort unknown", []string{"terminal", "--sort", "readme"}},
 		{"forge missing value", []string{"terminal", "--forge"}},
 		{"forge gitlab", []string{"terminal", "--forge", "gitlab"}},
+		{"limit equals above 100", []string{"terminal", "--limit=101"}},
+		{"unknown equals flag", []string{"terminal", "--bogus=1"}},
+		{"end of flags then two positionals", []string{"--", "a", "b"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := stubRepoSearch(t, resultWith(0))
@@ -198,6 +230,30 @@ func TestSpnRepoSearch_BadInputNeverReachesGitHub(t *testing.T) {
 				t.Errorf("searchReposFn called %d times for bad input, want 0", rec.calls)
 			}
 		})
+	}
+}
+
+func TestSpnRepoSearch_ValidationNamesLimitFlag(t *testing.T) {
+	for _, args := range [][]string{
+		{"terminal", "--limit", "101"},
+		{"terminal", "--limit=101"},
+		{"terminal", "--page", "34", "--limit", "30"},
+	} {
+		rec := stubRepoSearch(t, resultWith(0))
+		exit, _, stderr := runRepoSearch(t, args...)
+		if exit != 2 {
+			t.Fatalf("args %v: exit=%d stderr=%s", args, exit, stderr)
+		}
+		msg, _ := errorBody(t, stderr)["message"].(string)
+		if strings.Contains(msg, "per_page") {
+			t.Errorf("args %v: message %q names per_page", args, msg)
+		}
+		if !strings.Contains(msg, "--limit") {
+			t.Errorf("args %v: message %q should name --limit", args, msg)
+		}
+		if rec.calls != 0 {
+			t.Errorf("args %v: searchReposFn called", args)
+		}
 	}
 }
 

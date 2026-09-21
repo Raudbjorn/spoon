@@ -1,6 +1,6 @@
 ---
 name: using-spn-forks
-description: Use when discovering or scoring forks of a repository, finding candidate repositories to prospect with a GitHub search query, comparing fork novelty, clustering forks by novelty, ranking forks against a free-text intent, or fetching directory centrality data for a repo. Applies when the `spn` CLI is on PATH (`command -v spn`). Output is NDJSON streaming by default; pass `--csv` for batched tabular output.
+description: Use when discovering or scoring forks of a repository, finding candidate repositories to prospect with a GitHub search query, comparing fork novelty, clustering forks by novelty, ranking forks against a free-text intent, or fetching directory centrality data for a repo. Applies when the `spn` CLI is on PATH (`command -v spn`). `spn forks list` is NDJSON streaming by default; pass `--csv` for batched tabular output. `spn repo search` prints one JSON envelope and rejects `--csv`.
 ---
 
 # Using `spn` for Fork Discovery and Clustering
@@ -57,6 +57,7 @@ A hit is a candidate, not network coverage. For a fork hit (`is_fork: true`), `s
 | --- | --- | --- |
 | Success — NDJSON | stdout | one JSON object per line |
 | Success — CSV | stdout | header + rows |
+| Success — `repo search` | stdout | one JSON envelope |
 | Failure | stderr | `{"error": {...}}` envelope |
 
 Stdout is exclusively success data. Per-fork enrichment errors go to stderr (NDJSON-shaped); fatal errors go to stderr (full envelope) and exit non-zero.

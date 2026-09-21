@@ -111,6 +111,9 @@ func ValidateRepoSearch(query string, opts RepoSearchOptions) error {
 // Rate limits surface as *RateLimitError and malformed queries satisfy
 // IsQueryRejected, both through the %w wrapping.
 func (c *Client) SearchRepositories(ctx context.Context, query string, opts RepoSearchOptions) (*RepoSearchResult, error) {
+	if c == nil {
+		return nil, errors.New("github client is nil")
+	}
 	path, err := repoSearchPath(query, opts)
 	if err != nil {
 		return nil, err
@@ -121,7 +124,8 @@ func (c *Client) SearchRepositories(ctx context.Context, query string, opts Repo
 	}
 	items := make([]RepoSearchItem, 0, len(resp.Items))
 	seen := make(map[string]struct{}, len(resp.Items))
-	for _, it := range resp.Items {
+	for i := range resp.Items {
+		it := &resp.Items[i]
 		key := strings.ToLower(it.FullName)
 		if key == "" {
 			continue
@@ -130,7 +134,7 @@ func (c *Client) SearchRepositories(ctx context.Context, query string, opts Repo
 			continue
 		}
 		seen[key] = struct{}{}
-		items = append(items, it)
+		items = append(items, *it)
 	}
 	return &RepoSearchResult{TotalCount: resp.TotalCount, IncompleteResults: resp.IncompleteResults, Items: items}, nil
 }
