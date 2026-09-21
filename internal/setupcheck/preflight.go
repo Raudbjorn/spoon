@@ -6,15 +6,105 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/svnbjrn/spoon/internal/config"
 	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/forge"
 	"gopkg.in/yaml.v3"
 )
+
+// ghAuthTokenTimeout bounds the local "gh auth token" fallback below so a
+// hung or misbehaving gh binary can't stall spoon setup.
+const ghAuthTokenTimeout = 2 * time.Second
+
+// ghAuthToken runs "gh auth token" for the given host and returns its
+// trimmed stdout. It is a package-level variable so tests can stub it
+// without invoking a real gh binary.
+var ghAuthToken = func(ctx context.Context, ghPath, host string, env map[string]string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, ghAuthTokenTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, ghPath, "auth", "token", "--hostname", host)
+	cmd.Env = environSlice(env)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func environSlice(env map[string]string) []string {
+	out := make([]string, 0, len(env))
+	for name, value := range env {
+		out = append(out, name+"="+value)
+	}
+	return out
+}
+
+// lookupInPath resolves the bare command name against the PATH recorded in
+// the given environment snapshot, not the live process environment, so the
+// probe stays a function of its inputs and is stubbable in tests.
+func lookupInPath(env map[string]string, name string) (string, bool) {
+	return lookupInPathForOS(env, name, runtime.GOOS)
+}
+
+// lookupInPathForOS applies goos's rule for what is runnable. On Windows that
+// is an extension from the snapshot's PATHEXT ("gh" is installed as gh.exe),
+// because os.Stat reports no execute permission bits there; elsewhere the file
+// needs one. name must be a bare command name without an extension.
+func lookupInPathForOS(env map[string]string, name, goos string) (string, bool) {
+	pathValue := environmentValueForOS(env, "PATH", goos)
+	if pathValue == "" {
+		return "", false
+	}
+	names := []string{name}
+	if goos == "windows" {
+		names = nil
+		for _, ext := range windowsPathExts(env) {
+			names = append(names, name+ext)
+		}
+	}
+	for _, dir := range filepath.SplitList(pathValue) {
+		if dir == "" {
+			continue
+		}
+		for _, candidateName := range names {
+			candidate := filepath.Join(dir, candidateName)
+			info, err := os.Stat(candidate)
+			if err != nil || info.IsDir() {
+				continue
+			}
+			if goos == "windows" || info.Mode()&0o111 != 0 {
+				return candidate, true
+			}
+		}
+	}
+	return "", false
+}
+
+// windowsPathExts returns the executable extensions from the snapshot's
+// PATHEXT, lowercased and dot-prefixed, or the defaults exec.LookPath uses
+// when the snapshot names none.
+func windowsPathExts(env map[string]string) []string {
+	var exts []string
+	for _, ext := range strings.Split(strings.ToLower(environmentValueForOS(env, "PATHEXT", "windows")), ";") {
+		if ext == "" {
+			continue
+		}
+		if ext[0] != '.' {
+			ext = "." + ext
+		}
+		exts = append(exts, ext)
+	}
+	if len(exts) == 0 {
+		return []string{".com", ".exe", ".bat", ".cmd"}
+	}
+	return exts
+}
 
 // DenyHTTPTransport is the fail-closed transport passed to local preflights.
 // Setup checks authenticate from configured local credentials or CLI state; they
@@ -60,9 +150,14 @@ func CheckProvider(ctx context.Context, input ProviderInput, probe ProviderProbe
 	return ProviderResult{Provider: input.Provider, Auth: auth, Ready: input.ConfiguredToken || auth.Configured || auth.Authenticated()}, nil
 }
 
-// LocalProviderProbe checks only credentials from the startup environment
+// LocalProviderProbe checks credentials from the startup environment
 // snapshot, spoon's loaded config, and local gh/glab config files. It never
-// executes provider CLIs or constructs a network client.
+// constructs a network client. For GitHub only, if hosts.yml names the host
+// but stores no plaintext oauth_token (gh's keyring-backed credential
+// storage leaves it empty), it falls back to running the local "gh auth
+// token" CLI, resolved against the environment snapshot's PATH and bounded
+// by ghAuthTokenTimeout — still local-only, fail-closed, and never a
+// network request itself. GitLab's glab has no equivalent fallback.
 func LocalProviderProbe(ctx context.Context, input ProviderInput, transport http.RoundTripper) (forge.AuthInfo, error) {
 	host := input.Host
 	if host == "" {
@@ -92,16 +187,23 @@ func LocalProviderProbe(ctx context.Context, input ProviderInput, transport http
 	if err := ctx.Err(); err != nil {
 		return auth, err
 	}
-	if localProviderTokenConfigured(input.Provider, host, input.Environment) {
+	if localProviderTokenConfigured(ctx, input.Provider, host, input.Environment) {
 		auth.Configured = true
 		return auth, nil
+	}
+	// The gh fallback runs under ctx, so a caller cancelling mid-call kills it
+	// and the command error reads as "no credential". Report the cancellation
+	// rather than an unconfigured result the probe never finished computing.
+	// (gh hitting its own timeout leaves ctx alive and stays fail-closed.)
+	if err := ctx.Err(); err != nil {
+		return auth, err
 	}
 	return auth, nil
 }
 
 const maxProviderConfigBytes = 1 << 20
 
-func localProviderTokenConfigured(provider forge.Provider, host string, env map[string]string) bool {
+func localProviderTokenConfigured(ctx context.Context, provider forge.Provider, host string, env map[string]string) bool {
 	path := providerConfigPath(provider, env)
 	if path == "" {
 		return false
@@ -135,7 +237,7 @@ func localProviderTokenConfigured(provider forge.Provider, host string, env map[
 	if yaml.Unmarshal(data, &cfg) != nil {
 		return false
 	}
-	entry := cfg[host]
+	entry, hostConfigured := cfg[host]
 	if strings.TrimSpace(entry.OAuthToken) != "" {
 		return true
 	}
@@ -145,6 +247,16 @@ func localProviderTokenConfigured(provider forge.Provider, host string, env map[
 	for _, user := range entry.Users {
 		if strings.TrimSpace(user.OAuthToken) != "" {
 			return true
+		}
+	}
+	// gh's keyring-backed credential storage leaves hosts.yml with a host
+	// entry but no oauth_token anywhere in it. hosts.yml alone can't tell us
+	// whether that credential exists, so ask the local gh binary directly.
+	if hostConfigured {
+		if ghPath, ok := lookupInPath(env, "gh"); ok {
+			if token, err := ghAuthToken(ctx, ghPath, host, env); err == nil && token != "" {
+				return true
+			}
 		}
 	}
 	return false

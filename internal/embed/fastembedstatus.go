@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -11,6 +12,62 @@ import (
 // It is read by the binding itself (vendor/github.com/anush008/fastembed-go),
 // not by this package, which is why nothing here consults it at embed time.
 const ONNXPathEnv = "ONNX_PATH"
+
+// defaultONNXRuntimePaths are common system install locations for the ONNX
+// Runtime shared library, checked when ONNX_PATH is unset. The vendored
+// binding's own fallback dlopens the literal filename "onnxruntime.so" off
+// the loader's default search path, which does not match the "lib"-prefixed
+// name distros actually ship (e.g. Arch's onnxruntime package installs
+// /usr/lib/libonnxruntime.so), so that fallback never succeeds in practice.
+var defaultONNXRuntimePaths = map[string][]string{
+	"linux": {
+		"/usr/lib/libonnxruntime.so",
+		"/usr/lib64/libonnxruntime.so",
+		"/usr/lib/x86_64-linux-gnu/libonnxruntime.so",
+		"/usr/local/lib/libonnxruntime.so",
+	},
+	"darwin": {
+		"/opt/homebrew/lib/libonnxruntime.dylib",
+		"/usr/local/lib/libonnxruntime.dylib",
+	},
+}
+
+// defaultONNXRuntimePath returns the first common install-location library
+// that exists as a regular file, for use when ONNX_PATH is unset.
+func defaultONNXRuntimePath() (string, bool) {
+	for _, path := range defaultONNXRuntimePaths[runtime.GOOS] {
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			return path, true
+		}
+	}
+	return "", false
+}
+
+// resolveONNXPathEnv makes the ONNX_PATH the vendored binding will read agree
+// with the runtime ProbeFastEmbedProfile reports: the trimmed value when one is
+// set, otherwise the first default install location that exists.
+//
+// The probe trims ONNX_PATH but the binding does not; it hands any non-empty
+// value to the loader verbatim. Left alone, a blank value would be probed as
+// unset and auto-detected while the binding tried to load a path of
+// whitespace, and a padded path would be probed as found while the binding
+// tried to load the padding too. A blank value with no default to replace it
+// is left as is.
+//
+// The environment is written only when the effective value differs from what
+// is already there, so once it has been resolved later calls, concurrent ones
+// included, leave it alone. os.Getenv and os.Setenv share a lock inside package
+// syscall and every caller computes the same value, so none is needed here.
+func resolveONNXPathEnv() {
+	raw := os.Getenv(ONNXPathEnv)
+	path := strings.TrimSpace(raw)
+	if path == "" {
+		path, _ = defaultONNXRuntimePath()
+	}
+	if path != "" && path != raw {
+		os.Setenv(ONNXPathEnv, path)
+	}
+}
 
 // FastEmbedStatus reports whether the local embedder can be expected to run,
 // with its two prerequisites kept apart.
@@ -29,12 +86,17 @@ type FastEmbedStatus struct {
 	// condition the provisioning step uses to decide it has nothing to do.
 	ModelPresent bool
 
-	// RuntimeFound reports that ONNX_PATH names a file that exists. It is
-	// deliberately weaker than "the runtime loads": this probe does not dlopen
-	// anything, because doing so is expensive and not undoable in-process.
+	// RuntimeFound reports that ONNX_PATH (or, absent that, a common install
+	// location) names a file that exists. It is deliberately weaker than "the
+	// runtime loads": this probe does not dlopen anything, because doing so
+	// is expensive and not undoable in-process.
 	RuntimeFound bool
-	// RuntimePath is the value of ONNX_PATH, if set.
+	// RuntimePath is the value of ONNX_PATH, or the auto-detected default
+	// path when ONNX_PATH was unset and a candidate was found.
 	RuntimePath string
+	// RuntimeAutoDetected reports that RuntimePath came from a default
+	// search location rather than an explicit ONNX_PATH.
+	RuntimeAutoDetected bool
 
 	// Summary is one line fit to show a user.
 	Summary string
@@ -78,6 +140,10 @@ func ProbeFastEmbedProfile(cacheDir, model string, env map[string]string) FastEm
 		if info, err := os.Stat(status.RuntimePath); err == nil && !info.IsDir() {
 			status.RuntimeFound = true
 		}
+	} else if path, ok := defaultONNXRuntimePath(); ok {
+		status.RuntimePath = path
+		status.RuntimeFound = true
+		status.RuntimeAutoDetected = true
 	}
 
 	status.Summary = fastEmbedSummary(status)
@@ -122,6 +188,8 @@ func fastEmbedSummary(s FastEmbedStatus) string {
 	}
 
 	switch {
+	case s.RuntimeFound && s.RuntimeAutoDetected:
+		parts = append(parts, fmt.Sprintf("found at %s (default search path; %s unset)", s.RuntimePath, ONNXPathEnv))
 	case s.RuntimeFound:
 		parts = append(parts, ONNXPathEnv+"="+s.RuntimePath)
 	case s.RuntimePath != "":

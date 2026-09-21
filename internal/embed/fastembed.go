@@ -119,6 +119,12 @@ func NewFastEmbedEmbedder(cfg FastEmbedConfig) (*FastEmbedEmbedder, error) {
 			return nil, err
 		}
 	}
+	// The vendored binding only dlopens a path from ONNX_PATH; unset, it
+	// falls back to a bare "onnxruntime.so" that never matches a distro's
+	// "lib"-prefixed install (see defaultONNXRuntimePath). Set it from a
+	// common install location so the runtime is found without the user
+	// having to export ONNX_PATH by hand.
+	resolveONNXPathEnv()
 	// Populate the cache ourselves before handing off. The vendored downloader
 	// extracts without a containment check, so a crafted archive entry could
 	// write outside CacheDir; retrieveModel skips it entirely once the model

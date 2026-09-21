@@ -191,7 +191,7 @@ func TestNoProductionLipglossColorOutsideTheme(t *testing.T) {
 		}
 		if entry.IsDir() {
 			switch entry.Name() {
-			case ".git", ".worktrees", "vendor":
+			case ".git", ".worktrees", "vendor", "packaging":
 				return filepath.SkipDir
 			}
 			return nil
