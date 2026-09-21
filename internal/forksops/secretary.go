@@ -33,7 +33,7 @@ func ComparePromise(fork forge.T1Data, parentPushedAt time.Time) float64 {
 		p += 2
 	}
 
-	p += float64(fork.OpenPRCount) * 5  // PRs imply real, upstream-aimed changes
+	p += float64(fork.OpenPRCount) * 5  // PRs targeting this fork itself, not upstream: activity signal
 	p += float64(fork.SubForkCount) * 3 // others forked it → notable
 	// Stars are only a faint tiebreak (×0.1): the whole point is that a
 	// no-stars fork with real divergence must outrank a popular-but-stale one,
