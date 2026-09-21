@@ -124,11 +124,7 @@ func NewFastEmbedEmbedder(cfg FastEmbedConfig) (*FastEmbedEmbedder, error) {
 	// "lib"-prefixed install (see defaultONNXRuntimePath). Set it from a
 	// common install location so the runtime is found without the user
 	// having to export ONNX_PATH by hand.
-	if os.Getenv(ONNXPathEnv) == "" {
-		if path, ok := defaultONNXRuntimePath(); ok {
-			os.Setenv(ONNXPathEnv, path)
-		}
-	}
+	resolveONNXPathEnv()
 	// Populate the cache ourselves before handing off. The vendored downloader
 	// extracts without a containment check, so a crafted archive entry could
 	// write outside CacheDir; retrieveModel skips it entirely once the model

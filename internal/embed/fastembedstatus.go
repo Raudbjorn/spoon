@@ -43,6 +43,32 @@ func defaultONNXRuntimePath() (string, bool) {
 	return "", false
 }
 
+// resolveONNXPathEnv makes the ONNX_PATH the vendored binding will read agree
+// with the runtime ProbeFastEmbedProfile reports: the trimmed value when one is
+// set, otherwise the first default install location that exists.
+//
+// The probe trims ONNX_PATH but the binding does not; it hands any non-empty
+// value to the loader verbatim. Left alone, a blank value would be probed as
+// unset and auto-detected while the binding tried to load a path of
+// whitespace, and a padded path would be probed as found while the binding
+// tried to load the padding too. A blank value with no default to replace it
+// is left as is.
+//
+// The environment is written only when the effective value differs from what
+// is already there, so once it has been resolved later calls, concurrent ones
+// included, leave it alone. os.Getenv and os.Setenv share a lock inside package
+// syscall and every caller computes the same value, so none is needed here.
+func resolveONNXPathEnv() {
+	raw := os.Getenv(ONNXPathEnv)
+	path := strings.TrimSpace(raw)
+	if path == "" {
+		path, _ = defaultONNXRuntimePath()
+	}
+	if path != "" && path != raw {
+		os.Setenv(ONNXPathEnv, path)
+	}
+}
+
 // FastEmbedStatus reports whether the local embedder can be expected to run,
 // with its two prerequisites kept apart.
 //
