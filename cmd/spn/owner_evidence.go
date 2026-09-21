@@ -6,6 +6,7 @@ import "github.com/svnbjrn/spoon/internal/forge"
 // penalty so a reader can see what the score rested on. observedRepos
 // counts the repositories that were sampled, in sampleOrder; it equals
 // the owner's public repository count only when complete is true.
+// p is non-nil: forkToJSONDetailed only calls this after that check.
 func ownerEvidenceToJSON(p *forge.OwnerProfile) map[string]any {
 	return map[string]any{
 		"login":         p.Login,

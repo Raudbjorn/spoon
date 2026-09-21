@@ -216,6 +216,20 @@ type Options struct {
 // leave the 5000/h rate budget untouched for the rest of the pipeline.
 const ownerProfileDefaultCap = 30
 
+// applyCachedOwnerProfile copies a fresh on-disk owner profile onto
+// fork and result. Stream consults this before the live-fetch cap,
+// reserve, and client gates so a hit never spends a slot. Returns
+// whether a profile was applied.
+func applyCachedOwnerProfile(fork *forge.T1Data, result *Result, ttl time.Duration) bool {
+	rec := gh.LoadCachedOwnerProfile(fork.Owner, ttl)
+	if rec == nil {
+		return false
+	}
+	fork.OwnerProfile = rec.Profile()
+	result.Fork.OwnerProfile = fork.OwnerProfile
+	return true
+}
+
 // touchingNeverPushedDemotion pushes never-pushed forks behind every pushed
 // one in dispatch order under --touching: they are still compared if
 // headroom remains, but the rate reserve is spent where a match is
@@ -786,13 +800,11 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 								ForkID: s.fork.ID,
 								Reason: "owner profile fetch only implemented for the GitHub provider",
 							}
-						} else if rec := gh.LoadCachedOwnerProfile(s.fork.Owner, opts.OwnerCacheTTL); rec != nil {
+						} else if applyCachedOwnerProfile(&s.fork, &r, opts.OwnerCacheTTL) {
 							// A fresh stored profile costs no API budget, so it is read before
 							// the cap, reserve and client gates, the same rule the stored
 							// compare follows below: an exhausted cap or drained window still
 							// serves cached evidence, and a hit never spends a cap slot.
-							s.fork.OwnerProfile = rec.Profile()
-							r.Fork.OwnerProfile = s.fork.OwnerProfile
 						} else if int(ownerProfileCalls.Load()) >= ownerCap {
 							r.OwnerProfileSkip = &StageSkip{
 								Stage:  "owner_profile",

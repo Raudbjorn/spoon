@@ -2,6 +2,10 @@ package forksops
 
 import (
 	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +17,91 @@ import (
 func TestOwnerProfileDefaultCap_Pinned(t *testing.T) {
 	if ownerProfileDefaultCap != 30 {
 		t.Errorf("ownerProfileDefaultCap: got %d, want 30 (locked in plan)", ownerProfileDefaultCap)
+	}
+}
+
+// writeOwnerProfileCache writes a schema-v2 owner-profile file where
+// LoadCachedOwnerProfile looks. Used to pin the cache-first helper
+// Stream calls before the live-fetch cap.
+func writeOwnerProfileCache(t *testing.T, login string, complete bool) time.Time {
+	t.Helper()
+	fetched := time.Now().UTC().Truncate(time.Second)
+	dir := filepath.Join(os.Getenv("XDG_CACHE_HOME"), "spoon", "owner-profiles")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(map[string]any{
+		"schema_version":      2,
+		"login":               login,
+		"total_public_repos":  9,
+		"fork_count":          6,
+		"signal_fork_count":   2,
+		"non_fork_repo_count": 3,
+		"complete":            complete,
+		"sample_order":        "pushed_desc",
+		"fetched_at":          fetched.Format(time.RFC3339),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, strings.ToLower(login)+".json"), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return fetched
+}
+
+// TestApplyCachedOwnerProfile_Hit applies a fresh cache file with no
+// GitHub client: this is the branch Stream takes before the cap,
+// reserve, and client gates, so an exhausted cap still serves evidence.
+func TestApplyCachedOwnerProfile_Hit(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	fetched := writeOwnerProfileCache(t, "alice", true)
+	fork := forge.T1Data{Owner: "alice"}
+	var result Result
+	if !applyCachedOwnerProfile(&fork, &result, 24*time.Hour) {
+		t.Fatal("expected a cache hit")
+	}
+	if fork.OwnerProfile == nil {
+		t.Fatal("fork.OwnerProfile is nil")
+	}
+	if result.Fork.OwnerProfile != fork.OwnerProfile {
+		t.Fatal("result must mirror the same profile pointer")
+	}
+	p := fork.OwnerProfile
+	if p.Login != "alice" || p.TotalPublicRepos != 9 || p.ForkCount != 6 ||
+		p.SignalForkCount != 2 || p.NonForkRepoCount != 3 ||
+		!p.Complete || p.SampleOrder != "pushed_desc" || !p.FetchedAt.Equal(fetched) {
+		t.Errorf("profile: %+v", p)
+	}
+}
+
+// TestApplyCachedOwnerProfile_Miss leaves nil meaning no signal, the
+// same as a skipped live fetch. Stream then falls through to the cap.
+func TestApplyCachedOwnerProfile_Miss(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	fork := forge.T1Data{Owner: "alice"}
+	var result Result
+	if applyCachedOwnerProfile(&fork, &result, 24*time.Hour) {
+		t.Fatal("empty cache must miss")
+	}
+	if fork.OwnerProfile != nil || result.Fork.OwnerProfile != nil {
+		t.Fatal("miss must not invent a profile")
+	}
+}
+
+// TestApplyCachedOwnerProfile_TTLZeroIsMiss is the --refresh path:
+// ttl 0 disables the read so Stream does not serve a stale file
+// before the live-fetch gates.
+func TestApplyCachedOwnerProfile_TTLZeroIsMiss(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	writeOwnerProfileCache(t, "alice", true)
+	fork := forge.T1Data{Owner: "alice"}
+	var result Result
+	if applyCachedOwnerProfile(&fork, &result, 0) {
+		t.Fatal("ttl 0 must skip the cache")
+	}
+	if fork.OwnerProfile != nil {
+		t.Fatal("ttl 0 must not apply a profile")
 	}
 }
 

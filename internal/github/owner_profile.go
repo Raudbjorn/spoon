@@ -14,10 +14,10 @@ import (
 	"github.com/svnbjrn/spoon/internal/forge"
 )
 
-// ownerProfileRecord is the on-disk cache shape. The fetch function
-// returns a *forge.OwnerProfile-shaped value, but the cache layer keeps
-// the persistence shape in this package to avoid pulling forge into
-// the cache-key path.
+// ownerProfileRecord is the on-disk cache shape. Profile() projects it
+// into forge.OwnerProfile for scoring and NDJSON; SchemaVersion stays
+// here so loadOwnerProfile can reject older sampling semantics without
+// putting a cache gate on the forge type.
 type ownerProfileRecord struct {
 	// SchemaVersion lets loadOwnerProfile reject files written under
 	// older sampling semantics; saveOwnerProfile stamps it.
