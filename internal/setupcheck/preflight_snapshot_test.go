@@ -2,6 +2,7 @@ package setupcheck
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -201,6 +202,74 @@ func TestLocalProviderProbeSkipsGHAuthTokenWhenHostNotConfigured(t *testing.T) {
 	}
 	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
 		t.Fatal("gh auth token was invoked despite no host entry to fall back from")
+	}
+}
+
+// keyringLoginEnvironment returns an environment snapshot for a keyring-backed
+// gh login: hosts.yml names github.com but holds no oauth_token, and a gh
+// executable is on PATH so the probe reaches the ghAuthToken fallback.
+func keyringLoginEnvironment(t *testing.T) map[string]string {
+	t.Helper()
+	configHome := t.TempDir()
+	hostsPath := filepath.Join(configHome, "gh", "hosts.yml")
+	if err := os.MkdirAll(filepath.Dir(hostsPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(hostsPath, []byte("github.com:\n  users:\n    octocat:\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	binDir := writeFakeExecutable(t, "gh", "#!/bin/sh\nexit 1\n")
+	return map[string]string{"XDG_CONFIG_HOME": configHome, "PATH": binDir}
+}
+
+// stubGHAuthToken replaces ghAuthToken for the duration of the test.
+func stubGHAuthToken(t *testing.T, stub func(context.Context, string, string, map[string]string) (string, error)) {
+	t.Helper()
+	original := ghAuthToken
+	t.Cleanup(func() { ghAuthToken = original })
+	ghAuthToken = stub
+}
+
+// A caller that cancels while gh is running kills the subprocess, and the
+// resulting command error is indistinguishable from "gh has no token". The
+// probe must report the cancellation instead of returning an unconfigured
+// result as though it had checked to completion.
+func TestLocalProviderProbeReportsCancellationDuringGHAuthToken(t *testing.T) {
+	env := keyringLoginEnvironment(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stubGHAuthToken(t, func(context.Context, string, string, map[string]string) (string, error) {
+		cancel()
+		return "", context.Canceled
+	})
+
+	auth, err := LocalProviderProbe(ctx, ProviderInput{
+		Provider:    forge.ProviderGitHub,
+		Environment: env,
+	}, DenyHTTPTransport{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation during gh auth token was swallowed: err=%v, auth=%+v", err, auth)
+	}
+}
+
+// The other side of the same line: gh timing out on its own (ghAuthTokenTimeout)
+// is not the caller cancelling. It stays a fail-closed "no credential" so a
+// hung gh can never turn a setup check into a hard error.
+func TestLocalProviderProbeGHAuthTokenTimeoutIsNotACancellation(t *testing.T) {
+	env := keyringLoginEnvironment(t)
+	stubGHAuthToken(t, func(context.Context, string, string, map[string]string) (string, error) {
+		return "", context.DeadlineExceeded
+	})
+
+	auth, err := LocalProviderProbe(context.Background(), ProviderInput{
+		Provider:    forge.ProviderGitHub,
+		Environment: env,
+	}, DenyHTTPTransport{})
+	if err != nil {
+		t.Fatalf("a gh auth token timeout surfaced as an error: %v", err)
+	}
+	if auth.Configured {
+		t.Fatal("a timed-out gh auth token call was treated as a configured credential")
 	}
 }
 

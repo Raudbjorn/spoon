@@ -150,6 +150,13 @@ func LocalProviderProbe(ctx context.Context, input ProviderInput, transport http
 		auth.Configured = true
 		return auth, nil
 	}
+	// The gh fallback runs under ctx, so a caller cancelling mid-call kills it
+	// and the command error reads as "no credential". Report the cancellation
+	// rather than an unconfigured result the probe never finished computing.
+	// (gh hitting its own timeout leaves ctx alive and stays fail-closed.)
+	if err := ctx.Err(); err != nil {
+		return auth, err
+	}
 	return auth, nil
 }
 
