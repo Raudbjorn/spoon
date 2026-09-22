@@ -7,8 +7,8 @@
 
 pkgname=spoon-git
 _pkgname=spoon
-pkgver=r349.cc4d44b
-pkgrel=1
+pkgver=r354.15d2c3b
+pkgrel=2
 pkgdesc="Find useful forks of a Git repo (spoon) + agent-shaped CLI (spn)"
 arch=('x86_64' 'aarch64')
 url="https://github.com/Raudbjorn/spoon"
@@ -39,14 +39,6 @@ pkgver() {
     fi
 }
 
-prepare() {
-    cd "${srcdir}/${_pkgname}"
-    # Pre-fetch modules so the build phase doesn't need network.
-    export GOPATH="${srcdir}/gopath"
-    export GOFLAGS="-mod=readonly -modcacherw"
-    go mod download
-}
-
 build() {
     cd "${srcdir}/${_pkgname}"
 
@@ -59,7 +51,8 @@ build() {
     export CGO_CXXFLAGS="${CXXFLAGS}"
     export CGO_LDFLAGS="${LDFLAGS}"
     export GOPATH="${srcdir}/gopath"
-    export GOFLAGS="-mod=readonly -modcacherw -trimpath -buildmode=pie"
+    # vendor/ contains the tokenizer crash fix; -mod=readonly bypasses it.
+    export GOFLAGS="-mod=vendor -trimpath -buildmode=pie"
 
     # Both `version` symbols are package-level `var`s (spoon 0.3.0-dev,
     # spn 0.1.0-dev), so embed the package version into each binary.
@@ -87,7 +80,7 @@ check() {
     export CGO_CXXFLAGS="${CXXFLAGS}"
     export CGO_LDFLAGS="${LDFLAGS}"
     export GOPATH="${srcdir}/gopath"
-    export GOFLAGS="-mod=readonly -modcacherw"
+    export GOFLAGS="-mod=vendor"
     go test ./...
 }
 
