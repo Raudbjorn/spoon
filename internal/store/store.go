@@ -1141,12 +1141,14 @@ func FilesFromForge(diffs []forge.FileDiff) []FileRecord {
 	}
 	out := make([]FileRecord, 0, len(diffs))
 	for _, d := range diffs {
+		// Backstop for every provider: libsql rejects invalid UTF-8 bound as
+		// TEXT, and raw diff sources (.diff bodies, web diff HTML) can carry it.
 		fr := FileRecord{
-			Path: d.Path, PreviousPath: d.PreviousPath, Status: d.Status,
+			Path: forge.ValidUTF8(d.Path), PreviousPath: forge.ValidUTF8(d.PreviousPath), Status: d.Status,
 			Additions: d.Additions, Deletions: d.Deletions, PatchSource: d.PatchSource,
 		}
 		if d.Patch != "" {
-			p := d.Patch
+			p := forge.ValidUTF8(d.Patch)
 			fr.Patch = &p
 		}
 		out = append(out, fr)

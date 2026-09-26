@@ -204,3 +204,34 @@ func TestParse_EmptyInput(t *testing.T) {
 		t.Errorf("got %d files, want 0", len(files))
 	}
 }
+
+// Raw .diff bodies can carry bytes that are not UTF-8, in hunk content and in
+// C-quoted paths ("\377"). Parse must hand back valid UTF-8 (the store cannot
+// bind anything else as TEXT) without disturbing the line counts.
+func TestParse_InvalidUTF8IsReplaced(t *testing.T) {
+	diff := "diff --git \"a/cfg\\377.yaml\" \"b/cfg\\377.yaml\"\n" +
+		"new file mode 100644\n" +
+		"--- /dev/null\n" +
+		"+++ \"b/cfg\\377.yaml\"\n" +
+		"@@ -0,0 +1,2 @@\n" +
+		"+version: 0.34\n" +
+		"+vQ\xff\n"
+
+	files, err := Parse(strings.NewReader(diff), 1<<20)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("got %d files, want 1", len(files))
+	}
+	fd := files[0]
+	if fd.Path != "cfg�.yaml" {
+		t.Errorf("Path = %q, want %q", fd.Path, "cfg�.yaml")
+	}
+	if want := "@@ -0,0 +1,2 @@\n+version: 0.34\n+vQ�\n"; fd.Patch != want {
+		t.Errorf("Patch = %q, want %q", fd.Patch, want)
+	}
+	if fd.Additions != 2 || fd.Deletions != 0 {
+		t.Errorf("got Additions=%d Deletions=%d, want 2/0", fd.Additions, fd.Deletions)
+	}
+}

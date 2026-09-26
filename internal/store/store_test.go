@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/svnbjrn/spoon/internal/forge"
 )
 
 func TestSnapshotReplaceRemovesStaleRows(t *testing.T) {
@@ -113,5 +115,34 @@ func TestEmbeddingContentHashInvalidates(t *testing.T) {
 	pending, err = db.PendingDocuments(context.Background(), "m")
 	if err != nil || len(pending) != 1 {
 		t.Fatalf("changed pending=%v err=%v", pending, err)
+	}
+}
+
+// Regression: a .diff-sourced patch carrying a stray non-UTF-8 byte (seen live
+// as "+vQ\xff" in an added YAML-ish file) made libsql refuse to bind the patch
+// as TEXT, aborting the whole snapshot write and the embed run with it.
+func TestUpsertSnapshotSanitizesInvalidUTF8FromForge(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "spoon.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	now := time.Now().UTC()
+	repo := RepoRecord{Provider: "github", Host: "github.com", Owner: "up", Name: "repo", FirstSeen: now, LastSeen: now}
+	t1 := forge.T1Data{ID: "fork/repo", Owner: "fork", Name: "repo"}
+	t2 := &forge.T2Data{Diffs: []forge.FileDiff{{
+		Path: "cfg\xff.yaml", Status: "added", Additions: 4,
+		Patch: "@@ -0,0 +1,4 @@\n+version: 0.34\n+vQ\xff", PatchSource: "complete",
+	}}}
+	snap := SnapshotFromForge(repo, t1, t2, 0, 0, now)
+	if err := db.UpsertSnapshot(context.Background(), snap); err != nil {
+		t.Fatalf("UpsertSnapshot: %v", err)
+	}
+	var path, patch string
+	if err := db.db.QueryRow("SELECT path, patch FROM compare_files").Scan(&path, &patch); err != nil {
+		t.Fatal(err)
+	}
+	if path != "cfg�.yaml" || patch != "@@ -0,0 +1,4 @@\n+version: 0.34\n+vQ�" {
+		t.Fatalf("got path=%q patch=%q, want U+FFFD in place of the invalid byte", path, patch)
 	}
 }
