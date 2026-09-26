@@ -301,3 +301,19 @@ func TestBatchDivergence_ResolvesInPriorityChunks(t *testing.T) {
 			m.batchResolving, m.batchChunksDone, len(m.pendingUpdates), len(order))
 	}
 }
+
+// Lowering the ceiling to T1 mid-pass stops further batch chunks; the forks
+// they held are reported as ceiling skips so the pass still completes.
+func TestNextBatchChunk_CeilingOneStopsSpending(t *testing.T) {
+	fake := &batchFake{}
+	m := queueTestModel(fake)
+	m.batchProvider = fake
+	m.batchPending = []enrichEntry{{fork: forge.T1Data{ID: "a"}}, {fork: forge.T1Data{ID: "b"}}}
+	m.setMaxTier(1)
+	if cmd := m.nextBatchChunk(); cmd != nil {
+		t.Fatal("a chunk was dispatched at ceiling 1")
+	}
+	if len(fake.chunks) != 0 || len(m.pendingUpdates) != 2 || !m.pendingUpdates[0].tierSkipped {
+		t.Errorf("chunks=%d updates=%+v; want no batch spend and two ceiling skips", len(fake.chunks), m.pendingUpdates)
+	}
+}

@@ -103,6 +103,16 @@ func (m *Model) nextBatchChunk() tea.Cmd {
 	if len(m.batchPending) == 0 || m.batchProvider == nil {
 		return nil
 	}
+	// Ceiling lowered to T1 mid-pass: stop spending GraphQL on forks that
+	// will not be compared. Each still reports once, as a ceiling skip, so
+	// enrichDone reaches enrichTotal and raising the ceiling re-enriches them.
+	if m.maxTier() < 2 {
+		for _, e := range m.batchPending {
+			m.pendingUpdates = append(m.pendingUpdates, tier2ResultMsg{forkID: e.fork.ID, tierSkipped: true})
+		}
+		m.batchPending = nil
+		return nil
+	}
 	n := min(batchChunkForks, len(m.batchPending))
 	chunk := m.batchPending[:n:n]
 	m.batchPending = m.batchPending[n:]
