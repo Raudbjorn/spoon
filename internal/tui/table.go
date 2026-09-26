@@ -483,7 +483,11 @@ func (m Model) renderStatusBar() string {
 		}
 	}
 
-	if m.enriching {
+	if m.batchResolving {
+		// One GraphQL sweep over the whole list, no per-fork progress: say
+		// so, or a multi-minute pause reads as a hang.
+		appendTail(2, fmt.Sprintf("T2: resolving divergence for %d forks (GraphQL)...", m.enrichTotal))
+	} else if m.enriching {
 		appendTail(2, fmt.Sprintf("T2: %d/%d", m.enrichDone, m.enrichTotal))
 	}
 
