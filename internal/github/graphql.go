@@ -63,11 +63,14 @@ func (c *Client) defaultBranchTipSHA(ctx context.Context, owner, repo string) (s
 	return resp.Repository.DefaultBranchRef.Target.OID, nil
 }
 
+// forksGraphQLQuery pages by CREATED_AT, not STARGAZERS: most forks tie at 0
+// stars and cursor paging over a heavily tied key is unstable (pages overlap
+// and others are skipped). See fetchForksREST for the measured impact.
 const forksGraphQLQuery = `
 query($owner: String!, $name: String!, $cursor: String) {
   repository(owner: $owner, name: $name) {
     forkCount
-    forks(first: 50, after: $cursor, orderBy: {field: STARGAZERS, direction: DESC}) {
+    forks(first: 50, after: $cursor, orderBy: {field: CREATED_AT, direction: ASC}) {
       totalCount
       pageInfo { hasNextPage endCursor }
       nodes {
@@ -206,6 +209,7 @@ func (c *Client) FetchForksGraphQL(ctx context.Context, owner, repo string, onPa
 	firstResponse := true
 	var repoForkCount, directTotalCount int
 	seen := make(map[int64]struct{}, 256)
+	rawRows := 0
 
 	for {
 		variables := map[string]interface{}{
@@ -226,15 +230,17 @@ func (c *Client) FetchForksGraphQL(ctx context.Context, owner, repo string, onPa
 				AuthMode:      authMode,
 				FallbackChain: []string{"graphql"},
 				Pages:         page,
-				RawRows:       len(allForks),
+				RawRows:       rawRows,
 				UniqueRows:    len(seen),
-				DuplicateRows: len(allForks) - len(seen),
+				DuplicateRows: rawRows - len(seen),
+				ExpectedRows:  directTotalCount,
 				CaptureAt:     time.Now(),
 				AuthScopeID:   c.AuthScopeID(),
 			}
 			// Annotate lineage on the partial data we have so far before returning.
 			// DirectParent/DepthFromRoot are unknown when parent data is missing.
 			allExtras = annotateDepths(allForks, allExtras, owner+"/"+repo)
+			sortForksByStars(allForks, allExtras)
 			return allForks, allExtras, report, fmt.Errorf("GraphQL query: %w", err)
 		}
 
@@ -252,6 +258,13 @@ func (c *Client) FetchForksGraphQL(ctx context.Context, owner, repo string, onPa
 
 		for _, node := range resp.Repository.Forks.Nodes {
 			fork, extra := gqlForkToForkInfo(node, repoForkCount, directTotalCount, authMode, defaultRESTVersion)
+			rawRows++
+			// Cursor paging can still repeat a row (e.g. a fork created or
+			// deleted mid-walk); every consumer downstream assumes one row
+			// per fork, so a repeat is counted and dropped here.
+			if _, dup := seen[fork.ID]; dup {
+				continue
+			}
 			seen[fork.ID] = struct{}{}
 			pageForks = append(pageForks, fork)
 			pageExtras = append(pageExtras, extra)
@@ -282,15 +295,17 @@ func (c *Client) FetchForksGraphQL(ctx context.Context, owner, repo string, onPa
 		AuthMode:      authMode,
 		FallbackChain: []string{"graphql"},
 		Pages:         page,
-		RawRows:       len(allForks),
+		RawRows:       rawRows,
 		UniqueRows:    unique,
-		DuplicateRows: len(allForks) - unique,
+		DuplicateRows: rawRows - unique,
+		ExpectedRows:  directTotalCount,
 		CaptureAt:     time.Now(),
 		AuthScopeID:   c.AuthScopeID(),
 	}
 	// Annotate lineage on the full set. annotateDepths is cycle-safe and
 	// deterministic regardless of page order.
 	allExtras = annotateDepths(allForks, allExtras, owner+"/"+repo)
+	sortForksByStars(allForks, allExtras)
 
 	return allForks, allExtras, report, nil
 }
@@ -872,7 +887,8 @@ func (c *Client) FetchForksAuto(ctx context.Context, owner, repo string, onPage 
 					dedupOnPage(pageForks, page)
 				}
 			}
-			restForks, restErr := c.FetchForks(ctx, owner, repo, restOnPage)
+			restForks, restRaw, restErr := c.fetchForksREST(ctx, owner, repo, restOnPage)
+			restRawRows = restRaw
 			if restErr != nil {
 				// REST fallback failed too: retain the partial GraphQL snapshot.
 				if gqlReport == nil {
@@ -947,7 +963,8 @@ func (c *Client) FetchForksAuto(ctx context.Context, owner, repo string, onPage 
 			onPage(pageForks, page)
 		}
 	}
-	restForks, restErr := c.FetchForks(ctx, owner, repo, restOnPage)
+	restForks, restRaw, restErr := c.fetchForksREST(ctx, owner, repo, restOnPage)
+	restRawRows = restRaw
 	if restErr != nil {
 		// Pure REST failure: still surface a report so callers know what we
 		// tried. Method stays "rest" and Error marks the failure.
@@ -976,7 +993,7 @@ func (c *Client) FetchForksAuto(ctx context.Context, owner, repo string, onPage 
 		Pages:         restPages,
 		RawRows:       restRawRows,
 		UniqueRows:    len(seen),
-		DuplicateRows: len(restForks) - len(seen),
+		DuplicateRows: restRawRows - len(seen),
 		CaptureAt:     time.Now(),
 		AuthScopeID:   c.AuthScopeID(),
 	}

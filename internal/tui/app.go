@@ -1454,6 +1454,7 @@ func (m *Model) fetchForks() tea.Cmd {
 		var forks []forge.T1Data
 		var streamErr error
 		var report *forge.AcquisitionReport
+		seen := make(map[string]struct{})
 		for msg := range ch {
 			if msg.Err != nil {
 				streamErr = msg.Err // remember; per-fork errors are tolerated below
@@ -1465,6 +1466,15 @@ func (m *Model) fetchForks() tea.Cmd {
 				report = msg.Report
 				continue
 			}
+			// One row per fork is assumed by everything downstream: a repeat
+			// becomes a second scored row, gets its own compare, and the
+			// result lands only on the first copy (processPendingUpdates
+			// matches by ID), leaving enriched/stub twins in the export.
+			// Providers dedup; this guards against one that doesn't.
+			if _, dup := seen[msg.Fork.ID]; dup {
+				continue
+			}
+			seen[msg.Fork.ID] = struct{}{}
 			forks = append(forks, msg.Fork)
 		}
 

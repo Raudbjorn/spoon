@@ -181,3 +181,36 @@ func TestNoReportStillWorks(t *testing.T) {
 		t.Errorf("m.forks len = %d, want 1", len(m.forks))
 	}
 }
+
+// fakeForgeRepeats emits the same fork twice around a distinct one, the shape
+// an unstable provider listing produced on ggml-org/llama.cpp.
+type fakeForgeRepeats struct{ fakeForgeNoReport }
+
+func (f *fakeForgeRepeats) ListForks(ctx context.Context, owner, repo string) (<-chan forge.ForkMsg, error) {
+	ch := make(chan forge.ForkMsg, 3)
+	pushed := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	ch <- forge.ForkMsg{Fork: forge.T1Data{ID: "a/fork", Owner: "a", Name: "fork", PushedAt: pushed}}
+	ch <- forge.ForkMsg{Fork: forge.T1Data{ID: "b/fork", Owner: "b", Name: "fork", PushedAt: pushed}}
+	ch <- forge.ForkMsg{Fork: forge.T1Data{ID: "a/fork", Owner: "a", Name: "fork", PushedAt: pushed}}
+	close(ch)
+	return ch, nil
+}
+
+// TestFetchForksDropsRepeatedForks: a repeated fork must become one scored
+// row, or it is scored, compared and exported as independent twins.
+func TestFetchForksDropsRepeatedForks(t *testing.T) {
+	m := newClusterTestModel(nil)
+	m.provider = &fakeForgeRepeats{}
+
+	fm, ok := m.fetchForks()().(forksFetchedMsg)
+	if !ok || fm.err != nil {
+		t.Fatalf("fetchForks: ok=%v err=%v", ok, fm.err)
+	}
+	if len(fm.forks) != 2 || fm.forks[0].ID != "a/fork" || fm.forks[1].ID != "b/fork" {
+		t.Fatalf("forks = %+v, want a/fork then b/fork once each", fm.forks)
+	}
+	_, _ = m.handleForksFetched(fm)
+	if len(m.forks) != 2 {
+		t.Errorf("len(m.forks) = %d, want 2", len(m.forks))
+	}
+}

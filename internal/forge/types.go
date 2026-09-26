@@ -36,18 +36,22 @@ func (p Provider) String() string {
 // It is emitted as a terminal message on the ForkMsg channel and copied to
 // the caller-owned Report field in forksops.Options after the channel closes.
 type AcquisitionReport struct {
-	Method        string    `json:"method"`          // "graphql" | "graphql+rest" | "rest"
-	Scope         string    `json:"scope"`           // "direct" in step 2
-	APIVersion    string    `json:"apiVersion"`      // pinned REST version e.g. "2022-11-28"
-	AuthMode      string    `json:"authMode"`        // "authenticated" | "anonymous"
-	FallbackChain []string  `json:"fallbackChain"`   // e.g. ["graphql"] or ["graphql","rest"]
-	Pages         int       `json:"pages"`           // upstream page callbacks (raw count)
-	RawRows       int       `json:"rawRows"`         // total fork records before dedup
-	UniqueRows    int       `json:"uniqueRows"`      // unique database IDs
-	DuplicateRows int       `json:"duplicateRows"`   // raw - unique
-	CaptureAt     time.Time `json:"captureAt"`       // when the report was generated
-	AuthScopeID   string    `json:"authScopeId"`     // non-reversible; never logged with tokens
-	Error         string    `json:"error,omitempty"` // set when REST fallback fails
+	Method        string   `json:"method"`        // "graphql" | "graphql+rest" | "rest"
+	Scope         string   `json:"scope"`         // "direct" in step 2
+	APIVersion    string   `json:"apiVersion"`    // pinned REST version e.g. "2022-11-28"
+	AuthMode      string   `json:"authMode"`      // "authenticated" | "anonymous"
+	FallbackChain []string `json:"fallbackChain"` // e.g. ["graphql"] or ["graphql","rest"]
+	Pages         int      `json:"pages"`         // upstream page callbacks (raw count)
+	RawRows       int      `json:"rawRows"`       // total fork records before dedup
+	UniqueRows    int      `json:"uniqueRows"`    // unique database IDs
+	DuplicateRows int      `json:"duplicateRows"` // raw - unique
+	// ExpectedRows is the provider's own count of direct forks (GitHub
+	// forks.totalCount), 0 when unknown. UniqueRows below it means the
+	// listing missed forks rather than the network having fewer.
+	ExpectedRows int       `json:"expectedRows,omitempty"`
+	CaptureAt    time.Time `json:"captureAt"`       // when the report was generated
+	AuthScopeID  string    `json:"authScopeId"`     // non-reversible; never logged with tokens
+	Error        string    `json:"error,omitempty"` // set when REST fallback fails
 
 	// VisitedNodes is the number of distinct repos the bounded traversal visited.
 	VisitedNodes int    `json:"visitedNodes"`
