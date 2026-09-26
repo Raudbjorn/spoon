@@ -206,10 +206,15 @@ type Model struct {
 	// enrichQueue orders live compares for the current pass (see
 	// enrich_queue.go); nil between passes.
 	enrichQueue *enrichQueue
-	// batchResolving is true while the GraphQL divergence batch runs, before
-	// any live compare is dispatched; batchStats/batchErr describe its result.
-	batchResolving bool
-	batchStats     *forge.BatchStats
+	// batchResolving is true while GraphQL divergence-batch chunks remain;
+	// batchPending holds the forks not yet sent to it, in priority order.
+	// batchStats/batchErr accumulate over the chunks.
+	batchResolving   bool
+	batchProvider    forge.BatchCompareProvider
+	batchPending     []enrichEntry
+	batchChunksDone  int
+	batchChunksTotal int
+	batchStats       *forge.BatchStats
 	batchErr       string
 	// unreachable counts forks dropped from the list because their
 	// repository no longer exists (see tier2ResultMsg.unreachable).
@@ -1743,7 +1748,11 @@ func (m *Model) startEnrichment() tea.Cmd {
 	// REST compare, and divergent ones carry a pre-chosen branch.
 	if bp, ok := m.provider.(forge.BatchCompareProvider); ok {
 		m.batchResolving = true
-		return tea.Batch(batchTick(), batchDivergenceCmd(ctx, bp, order))
+		m.batchProvider = bp
+		m.batchPending = order
+		m.batchChunksDone = 0
+		m.batchChunksTotal = (len(order) + batchChunkForks - 1) / batchChunkForks
+		return tea.Batch(batchTick(), m.nextBatchChunk())
 	}
 	return tea.Batch(append([]tea.Cmd{batchTick()}, m.dispatchQueued(order)...)...)
 }
@@ -1755,6 +1764,7 @@ func (m *Model) cancelEnrichment() {
 	}
 	m.enriching = false
 	m.batchResolving = false
+	m.batchPending = nil
 	// Drop the limiter and queue with the run they belonged to, so a fresh
 	// fetch builds new ones rather than inheriting slots held by dead
 	// closures.

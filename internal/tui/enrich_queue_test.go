@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -242,5 +243,61 @@ func TestBatchDivergence_MissingRepoDroppedWithoutCompare(t *testing.T) {
 	}
 	if m.cursor != 0 {
 		t.Errorf("cursor = %d, want 0 (was on the dropped row)", m.cursor)
+	}
+}
+
+// batchFake resolves every fork as zero-ahead and records chunk sizes.
+type batchFake struct {
+	orderFakeForge
+	chunks [][]string
+}
+
+func (f *batchFake) BatchCompare(_ context.Context, forks []forge.T1Data) (map[string]forge.ForkDivergence, forge.BatchStats, error) {
+	ids := make([]string, len(forks))
+	div := make(map[string]forge.ForkDivergence, len(forks))
+	for i, fk := range forks {
+		ids[i] = fk.ID
+		div[fk.ID] = forge.ForkDivergence{Resolved: true, Default: forge.BranchDivergence{Name: "main"}}
+	}
+	f.chunks = append(f.chunks, ids)
+	return div, forge.BatchStats{Queries: 1, Cost: 1}, nil
+}
+
+// The divergence batch runs in priority-ordered chunks so compares start after
+// the first chunk instead of after the whole network (42 minutes on
+// llama.cpp); the next chunk is requested alongside each chunk's compares.
+func TestBatchDivergence_ResolvesInPriorityChunks(t *testing.T) {
+	fake := &batchFake{}
+	m := queueTestModel(fake)
+	m.enrichQueue = &enrichQueue{}
+	var order []enrichEntry
+	for i := 0; i < 2*batchChunkForks+7; i++ {
+		order = append(order, enrichEntry{fork: forge.T1Data{ID: fmt.Sprintf("f%04d", i)}, priority: float64(-i)})
+	}
+	m.batchResolving, m.batchProvider, m.batchPending = true, fake, order
+	m.batchChunksTotal = 3
+
+	// A zero-ahead chunk dispatches no compares, so the command handed back
+	// is just the next chunk (tea.Batch of one command returns it as-is).
+	cmd := m.nextBatchChunk()
+	for steps := 0; cmd != nil; steps++ {
+		if steps > 5 {
+			t.Fatal("batch chunks did not terminate")
+		}
+		msg, ok := cmd().(batchDivergenceMsg)
+		if !ok {
+			t.Fatalf("expected a chunk result, got %T", msg)
+		}
+		_, cmd = m.handleBatchDivergence(msg)
+	}
+	if len(fake.chunks) != 3 || len(fake.chunks[0]) != batchChunkForks || len(fake.chunks[2]) != 7 {
+		t.Fatalf("chunk sizes = %d chunks, want 3 of %d,%d,7", len(fake.chunks), batchChunkForks, batchChunkForks)
+	}
+	if fake.chunks[0][0] != "f0000" || fake.chunks[1][0] != fmt.Sprintf("f%04d", batchChunkForks) {
+		t.Errorf("chunks not in priority order: first ids %s, %s", fake.chunks[0][0], fake.chunks[1][0])
+	}
+	if m.batchResolving || m.batchChunksDone != 3 || len(m.pendingUpdates) != len(order) {
+		t.Errorf("after last chunk: resolving=%v done=%d settled=%d; want false, 3, %d",
+			m.batchResolving, m.batchChunksDone, len(m.pendingUpdates), len(order))
 	}
 }

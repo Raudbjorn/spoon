@@ -87,10 +87,31 @@ type batchDivergenceMsg struct {
 	missing map[string]bool
 }
 
-// batchDivergenceCmd resolves ahead/behind for every queued fork in one
-// batched GraphQL sweep (about one query per 50 branches) instead of one
-// REST compare per fork. Forks the batch finds have nothing ahead need no
-// REST call at all.
+// batchChunkForks is how many forks one divergence-batch step covers.
+//
+// The batch is sequential GraphQL, about one query per 50 branches. Over
+// the whole of ggml-org/llama.cpp (20,433 forks) it took 42 minutes (873
+// queries, 2026-09-26) before a single compare could start. In chunks of
+// this size, in priority order, the most promising forks start comparing
+// after roughly one minute, and later chunks resolve while earlier compares
+// run.
+const batchChunkForks = 500
+
+// nextBatchChunk takes the next chunk of forks still awaiting the divergence
+// batch and returns the command that resolves it, or nil when none remain.
+func (m *Model) nextBatchChunk() tea.Cmd {
+	if len(m.batchPending) == 0 || m.batchProvider == nil {
+		return nil
+	}
+	n := min(batchChunkForks, len(m.batchPending))
+	chunk := m.batchPending[:n:n]
+	m.batchPending = m.batchPending[n:]
+	return batchDivergenceCmd(m.enrichCtx, m.batchProvider, chunk)
+}
+
+// batchDivergenceCmd resolves ahead/behind for one chunk of forks in batched
+// GraphQL (about one query per 50 branches) instead of one REST compare per
+// fork. Forks the batch finds have nothing ahead need no REST call at all.
 func batchDivergenceCmd(ctx context.Context, bp forge.BatchCompareProvider, order []enrichEntry) tea.Cmd {
 	return func() tea.Msg {
 		forks := make([]forge.T1Data, len(order))
@@ -212,9 +233,12 @@ func (m *Model) handleBatchDivergence(msg batchDivergenceMsg) (tea.Model, tea.Cm
 	if msg.ctx != m.enrichCtx || m.enrichCtx == nil || m.enrichCtx.Err() != nil {
 		return m, nil // a cancelled or superseded pass
 	}
-	m.batchResolving = false
-	stats := msg.stats
-	m.batchStats = &stats
+	if m.batchStats == nil {
+		m.batchStats = &forge.BatchStats{}
+	}
+	m.batchStats.Queries += msg.stats.Queries
+	m.batchStats.Cost += msg.stats.Cost
+	m.batchChunksDone++
 	if msg.err != nil && !errors.Is(msg.err, forge.ErrBatchCompareUnavailable) {
 		// Degraded, not fatal: whatever the batch did resolve still applies,
 		// and every other fork falls back to a per-fork compare.
@@ -238,5 +262,11 @@ func (m *Model) handleBatchDivergence(msg batchDivergenceMsg) (tea.Model, tea.Cm
 			rest = append(rest, e)
 		}
 	}
-	return m, tea.Batch(m.dispatchQueued(rest)...)
+	cmds := m.dispatchQueued(rest)
+	if next := m.nextBatchChunk(); next != nil {
+		cmds = append(cmds, next)
+	} else {
+		m.batchResolving = false
+	}
+	return m, tea.Batch(cmds...)
 }

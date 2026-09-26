@@ -73,17 +73,58 @@ listed against the same rate budget and the same unordered dispatch.
 a walk; Gitea paging not checked. Bounded network traversal
 (`FetchForksBounded`) already dedups.
 
-## Phase 2 — TUI enrichment that spends budget on the right forks
+## Phase 2 — TUI enrichment that spends budget on the right forks (implemented, branch `feat/accuracy-phase2`)
 
-1. Run `BatchCompare` in the TUI before per-fork REST compares, as the CLI
-   does (`internal/forksops/stream.go:634-666`): resolves ahead/behind for
-   every fork at ~1 GraphQL point per 50, zero-ahead forks never need a REST
-   compare.
-2. Replace `tea.Batch` of all closures with an ordered work queue drained by
-   N workers, so dispatch order is real and the reserve cuts the *least*
-   promising forks. Fix the false "best-first" comment.
-3. Export header: `enriched_count`/`total_count` over unique forks; add
-   `listed_count` vs `expected_count` from the acquisition report.
+1. **Batch first.** `startEnrichment` runs the provider's `BatchCompare` over
+   every fork without a valid compare, as `spn forks list` does. Zero-ahead
+   forks are settled from the batch (same apply/persist path as a REST
+   result); divergent forks carry the batch's branch into `CompareResolved`;
+   a batch error degrades to per-fork REST. Status line covers the batch
+   phase, which has no per-fork progress.
+2. **Ordered queue** (`internal/tui/enrich_queue.go`). Commands are still
+   launched by `tea.Batch`, but each takes the next fork in
+   `DispatchPriority` order only once it holds a semaphore slot, so work
+   starts in priority order whichever command wins the race. Exactly one pop
+   per command, including on cancel, so `enrichDone` reaches `enrichTotal`.
+   Re-enrichment appends and re-sorts the unconsumed tail. Found and fixed on
+   the way: a cancelled pass could still win a free slot (`select` picks at
+   random) and spend a compare.
+3. **Listing shortfall visible.** Header reads "N of M forks listed" when
+   `ExpectedRows` exceeds the list; export carries a `listing` block
+   (`listed`, `expected`, `repeats_dropped`, `unreachable`, `method`).
+   `enriched_count`/`total_count` are already over unique forks since Phase 1.
+4. **Vanished forks.** After the batch, forks it could not resolve are
+   checked with aliased `repository(owner,name){id}` lookups; a null answer
+   (and only that) drops the fork with no compare spent. Header shows
+   "N gone", export `listing.unreachable`.
+
+5. **Chunked batch.** The batch runs 500 forks at a time in priority order;
+   each chunk's compares start as it resolves, and the next chunk is
+   requested alongside them.
+
+**Live measurement (observed once, 2026-09-26, spoon's provider calls on
+ggml-org/llama.cpp via a headless harness, not the TUI loop):**
+
+| | Before (export) | Batch-first |
+|---|---|---|
+| Forks listed | 11,171 | 20,433 (expected 19,985; 250 repeats dropped) |
+| Settled with no REST compare (zero-ahead) | – | 17,608 (86%) |
+| Need a REST compare | every uncached fork | 2,377 (2,361 divergent + 16 unresolved) |
+| Vanished repos detected | – | 448 of 464 unresolved (6 s) |
+| Divergence batch | – | 873 queries, GraphQL cost 870, **42 min unchunked** |
+
+All six named forks resolved with real ahead counts (koboldcpp 4,732,
+TheTom 532, beellama 1,030, LaurentZuijdwijk 108, PrismML 127, unsloth 286);
+koboldcpp and TheTom have the two highest dispatch priorities of the six.
+2,377 REST compares fit one 5,000/h window, so nearly every divergent fork
+can be compared, where before ~19% were, chosen near-randomly. The 42-minute
+unchunked batch is what item 5 fixes; the chunked end-to-end timing in the
+TUI was not measured. The GraphQL listing failed partway in both live runs
+and the REST fallback finished it; cause not captured (Debug log).
+
+Deferred: rows for vanished forks stay in `spoon.db` (the list persist runs
+before the check); a cached reload re-lists them until the batch drops them
+again.
 
 ## Phase 3 — Use what forks say about themselves
 

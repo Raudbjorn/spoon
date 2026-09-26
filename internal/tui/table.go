@@ -490,12 +490,13 @@ func (m Model) renderStatusBar() string {
 		}
 	}
 
-	if m.batchResolving {
-		// One GraphQL sweep over the whole list, no per-fork progress: say
-		// so, or a multi-minute pause reads as a hang.
-		appendTail(2, fmt.Sprintf("T2: resolving divergence for %d forks (GraphQL)...", m.enrichTotal))
-	} else if m.enriching {
+	if m.enriching {
 		appendTail(2, fmt.Sprintf("T2: %d/%d", m.enrichDone, m.enrichTotal))
+	}
+	if m.batchResolving {
+		// Chunks resolve with no per-fork progress of their own: show the
+		// chunk count, or a long network reads as a hang.
+		appendTail(2, fmt.Sprintf("divergence batch %d/%d", m.batchChunksDone, m.batchChunksTotal))
 	}
 
 	// Enrichment ceiling. Shown only when it is actually capping something --
