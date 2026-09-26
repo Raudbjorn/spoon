@@ -938,6 +938,8 @@ func (c *Client) FetchForksAuto(ctx context.Context, owner, repo string, onPage 
 			}
 			report.UniqueRows = len(seen)
 			report.DuplicateRows = report.RawRows - report.UniqueRows
+			// Each half arrives stars-sorted; the concatenation is not.
+			sortForksByStars(merged, nil)
 			return merged, nil, report, nil
 		}
 

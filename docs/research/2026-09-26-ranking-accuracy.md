@@ -25,6 +25,9 @@ Evidence labels used below:
 - **[source]**: read in the source at the cited line.
 - **[agent]**: reported by a code-mapping subagent, line not re-read here.
 
+Line numbers refer to commit `3dbd09c`, the code that produced the export
+(before the Phase 1 fix on this branch).
+
 ## Headline: 44% of the network was never listed
 
 The critique counted duplicates. The bigger defect is what the duplicates
