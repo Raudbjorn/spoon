@@ -478,6 +478,10 @@ func (m Model) renderStatusBar() string {
 			// count into looking like the repo has fewer forks than it does.
 			appendTail(1, fmt.Sprintf("%d/%d forks", m.visibleCount(), len(m.forks)))
 			variable = append(variable, fmt.Sprintf("filter: %q", m.filter))
+		} else if a := m.acquisition; a != nil && a.ExpectedRows > len(m.forks) {
+			// Say when the list itself is short: forks missing from it can
+			// never be ranked, and nothing else on screen would show it.
+			appendTail(1, fmt.Sprintf("%d of %d forks listed", len(m.forks), a.ExpectedRows))
 		} else {
 			appendTail(1, fmt.Sprintf("%d forks", len(m.forks)))
 		}

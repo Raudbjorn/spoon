@@ -67,3 +67,32 @@ func TestDoExport_degradedOmitsDivergenceForUnenriched(t *testing.T) {
 		t.Error("o/b should be marked enriched=false")
 	}
 }
+
+// The export must say when the fork list itself fell short of the provider's
+// count: missing forks are invisible in the per-row counts.
+func TestDoExport_listingReportsShortfall(t *testing.T) {
+	now := time.Now()
+	forks := []ScoredFork{{Fork: forge.T1Data{ID: "o/a", Owner: "o", Name: "a", DefaultBranch: "main", PushedAt: now}}}
+	m := &Model{
+		parent:      &forge.ParentData{FullName: "o/r", DefaultBranch: "main"},
+		auth:        forge.AuthInfo{Provider: forge.ProviderGitHub, Host: "github.com"},
+		forks:       forks,
+		acquisition: &forge.AcquisitionReport{Method: "graphql", ExpectedRows: 3, DuplicateRows: 2},
+	}
+	path := filepath.Join(t.TempDir(), "out.json")
+	if dm, ok := m.doExport(forks, path)().(exportDoneMsg); !ok || dm.err != nil {
+		t.Fatalf("export failed: %#v", dm)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var data ExportData
+	if err := json.Unmarshal(raw, &data); err != nil {
+		t.Fatal(err)
+	}
+	want := ExportListing{Listed: 1, Expected: 3, RepeatsDropped: 2, Method: "graphql"}
+	if data.Listing == nil || *data.Listing != want {
+		t.Errorf("listing = %+v, want %+v", data.Listing, want)
+	}
+}

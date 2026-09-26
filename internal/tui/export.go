@@ -34,7 +34,38 @@ type ExportData struct {
 	// was ranked. Same shape as the spn rank_report details.
 	RankReport *forksops.RankReport `json:"rank_report,omitempty"`
 
+	// Listing says how complete the fork list behind this export is. The
+	// counts above cover only the exported rows; a listing that fell short
+	// of the provider's own fork count means forks missing from the list
+	// entirely, which no enrichment can recover.
+	Listing *ExportListing `json:"listing,omitempty"`
+
 	Forks []ExportFork `json:"forks"`
+}
+
+// ExportListing summarises the fork-list acquisition for an export.
+type ExportListing struct {
+	// Listed is the number of unique forks spoon listed for the repo.
+	Listed int `json:"listed"`
+	// Expected is the provider's own count of direct forks; 0 when unknown.
+	Expected int `json:"expected,omitempty"`
+	// RepeatsDropped counts rows the provider returned more than once.
+	RepeatsDropped int    `json:"repeats_dropped"`
+	Method         string `json:"method,omitempty"`
+}
+
+// exportListing builds the Listing block, or nil when no acquisition report
+// was captured (e.g. a fork list served from the store cache).
+func exportListing(report *forge.AcquisitionReport, listed int) *ExportListing {
+	if report == nil {
+		return nil
+	}
+	return &ExportListing{
+		Listed:         listed,
+		Expected:       report.ExpectedRows,
+		RepeatsDropped: report.DuplicateRows,
+		Method:         report.Method,
+	}
 }
 
 // ExportParent describes the parent repository.
@@ -280,8 +311,10 @@ func (m Model) viewExportPath() string {
 func (m *Model) doExport(toExport []ScoredFork, filename string) tea.Cmd {
 	parent := m.parent
 	auth := m.auth
+	listing := exportListing(m.acquisition, len(m.forks))
 	return func() tea.Msg {
 		data := ExportData{
+			Listing: listing,
 			Parent: ExportParent{
 				FullName:      parent.FullName,
 				URL:           parent.URL,
