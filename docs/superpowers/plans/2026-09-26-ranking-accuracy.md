@@ -20,7 +20,7 @@ get their own detailed plan when started.
 - Re-run after each phase; a phase that does not move recall is questioned
   before merge.
 
-## Phase 1 — Complete, duplicate-free fork listing (this branch)
+## Phase 1 — Complete, duplicate-free fork listing (implemented on this branch)
 
 **Goal:** every direct fork listed exactly once; shortfall reported.
 

@@ -75,8 +75,16 @@ func TestFetchForksAuto_GraphQLSuccess_Report(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FetchForksAuto: %v", err)
 	}
-	if len(forks) != 3 {
-		t.Errorf("len(forks) = %d, want 3 (raw count)", len(forks))
+	// Was "want 3 (raw count)": repeats used to be returned and only counted.
+	// Every consumer downstream (TUI scoring, rank pool, export, enrichment
+	// dispatch) assumes one row per fork, and on ggml-org/llama.cpp 9,187
+	// repeats split forks into an enriched copy and stub copies. The raw
+	// count now lives only in report.RawRows.
+	if len(forks) != 2 {
+		t.Errorf("len(forks) = %d, want 2 (repeats dropped)", len(forks))
+	}
+	if report != nil && report.ExpectedRows != 3 {
+		t.Errorf("report.ExpectedRows = %d, want 3 (forks.totalCount)", report.ExpectedRows)
 	}
 	if report == nil {
 		t.Fatal("report is nil")
@@ -360,5 +368,80 @@ func TestAuthScopeIDSafeWithTokens(t *testing.T) {
 	id := computeAuthScopeID("github", "github.com", []string{sentinel})
 	if strings.Contains(id, sentinel) {
 		t.Errorf("AuthScopeID %q contains sentinel token; secret leak!", id)
+	}
+}
+
+// The fork listing must page by an immutable key. Paging by stars returned
+// ~20k rows covering only 11,171 of 19,981 forks on ggml-org/llama.cpp (most
+// forks tie at 0 stars, so cursor pages overlap and skip); CREATED_AT returned
+// all 19,981 exactly once (live, 2026-09-26).
+func TestForksGraphQLQuery_PagesByCreationTime(t *testing.T) {
+	if !strings.Contains(forksGraphQLQuery, "orderBy: {field: CREATED_AT, direction: ASC}") {
+		t.Fatalf("forks query must page by CREATED_AT ASC; got:\n%s", forksGraphQLQuery)
+	}
+	if strings.Contains(forksGraphQLQuery, "field: STARGAZERS") {
+		t.Fatal("forks query pages by STARGAZERS, a heavily tied key")
+	}
+}
+
+// REST fallback: pages requested oldest-first, repeats across pages dropped
+// (and from onPage), raw count kept in the report, result in stars order.
+func TestFetchForksAuto_RESTDedupAndOrder(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("sort"); got != "oldest" {
+			t.Errorf("REST forks sort = %q, want oldest", got)
+		}
+		if r.URL.Query().Get("page") == "2" {
+			_ = json.NewEncoder(w).Encode([]ForkInfo{
+				{ID: 2, FullName: "b/r"}, // repeat from page 1
+				{ID: 3, FullName: "c/r", Stars: 7},
+			})
+			return
+		}
+		w.Header().Set("Link", `<`+"http://"+r.Host+r.URL.Path+`?sort=oldest&per_page=100&page=2>; rel="next"`)
+		_ = json.NewEncoder(w).Encode([]ForkInfo{
+			{ID: 1, FullName: "a/r"},
+			{ID: 2, FullName: "b/r", Stars: 7},
+		})
+	}))
+	defer srv.Close()
+
+	var streamed []int64
+	c := newRESTOnlyTestClient(t, srv)
+	forks, _, report, err := c.FetchForksAuto(context.Background(), "foo", "bar", func(fs []ForkInfo, _ int) {
+		for _, f := range fs {
+			streamed = append(streamed, f.ID)
+		}
+	})
+	if err != nil {
+		t.Fatalf("FetchForksAuto: %v", err)
+	}
+	got := make([]int64, len(forks))
+	for i, f := range forks {
+		got[i] = f.ID
+	}
+	// Stars desc, ID asc on ties: 2 (7★), 3 (7★), 1 (0★).
+	if want := []int64{2, 3, 1}; !equalInt64s(got, want) {
+		t.Errorf("fork IDs = %v, want %v", got, want)
+	}
+	if want := []int64{1, 2, 3}; !equalInt64s(streamed, want) {
+		t.Errorf("onPage streamed %v, want %v (repeat must not be re-emitted)", streamed, want)
+	}
+	if report.RawRows != 4 || report.UniqueRows != 3 || report.DuplicateRows != 1 {
+		t.Errorf("report raw/unique/dup = %d/%d/%d, want 4/3/1", report.RawRows, report.UniqueRows, report.DuplicateRows)
+	}
+}
+
+func TestSortForksByStars_KeepsExtrasParallel(t *testing.T) {
+	forks := []ForkInfo{{ID: 5, Stars: 0}, {ID: 9, Stars: 3}, {ID: 1, Stars: 0}}
+	extras := []T1Extra{{ForkCount: 50}, {ForkCount: 90}, {ForkCount: 10}}
+	sortForksByStars(forks, extras)
+	for i, want := range []int64{9, 1, 5} {
+		if forks[i].ID != want {
+			t.Fatalf("forks[%d].ID = %d, want %d", i, forks[i].ID, want)
+		}
+		if extras[i].ForkCount != int(want)*10 {
+			t.Fatalf("extras[%d] = %d, not aligned with fork %d", i, extras[i].ForkCount, want)
+		}
 	}
 }
