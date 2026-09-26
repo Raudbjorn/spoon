@@ -80,6 +80,14 @@ func (c *Client) fetchForksREST(ctx context.Context, owner, repo string, onPage 
 // walks it; dispatch tie-breaks follow it), so it is restored here after the
 // fetch pages in a stable but unrelated order.
 func sortForksByStars(forks []ForkInfo, extras []T1Extra) {
+	// Checked before anything moves: callers build the two slices in
+	// lockstep, so a mismatch is a bug, and sorting forks alone would attach
+	// extras to the wrong fork. Leave both in their original, aligned order.
+	if extras != nil && len(extras) != len(forks) {
+		slog.Error("sortForksByStars: extras not parallel to forks; leaving both unsorted",
+			"forks", len(forks), "extras", len(extras))
+		return
+	}
 	idx := make([]int, len(forks))
 	for i := range idx {
 		idx[i] = i
@@ -97,13 +105,6 @@ func sortForksByStars(forks []ForkInfo, extras []T1Extra) {
 	}
 	copy(forks, sortedForks)
 	if extras == nil {
-		return
-	}
-	if len(extras) != len(forks) {
-		// Callers build the two slices in lockstep; a mismatch is a bug, and
-		// reordering only forks would silently attach extras to the wrong fork.
-		slog.Error("sortForksByStars: extras not parallel to forks; extras left unsorted",
-			"forks", len(forks), "extras", len(extras))
 		return
 	}
 	sortedExtras := make([]T1Extra, len(extras))
