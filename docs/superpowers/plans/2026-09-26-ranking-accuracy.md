@@ -33,7 +33,9 @@ get their own detailed plan when started.
    consumers (secretary rule, dispatch tie-break) keep today's semantics.
 3. REST `FetchForks`: `sort=oldest` (stable) + same dedup + same final sort.
 4. `forge.AcquisitionReport`: add `ExpectedRows` (GraphQL `forks.totalCount`;
-   0 when unknown) so a shortfall (`UniqueRows < ExpectedRows`) is visible.
+   0 when unknown) so a shortfall (`UniqueRows < ExpectedRows`) is recorded.
+   Only `spn`'s stderr acquisition report shows it today; the TUI stores the
+   report (`m.acquisition`) but never renders it. Surfacing it is Phase 2.3.
    `RawRows`/`DuplicateRows` stay as diagnostics.
 5. TUI backstop: `fetchForks` (`internal/tui/app.go:1470`) drops repeated
    `Fork.ID` so no future provider can reintroduce the enriched/stub split.
@@ -44,9 +46,17 @@ get their own detailed plan when started.
    - Query text uses `CREATED_AT` (guard against regression to a tied key).
    - TUI: repeated `ForkMsg` → unique `m.forks`.
 
-**Not in Phase 1:** GitLab/Gitea listing order (check separately — same
-tied-key risk if they sort by stars); bounded network traversal
-(`FetchForksBounded`, already dedups).
+**Rollout note:** the TUI serves a cached fork list for 12 h
+(`forkListTTL`); a repo listed before this fix keeps its short list until the
+TTL lapses or the user refreshes (`r`, or `spn --refresh`).
+
+**Expect the enriched share to drop until Phase 2:** twice as many forks
+listed against the same rate budget and the same unordered dispatch.
+
+**Not in Phase 1:** GitLab lists forks by `last_activity_at`/`updated_at`
+(`internal/gitlab/forks.go:107`, `:244`), mutable keys that can shift during
+a walk; Gitea paging not checked. Bounded network traversal
+(`FetchForksBounded`) already dedups.
 
 ## Phase 2 — TUI enrichment that spends budget on the right forks
 
