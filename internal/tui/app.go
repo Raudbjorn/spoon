@@ -211,6 +211,9 @@ type Model struct {
 	batchResolving bool
 	batchStats     *forge.BatchStats
 	batchErr       string
+	// unreachable counts forks dropped from the list because their
+	// repository no longer exists (see tier2ResultMsg.unreachable).
+	unreachable int
 
 	// Global store (mandatory at runtime; nil only in unit tests). cached is
 	// the repo's stored snapshot, used to serve fork lists within forkListTTL
@@ -730,6 +733,7 @@ func (m *Model) handleForksFetched(msg forksFetchedMsg) (tea.Model, tea.Cmd) {
 
 	// Store the terminal acquisition report if the provider supplied one.
 	m.acquisition = msg.Report
+	m.unreachable = 0
 
 	m.scoreForks(msg.forks)
 	m.view = viewTable
@@ -793,9 +797,21 @@ func (m *Model) processPendingUpdates() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	coverageDirty := false
+	// Captured before any row is dropped below, so the cursor stays on the
+	// same fork rather than the same index.
+	var selectedID string
+	if m.cursor >= 0 && m.cursor < len(m.forks) {
+		selectedID = m.forks[m.cursor].Fork.ID
+	}
+	gone := map[string]bool{}
 
 	for _, update := range m.pendingUpdates {
 		m.enrichDone++
+
+		if update.unreachable {
+			gone[update.forkID] = true
+			continue
+		}
 
 		// Rate-reserve skip: keep the fork, mark it un-enriched/degraded (not
 		// failed, not zero divergence) so the export can distinguish it.
@@ -864,21 +880,28 @@ func (m *Model) processPendingUpdates() (tea.Model, tea.Cmd) {
 		}
 	}
 	m.pendingUpdates = m.pendingUpdates[:0]
+	if len(gone) > 0 {
+		kept := m.forks[:0]
+		for _, sf := range m.forks {
+			if !gone[sf.Fork.ID] {
+				kept = append(kept, sf)
+			}
+		}
+		m.unreachable += len(m.forks) - len(kept)
+		m.forks = kept
+	}
 
 	// Re-group after each settled batch: T2 landing can sharpen a fork's key
 	// from the diff-shape fallback to an exact head SHA. Gather rather than
 	// re-sort: the rows are already in the user's chosen order, and gathering
 	// only moves the members of a freshly-formed group next to each other
-	// instead of reordering everything. It can still move rows, though — so
-	// capture the fork under the cursor first and restore it afterward, same
+	// instead of reordering everything. It can still move rows, though -- so
+	// the fork under the cursor (captured above) is restored afterward, same
 	// as the sweep handler does for its own re-sort.
-	var selectedID string
-	if m.cursor >= 0 && m.cursor < len(m.forks) {
-		selectedID = m.forks[m.cursor].Fork.ID
-	}
 	m.assignDuplicateGroups()
 	m.gatherDuplicateGroups(0, len(m.forks))
 	m.restoreCursorByID(selectedID)
+	m.cursor = clampCursorVisible(m.cursor, m.visibleIdx())
 
 	cmds := make([]tea.Cmd, 0, 3)
 	if coverageDirty {

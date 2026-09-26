@@ -485,6 +485,9 @@ func (m Model) renderStatusBar() string {
 		} else {
 			appendTail(1, fmt.Sprintf("%d forks", len(m.forks)))
 		}
+		if m.unreachable > 0 {
+			appendTail(1, fmt.Sprintf("%d gone", m.unreachable))
+		}
 	}
 
 	if m.batchResolving {

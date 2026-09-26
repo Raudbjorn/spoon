@@ -83,6 +83,8 @@ type batchDivergenceMsg struct {
 	divergence map[string]forge.ForkDivergence
 	stats      forge.BatchStats
 	err        error
+	// missing names forks whose repository no longer resolves at all.
+	missing map[string]bool
 }
 
 // batchDivergenceCmd resolves ahead/behind for every queued fork in one
@@ -96,7 +98,23 @@ func batchDivergenceCmd(ctx context.Context, bp forge.BatchCompareProvider, orde
 			forks[i] = e.fork
 		}
 		div, stats, err := bp.BatchCompare(ctx, forks)
-		return batchDivergenceMsg{ctx: ctx, order: order, divergence: div, stats: stats, err: err}
+		msg := batchDivergenceMsg{ctx: ctx, order: order, divergence: div, stats: stats, err: err}
+		// Forks the batch could not resolve are the only candidates for a
+		// vanished repository; checking just those keeps the lookup cheap.
+		// A lookup failure leaves missing nil: every fork then gets its
+		// compare as before, nothing is marked on a guess.
+		if mp, ok := bp.(forge.MissingReposProvider); ok {
+			var unresolved []forge.T1Data
+			for _, f := range forks {
+				if d, found := div[f.ID]; !found || !d.Resolved {
+					unresolved = append(unresolved, f)
+				}
+			}
+			if len(unresolved) > 0 {
+				msg.missing, _ = mp.MissingRepos(ctx, unresolved)
+			}
+		}
+		return msg
 	}
 }
 
@@ -207,6 +225,8 @@ func (m *Model) handleBatchDivergence(msg batchDivergenceMsg) (tea.Model, tea.Cm
 	for _, e := range msg.order {
 		res, ok := forksops.ResolveFromBatch(msg.divergence, e.fork.ID)
 		switch {
+		case msg.missing[e.fork.ID]:
+			m.pendingUpdates = append(m.pendingUpdates, tier2ResultMsg{forkID: e.fork.ID, unreachable: true})
 		case ok && res.T2 != nil:
 			// Settled through the same apply/persist path as a REST result,
 			// so the no_ahead penalty and the store write both happen.

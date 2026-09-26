@@ -50,13 +50,16 @@ type ExportListing struct {
 	// Expected is the provider's own count of direct forks; 0 when unknown.
 	Expected int `json:"expected,omitempty"`
 	// RepeatsDropped counts rows the provider returned more than once.
-	RepeatsDropped int    `json:"repeats_dropped"`
-	Method         string `json:"method,omitempty"`
+	RepeatsDropped int `json:"repeats_dropped"`
+	// Unreachable counts listed forks dropped because their repository no
+	// longer exists (deleted, disabled or hidden); they are not in Forks.
+	Unreachable int    `json:"unreachable,omitempty"`
+	Method      string `json:"method,omitempty"`
 }
 
 // exportListing builds the Listing block, or nil when no acquisition report
 // was captured (e.g. a fork list served from the store cache).
-func exportListing(report *forge.AcquisitionReport, listed int) *ExportListing {
+func exportListing(report *forge.AcquisitionReport, listed, unreachable int) *ExportListing {
 	if report == nil {
 		return nil
 	}
@@ -64,6 +67,7 @@ func exportListing(report *forge.AcquisitionReport, listed int) *ExportListing {
 		Listed:         listed,
 		Expected:       report.ExpectedRows,
 		RepeatsDropped: report.DuplicateRows,
+		Unreachable:    unreachable,
 		Method:         report.Method,
 	}
 }
@@ -311,7 +315,7 @@ func (m Model) viewExportPath() string {
 func (m *Model) doExport(toExport []ScoredFork, filename string) tea.Cmd {
 	parent := m.parent
 	auth := m.auth
-	listing := exportListing(m.acquisition, len(m.forks))
+	listing := exportListing(m.acquisition, len(m.forks), m.unreachable)
 	return func() tea.Msg {
 		data := ExportData{
 			Listing: listing,

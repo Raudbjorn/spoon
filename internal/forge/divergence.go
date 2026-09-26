@@ -86,6 +86,13 @@ type BatchCompareProvider interface {
 	BatchCompare(ctx context.Context, forks []T1Data) (map[string]ForkDivergence, BatchStats, error)
 }
 
+// MissingReposProvider is an optional provider capability that reports which
+// forks' repositories no longer exist (deleted, disabled or hidden), keyed by
+// T1Data.ID. A fork absent from the map is not known to be missing.
+type MissingReposProvider interface {
+	MissingRepos(ctx context.Context, forks []T1Data) (map[string]bool, error)
+}
+
 // ResolvedCompareProvider is an optional provider capability that fetches
 // the full T2Data (commits, file diffs) for a fork given a BranchSelection
 // already chosen by SelectDivergentBranch, so the branch-choice decision

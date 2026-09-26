@@ -195,3 +195,52 @@ func runBatch(cmd tea.Cmd) {
 		}
 	}
 }
+
+// A fork whose repository no longer exists is settled without a compare and
+// dropped from the list, counted as unreachable, with the pass still
+// finishing its count.
+func TestBatchDivergence_MissingRepoDroppedWithoutCompare(t *testing.T) {
+	fake := &orderFakeForge{tierFakeForge: tierFakeForge{headroom: 1}}
+	m := queueTestModel(fake)
+	m.forks = []ScoredFork{
+		{Fork: forge.T1Data{ID: "live"}, Enriching: true},
+		{Fork: forge.T1Data{ID: "gone"}, Enriching: true},
+	}
+	m.cursor = 1
+	m.enriching, m.enrichTotal = true, 2
+	m.enrichQueue = &enrichQueue{}
+
+	_, cmd := m.handleBatchDivergence(batchDivergenceMsg{
+		ctx:     m.enrichCtx,
+		order:   []enrichEntry{{fork: m.forks[0].Fork}, {fork: m.forks[1].Fork}},
+		missing: map[string]bool{"gone": true},
+	})
+	// Deliver the live fork's compare result the way Update would.
+	// tea.Batch of one command returns that command itself, not a BatchMsg.
+	var collect func(tea.Msg)
+	collect = func(msg tea.Msg) {
+		switch v := msg.(type) {
+		case tier2ResultMsg:
+			m.pendingUpdates = append(m.pendingUpdates, v)
+		case tea.BatchMsg:
+			for _, c := range v {
+				collect(c())
+			}
+		}
+	}
+	collect(cmd())
+	_, _ = m.processPendingUpdates()
+
+	if len(fake.order) != 1 || fake.order[0] != "live" {
+		t.Errorf("Compare calls = %v, want only [live]", fake.order)
+	}
+	if len(m.forks) != 1 || m.forks[0].Fork.ID != "live" || m.unreachable != 1 {
+		t.Errorf("forks = %d (%v), unreachable = %d; want only live kept, 1 unreachable", len(m.forks), m.forks, m.unreachable)
+	}
+	if m.enrichDone != 2 || m.enriching {
+		t.Errorf("enrichDone = %d, enriching = %v; want 2 and finished", m.enrichDone, m.enriching)
+	}
+	if m.cursor != 0 {
+		t.Errorf("cursor = %d, want 0 (was on the dropped row)", m.cursor)
+	}
+}
