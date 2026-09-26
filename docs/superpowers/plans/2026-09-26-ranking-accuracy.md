@@ -46,6 +46,21 @@ get their own detailed plan when started.
    - Query text uses `CREATED_AT` (guard against regression to a tied key).
    - TUI: repeated `ForkMsg` → unique `m.forks`.
 
+**Live check (observed once, 2026-09-26, spoon's own `FetchForksAuto` on
+ggml-org/llama.cpp):** 20,430 forks returned, 20,430 unique, stars-sorted;
+top three `LostRuins/koboldcpp`, `antimatter15/alpaca.cpp`,
+`TheTom/llama-cpp-turboquant`. Two surprises:
+
+- GraphQL failed partway and the REST fallback finished the walk
+  (`method: graphql+rest`, 100 cross-source repeats dropped). Cause not
+  captured (the fallback logs at Debug).
+- 20,430 > `ExpectedRows` 19,981. A standalone REST `sort=oldest` walk lists
+  20,431 forks; 450 of them are absent from GraphQL, and 12/12 sampled
+  return 404 on `GET /repos` and GraphQL (deleted, disabled or spam-hidden
+  accounts). REST lists them; GraphQL does not. Follow-up (Phase 2): drop
+  REST-only rows that GraphQL cannot resolve, or at least never spend a
+  compare on them.
+
 **Rollout note:** the TUI serves a cached fork list for 12 h
 (`forkListTTL`); a repo listed before this fix keeps its short list until the
 TTL lapses or the user refreshes (`r`, or `spn --refresh`).
