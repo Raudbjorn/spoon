@@ -511,3 +511,14 @@ func TestFetchForksAuto_DuplicateOnlyPagesStillCounted(t *testing.T) {
 		}
 	})
 }
+
+// Mismatched extras leave both slices untouched rather than sorting forks
+// alone and misaligning them. Review finding on #135.
+func TestSortForksByStars_MismatchedExtrasLeavesBothAligned(t *testing.T) {
+	forks := []ForkInfo{{ID: 1, Stars: 0}, {ID: 2, Stars: 5}}
+	extras := []T1Extra{{ForkCount: 10}}
+	sortForksByStars(forks, extras)
+	if forks[0].ID != 1 || forks[1].ID != 2 || extras[0].ForkCount != 10 {
+		t.Errorf("forks = %v, extras = %v; want both unchanged", forks, extras)
+	}
+}
