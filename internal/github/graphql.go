@@ -273,9 +273,12 @@ func (c *Client) FetchForksGraphQL(ctx context.Context, owner, repo string, onPa
 		allForks = append(allForks, pageForks...)
 		allExtras = append(allExtras, pageExtras...)
 
-		if len(pageForks) > 0 {
+		// Pages counts non-empty upstream batches, so a page whose rows were
+		// all repeats of earlier pages still counts; only the callback is
+		// skipped when nothing on the page is new.
+		if len(resp.Repository.Forks.Nodes) > 0 {
 			page++
-			if onPage != nil {
+			if onPage != nil && len(pageForks) > 0 {
 				onPage(pageForks, pageExtras, page)
 			}
 		}
@@ -877,18 +880,13 @@ func (c *Client) FetchForksAuto(ctx context.Context, owner, repo string, onPage 
 					}
 				}
 			}
-			restPages, restRawRows := 0, 0
 			restOnPage := func(pageForks []ForkInfo, page int) {
-				if len(pageForks) > 0 {
-					restPages++
-					restRawRows += len(pageForks)
-				}
 				if dedupOnPage != nil {
 					dedupOnPage(pageForks, page)
 				}
 			}
-			restForks, restRaw, restErr := c.fetchForksREST(ctx, owner, repo, restOnPage)
-			restRawRows = restRaw
+			restForks, restStats, restErr := c.fetchForksREST(ctx, owner, repo, restOnPage)
+			restPages, restRawRows := restStats.pages, restStats.raw
 			if restErr != nil {
 				// REST fallback failed too: retain the partial GraphQL snapshot.
 				if gqlReport == nil {
@@ -953,20 +951,11 @@ func (c *Client) FetchForksAuto(ctx context.Context, owner, repo string, onPage 
 		return forks, extrasMap, gqlReport, nil
 	}
 
-	// REST fallback — no extras. Count raw, non-empty REST batches before
-	// any outward callback so report accounting never depends on dedup/display.
-	restPages, restRawRows := 0, 0
-	restOnPage := func(pageForks []ForkInfo, page int) {
-		if len(pageForks) > 0 {
-			restPages++
-			restRawRows += len(pageForks)
-		}
-		if onPage != nil {
-			onPage(pageForks, page)
-		}
-	}
-	restForks, restRaw, restErr := c.fetchForksREST(ctx, owner, repo, restOnPage)
-	restRawRows = restRaw
+	// REST fallback — no extras. fetchForksREST counts raw, non-empty REST
+	// batches before dedup, so report accounting never depends on
+	// dedup/display.
+	restForks, restStats, restErr := c.fetchForksREST(ctx, owner, repo, onPage)
+	restPages, restRawRows := restStats.pages, restStats.raw
 	if restErr != nil {
 		// Pure REST failure: still surface a report so callers know what we
 		// tried. Method stays "rest" and Error marks the failure.

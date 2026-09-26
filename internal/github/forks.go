@@ -24,18 +24,25 @@ func (c *Client) FetchForks(ctx context.Context, owner, repo string, onPage func
 	return forks, err
 }
 
-// fetchForksREST is FetchForks plus the raw row count (repeats included), for
-// the acquisition report.
+// restListStats is what the acquisition report needs from a REST listing,
+// counted before repeats are dropped: raw rows, and pages that returned any
+// row at all (a page of nothing but repeats still counts).
+type restListStats struct {
+	raw, pages int
+}
+
+// fetchForksREST is FetchForks plus restListStats for the acquisition report.
 //
 // Pages are requested oldest-first, not by stars: most forks tie at 0 stars,
 // and paging over a heavily tied sort key is unstable. On ggml-org/llama.cpp
 // the star-ordered walk returned ~20k rows covering only 11,171 of 19,981
 // forks; a creation-ordered walk returned every fork exactly once. The stars
 // order callers expect is restored in memory afterwards.
-func (c *Client) fetchForksREST(ctx context.Context, owner, repo string, onPage func(forks []ForkInfo, page int)) ([]ForkInfo, int, error) {
+func (c *Client) fetchForksREST(ctx context.Context, owner, repo string, onPage func(forks []ForkInfo, page int)) ([]ForkInfo, restListStats, error) {
 	var all []ForkInfo
+	var stats restListStats
 	seen := make(map[int64]struct{}, 256)
-	page, raw := 0, 0
+	page := 0
 	path := fmt.Sprintf("repos/%s/%s/forks?sort=oldest&per_page=100", owner, repo)
 
 	err := c.GetPaginated(ctx, path, func(msg json.RawMessage) error {
@@ -44,7 +51,10 @@ func (c *Client) fetchForksREST(ctx context.Context, owner, repo string, onPage 
 			return fmt.Errorf("parsing forks page: %w", err)
 		}
 		page++
-		raw += len(forks)
+		stats.raw += len(forks)
+		if len(forks) > 0 {
+			stats.pages++
+		}
 		fresh := make([]ForkInfo, 0, len(forks))
 		for _, f := range forks {
 			if _, dup := seen[f.ID]; dup {
@@ -54,14 +64,14 @@ func (c *Client) fetchForksREST(ctx context.Context, owner, repo string, onPage 
 			fresh = append(fresh, f)
 		}
 		all = append(all, fresh...)
-		if onPage != nil {
+		if onPage != nil && len(fresh) > 0 {
 			onPage(fresh, page)
 		}
 		return nil
 	})
 
 	sortForksByStars(all, nil)
-	return all, raw, err
+	return all, stats, err
 }
 
 // sortForksByStars orders forks by stars descending, ID ascending on ties,

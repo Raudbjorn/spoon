@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -444,4 +445,69 @@ func TestSortForksByStars_KeepsExtrasParallel(t *testing.T) {
 			t.Fatalf("extras[%d] = %d, not aligned with fork %d", i, extras[i].ForkCount, want)
 		}
 	}
+}
+
+// A page whose rows all repeat earlier pages is still an upstream page:
+// Pages counts it (RawRows already includes its rows), and onPage is not
+// called with an empty batch. Review finding on #135.
+func TestFetchForksAuto_DuplicateOnlyPagesStillCounted(t *testing.T) {
+	t.Run("graphql", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			var got struct {
+				Variables struct {
+					Cursor string `json:"cursor"`
+				} `json:"variables"`
+			}
+			_ = json.Unmarshal(body, &got)
+			node := func(id int) string {
+				return fmt.Sprintf(`{"databaseId":%d,"nameWithOwner":"o%d/r","name":"r"}`, id, id)
+			}
+			page := func(next, cursor string, nodes ...string) string {
+				return `{"data":{"repository":{"forkCount":2,"forks":{"totalCount":2,` +
+					`"pageInfo":{"hasNextPage":` + next + `,"endCursor":"` + cursor + `"},` +
+					`"nodes":[` + strings.Join(nodes, ",") + `]}}}}`
+			}
+			switch got.Variables.Cursor {
+			case "":
+				_, _ = io.WriteString(w, page("true", "c1", node(1)))
+			case "c1":
+				_, _ = io.WriteString(w, page("true", "c2", node(1))) // repeats only
+			case "c2":
+				_, _ = io.WriteString(w, page("false", "c3", node(2)))
+			}
+		}))
+		defer srv.Close()
+
+		var calls int
+		c := newTestClientGQL(t, srv)
+		forks, _, report, err := c.FetchForksAuto(context.Background(), "foo", "bar", func([]ForkInfo, int) { calls++ })
+		if err != nil {
+			t.Fatalf("FetchForksAuto: %v", err)
+		}
+		if len(forks) != 2 || report.Pages != 3 || report.RawRows != 3 || calls != 2 {
+			t.Errorf("forks=%d pages=%d raw=%d onPage calls=%d; want 2/3/3/2", len(forks), report.Pages, report.RawRows, calls)
+		}
+	})
+	t.Run("rest", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Query().Get("page") == "2" {
+				_ = json.NewEncoder(w).Encode([]ForkInfo{{ID: 1, FullName: "a/r"}}) // repeats only
+				return
+			}
+			w.Header().Set("Link", `<`+"http://"+r.Host+r.URL.Path+`?sort=oldest&per_page=100&page=2>; rel="next"`)
+			_ = json.NewEncoder(w).Encode([]ForkInfo{{ID: 1, FullName: "a/r"}})
+		}))
+		defer srv.Close()
+
+		var calls int
+		c := newRESTOnlyTestClient(t, srv)
+		_, _, report, err := c.FetchForksAuto(context.Background(), "foo", "bar", func([]ForkInfo, int) { calls++ })
+		if err != nil {
+			t.Fatalf("FetchForksAuto: %v", err)
+		}
+		if report.Pages != 2 || report.RawRows != 2 || report.UniqueRows != 1 || calls != 1 {
+			t.Errorf("pages=%d raw=%d unique=%d onPage calls=%d; want 2/2/1/1", report.Pages, report.RawRows, report.UniqueRows, calls)
+		}
+	})
 }
