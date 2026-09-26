@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -633,11 +634,33 @@ func (c *Client) doGraphQLWithRetry(ctx context.Context, query string, variables
 	return err
 }
 
+// extrasByID keys GraphQL T1 extras by fork ID. extras is parallel to forks;
+// nil when there are none.
+func extrasByID(forks []ForkInfo, extras []T1Extra) map[int64]T1Extra {
+	if len(extras) == 0 {
+		return nil
+	}
+	m := make(map[int64]T1Extra, len(extras))
+	for i, f := range forks {
+		if i < len(extras) {
+			m[f.ID] = extras[i]
+		}
+	}
+	return m
+}
+
 // isTransientServerError reports whether err is a retryable upstream failure
 // (HTTP 502 Bad Gateway, 503 Service Unavailable, or 504 Gateway Timeout).
 func isTransientServerError(err error) bool {
 	if err == nil {
 		return false
+	}
+	// A response body cut off mid-JSON is a server/transport hiccup, not a
+	// bad query: the same request succeeds on retry. Observed 2026-09-26 on
+	// ggml-org/llama.cpp page 371 of the fork listing, between runs of
+	// 502/504s; treating it as fatal aborted a 65-minute GraphQL walk.
+	if errors.Is(err, io.ErrUnexpectedEOF) || strings.Contains(err.Error(), "unexpected end of JSON input") {
+		return true
 	}
 	var httpErr *ghAPI.HTTPError
 	if asHTTPError(err, &httpErr) {
@@ -938,17 +961,15 @@ func (c *Client) FetchForksAuto(ctx context.Context, owner, repo string, onPage 
 			report.DuplicateRows = report.RawRows - report.UniqueRows
 			// Each half arrives stars-sorted; the concatenation is not.
 			sortForksByStars(merged, nil)
-			return merged, nil, report, nil
+			// Keep the T1 extras (branches, tip SHA, releases, open PRs) for
+			// every fork GraphQL did return. Dropping them all because a late
+			// page failed erased branch data network-wide: on llama.cpp the
+			// walk returned 18,500 forks before failing, and every one lost
+			// its branches, hiding side-branch work from the divergence batch.
+			return merged, extrasByID(forks, extras), report, nil
 		}
 
-		// Build extras map
-		extrasMap := make(map[int64]T1Extra, len(extras))
-		for i, f := range forks {
-			if i < len(extras) {
-				extrasMap[f.ID] = extras[i]
-			}
-		}
-		return forks, extrasMap, gqlReport, nil
+		return forks, extrasByID(forks, extras), gqlReport, nil
 	}
 
 	// REST fallback — no extras. fetchForksREST counts raw, non-empty REST
