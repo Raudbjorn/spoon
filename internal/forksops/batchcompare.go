@@ -180,3 +180,18 @@ func batchEstimate(pending []forge.T1Data, divergence map[string]forge.ForkDiver
 	restEstimate = divergent + resolved*contributorsShare + unresolved*perRequestCost(tier)
 	return divergent, resolved, restEstimate
 }
+
+// BatchResolution is the exported form of batchResolution, for callers
+// outside the CLI stream (the TUI) that run the same batch-then-REST
+// enrichment and must apply the same branch-choice policy.
+type BatchResolution = batchResolution
+
+// ResolveFromBatch is resolveFromBatch for callers outside this package.
+func ResolveFromBatch(divergence map[string]forge.ForkDivergence, forkID string) (BatchResolution, bool) {
+	return resolveFromBatch(divergence, forkID)
+}
+
+// CompareFork is compareFork for callers outside this package.
+func CompareFork(ctx context.Context, provider forge.Forge, fork forge.T1Data, sel *forge.BranchSelection, logger io.Writer) (forge.T2Data, error) {
+	return compareFork(ctx, provider, fork, sel, logger)
+}
