@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/svnbjrn/spoon/internal/forge"
 )
@@ -41,5 +42,22 @@ func TestBuildDocumentDiffPrecedesCommitsAndHashesBodyOnly(t *testing.T) {
 	sum := sha256.Sum256([]byte(rec.Body))
 	if rec.ContentHash != hex.EncodeToString(sum[:]) {
 		t.Fatalf("content_hash is not the body-only hash; model identity leaked in")
+	}
+}
+
+// Invalid UTF-8 from a raw diff must yield a valid body, hashed after
+// cleaning, so the stored body and its content_hash agree and libsql can
+// bind it (PR #134 review). The diff chunk already passes through []rune,
+// which replaces bad bytes; the paths section does not, so the invalid byte
+// sits in the file path here.
+func TestBuildDocumentCleansInvalidUTF8BeforeHashing(t *testing.T) {
+	t2 := &forge.T2Data{Diffs: []forge.FileDiff{{Path: "cfg\xff.yaml", Additions: 1, Patch: "@@ -0,0 +1 @@\n+v"}}}
+	rec, _ := BuildDocument("fk", forge.T1Data{Owner: "o", Name: "n"}, t2)
+	if !utf8.ValidString(rec.Body) || !strings.Contains(rec.Body, "cfg\uFFFD.yaml") {
+		t.Fatalf("body not cleaned: %q", rec.Body)
+	}
+	sum := sha256.Sum256([]byte(rec.Body))
+	if rec.ContentHash != hex.EncodeToString(sum[:]) {
+		t.Fatal("content_hash must be the hash of the cleaned body")
 	}
 }

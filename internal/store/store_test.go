@@ -142,7 +142,43 @@ func TestUpsertSnapshotSanitizesInvalidUTF8FromForge(t *testing.T) {
 	if err := db.db.QueryRow("SELECT path, patch FROM compare_files").Scan(&path, &patch); err != nil {
 		t.Fatal(err)
 	}
-	if path != "cfg�.yaml" || patch != "@@ -0,0 +1,4 @@\n+version: 0.34\n+vQ�" {
+	if path != "cfg\uFFFD.yaml" || patch != "@@ -0,0 +1,4 @@\n+version: 0.34\n+vQ\uFFFD" {
 		t.Fatalf("got path=%q patch=%q, want U+FFFD in place of the invalid byte", path, patch)
+	}
+}
+
+// Records built outside FilesFromForge (spn's storeFiles builds FileRecords
+// directly) and commit fields must be cleaned where they are bound, not only
+// in one constructor (PR #134 review).
+func TestUpsertSnapshotCleansDirectRecordsAndCommits(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "spoon.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	now := time.Now().UTC()
+	patch := "+vQ\xff"
+	snap := Snapshot{
+		Repo:         RepoRecord{Provider: "github", Host: "github.com", Owner: "up", Name: "repo", FirstSeen: now, LastSeen: now},
+		Fork:         ForkRecord{ForgeID: "fork/repo", Owner: "fork", Name: "repo", UpdatedAt: now},
+		T2Present:    true,
+		CompareFiles: []FileRecord{{Path: "a\xff.go", Patch: &patch}},
+		Commits: []CommitRecord{{
+			SHA: "c1", Message: "fix \xfe thing", AuthorLogin: "who\xff", CommittedAt: now,
+			Files: []FileRecord{{Path: "b\xff.go", Patch: &patch}},
+		}},
+	}
+	if err := db.UpsertSnapshot(context.Background(), snap); err != nil {
+		t.Fatalf("UpsertSnapshot: %v", err)
+	}
+	var msg, login, cpath, cpatch string
+	if err := db.db.QueryRow("SELECT message, author_login FROM commits").Scan(&msg, &login); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.db.QueryRow("SELECT path, patch FROM commit_files").Scan(&cpath, &cpatch); err != nil {
+		t.Fatal(err)
+	}
+	if msg != "fix \uFFFD thing" || login != "who\uFFFD" || cpath != "b\uFFFD.go" || cpatch != "+vQ\uFFFD" {
+		t.Errorf("got message=%q login=%q path=%q patch=%q", msg, login, cpath, cpatch)
 	}
 }
