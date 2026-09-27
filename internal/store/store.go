@@ -1060,7 +1060,7 @@ func upsertSnapshotTx(ctx context.Context, tx *wtx, snap Snapshot) error {
 			}
 		}
 		for _, c := range snap.Commits {
-			if _, err = tx.ExecContext(ctx, `INSERT INTO commits(fork_key,sha,message,author_login,author_email,committed_at) VALUES(?,?,?,?,?,?)`, forkKey, c.SHA, c.Message, c.AuthorLogin, c.AuthorEmail, ts(c.CommittedAt)); err != nil {
+			if _, err = tx.ExecContext(ctx, `INSERT INTO commits(fork_key,sha,message,author_login,author_email,committed_at) VALUES(?,?,?,?,?,?)`, forkKey, c.SHA, forge.ValidUTF8(c.Message), forge.ValidUTF8(c.AuthorLogin), forge.ValidUTF8(c.AuthorEmail), ts(c.CommittedAt)); err != nil {
 				return fmt.Errorf("insert commit: %w", err)
 			}
 			for _, f := range c.Files {
@@ -1155,6 +1155,17 @@ func FilesFromForge(diffs []forge.FileDiff) []FileRecord {
 }
 
 func insertFile(ctx context.Context, tx *wtx, table, forkKey, sha string, f FileRecord) error {
+	// libsql refuses to bind invalid UTF-8 as TEXT and the whole snapshot
+	// transaction rolls back. Raw diff sources (.diff bodies, web diff HTML,
+	// Gitea) can carry it, and FileRecords are built by more than one caller
+	// (FilesFromForge, spn's storeFiles), so it is cleaned here, where every
+	// file row is bound.
+	f.Path = forge.ValidUTF8(f.Path)
+	f.PreviousPath = forge.ValidUTF8(f.PreviousPath)
+	if f.Patch != nil {
+		p := forge.ValidUTF8(*f.Patch)
+		f.Patch = &p
+	}
 	var q string
 	var args []any
 	// ON CONFLICT ... DO UPDATE guards against a compare/commit that lists the

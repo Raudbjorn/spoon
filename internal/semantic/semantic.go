@@ -53,7 +53,10 @@ func BuildDocument(forkKey string, fork forge.T1Data, t2 *forge.T2Data) (store.D
 		sections = append(sections, strings.Join(topics, " "))
 	}
 
-	body := strings.TrimSpace(strings.Join(sections, "\n\n"))
+	// Cleaned before hashing so the stored body, its content_hash and the
+	// text sent to the embedder all agree: diff sections can carry invalid
+	// UTF-8 from raw .diff/web-diff sources, which libsql refuses to bind.
+	body := forge.ValidUTF8(strings.TrimSpace(strings.Join(sections, "\n\n")))
 	// Hash the body alone, NOT modelID+body: documents is keyed by fork
 	// (document_id PRIMARY KEY) while embeddings is keyed (document_id, model),
 	// so model identity already lives on the embedding row. Folding modelID into

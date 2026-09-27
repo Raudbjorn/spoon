@@ -3,8 +3,34 @@ package forge
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
+	"unicode/utf8"
 )
+
+// ValidUTF8 returns s with every byte that is not part of a valid UTF-8
+// sequence replaced by U+FFFD. Raw diff bodies (the .diff endpoints, C-quoted
+// git paths) carry arbitrary bytes, and the store's libsql driver refuses to
+// bind invalid UTF-8 as TEXT, failing the whole snapshot write. Replacement is
+// per byte, matching encoding/json, so a path sanitized here equals the same
+// path as decoded from a JSON (REST) response.
+func ValidUTF8(s string) string {
+	if utf8.ValidString(s) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s) + 8)
+	for len(s) > 0 {
+		r, size := utf8.DecodeRuneInString(s)
+		if r == utf8.RuneError && size == 1 {
+			b.WriteRune(utf8.RuneError)
+		} else {
+			b.WriteString(s[:size])
+		}
+		s = s[size:]
+	}
+	return b.String()
+}
 
 // CommitSpanDays returns the number of calendar days between the earliest and
 // latest commit in commits. Returns 0 for empty or single-item slices.

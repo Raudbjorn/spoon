@@ -1,6 +1,7 @@
 package forge
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -62,5 +63,23 @@ func TestDefaultHost(t *testing.T) {
 	// persistForkSnapshot already assumed for a hostless Gitea caller.
 	if got := DefaultHost(ProviderGitea); got != "codeberg.org" {
 		t.Errorf("DefaultHost(Gitea) = %q, want codeberg.org", got)
+	}
+}
+
+// ValidUTF8 must replace per byte, like encoding/json, so a raw-diff path and
+// the same path decoded from a REST response compare equal.
+func TestValidUTF8MatchesJSONDecoding(t *testing.T) {
+	for _, in := range []string{"", "plain", "café", "a\xffb", "a\xff\xfeb", "\xe2\x82", "ok\xc3"} {
+		raw, err := json.Marshal(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var viaJSON string
+		if err := json.Unmarshal(raw, &viaJSON); err != nil {
+			t.Fatal(err)
+		}
+		if got := ValidUTF8(in); got != viaJSON {
+			t.Errorf("ValidUTF8(%q) = %q, want %q (encoding/json)", in, got, viaJSON)
+		}
 	}
 }
