@@ -132,7 +132,7 @@ Fork work is a different use case — see the `using-spn-forks` skill for the fu
 
 Rule of thumb: `unresolved` (default) for active review work; `current-unresolved` to exclude stale threads; `unresolved-outdated` to find sweep candidates before bulk-resolving.
 
-`--all` is shorthand for `--filter all`. Passing both is `bad_input` exit 2 (`--all conflicts with --filter <mode> (drop one)`), even when the two agree.
+`--all` is shorthand for `--filter all`. Passing it with a *different* `--filter` value is `bad_input` exit 2 (`--all conflicts with --filter <mode> (drop one)`); `--all --filter all` agrees and is accepted.
 
 ## Body-Required Policy
 

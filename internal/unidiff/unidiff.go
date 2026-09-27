@@ -298,7 +298,12 @@ func (fb *fileBuilder) finish(maxPatchBytes int) forge.FileDiff {
 		fd.Path = firstNonEmpty(fb.gitNewPath, fb.gitOldPath)
 	}
 	// Paths decoded from C-quoted octal escapes are raw bytes; see
-	// forge.ValidUTF8.
+	// forge.ValidUTF8. The replacement is lossy by design: it must equal the
+	// path GitHub's JSON API reports for the same file (which already carries
+	// U+FFFD per invalid byte), because REST and .diff files are merged by
+	// path (github/adapter.go FetchCompareDiff handling). Known limit: two
+	// paths in one diff that differ only in invalid bytes collapse to one
+	// path, and compare_files keeps the last. REST-sourced diffs share it.
 	fd.Path = forge.ValidUTF8(fd.Path)
 	fd.PreviousPath = forge.ValidUTF8(fd.PreviousPath)
 
