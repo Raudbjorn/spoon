@@ -146,9 +146,34 @@ branch when it is created; an unmerged upstream feature branch then reads as
 224 (65%) have a tip commit older than the fork itself, 165 (48%) have a tip
 identical to an upstream branch tip, and only 119 (35%) show neither. Most of
 the 5,626 side-branch selections are therefore likely upstream's own work.
-Candidate fix (not implemented): drop side branches whose tip commit predates
-the fork's creation, or whose tip equals an upstream branch tip, before the
-batch pairs them.
+Fix (`7f7eeda`): `forge.PostForkBranches` drops side branches whose tip commit
+predates the fork's creation before the batch pairs them; the sample shows the
+upstream-tip check adds nothing (all 165 upstream-tip copies also predate the
+fork). Fixture: `internal/forge/testdata/inherited_branches_sample.json`.
+
+**Re-measurement with the filter (observed once, 2026-09-28) -- confounded.**
+The GraphQL listing failed again near page 400: three consecutive transient
+failures (504, truncated body, 504) exhausted the retry budget and the REST
+fallback finished the walk, so only 3,426 forks kept branch data (6,847 in
+the previous run) and 449 vanished forks re-entered via REST.
+
+| | Previous (no filter, full branch data) | This run (filter, ~half branch data) |
+|---|---|---|
+| Side branches paired | 22,895 | 4,346 of 11,337 (62% dropped) |
+| Side-branch selections / forks with sides | 5,626 / 6,847 (82%) | 1,564 / 3,426 (46%) |
+| REST compares needed | 7,962 | 3,922 |
+| Batch queries / first chunk | 1,390 / 5 min | 1,101 / 4 min |
+
+The filter's drop rate (62%) matches the sample (65%), and every named fork
+kept its selected branch. The full-data REST total with the filter is not
+measured; extrapolated from the previous run's ~2,320 default-branch
+divergent forks plus ~46% of 6,847 side-branch forks, about 5,400 -- still
+near one 5,000/h window.
+
+**Listing resilience is the next blocker.** Three retries with 1 s/2 s
+backoff do not survive GitHub's late-walk 5xx bursts on llama.cpp (43-100
+transient errors per walk). Proposed: on exhausted retries, back off longer
+and halve the page size for that cursor before falling back to REST.
 
 Deferred: rows for vanished forks stay in `spoon.db` (the list persist runs
 before the check); a cached reload re-lists them until the batch drops them
