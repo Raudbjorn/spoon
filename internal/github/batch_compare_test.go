@@ -987,3 +987,36 @@ func TestFetchBatchDivergence_PhaseBAliasScopedErrorRetriesThenFallsBack(t *test
 		t.Errorf("stats.Queries = %d, want 4 (phase A + phase B initial + 2 follow-ups)", stats.Queries)
 	}
 }
+
+// GHProvider.BatchCompare must not pair side branches the fork inherited from
+// upstream (tip commit dated before the fork was created): they report
+// upstream's own unmerged commits as fork divergence. See
+// forge.PostForkBranches for the measured llama.cpp impact.
+func TestGHProviderBatchCompare_SkipsInheritedBranches(t *testing.T) {
+	phaseA := `{"data":{"repository":{"ref":{
+		"c0":{"aheadBy":0,"behindBy":1},
+		"c1":{"aheadBy":0,"behindBy":1}
+	}},` + rl + `}}`
+	srv, docs := batchStub(t, phaseA, "")
+	p := NewGHProvider(newTestClientGQL(t, srv), AuthStatus{})
+	p.SetCompareBaseline("up", "stream", "main")
+
+	created := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	fork := forge.T1Data{
+		ID: "f/repo", Owner: "f", Name: "repo", DefaultBranch: "main", CreatedAt: created,
+		Branches: []forge.BranchRef{
+			{Name: "gg/inherited-upstream-feature", CommittedDate: created.AddDate(0, -2, 0)},
+			{Name: "my-work", CommittedDate: created.AddDate(0, 1, 0)},
+		},
+	}
+	if _, _, err := p.BatchCompare(context.Background(), []forge.T1Data{fork}); err != nil {
+		t.Fatalf("BatchCompare: %v", err)
+	}
+	joined := strings.Join(docs(), "\n")
+	if strings.Contains(joined, "inherited-upstream-feature") {
+		t.Error("an inherited upstream branch was paired in the batch")
+	}
+	if !strings.Contains(joined, "my-work") {
+		t.Error("the post-fork branch was not paired")
+	}
+}

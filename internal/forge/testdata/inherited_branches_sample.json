@@ -1,0 +1,2448 @@
+{
+ "source": "ggml-org/llama.cpp, 400 random forks sampled 2026-09-28; forks with side branches only",
+ "forks": [
+  {
+   "fork": "NebulaMao/llama.cpp",
+   "created_at": "2026-04-13T07:33:54Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "fix/cann-ggml-op-set",
+     "committed_date": "2026-04-13T07:40:29Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "jellyuwu/llama.cpp",
+   "created_at": "2026-04-13T08:57:37Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "fix-cuda-peer-copy-nonp2p",
+     "committed_date": "2026-04-13T09:00:52Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "gyunggyung/OpenMLLM",
+   "created_at": "2023-03-12T03:26:51Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "ysh_workspace",
+     "committed_date": "2023-03-12T06:08:53Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "patch-1",
+     "committed_date": "2023-03-19T00:55:23Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "paarai/llama.cpp",
+   "created_at": "2023-06-05T14:40:47Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "tcp_server",
+     "committed_date": "2023-03-22T17:34:19Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "steering",
+     "committed_date": "2023-05-19T20:19:57Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "remove-vzip",
+     "committed_date": "2023-05-11T15:51:56Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "quant-attn",
+     "committed_date": "2023-04-22T08:35:13Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "q4_3-range-fix",
+     "committed_date": "2023-04-23T11:56:44Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "killerzero999/llama.cpp",
+   "created_at": "2026-04-13T15:17:56Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "xsn/webui_fix_eta",
+     "committed_date": "2025-12-29T20:07:10Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/update_guidelines_for_ai",
+     "committed_date": "2025-11-30T16:54:44Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/tmp_jinja_safer",
+     "committed_date": "2025-01-20T15:58:29Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/qwen3next_experiment",
+     "committed_date": "2025-09-20T05:58:36Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/private_batch_api",
+     "committed_date": "2025-03-18T20:05:44Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "amanwalia123/llama.cpp",
+   "created_at": "2026-04-13T15:44:36Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "llama-ctl-update-and-model-mgmt",
+     "committed_date": "2026-06-18T23:47:22Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "dev",
+     "committed_date": "2026-06-16T16:00:57Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "belarusian/llama.cpp",
+   "created_at": "2026-04-13T16:21:03Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "mtp-recovery",
+     "committed_date": "2026-08-02T16:56:34Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "feature/model-runner",
+     "committed_date": "2026-09-20T16:11:01Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "bio-bench/llama.cpp",
+   "created_at": "2026-04-13T16:23:55Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "xsn/webui_fix_eta",
+     "committed_date": "2025-12-29T20:07:10Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/update_guidelines_for_ai",
+     "committed_date": "2025-11-30T16:54:44Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/tmp_jinja_safer",
+     "committed_date": "2025-01-20T15:58:29Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/qwen3next_experiment",
+     "committed_date": "2025-09-20T05:58:36Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/private_batch_api",
+     "committed_date": "2025-03-18T20:05:44Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "purvikpatel/llama.cpp",
+   "created_at": "2023-06-06T14:28:40Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "tcp_server",
+     "committed_date": "2023-03-22T17:34:19Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "steering",
+     "committed_date": "2023-05-19T20:19:57Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "remove-vzip",
+     "committed_date": "2023-05-11T15:51:56Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "quant-attn",
+     "committed_date": "2023-04-22T08:35:13Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "q4_3-range-fix",
+     "committed_date": "2023-04-23T11:56:44Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "stew675/llama.cpp",
+   "created_at": "2026-04-13T18:58:37Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "structural-fixes",
+     "committed_date": "2026-09-11T00:48:47Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "rdna-native-flash-bf16",
+     "committed_date": "2026-08-09T00:06:07Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "rdna-boosts-orig",
+     "committed_date": "2026-08-16T13:20:16Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "rdna-boosts",
+     "committed_date": "2026-09-01T17:07:42Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "qwen4exp",
+     "committed_date": "2026-09-02T21:30:42Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "wizd/llama.cpp",
+   "created_at": "2023-03-12T08:51:42Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "chinese",
+     "committed_date": "2023-03-18T02:35:42Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "jooray/llama.cpp",
+   "created_at": "2023-03-11T17:28:01Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "patch-3",
+     "committed_date": "2023-11-25T01:45:02Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "patch-2",
+     "committed_date": "2023-03-11T17:44:59Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "patch-1",
+     "committed_date": "2023-03-11T17:28:23Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "addcx1developer/llama.cpp",
+   "created_at": "2026-04-14T01:46:13Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "xsn/webui_fix_eta",
+     "committed_date": "2025-12-29T20:07:10Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/update_guidelines_for_ai",
+     "committed_date": "2025-11-30T16:54:44Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/tmp_jinja_safer",
+     "committed_date": "2025-01-20T15:58:29Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/qwen3next_experiment",
+     "committed_date": "2025-09-20T05:58:36Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/private_batch_api",
+     "committed_date": "2025-03-18T20:05:44Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "Mesh-LLM/llama.cpp",
+   "created_at": "2026-04-14T02:38:45Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "pr3-moe-read-all-splits",
+     "committed_date": "2026-04-17T06:45:03Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "pr2-moe-standalone-shards",
+     "committed_date": "2026-04-17T07:17:59Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "moe-experiments",
+     "committed_date": "2026-04-20T01:35:52Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "mesh-ci-workflow",
+     "committed_date": "2026-04-17T08:31:17Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "main",
+     "committed_date": "2026-07-12T23:58:44Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "ProgrammingWu/llama.cpp",
+   "created_at": "2026-04-14T07:36:50Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "xsn/webui_fix_eta",
+     "committed_date": "2025-12-29T20:07:10Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/update_guidelines_for_ai",
+     "committed_date": "2025-11-30T16:54:44Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/tmp_jinja_safer",
+     "committed_date": "2025-01-20T15:58:29Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/qwen3next_experiment",
+     "committed_date": "2025-09-20T05:58:36Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/private_batch_api",
+     "committed_date": "2025-03-18T20:05:44Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "RaymondWang0/llama.cpp",
+   "created_at": "2023-06-07T20:23:01Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "test",
+     "committed_date": "2023-12-04T05:52:14Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "soltrinox/llama.cpp",
+   "created_at": "2023-06-08T01:30:25Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "tcp_server",
+     "committed_date": "2023-03-22T17:34:19Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "steering",
+     "committed_date": "2023-05-19T20:19:57Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "remove-vzip",
+     "committed_date": "2023-05-11T15:51:56Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "quant-attn",
+     "committed_date": "2023-04-22T08:35:13Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "q4_3-range-fix",
+     "committed_date": "2023-04-23T11:56:44Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "dhdaines/llama.cpp",
+   "created_at": "2026-04-14T14:03:30Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "poetry_migrate",
+     "committed_date": "2026-05-06T09:34:15Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "ManaEstras/llama.cpp",
+   "created_at": "2026-04-14T14:41:49Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "pr2-hunyuanvl",
+     "committed_date": "2026-04-22T02:44:01Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "pr1-interpolate-sf",
+     "committed_date": "2026-04-17T08:39:56Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "hyvl",
+     "committed_date": "2026-04-18T08:39:56Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "martinjt/llama.cpp",
+   "created_at": "2026-04-14T15:00:15Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "xsn/webui_fix_eta",
+     "committed_date": "2025-12-29T20:07:10Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/update_guidelines_for_ai",
+     "committed_date": "2025-11-30T16:54:44Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/tmp_jinja_safer",
+     "committed_date": "2025-01-20T15:58:29Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/qwen3next_experiment",
+     "committed_date": "2025-09-20T05:58:36Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/private_batch_api",
+     "committed_date": "2025-03-18T20:05:44Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "alexbfr/llama.cpp",
+   "created_at": "2023-06-08T10:58:46Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "fix-server-example",
+     "committed_date": "2023-06-08T10:59:24Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "simonw/llama.cpp",
+   "created_at": "2023-03-11T04:25:59Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "patch-1",
+     "committed_date": "2023-03-11T04:26:36Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "Cr4xy/llama.cpp",
+   "created_at": "2026-04-14T20:25:02Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "router-no-cache-models",
+     "committed_date": "2026-08-22T17:08:40Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "router-hide-cache-models",
+     "committed_date": "2026-08-22T10:54:17Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "hf-prune-old-files",
+     "committed_date": "2026-05-29T16:28:21Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "fix-solo-frontend-tools",
+     "committed_date": "2026-07-06T18:39:06Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "mraleko/llama.cpp",
+   "created_at": "2026-04-14T22:22:54Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "xsn/webui_fix_eta",
+     "committed_date": "2025-12-29T20:07:10Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/update_guidelines_for_ai",
+     "committed_date": "2025-11-30T16:54:44Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/tmp_jinja_safer",
+     "committed_date": "2025-01-20T15:58:29Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/qwen3next_experiment",
+     "committed_date": "2025-09-20T05:58:36Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/private_batch_api",
+     "committed_date": "2025-03-18T20:05:44Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "nomic-ai/llama.cpp",
+   "created_at": "2023-06-09T03:03:13Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "vulkan-ggml-backend",
+     "committed_date": "2024-01-09T16:45:54Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "vulkan",
+     "committed_date": "2024-01-17T18:47:03Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "vulkan_bert",
+     "committed_date": "2023-10-02T09:31:27Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "vulkan_backend",
+     "committed_date": "2023-08-30T18:33:31Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "vk-nodynamic",
+     "committed_date": "2023-09-05T20:42:57Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "anmolg1997/llama.cpp",
+   "created_at": "2026-04-15T03:13:57Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "xsn/webui_fix_eta",
+     "committed_date": "2025-12-29T20:07:10Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/update_guidelines_for_ai",
+     "committed_date": "2025-11-30T16:54:44Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/tmp_jinja_safer",
+     "committed_date": "2025-01-20T15:58:29Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/qwen3next_experiment",
+     "committed_date": "2025-09-20T05:58:36Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/private_batch_api",
+     "committed_date": "2025-03-18T20:05:44Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "Apothic-AI/llama.cpp",
+   "created_at": "2026-04-15T03:48:16Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "bonsai",
+     "committed_date": "2026-06-02T00:40:16Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "FierySwampshire/llama.cpp",
+   "created_at": "2023-06-10T09:38:33Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "tcp_server",
+     "committed_date": "2023-03-22T17:34:19Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "steering",
+     "committed_date": "2023-05-19T20:19:57Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "remove-vzip",
+     "committed_date": "2023-05-11T15:51:56Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "quant-attn",
+     "committed_date": "2023-04-22T08:35:13Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "q4_3-range-fix",
+     "committed_date": "2023-04-23T11:56:44Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "bullno1/llama.cpp",
+   "created_at": "2023-06-10T11:06:43Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "windows-static-cudart",
+     "committed_date": "2023-12-17T07:58:25Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "offload-leak-2",
+     "committed_date": "2023-07-14T14:01:36Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "offload-leak",
+     "committed_date": "2023-07-12T14:59:04Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "llama_state",
+     "committed_date": "2023-06-12T12:34:36Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "contextless-op",
+     "committed_date": "2023-07-12T15:29:36Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "solariun/llama.cpp",
+   "created_at": "2026-04-15T08:42:23Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "gemma4-mxfp4-experts",
+     "committed_date": "2026-06-17T22:53:57Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "matthew-mcallister/llama.cpp",
+   "created_at": "2023-03-13T04:51:02Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "trailing-newline",
+     "committed_date": "2023-03-13T05:13:23Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "context-overflow",
+     "committed_date": "2023-03-13T04:51:55Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "didzis/llama.cpp",
+   "created_at": "2023-06-11T01:35:40Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "stateless-model",
+     "committed_date": "2023-06-20T21:08:49Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "rlanday/llama.cpp",
+   "created_at": "2023-06-11T03:01:29Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "Update_SHA256SUMS",
+     "committed_date": "2023-06-11T03:06:32Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "Achilles1089/llama.cpp",
+   "created_at": "2026-04-15T15:38:46Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "xsn/webui_fix_eta",
+     "committed_date": "2025-12-29T20:07:10Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/update_guidelines_for_ai",
+     "committed_date": "2025-11-30T16:54:44Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/tmp_jinja_safer",
+     "committed_date": "2025-01-20T15:58:29Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/qwen3next_experiment",
+     "committed_date": "2025-09-20T05:58:36Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/private_batch_api",
+     "committed_date": "2025-03-18T20:05:44Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "mannyveloso/llama.cpp",
+   "created_at": "2023-06-12T03:50:45Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "tcp_server",
+     "committed_date": "2023-03-22T17:34:19Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "steering",
+     "committed_date": "2023-05-19T20:19:57Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "remove-vzip",
+     "committed_date": "2023-05-11T15:51:56Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "quant-attn",
+     "committed_date": "2023-04-22T08:35:13Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "q4_3-range-fix",
+     "committed_date": "2023-04-23T11:56:44Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "13801237663/llama.cpp",
+   "created_at": "2023-06-12T06:41:48Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "tcp_server",
+     "committed_date": "2023-03-22T17:34:19Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "steering",
+     "committed_date": "2023-05-19T20:19:57Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "remove-vzip",
+     "committed_date": "2023-05-11T15:51:56Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "quant-attn",
+     "committed_date": "2023-04-22T08:35:13Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "q4_3-range-fix",
+     "committed_date": "2023-04-23T11:56:44Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "yitaverse/llama.cpp",
+   "created_at": "2026-04-16T02:12:38Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "xsn/webui_fix_eta",
+     "committed_date": "2025-12-29T20:07:10Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/update_guidelines_for_ai",
+     "committed_date": "2025-11-30T16:54:44Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/tmp_jinja_safer",
+     "committed_date": "2025-01-20T15:58:29Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/qwen3next_experiment",
+     "committed_date": "2025-09-20T05:58:36Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/private_batch_api",
+     "committed_date": "2025-03-18T20:05:44Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "megatronyy/llama.cpp",
+   "created_at": "2026-04-16T03:15:37Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "xsn/webui_fix_eta",
+     "committed_date": "2025-12-29T20:07:10Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/update_guidelines_for_ai",
+     "committed_date": "2025-11-30T16:54:44Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/tmp_jinja_safer",
+     "committed_date": "2025-01-20T15:58:29Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/qwen3next_experiment",
+     "committed_date": "2025-09-20T05:58:36Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/private_batch_api",
+     "committed_date": "2025-03-18T20:05:44Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "es0m-msft/llama.cpp",
+   "created_at": "2023-03-13T09:40:30Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "vdotq_s32",
+     "committed_date": "2023-03-12T23:30:53Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "dev",
+     "committed_date": "2023-03-13T03:08:01Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "jamesthesnake/llama.cpp",
+   "created_at": "2023-06-13T03:50:25Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "ra",
+     "committed_date": "2023-07-04T02:39:41Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "fargo",
+     "committed_date": "2023-07-04T02:39:03Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "okigan/llama.cpp",
+   "created_at": "2023-06-13T04:09:30Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "qwen4exp-mtp-fix",
+     "committed_date": "2026-09-07T03:07:36Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "okigan/issue/8763",
+     "committed_date": "2024-07-30T16:27:22Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "okigan/issue1829",
+     "committed_date": "2023-06-15T19:28:04Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "xris99/llama.cpp",
+   "created_at": "2026-04-16T10:06:01Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "gfx906-merge",
+     "committed_date": "2026-05-04T16:08:59Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "fix/proxy-timeout-router-mode",
+     "committed_date": "2026-04-17T07:33:05Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "sleepyeldrazi/llama.cpp",
+   "created_at": "2026-04-16T11:44:41Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "xsn/webui_fix_eta",
+     "committed_date": "2025-12-29T20:07:10Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/update_guidelines_for_ai",
+     "committed_date": "2025-11-30T16:54:44Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/tmp_jinja_safer",
+     "committed_date": "2025-01-20T15:58:29Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/qwen3next_experiment",
+     "committed_date": "2025-09-20T05:58:36Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/private_batch_api",
+     "committed_date": "2025-03-18T20:05:44Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "cmp-nct/ggllm.cpp",
+   "created_at": "2023-06-13T20:24:51Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "tokenenizer-fix-1",
+     "committed_date": "2023-06-29T00:17:46Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "test-pull-48",
+     "committed_date": "2023-07-07T12:59:59Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "test-ggml-compute-chunks",
+     "committed_date": "2023-06-20T13:06:35Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "split-loader-1",
+     "committed_date": "2023-07-10T03:36:34Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "pull-1862-k-quant",
+     "committed_date": "2023-06-23T15:01:42Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "kw3rk/llama.cpp",
+   "created_at": "2026-04-16T15:57:43Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "xsn/webui_fix_eta",
+     "committed_date": "2025-12-29T20:07:10Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/update_guidelines_for_ai",
+     "committed_date": "2025-11-30T16:54:44Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/tmp_jinja_safer",
+     "committed_date": "2025-01-20T15:58:29Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/qwen3next_experiment",
+     "committed_date": "2025-09-20T05:58:36Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/private_batch_api",
+     "committed_date": "2025-03-18T20:05:44Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "tonyszhang/llama.cpp",
+   "created_at": "2023-03-13T17:32:01Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "dev",
+     "committed_date": "2023-03-13T03:08:01Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "daboe01/llama.cpp",
+   "created_at": "2023-06-14T10:25:56Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "tcp_server",
+     "committed_date": "2023-03-22T17:34:19Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "steering",
+     "committed_date": "2023-05-19T20:19:57Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "remove-vzip",
+     "committed_date": "2023-05-11T15:51:56Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "quant-attn",
+     "committed_date": "2023-04-22T08:35:13Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "q4_3-range-fix",
+     "committed_date": "2023-04-23T11:56:44Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "muqadma/llama.cpp",
+   "created_at": "2023-06-14T20:38:43Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "add-nix-apps",
+     "committed_date": "2023-06-14T20:49:03Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "ludoplex/llama.cpp",
+   "created_at": "2023-06-14T23:05:01Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "sourcery/master",
+     "committed_date": "2023-08-04T14:01:50Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "dependabot/pip/pip-73012d4275",
+     "committed_date": "2026-01-22T20:34:41Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "cetarthoriphros/llama.cpp",
+   "created_at": "2026-04-16T23:48:44Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "completion-file-load",
+     "committed_date": "2026-05-09T13:58:06Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "accaldwell/llama.cpp",
+   "created_at": "2026-04-17T00:12:45Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "xsn/webui_fix_eta",
+     "committed_date": "2025-12-29T20:07:10Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/update_guidelines_for_ai",
+     "committed_date": "2025-11-30T16:54:44Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/tmp_jinja_safer",
+     "committed_date": "2025-01-20T15:58:29Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/qwen3next_experiment",
+     "committed_date": "2025-09-20T05:58:36Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/private_batch_api",
+     "committed_date": "2025-03-18T20:05:44Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "nivibilla/llama.cpp",
+   "created_at": "2023-06-15T13:36:41Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "tcp_server",
+     "committed_date": "2023-03-22T17:34:19Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "steering",
+     "committed_date": "2023-05-19T20:19:57Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "remove-vzip",
+     "committed_date": "2023-05-11T15:51:56Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "quant-attn",
+     "committed_date": "2023-04-22T08:35:13Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "q4_3-range-fix",
+     "committed_date": "2023-04-23T11:56:44Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "shabbir-hasan/llama.cpp",
+   "created_at": "2023-06-15T17:05:14Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "tcp_server",
+     "committed_date": "2023-03-22T17:34:19Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "steering",
+     "committed_date": "2023-05-19T20:19:57Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "remove-vzip",
+     "committed_date": "2023-05-11T15:51:56Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "quant-attn",
+     "committed_date": "2023-04-22T08:35:13Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "q4_3-range-fix",
+     "committed_date": "2023-04-23T11:56:44Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "inthecloud247/llama.cpp",
+   "created_at": "2023-03-12T12:55:51Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "patch-1",
+     "committed_date": "2023-03-12T13:00:34Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "fix-osx-python",
+     "committed_date": "2023-03-12T13:00:34Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "tkuehl/Atlas---llama.cpp",
+   "created_at": "2026-04-17T04:06:55Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "claude/stream-model-weights-dc3El",
+     "committed_date": "2026-04-17T23:53:12Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "claude/research-quantization-papers-EXXgR",
+     "committed_date": "2026-04-21T03:26:39Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "claude/choose-research-method-eOf6n",
+     "committed_date": "2026-04-19T04:54:00Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "FrankHB/llama.cpp",
+   "created_at": "2023-06-16T14:18:08Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "tcp_server",
+     "committed_date": "2023-03-22T17:34:19Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "steering",
+     "committed_date": "2023-05-19T20:19:57Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "remove-vzip",
+     "committed_date": "2023-05-11T15:51:56Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "quant-attn",
+     "committed_date": "2023-04-22T08:35:13Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "q4_3-range-fix",
+     "committed_date": "2023-04-23T11:56:44Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "taikongstudio/llama.cpp",
+   "created_at": "2026-04-17T14:23:56Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "xsn/webui_fix_eta",
+     "committed_date": "2025-12-29T20:07:10Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/update_guidelines_for_ai",
+     "committed_date": "2025-11-30T16:54:44Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/tmp_jinja_safer",
+     "committed_date": "2025-01-20T15:58:29Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/qwen3next_experiment",
+     "committed_date": "2025-09-20T05:58:36Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/private_batch_api",
+     "committed_date": "2025-03-18T20:05:44Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "aittalam/llama.cpp-lizzy",
+   "created_at": "2026-04-17T15:07:47Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "xsn/webui_fix_eta",
+     "committed_date": "2025-12-29T20:07:10Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/update_guidelines_for_ai",
+     "committed_date": "2025-11-30T16:54:44Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/tmp_jinja_safer",
+     "committed_date": "2025-01-20T15:58:29Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/qwen3next_experiment",
+     "committed_date": "2025-09-20T05:58:36Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/private_batch_api",
+     "committed_date": "2025-03-18T20:05:44Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "YangWang92/llama.cpp",
+   "created_at": "2023-03-13T06:28:02Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "vdotq_s32",
+     "committed_date": "2023-03-12T23:30:53Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "justinappler/llama.cpp-strix-halo",
+   "created_at": "2026-04-18T16:47:55Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "experiment/upstream-28195",
+     "committed_date": "2026-09-26T07:04:59Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "experiment/upstream-26419",
+     "committed_date": "2026-08-29T19:45:01Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "experiment/mmq-rdna3-5-table-only",
+     "committed_date": "2026-08-29T22:11:44Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "experiment/fa-mma-d256-26419",
+     "committed_date": "2026-08-29T19:47:44Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "experiment/fa-guard-off-20260925",
+     "committed_date": "2026-09-26T05:42:56Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "thelittlefireman/llama.cpp",
+   "created_at": "2026-04-18T17:34:49Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "tmp-gfx906-spill-v27-run2",
+     "committed_date": "2026-09-14T06:43:22Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "tmp-gfx906-spill-v27-run",
+     "committed_date": "2026-09-14T06:27:39Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "tmp-gfx906-spill-current-master-port-run",
+     "committed_date": "2026-09-14T06:27:39Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "tmp-gfx906-spill-current-master-port-2",
+     "committed_date": "2026-09-14T06:27:39Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "tmp-gfx906-spill-current-master-port",
+     "committed_date": "2026-09-14T06:27:39Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "nauyisu022/llama.cpp",
+   "created_at": "2023-06-21T06:51:47Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "uptodate",
+     "committed_date": "2023-06-21T10:47:17Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "trace2file",
+     "committed_date": "2023-03-25T23:15:54Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "repeat_decay",
+     "committed_date": "2023-04-30T14:39:19Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "log_output",
+     "committed_date": "2023-03-20T11:15:52Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "yangw1234/llama.cpp",
+   "created_at": "2026-04-19T00:54:07Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "vulkan-q4_0-soa",
+     "committed_date": "2026-04-19T04:17:07Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "br_b8698",
+     "committed_date": "2026-04-07T17:30:01Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "b8698_opt",
+     "committed_date": "2026-05-12T22:30:21Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "TheRuKa7/llama.cpp",
+   "created_at": "2026-04-19T02:10:24Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "xsn/webui_fix_eta",
+     "committed_date": "2025-12-29T20:07:10Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/update_guidelines_for_ai",
+     "committed_date": "2025-11-30T16:54:44Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/tmp_jinja_safer",
+     "committed_date": "2025-01-20T15:58:29Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/qwen3next_experiment",
+     "committed_date": "2025-09-20T05:58:36Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/private_batch_api",
+     "committed_date": "2025-03-18T20:05:44Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "RahulVivekNair/llama.cpp",
+   "created_at": "2023-06-21T18:20:40Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "imgbot",
+     "committed_date": "2023-06-21T18:53:58Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "WangHaoranRobin/llama.cpp",
+   "created_at": "2023-06-21T18:51:46Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "robin_fork_master",
+     "committed_date": "2023-07-02T00:01:19Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "minzhihui/llama.cpp",
+   "created_at": "2026-04-19T04:16:53Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "xsn/webui_fix_eta",
+     "committed_date": "2025-12-29T20:07:10Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/update_guidelines_for_ai",
+     "committed_date": "2025-11-30T16:54:44Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/tmp_jinja_safer",
+     "committed_date": "2025-01-20T15:58:29Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/qwen3next_experiment",
+     "committed_date": "2025-09-20T05:58:36Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/private_batch_api",
+     "committed_date": "2025-03-18T20:05:44Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "shifan3/llama.cpp",
+   "created_at": "2023-06-23T00:57:59Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "a1",
+     "committed_date": "2023-06-27T01:16:14Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "HashemAlsaket/llama.cpp",
+   "created_at": "2023-06-24T23:46:33Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "eos_bos_dynamic",
+     "committed_date": "2023-06-24T23:50:08Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "ego-ipse/llama.cpp",
+   "created_at": "2026-04-19T17:16:18Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "gbnf_literal_token",
+     "committed_date": "2026-04-20T18:17:47Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "ZackyLake/llama.cpp",
+   "created_at": "2026-04-19T21:32:50Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "iqk-tmp7",
+     "committed_date": "2026-09-26T09:27:12Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "iqk-tmp6",
+     "committed_date": "2026-09-23T14:06:09Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "iqk",
+     "committed_date": "2026-05-27T23:41:15Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "jmorganca/llama.cpp",
+   "created_at": "2026-04-19T23:12:09Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "jmorganca/llama4-vision-slice-tmpl",
+     "committed_date": "2026-04-19T23:12:49Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "gavinjx/llama.cpp",
+   "created_at": "2023-06-25T10:55:04Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "tcp_server",
+     "committed_date": "2023-03-22T17:34:19Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "steering",
+     "committed_date": "2023-05-19T20:19:57Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "remove-vzip",
+     "committed_date": "2023-05-11T15:51:56Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "quant-attn",
+     "committed_date": "2023-04-22T08:35:13Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "q4_3-range-fix",
+     "committed_date": "2023-04-23T11:56:44Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "JoongHyuk-Shin/llama.cpp",
+   "created_at": "2026-04-20T01:05:57Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "xsn/webui_fix_eta",
+     "committed_date": "2025-12-29T20:07:10Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/update_guidelines_for_ai",
+     "committed_date": "2025-11-30T16:54:44Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/tmp_jinja_safer",
+     "committed_date": "2025-01-20T15:58:29Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/qwen3next_experiment",
+     "committed_date": "2025-09-20T05:58:36Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/private_batch_api",
+     "committed_date": "2025-03-18T20:05:44Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "tkofp/llama.cpp",
+   "created_at": "2026-04-20T01:54:21Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "llama_cn",
+     "committed_date": "2026-05-26T22:59:35Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "lwczy/llama.cpp",
+   "created_at": "2023-03-14T15:17:04Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "dev",
+     "committed_date": "2023-03-13T03:08:01Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "asdfefbhjy/llama.cpp",
+   "created_at": "2023-06-26T04:08:34Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "tcp_server",
+     "committed_date": "2023-03-22T17:34:19Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "steering",
+     "committed_date": "2023-05-19T20:19:57Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "remove-vzip",
+     "committed_date": "2023-05-11T15:51:56Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "quant-attn",
+     "committed_date": "2023-04-22T08:35:13Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "q4_3-range-fix",
+     "committed_date": "2023-04-23T11:56:44Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "mmyjona/llama.cpp",
+   "created_at": "2023-03-14T04:14:43Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "mmy_cus",
+     "committed_date": "2023-05-12T06:04:15Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "fix-ins-and-i-bug",
+     "committed_date": "2023-03-24T04:19:37Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "fix-cmake-pthread",
+     "committed_date": "2023-03-17T16:33:42Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "qiurui144/llama.cpp",
+   "created_at": "2026-04-20T06:25:22Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "test-pr/test-backend-ops-mode-extra-bufts",
+     "committed_date": "2026-05-01T13:36:38Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "test-pr/i8i8-ime-q8-0",
+     "committed_date": "2026-05-01T13:35:05Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "feat/cmake-append-xsmtvdotii-march-for-spacemit-ime",
+     "committed_date": "2026-04-26T02:56:59Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "develop",
+     "committed_date": "2026-04-20T10:43:28Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "AGE-1000/llama.cpp",
+   "created_at": "2023-03-14T05:28:50Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "dev",
+     "committed_date": "2023-03-13T03:08:01Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "haowern98/llama.cpp-nv12pack",
+   "created_at": "2026-04-20T10:24:06Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "xsn/webui_fix_eta",
+     "committed_date": "2025-12-29T20:07:10Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/update_guidelines_for_ai",
+     "committed_date": "2025-11-30T16:54:44Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/tmp_jinja_safer",
+     "committed_date": "2025-01-20T15:58:29Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/qwen3next_experiment",
+     "committed_date": "2025-09-20T05:58:36Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/private_batch_api",
+     "committed_date": "2025-03-18T20:05:44Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "Neophyte-ai/llama.cpp",
+   "created_at": "2026-04-20T14:45:30Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "xsn/webui_fix_eta",
+     "committed_date": "2025-12-29T20:07:10Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/update_guidelines_for_ai",
+     "committed_date": "2025-11-30T16:54:44Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/tmp_jinja_safer",
+     "committed_date": "2025-01-20T15:58:29Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/qwen3next_experiment",
+     "committed_date": "2025-09-20T05:58:36Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/private_batch_api",
+     "committed_date": "2025-03-18T20:05:44Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "meh/llama.cpp",
+   "created_at": "2026-04-20T15:27:04Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "turboquant-multimodel",
+     "committed_date": "2026-09-15T19:52:52Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "turboquant-mtp",
+     "committed_date": "2026-05-07T15:55:34Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "turboquant",
+     "committed_date": "2026-05-18T15:26:29Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "multimodel-turboquant",
+     "committed_date": "2026-05-14T13:27:26Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "multimodel",
+     "committed_date": "2026-09-15T18:42:46Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "clawsed/llama.cpp",
+   "created_at": "2026-04-20T16:32:02Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "xsn/webui_fix_eta",
+     "committed_date": "2025-12-29T20:07:10Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/update_guidelines_for_ai",
+     "committed_date": "2025-11-30T16:54:44Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/tmp_jinja_safer",
+     "committed_date": "2025-01-20T15:58:29Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/qwen3next_experiment",
+     "committed_date": "2025-09-20T05:58:36Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/private_batch_api",
+     "committed_date": "2025-03-18T20:05:44Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "aliasfoxkde/llama.cpp",
+   "created_at": "2023-03-14T23:32:01Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "fix/codex-local-proxy",
+     "committed_date": "2026-08-21T03:58:32Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "feature/apu-benchmarks-2026",
+     "committed_date": "2026-07-22T12:36:04Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "Aflah012/llama.cpp",
+   "created_at": "2026-04-21T01:26:38Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "q1_0-neon",
+     "committed_date": "2026-04-21T02:30:47Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "qy-guo/llama.cpp",
+   "created_at": "2026-04-21T01:50:12Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "codex/review-and-revise-markdown-documentation",
+     "committed_date": "2026-05-21T01:55:53Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "alphaonex86/llama.cpp",
+   "created_at": "2026-04-21T02:10:51Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "lazzy-RAM",
+     "committed_date": "2026-04-24T02:30:13Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "Aswanidev-vs/Gllama",
+   "created_at": "2026-04-21T06:38:39Z",
+   "default_branch": "main",
+   "branches": [
+    {
+     "name": "master",
+     "committed_date": "2026-04-21T04:41:14Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "tomkiyang/llama.cpp",
+   "created_at": "2026-04-21T09:55:24Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "xsn/webui_fix_eta",
+     "committed_date": "2025-12-29T20:07:10Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/update_guidelines_for_ai",
+     "committed_date": "2025-11-30T16:54:44Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/tmp_jinja_safer",
+     "committed_date": "2025-01-20T15:58:29Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/qwen3next_experiment",
+     "committed_date": "2025-09-20T05:58:36Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/private_batch_api",
+     "committed_date": "2025-03-18T20:05:44Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "sherjilozair/llama.cpp",
+   "created_at": "2023-06-27T10:12:46Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "try-fix-metal",
+     "committed_date": "2023-06-26T19:23:04Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "tcp_server",
+     "committed_date": "2023-03-22T17:34:19Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "steering",
+     "committed_date": "2023-05-19T20:19:57Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "remove-vzip",
+     "committed_date": "2023-05-11T15:51:56Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "quant-attn",
+     "committed_date": "2023-04-22T08:35:13Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "YiLIU001/llama.cpp",
+   "created_at": "2023-03-14T12:03:55Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "dev",
+     "committed_date": "2023-03-13T03:08:01Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "maikzz32/llama.cpp",
+   "created_at": "2026-04-21T18:23:23Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "xsn/webui_fix_eta",
+     "committed_date": "2025-12-29T20:07:10Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/update_guidelines_for_ai",
+     "committed_date": "2025-11-30T16:54:44Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/tmp_jinja_safer",
+     "committed_date": "2025-01-20T15:58:29Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/qwen3next_experiment",
+     "committed_date": "2025-09-20T05:58:36Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/private_batch_api",
+     "committed_date": "2025-03-18T20:05:44Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "geofstone/llama.cpp",
+   "created_at": "2023-06-28T16:25:22Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "try-fix-metal",
+     "committed_date": "2023-06-26T19:23:04Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "tcp_server",
+     "committed_date": "2023-03-22T17:34:19Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "steering",
+     "committed_date": "2023-05-19T20:19:57Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "remove-vzip",
+     "committed_date": "2023-05-11T15:51:56Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "quant-attn",
+     "committed_date": "2023-04-22T08:35:13Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "peterwillcn/llama.cpp",
+   "created_at": "2026-04-22T02:52:22Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "xsn/webui_fix_eta",
+     "committed_date": "2025-12-29T20:07:10Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/update_guidelines_for_ai",
+     "committed_date": "2025-11-30T16:54:44Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/tmp_jinja_safer",
+     "committed_date": "2025-01-20T15:58:29Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/qwen3next_experiment",
+     "committed_date": "2025-09-20T05:58:36Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/private_batch_api",
+     "committed_date": "2025-03-18T20:05:44Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "jzrna-tn/llama.cpp",
+   "created_at": "2023-03-14T14:28:35Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "dev",
+     "committed_date": "2023-03-13T03:08:01Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "paulrobello/llama.cpp",
+   "created_at": "2026-04-22T05:45:37Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "xsn/webui_fix_eta",
+     "committed_date": "2025-12-29T20:07:10Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/update_guidelines_for_ai",
+     "committed_date": "2025-11-30T16:54:44Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/tmp_jinja_safer",
+     "committed_date": "2025-01-20T15:58:29Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/qwen3next_experiment",
+     "committed_date": "2025-09-20T05:58:36Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/private_batch_api",
+     "committed_date": "2025-03-18T20:05:44Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "Junaifu/llama.cpp",
+   "created_at": "2023-03-14T16:00:17Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "dev",
+     "committed_date": "2023-03-13T03:08:01Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "dinneo/llama.cpp",
+   "created_at": "2023-07-01T12:23:48Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "try-fix-metal",
+     "committed_date": "2023-06-26T19:23:04Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "tcp_server",
+     "committed_date": "2023-03-22T17:34:19Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "steering",
+     "committed_date": "2023-05-19T20:19:57Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "remove-vzip",
+     "committed_date": "2023-05-11T15:51:56Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "quant-attn",
+     "committed_date": "2023-04-22T08:35:13Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "100000001/llama.cpp",
+   "created_at": "2026-04-22T18:51:15Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "feat/ngram-spec-multimodal",
+     "committed_date": "2026-04-22T18:57:42Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "SongTonyLi/llama.cpp",
+   "created_at": "2026-04-22T23:34:04Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "xsn/webui_fix_eta",
+     "committed_date": "2025-12-29T20:07:10Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/update_guidelines_for_ai",
+     "committed_date": "2025-11-30T16:54:44Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "xsn/tmp_jinja_safer",
+     "committed_date": "2025-01-20T15:58:29Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/qwen3next_experiment",
+     "committed_date": "2025-09-20T05:58:36Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "xsn/private_batch_api",
+     "committed_date": "2025-03-18T20:05:44Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "ZephyrLi-pro/llama.cpp",
+   "created_at": "2026-04-23T01:58:31Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "rvv-tq1-vmacc",
+     "committed_date": "2026-07-03T01:51:31Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "rvv-q8-0-gemm-vwmacc",
+     "committed_date": "2026-06-15T07:43:21Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "rvv-q6-k-vwmacc",
+     "committed_date": "2026-07-01T01:55:54Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "rvv-q6-k-16x1-repack",
+     "committed_date": "2026-07-29T07:31:45Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "rvv-q5-k-vwmacc",
+     "committed_date": "2026-06-30T07:05:29Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  },
+  {
+   "fork": "tslmy/llama.cpp",
+   "created_at": "2023-07-02T22:37:03Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "try-fix-metal",
+     "committed_date": "2023-06-26T19:23:04Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "tcp_server",
+     "committed_date": "2023-03-22T17:34:19Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "steering",
+     "committed_date": "2023-05-19T20:19:57Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "remove-vzip",
+     "committed_date": "2023-05-11T15:51:56Z",
+     "tip_matches_upstream": true
+    },
+    {
+     "name": "quant-attn",
+     "committed_date": "2023-04-22T08:35:13Z",
+     "tip_matches_upstream": true
+    }
+   ]
+  },
+  {
+   "fork": "evanmiller/llama.cpp",
+   "created_at": "2023-07-03T01:07:01Z",
+   "default_branch": "master",
+   "branches": [
+    {
+     "name": "static-assert",
+     "committed_date": "2023-07-14T10:57:02Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "mpi",
+     "committed_date": "2023-07-10T15:47:24Z",
+     "tip_matches_upstream": false
+    },
+    {
+     "name": "integer-abs-warning",
+     "committed_date": "2023-07-03T01:19:31Z",
+     "tip_matches_upstream": false
+    }
+   ]
+  }
+ ]
+}

@@ -123,3 +123,29 @@ func FormatStars(n int) string {
 	}
 	return strconv.Itoa(n)
 }
+
+// PostForkBranches returns the fork's listed side branches minus those it
+// inherited from upstream: branches whose tip commit is dated before the fork
+// was created. A fork copies every upstream branch when it is made, and an
+// unmerged upstream feature branch then reads as "ahead of master" though
+// the fork never touched it. On ggml-org/llama.cpp (400 random forks sampled
+// 2026-09-28) 224 of 343 side branches predated their fork, including every
+// one whose tip matched an upstream branch tip (165), and 5,626 of 7,946
+// divergent forks had a side branch chosen as their work.
+//
+// A branch or fork with no known date is kept: dropping it would hide work on
+// a guess. Known miss: commits made locally before forking and pushed to the
+// new fork unchanged keep their older dates and are dropped.
+func PostForkBranches(f T1Data) []BranchRef {
+	if f.CreatedAt.IsZero() || len(f.Branches) == 0 {
+		return f.Branches
+	}
+	kept := make([]BranchRef, 0, len(f.Branches))
+	for _, b := range f.Branches {
+		if !b.CommittedDate.IsZero() && b.CommittedDate.Before(f.CreatedAt) {
+			continue
+		}
+		kept = append(kept, b)
+	}
+	return kept
+}

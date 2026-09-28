@@ -118,8 +118,11 @@ func (p *GHProvider) BatchCompare(ctx context.Context, forks []forge.T1Data) (ma
 
 	targets := make([]BatchTarget, 0, len(forks))
 	for _, f := range forks {
-		sides := make([]BatchBranch, 0, len(f.Branches))
-		for _, b := range f.Branches {
+		// Inherited upstream branches are not fork work; pairing them would
+		// report upstream's own unmerged commits as this fork's divergence.
+		branches := forge.PostForkBranches(f)
+		sides := make([]BatchBranch, 0, len(branches))
+		for _, b := range branches {
 			sides = append(sides, BatchBranch{
 				Name:        b.Name,
 				TipSHA:      b.TipSHA,
