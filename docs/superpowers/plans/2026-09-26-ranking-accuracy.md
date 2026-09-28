@@ -122,6 +122,34 @@ unchunked batch is what item 5 fixes; the chunked end-to-end timing in the
 TUI was not measured. The GraphQL listing failed partway in both live runs
 and the REST fallback finished it; cause not captured (Debug log).
 
+**Re-measurement with branch data (observed once, 2026-09-28, after
+`cafaac4` kept T1 extras and retried truncated pages):**
+
+- Listing finished on GraphQL alone: 20,027 unique of 20,026 expected, 401
+  pages, 81 min, 100 transient 502/504/truncated responses absorbed by retry.
+  Every fork kept its default tip; 6,847 carry side branches (22,895 total);
+  1,132 report releases. No vanished forks: GraphQL does not list them.
+- Batch in 500-fork priority chunks: 1,390 queries / cost 1,390, 78 min
+  total, first chunk ready after 5 min.
+- Zero-ahead 12,065 (60%, was 86% without branch data); divergent 7,946, of
+  which **5,626 select a side branch**; unresolved 16. 7,962 forks would need
+  a REST compare: more than one 5,000/h window.
+- Named forks all resolve with their real work: koboldcpp (concedo, 4,734
+  ahead), TheTom (532), beellama (1,030), PrismML (prism, 127), unsloth (286),
+  Torchit1 (arc-b580, 160), Fenix46 (cuda-paged-attn, 105), k0zi (11),
+  LaurentZuijdwijk (108).
+
+**Inherited branches inflate divergence.** A fork copies every upstream
+branch when it is created; an unmerged upstream feature branch then reads as
+"ahead of master" though it holds no fork work. Sample of 400 random forks
+(372 resolvable, 104 with side branches, 343 side branches, checked live):
+224 (65%) have a tip commit older than the fork itself, 165 (48%) have a tip
+identical to an upstream branch tip, and only 119 (35%) show neither. Most of
+the 5,626 side-branch selections are therefore likely upstream's own work.
+Candidate fix (not implemented): drop side branches whose tip commit predates
+the fork's creation, or whose tip equals an upstream branch tip, before the
+batch pairs them.
+
 Deferred: rows for vanished forks stay in `spoon.db` (the list persist runs
 before the check); a cached reload re-lists them until the batch drops them
 again.
