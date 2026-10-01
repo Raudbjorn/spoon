@@ -1054,7 +1054,9 @@ func TestFetchForksBounded_DeadlineExpiryReportsMaxElapsed(t *testing.T) {
 func TestIsTransientServerError_TruncatedBody(t *testing.T) {
 	for _, err := range []error{
 		io.ErrUnexpectedEOF,
+		io.EOF,
 		fmt.Errorf("GraphQL query: %w", io.ErrUnexpectedEOF),
+		fmt.Errorf("GraphQL query: %w", io.EOF),
 		errors.New("unexpected end of JSON input"),
 	} {
 		if !isTransientServerError(err) {

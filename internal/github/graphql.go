@@ -649,6 +649,29 @@ func extrasByID(forks []ForkInfo, extras []T1Extra) map[int64]T1Extra {
 	return m
 }
 
+// mergePartialWithREST joins the forks GraphQL returned before it failed with
+// the REST fallback's list, minus the rows REST repeats, and orders the result
+// by stars. It returns the T1 extras keyed by fork ID for the GraphQL rows.
+//
+// The extras map is built before the sort and the result never shares memory
+// with forks: sortForksByStars reorders in place, and extras is parallel to
+// the unsorted forks, so building the map afterwards (or sorting an alias of
+// forks) attached branch and release data to the wrong repositories.
+func mergePartialWithREST(forks []ForkInfo, extras []T1Extra, restForks []ForkInfo, streamed map[int64]struct{}) ([]ForkInfo, map[int64]T1Extra) {
+	byID := extrasByID(forks, extras)
+	merged := make([]ForkInfo, 0, len(forks)+len(restForks))
+	merged = append(merged, forks...)
+	for _, f := range restForks {
+		if _, seen := streamed[f.ID]; seen {
+			continue
+		}
+		merged = append(merged, f)
+	}
+	// Each half arrives stars-sorted; the concatenation is not.
+	sortForksByStars(merged, nil)
+	return merged, byID
+}
+
 // isTransientServerError reports whether err is a retryable upstream failure
 // (HTTP 502 Bad Gateway, 503 Service Unavailable, or 504 Gateway Timeout).
 func isTransientServerError(err error) bool {
@@ -658,8 +681,10 @@ func isTransientServerError(err error) bool {
 	// A response body cut off mid-JSON is a server/transport hiccup, not a
 	// bad query: the same request succeeds on retry. Observed 2026-09-26 on
 	// ggml-org/llama.cpp page 371 of the fork listing, between runs of
-	// 502/504s; treating it as fatal aborted a 65-minute GraphQL walk.
-	if errors.Is(err, io.ErrUnexpectedEOF) || strings.Contains(err.Error(), "unexpected end of JSON input") {
+	// 502/504s; treating it as fatal aborted a 65-minute GraphQL walk. A bare
+	// io.EOF (empty body, or the server or a proxy closing the connection
+	// before replying) is the same hiccup; the retry budget bounds it.
+	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) || strings.Contains(err.Error(), "unexpected end of JSON input") {
 		return true
 	}
 	var httpErr *ghAPI.HTTPError
@@ -923,17 +948,7 @@ func (c *Client) FetchForksAuto(ctx context.Context, owner, repo string, onPage 
 			// REST fallback succeeded: dedup the REST result against the GraphQL
 			// partial list, compute the combined report, and return the merged
 			// fork set (REST rows carry no T1 extras; the GraphQL ones are kept).
-			merged := restForks
-			if len(streamed) > 0 {
-				filtered := make([]ForkInfo, 0, len(restForks))
-				for _, f := range restForks {
-					if _, seen := streamed[f.ID]; seen {
-						continue
-					}
-					filtered = append(filtered, f)
-				}
-				merged = append(forks, filtered...)
-			}
+			merged, mergedExtras := mergePartialWithREST(forks, extras, restForks, streamed)
 			report := gqlReport
 			if report == nil {
 				report = &forge.AcquisitionReport{
@@ -959,14 +974,13 @@ func (c *Client) FetchForksAuto(ctx context.Context, owner, repo string, onPage 
 			}
 			report.UniqueRows = len(seen)
 			report.DuplicateRows = report.RawRows - report.UniqueRows
-			// Each half arrives stars-sorted; the concatenation is not.
-			sortForksByStars(merged, nil)
-			// Keep the T1 extras (branches, tip SHA, releases, open PRs) for
-			// every fork GraphQL did return. Dropping them all because a late
-			// page failed erased branch data network-wide: on llama.cpp the
-			// walk returned 18,500 forks before failing, and every one lost
-			// its branches, hiding side-branch work from the divergence batch.
-			return merged, extrasByID(forks, extras), report, nil
+			// mergedExtras keeps the T1 extras (branches, tip SHA, releases,
+			// open PRs) for every fork GraphQL did return. Dropping them all
+			// because a late page failed erased branch data network-wide: on
+			// llama.cpp the walk returned 18,500 forks before failing, and
+			// every one lost its branches, hiding side-branch work from the
+			// divergence batch.
+			return merged, mergedExtras, report, nil
 		}
 
 		return forks, extrasByID(forks, extras), gqlReport, nil
