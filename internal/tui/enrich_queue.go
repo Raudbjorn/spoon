@@ -115,6 +115,7 @@ func (m *Model) nextBatchChunk() tea.Cmd {
 			m.pendingUpdates = append(m.pendingUpdates, tier2ResultMsg{forkID: e.fork.ID, tierSkipped: true})
 		}
 		m.batchPending = nil
+		m.batchResolving = false // no batch result will arrive to clear it
 		return nil
 	}
 	// Reserve floor: the batch spends GraphQL budget too (hundreds of
@@ -126,6 +127,7 @@ func (m *Model) nextBatchChunk() tea.Cmd {
 			m.pendingUpdates = append(m.pendingUpdates, tier2ResultMsg{forkID: e.fork.ID, budgetSkipped: true})
 		}
 		m.batchPending = nil
+		m.batchResolving = false // no batch result will arrive to clear it
 		return nil
 	}
 	n := min(batchChunkForks, len(m.batchPending))

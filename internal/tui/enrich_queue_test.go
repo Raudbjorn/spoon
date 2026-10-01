@@ -308,10 +308,14 @@ func TestNextBatchChunk_CeilingOneStopsSpending(t *testing.T) {
 	fake := &batchFake{}
 	m := queueTestModel(fake)
 	m.batchProvider = fake
+	m.batchResolving = true
 	m.batchPending = []enrichEntry{{fork: forge.T1Data{ID: "a"}}, {fork: forge.T1Data{ID: "b"}}}
 	m.setMaxTier(1)
 	if cmd := m.nextBatchChunk(); cmd != nil {
 		t.Fatal("a chunk was dispatched at ceiling 1")
+	}
+	if m.batchResolving {
+		t.Error("batchResolving still set after the ceiling drained the batch")
 	}
 	if len(fake.chunks) != 0 || len(m.pendingUpdates) != 2 || !m.pendingUpdates[0].tierSkipped {
 		t.Errorf("chunks=%d updates=%+v; want no batch spend and two ceiling skips", len(fake.chunks), m.pendingUpdates)
@@ -357,9 +361,13 @@ func TestNextBatchChunk_BelowReserveSkipsBatch(t *testing.T) {
 	fake := &batchFake{orderFakeForge: orderFakeForge{tierFakeForge: tierFakeForge{headroom: 0}}}
 	m := queueTestModel(fake)
 	m.batchProvider = fake
+	m.batchResolving = true // as startEnrichment leaves it before the first chunk
 	m.batchPending = []enrichEntry{{fork: forge.T1Data{ID: "a"}}, {fork: forge.T1Data{ID: "b"}}}
 	if cmd := m.nextBatchChunk(); cmd != nil {
 		t.Fatal("a chunk was dispatched below the reserve floor")
+	}
+	if m.batchResolving {
+		t.Error("batchResolving still set: the status bar would show a batch that never runs")
 	}
 	if len(fake.chunks) != 0 {
 		t.Errorf("BatchCompare ran %d time(s) below the reserve floor", len(fake.chunks))
