@@ -149,3 +149,11 @@ func PostForkBranches(f T1Data) []BranchRef {
 	}
 	return kept
 }
+
+// HasBranchInventory reports whether f's Branches slice is a real listing of
+// its side branches. Rows from the GitHub GraphQL listing carry the default
+// branch tip SHA alongside their branches; REST-listed rows carry neither, so
+// an empty Branches there means "unknown", not "no side branches".
+func HasBranchInventory(f T1Data) bool {
+	return f.DefaultTipSHA != ""
+}

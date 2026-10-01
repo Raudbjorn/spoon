@@ -122,8 +122,8 @@ func TestHandleBatchDivergence_ZeroAheadNeverReachesCompare(t *testing.T) {
 	m.batchResolving = true
 
 	order := []enrichEntry{
-		{fork: forge.T1Data{ID: "zero"}, priority: 2},
-		{fork: forge.T1Data{ID: "unknown"}, priority: 1},
+		{fork: forge.T1Data{ID: "zero", DefaultTipSHA: "abc"}, priority: 2},
+		{fork: forge.T1Data{ID: "unknown", DefaultTipSHA: "def"}, priority: 1},
 	}
 	msg := batchDivergenceMsg{
 		ctx:   m.enrichCtx,
@@ -267,12 +267,12 @@ func (f *batchFake) BatchCompare(_ context.Context, forks []forge.T1Data) (map[s
 // the first chunk instead of after the whole network (42 minutes on
 // llama.cpp); the next chunk is requested alongside each chunk's compares.
 func TestBatchDivergence_ResolvesInPriorityChunks(t *testing.T) {
-	fake := &batchFake{}
+	fake := &batchFake{orderFakeForge: orderFakeForge{tierFakeForge: tierFakeForge{headroom: 1}}}
 	m := queueTestModel(fake)
 	m.enrichQueue = &enrichQueue{}
 	var order []enrichEntry
 	for i := 0; i < 2*batchChunkForks+7; i++ {
-		order = append(order, enrichEntry{fork: forge.T1Data{ID: fmt.Sprintf("f%04d", i)}, priority: float64(-i)})
+		order = append(order, enrichEntry{fork: forge.T1Data{ID: fmt.Sprintf("f%04d", i), DefaultTipSHA: "tip"}, priority: float64(-i)})
 	}
 	m.batchResolving, m.batchProvider, m.batchPending = true, fake, order
 	m.batchChunksTotal = 3
@@ -315,5 +315,59 @@ func TestNextBatchChunk_CeilingOneStopsSpending(t *testing.T) {
 	}
 	if len(fake.chunks) != 0 || len(m.pendingUpdates) != 2 || !m.pendingUpdates[0].tierSkipped {
 		t.Errorf("chunks=%d updates=%+v; want no batch spend and two ceiling skips", len(fake.chunks), m.pendingUpdates)
+	}
+}
+
+// A REST-listed row has no branch inventory: its empty Branches means unknown,
+// not "no side branches". A zero-ahead default branch must not settle it, or
+// work on a side branch the batch never paired reads as an inert fork.
+func TestHandleBatchDivergence_NoBranchInventoryStillGetsFullCompare(t *testing.T) {
+	fake := &orderFakeForge{tierFakeForge: tierFakeForge{headroom: 1}}
+	m := queueTestModel(fake)
+	m.enrichQueue = &enrichQueue{}
+	m.batchResolving = true
+
+	msg := batchDivergenceMsg{
+		ctx: m.enrichCtx,
+		order: []enrichEntry{
+			{fork: forge.T1Data{ID: "rest-only"}, priority: 2},
+			{fork: forge.T1Data{ID: "listed", DefaultTipSHA: "abc"}, priority: 1},
+		},
+		divergence: map[string]forge.ForkDivergence{
+			"rest-only": {Resolved: true, Default: forge.BranchDivergence{Name: "main", AheadBy: 0, TipSHA: "x"}},
+			"listed":    {Resolved: true, Default: forge.BranchDivergence{Name: "main", AheadBy: 0, TipSHA: "y"}},
+		},
+	}
+	_, cmd := m.handleBatchDivergence(msg)
+	if len(m.pendingUpdates) != 1 || m.pendingUpdates[0].forkID != "listed" {
+		t.Fatalf("pendingUpdates = %+v, want only the fork with a real inventory settled", m.pendingUpdates)
+	}
+	if cmd == nil {
+		t.Fatal("no compare dispatched for the fork without branch inventory")
+	}
+	runBatch(cmd)
+	if len(fake.order) != 1 || fake.order[0] != "rest-only" {
+		t.Errorf("Compare calls = %v, want [rest-only]", fake.order)
+	}
+}
+
+// Below the reserve floor the batch must stop spending GraphQL budget: every
+// fork it held settles as budget-skipped and BatchCompare is never called.
+func TestNextBatchChunk_BelowReserveSkipsBatch(t *testing.T) {
+	fake := &batchFake{orderFakeForge: orderFakeForge{tierFakeForge: tierFakeForge{headroom: 0}}}
+	m := queueTestModel(fake)
+	m.batchProvider = fake
+	m.batchPending = []enrichEntry{{fork: forge.T1Data{ID: "a"}}, {fork: forge.T1Data{ID: "b"}}}
+	if cmd := m.nextBatchChunk(); cmd != nil {
+		t.Fatal("a chunk was dispatched below the reserve floor")
+	}
+	if len(fake.chunks) != 0 {
+		t.Errorf("BatchCompare ran %d time(s) below the reserve floor", len(fake.chunks))
+	}
+	if len(m.pendingUpdates) != 2 || !m.pendingUpdates[0].budgetSkipped || !m.pendingUpdates[1].budgetSkipped {
+		t.Errorf("updates = %+v, want two budget skips so enrichDone reaches enrichTotal", m.pendingUpdates)
+	}
+	if len(m.batchPending) != 0 {
+		t.Errorf("batchPending = %d, want drained", len(m.batchPending))
 	}
 }

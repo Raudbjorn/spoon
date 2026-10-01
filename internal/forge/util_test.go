@@ -164,3 +164,12 @@ func TestPostForkBranches_UnknownDatesKept(t *testing.T) {
 		t.Errorf("kept %+v, want only the undated branch", got)
 	}
 }
+
+func TestHasBranchInventory(t *testing.T) {
+	if HasBranchInventory(T1Data{}) {
+		t.Error("a row with no tip SHA (REST listing) has no branch inventory")
+	}
+	if !HasBranchInventory(T1Data{DefaultTipSHA: "abc"}) {
+		t.Error("a GraphQL-listed row carries its tip SHA and a real branch inventory")
+	}
+}

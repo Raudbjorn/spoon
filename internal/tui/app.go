@@ -638,6 +638,10 @@ func (m *Model) handleCachedLoad(msg cachedLoadMsg) (tea.Model, tea.Cmd) {
 	m.cached = msg.snap
 	m.loading = false
 	m.loadMsg = fmt.Sprintf("Loaded %d forks from cache", len(msg.forks))
+	// A cached list carries no acquisition report; keep the previous
+	// repository's listing figures off this one.
+	m.acquisition = nil
+	m.unreachable = 0
 
 	m.scoreForks(msg.forks)
 	m.view = viewTable
@@ -893,6 +897,9 @@ func (m *Model) processPendingUpdates() (tea.Model, tea.Cmd) {
 			}
 		}
 		m.unreachable += len(m.forks) - len(kept)
+		// The tail past kept still holds the dropped rows' pointers (T2Data
+		// and friends); zero it so they can be collected.
+		clear(m.forks[len(kept):])
 		m.forks = kept
 	}
 
@@ -1305,6 +1312,8 @@ func (m *Model) startFetch() tea.Cmd {
 	if !m.refresh {
 		m.forks = nil
 		m.parent = nil
+		m.acquisition = nil
+		m.unreachable = 0
 	}
 	// A new fork list gets its own automatic pass. Latching per list rather
 	// than per session is what makes `r` and `n` behave like the first load.

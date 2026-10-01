@@ -59,9 +59,18 @@ type ExportListing struct {
 
 // exportListing builds the Listing block, or nil when no acquisition report
 // was captured (e.g. a fork list served from the store cache).
-func exportListing(report *forge.AcquisitionReport, listed, unreachable int) *ExportListing {
+//
+// surviving is the number of rows still in the table. Listed counts every
+// unique fork the provider returned, including rows later dropped as
+// unreachable, so the three figures reconcile: the report's own count when it
+// has one, otherwise the surviving rows plus the dropped ones.
+func exportListing(report *forge.AcquisitionReport, surviving, unreachable int) *ExportListing {
 	if report == nil {
 		return nil
+	}
+	listed := report.UniqueRows
+	if listed == 0 {
+		listed = surviving + unreachable
 	}
 	return &ExportListing{
 		Listed:         listed,

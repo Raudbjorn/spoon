@@ -24,6 +24,10 @@ type enrichEntry struct {
 }
 
 // enrichQueue hands forks to compare commands in descending priority order.
+// Entries are taken in that order; with a concurrency limit above one, the
+// compares they start can still swap places by up to concurrency-1 positions,
+// so the reserve floor is a soft, priority-biased cutoff rather than an exact
+// one.
 //
 // Every compare command is launched up front by tea.Batch and the commands
 // race for the concurrency semaphore in no particular order. Binding a
@@ -109,6 +113,17 @@ func (m *Model) nextBatchChunk() tea.Cmd {
 	if m.maxTier() < 2 {
 		for _, e := range m.batchPending {
 			m.pendingUpdates = append(m.pendingUpdates, tier2ResultMsg{forkID: e.fork.ID, tierSkipped: true})
+		}
+		m.batchPending = nil
+		return nil
+	}
+	// Reserve floor: the batch spends GraphQL budget too (hundreds of
+	// queries on a large network), and Headroom is the lower of the REST and
+	// GraphQL windows. Below the floor, settle what is left as budget-skipped,
+	// as the per-fork compare does, rather than draining the window further.
+	if m.provider.Headroom() < forksops.ReserveHeadroom {
+		for _, e := range m.batchPending {
+			m.pendingUpdates = append(m.pendingUpdates, tier2ResultMsg{forkID: e.fork.ID, budgetSkipped: true})
 		}
 		m.batchPending = nil
 		return nil
@@ -261,6 +276,12 @@ func (m *Model) handleBatchDivergence(msg batchDivergenceMsg) (tea.Model, tea.Cm
 		switch {
 		case msg.missing[e.fork.ID]:
 			m.pendingUpdates = append(m.pendingUpdates, tier2ResultMsg{forkID: e.fork.ID, unreachable: true})
+		case ok && res.T2 != nil && !forge.HasBranchInventory(e.fork):
+			// A zero-ahead default branch only settles a fork whose side
+			// branches were listed too. Without that inventory (REST-listed
+			// rows) work may sit on a side branch the batch never paired, so
+			// the fork takes the full compare, which scans branches itself.
+			rest = append(rest, e)
 		case ok && res.T2 != nil:
 			// Settled through the same apply/persist path as a REST result,
 			// so the no_ahead penalty and the store write both happen.
