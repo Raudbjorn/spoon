@@ -215,7 +215,7 @@ type Model struct {
 	batchChunksDone  int
 	batchChunksTotal int
 	batchStats       *forge.BatchStats
-	batchErr       string
+	batchErr         string
 	// unreachable counts forks dropped from the list because their
 	// repository no longer exists (see tier2ResultMsg.unreachable).
 	unreachable int

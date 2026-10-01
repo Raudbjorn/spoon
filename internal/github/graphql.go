@@ -922,7 +922,7 @@ func (c *Client) FetchForksAuto(ctx context.Context, owner, repo string, onPage 
 			}
 			// REST fallback succeeded: dedup the REST result against the GraphQL
 			// partial list, compute the combined report, and return the merged
-			// fork set with no extras (REST has no T1 extras).
+			// fork set (REST rows carry no T1 extras; the GraphQL ones are kept).
 			merged := restForks
 			if len(streamed) > 0 {
 				filtered := make([]ForkInfo, 0, len(restForks))
