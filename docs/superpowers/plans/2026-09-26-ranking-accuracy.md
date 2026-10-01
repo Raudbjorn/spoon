@@ -73,17 +73,111 @@ listed against the same rate budget and the same unordered dispatch.
 a walk; Gitea paging not checked. Bounded network traversal
 (`FetchForksBounded`) already dedups.
 
-## Phase 2 — TUI enrichment that spends budget on the right forks
+## Phase 2 — TUI enrichment that spends budget on the right forks (implemented, branch `feat/accuracy-phase2`)
 
-1. Run `BatchCompare` in the TUI before per-fork REST compares, as the CLI
-   does (`internal/forksops/stream.go:634-666`): resolves ahead/behind for
-   every fork at ~1 GraphQL point per 50, zero-ahead forks never need a REST
-   compare.
-2. Replace `tea.Batch` of all closures with an ordered work queue drained by
-   N workers, so dispatch order is real and the reserve cuts the *least*
-   promising forks. Fix the false "best-first" comment.
-3. Export header: `enriched_count`/`total_count` over unique forks; add
-   `listed_count` vs `expected_count` from the acquisition report.
+1. **Batch first.** `startEnrichment` runs the provider's `BatchCompare` over
+   every fork without a valid compare, as `spn forks list` does. Zero-ahead
+   forks are settled from the batch (same apply/persist path as a REST
+   result); divergent forks carry the batch's branch into `CompareResolved`;
+   a batch error degrades to per-fork REST. Status line covers the batch
+   phase, which has no per-fork progress.
+2. **Ordered queue** (`internal/tui/enrich_queue.go`). Commands are still
+   launched by `tea.Batch`, but each takes the next fork in
+   `DispatchPriority` order only once it holds a semaphore slot, so work
+   starts in priority order whichever command wins the race. Exactly one pop
+   per command, including on cancel, so `enrichDone` reaches `enrichTotal`.
+   Re-enrichment appends and re-sorts the unconsumed tail. Found and fixed on
+   the way: a cancelled pass could still win a free slot (`select` picks at
+   random) and spend a compare.
+3. **Listing shortfall visible.** Header reads "N of M forks listed" when
+   `ExpectedRows` exceeds the list; export carries a `listing` block
+   (`listed`, `expected`, `repeats_dropped`, `unreachable`, `method`).
+   `enriched_count`/`total_count` are already over unique forks since Phase 1.
+4. **Vanished forks.** After the batch, forks it could not resolve are
+   checked with aliased `repository(owner,name){id}` lookups; a null answer
+   (and only that) drops the fork with no compare spent. Header shows
+   "N gone", export `listing.unreachable`.
+
+5. **Chunked batch.** The batch runs 500 forks at a time in priority order;
+   each chunk's compares start as it resolves, and the next chunk is
+   requested alongside them.
+
+**Live measurement (observed once, 2026-09-26, spoon's provider calls on
+ggml-org/llama.cpp via a headless harness, not the TUI loop):**
+
+| | Before (export) | Batch-first |
+|---|---|---|
+| Forks listed | 11,171 | 20,433 (expected 19,985; 250 repeats dropped) |
+| Settled with no REST compare (zero-ahead) | – | 17,608 (86%) |
+| Need a REST compare | every uncached fork | 2,377 (2,361 divergent + 16 unresolved) |
+| Vanished repos detected | – | 448 of 464 unresolved (6 s) |
+| Divergence batch | – | 873 queries, GraphQL cost 870, **42 min unchunked** |
+
+All six named forks resolved with real ahead counts (koboldcpp 4,732,
+TheTom 532, beellama 1,030, LaurentZuijdwijk 108, PrismML 127, unsloth 286);
+koboldcpp and TheTom have the two highest dispatch priorities of the six.
+2,377 REST compares fit one 5,000/h window, so nearly every divergent fork
+can be compared, where before ~19% were, chosen near-randomly. The 42-minute
+unchunked batch is what item 5 fixes; the chunked end-to-end timing in the
+TUI was not measured. The GraphQL listing failed partway in both live runs
+and the REST fallback finished it; cause not captured (Debug log).
+
+**Re-measurement with branch data (observed once, 2026-09-28, after
+`cafaac4` kept T1 extras and retried truncated pages):**
+
+- Listing finished on GraphQL alone: 20,027 unique of 20,026 expected, 401
+  pages, 81 min, 100 transient 502/504/truncated responses absorbed by retry.
+  Every fork kept its default tip; 6,847 carry side branches (22,895 total);
+  1,132 report releases. No vanished forks: GraphQL does not list them.
+- Batch in 500-fork priority chunks: 1,390 queries / cost 1,390, 78 min
+  total, first chunk ready after 5 min.
+- Zero-ahead 12,065 (60%, was 86% without branch data); divergent 7,946, of
+  which **5,626 select a side branch**; unresolved 16. 7,962 forks would need
+  a REST compare: more than one 5,000/h window.
+- Named forks all resolve with their real work: koboldcpp (concedo, 4,734
+  ahead), TheTom (532), beellama (1,030), PrismML (prism, 127), unsloth (286),
+  Torchit1 (arc-b580, 160), Fenix46 (cuda-paged-attn, 105), k0zi (11),
+  LaurentZuijdwijk (108).
+
+**Inherited branches inflate divergence.** A fork copies every upstream
+branch when it is created; an unmerged upstream feature branch then reads as
+"ahead of master" though it holds no fork work. Sample of 400 random forks
+(372 resolvable, 104 with side branches, 343 side branches, checked live):
+224 (65%) have a tip commit older than the fork itself, 165 (48%) have a tip
+identical to an upstream branch tip, and only 119 (35%) show neither. Most of
+the 5,626 side-branch selections are therefore likely upstream's own work.
+Fix (`7f7eeda`): `forge.PostForkBranches` drops side branches whose tip commit
+predates the fork's creation before the batch pairs them; the sample shows the
+upstream-tip check adds nothing (all 165 upstream-tip copies also predate the
+fork). Fixture: `internal/forge/testdata/inherited_branches_sample.json`.
+
+**Re-measurement with the filter (observed once, 2026-09-28) -- confounded.**
+The GraphQL listing failed again near page 400: three consecutive transient
+failures (504, truncated body, 504) exhausted the retry budget and the REST
+fallback finished the walk, so only 3,426 forks kept branch data (6,847 in
+the previous run) and 449 vanished forks re-entered via REST.
+
+| | Previous (no filter, full branch data) | This run (filter, ~half branch data) |
+|---|---|---|
+| Side branches paired | 22,895 | 4,346 of 11,337 (62% dropped) |
+| Side-branch selections / forks with sides | 5,626 / 6,847 (82%) | 1,564 / 3,426 (46%) |
+| REST compares needed | 7,962 | 3,922 |
+| Batch queries / first chunk | 1,390 / 5 min | 1,101 / 4 min |
+
+The filter's drop rate (62%) matches the sample (65%), and every named fork
+kept its selected branch. The full-data REST total with the filter is not
+measured; extrapolated from the previous run's ~2,320 default-branch
+divergent forks plus ~46% of 6,847 side-branch forks, about 5,400 -- still
+near one 5,000/h window.
+
+**Listing resilience is the next blocker.** Three retries with 1 s/2 s
+backoff do not survive GitHub's late-walk 5xx bursts on llama.cpp (43-100
+transient errors per walk). Proposed: on exhausted retries, back off longer
+and halve the page size for that cursor before falling back to REST.
+
+Deferred: rows for vanished forks stay in `spoon.db` (the list persist runs
+before the check); a cached reload re-lists them until the batch drops them
+again.
 
 ## Phase 3 — Use what forks say about themselves
 

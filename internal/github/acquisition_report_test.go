@@ -290,8 +290,12 @@ func TestFetchForksAuto_PartialGraphQL_RESTSuccess(t *testing.T) {
 	if len(forks) != 2 {
 		t.Errorf("len(forks) = %d, want 2 (dedup merged)", len(forks))
 	}
-	if extrasMap != nil {
-		t.Errorf("extras = %v, want nil on REST fallback", extrasMap)
+	// Was "want nil on REST fallback": the fallback dropped the extras of
+	// every fork GraphQL had already returned. On llama.cpp that was 18,500
+	// forks' branches, hiding all side-branch work. Extras now survive for
+	// GraphQL-fetched forks; REST-only forks have none.
+	if len(extrasMap) != 1 {
+		t.Errorf("extras = %v, want exactly the GraphQL-fetched fork's", extrasMap)
 	}
 	if report.UniqueRows != 2 {
 		t.Errorf("report.UniqueRows = %d, want 2", report.UniqueRows)

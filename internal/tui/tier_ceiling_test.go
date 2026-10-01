@@ -94,7 +94,7 @@ func TestCompareCmd_CeilingOneSkipsWithoutSpending(t *testing.T) {
 	m.enrichSem = make(chan struct{}, 1)
 	m.setMaxTier(1)
 
-	msg := m.compareCmd(tierTestFork())().(tier2ResultMsg)
+	msg := compareOneForTest(m, tierTestFork()).(tier2ResultMsg)
 	if !msg.tierSkipped {
 		t.Errorf("msg = %+v, want tierSkipped", msg)
 	}
@@ -118,7 +118,7 @@ func TestCompareCmd_CachedCompareSurvivesCeilingOne(t *testing.T) {
 	m.setMaxTier(1)
 	m.cached = tierCachedSnapshot(t, tierTestFork())
 
-	msg := m.compareCmd(tierTestFork())().(tier2ResultMsg)
+	msg := compareOneForTest(m, tierTestFork()).(tier2ResultMsg)
 	if !msg.fromCache {
 		t.Errorf("msg = %+v, want fromCache (a stored compare costs no budget and must serve at any ceiling)", msg)
 	}
@@ -138,7 +138,7 @@ func TestCompareCmd_ReserveFloorStillAppliesAtCeilingTwo(t *testing.T) {
 	m.enrichSem = make(chan struct{}, 1)
 	m.setMaxTier(2)
 
-	msg := m.compareCmd(tierTestFork())().(tier2ResultMsg)
+	msg := compareOneForTest(m, tierTestFork()).(tier2ResultMsg)
 	if !msg.budgetSkipped {
 		t.Errorf("msg = %+v, want budgetSkipped", msg)
 	}
@@ -306,4 +306,13 @@ func tierCachedSnapshot(t *testing.T, fk forge.T1Data) *store.RepoSnapshot {
 		T1: fk,
 		T2: &forge.T2Data{Performed: true, AheadCount: 4},
 	}})
+}
+
+// compareOneForTest runs a single queued compare command for f: the gate
+// logic (store, ceiling, reserve) is identical whichever fork the queue hands
+// out, so a one-entry queue exercises it directly.
+func compareOneForTest(m *Model, f forge.T1Data) tea.Msg {
+	q := &enrichQueue{}
+	q.push(enrichEntry{fork: f})
+	return m.queuedCompareCmd(q)()
 }
