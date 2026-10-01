@@ -27,3 +27,4 @@ packaging/arch/spoon/
 packaging/arch/*.old/
 packaging/arch/*.pkg.tar.zst
 packaging/arch/*.log
+.do-not-commit/
