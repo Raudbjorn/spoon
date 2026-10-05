@@ -478,13 +478,27 @@ func (m Model) renderStatusBar() string {
 			// count into looking like the repo has fewer forks than it does.
 			appendTail(1, fmt.Sprintf("%d/%d forks", m.visibleCount(), len(m.forks)))
 			variable = append(variable, fmt.Sprintf("filter: %q", m.filter))
+		} else if a := m.acquisition; a != nil && a.ExpectedRows > len(m.forks)+m.unreachable {
+			// Say when the list itself is short: forks missing from it can
+			// never be ranked, and nothing else on screen would show it.
+			// Rows dropped as gone were listed, so they do not count as
+			// missing (they get their own "gone" figure below).
+			appendTail(1, fmt.Sprintf("%d of %d forks listed", len(m.forks)+m.unreachable, a.ExpectedRows))
 		} else {
 			appendTail(1, fmt.Sprintf("%d forks", len(m.forks)))
+		}
+		if m.unreachable > 0 {
+			appendTail(1, fmt.Sprintf("%d gone", m.unreachable))
 		}
 	}
 
 	if m.enriching {
 		appendTail(2, fmt.Sprintf("T2: %d/%d", m.enrichDone, m.enrichTotal))
+	}
+	if m.batchResolving {
+		// Chunks resolve with no per-fork progress of their own: show the
+		// chunk count, or a long network reads as a hang.
+		appendTail(2, fmt.Sprintf("divergence batch %d/%d", m.batchChunksDone, m.batchChunksTotal))
 	}
 
 	// Enrichment ceiling. Shown only when it is actually capping something --

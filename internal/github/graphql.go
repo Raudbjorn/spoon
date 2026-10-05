@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -63,11 +64,14 @@ func (c *Client) defaultBranchTipSHA(ctx context.Context, owner, repo string) (s
 	return resp.Repository.DefaultBranchRef.Target.OID, nil
 }
 
+// forksGraphQLQuery pages by CREATED_AT, not STARGAZERS: most forks tie at 0
+// stars and cursor paging over a heavily tied key is unstable (pages overlap
+// and others are skipped). See fetchForksREST for the measured impact.
 const forksGraphQLQuery = `
 query($owner: String!, $name: String!, $cursor: String) {
   repository(owner: $owner, name: $name) {
     forkCount
-    forks(first: 50, after: $cursor, orderBy: {field: STARGAZERS, direction: DESC}) {
+    forks(first: 50, after: $cursor, orderBy: {field: CREATED_AT, direction: ASC}) {
       totalCount
       pageInfo { hasNextPage endCursor }
       nodes {
@@ -206,6 +210,7 @@ func (c *Client) FetchForksGraphQL(ctx context.Context, owner, repo string, onPa
 	firstResponse := true
 	var repoForkCount, directTotalCount int
 	seen := make(map[int64]struct{}, 256)
+	rawRows := 0
 
 	for {
 		variables := map[string]interface{}{
@@ -226,15 +231,17 @@ func (c *Client) FetchForksGraphQL(ctx context.Context, owner, repo string, onPa
 				AuthMode:      authMode,
 				FallbackChain: []string{"graphql"},
 				Pages:         page,
-				RawRows:       len(allForks),
+				RawRows:       rawRows,
 				UniqueRows:    len(seen),
-				DuplicateRows: len(allForks) - len(seen),
+				DuplicateRows: rawRows - len(seen),
+				ExpectedRows:  directTotalCount,
 				CaptureAt:     time.Now(),
 				AuthScopeID:   c.AuthScopeID(),
 			}
 			// Annotate lineage on the partial data we have so far before returning.
 			// DirectParent/DepthFromRoot are unknown when parent data is missing.
 			allExtras = annotateDepths(allForks, allExtras, owner+"/"+repo)
+			sortForksByStars(allForks, allExtras)
 			return allForks, allExtras, report, fmt.Errorf("GraphQL query: %w", err)
 		}
 
@@ -252,6 +259,13 @@ func (c *Client) FetchForksGraphQL(ctx context.Context, owner, repo string, onPa
 
 		for _, node := range resp.Repository.Forks.Nodes {
 			fork, extra := gqlForkToForkInfo(node, repoForkCount, directTotalCount, authMode, defaultRESTVersion)
+			rawRows++
+			// Cursor paging can still repeat a row (e.g. a fork created or
+			// deleted mid-walk); every consumer downstream assumes one row
+			// per fork, so a repeat is counted and dropped here.
+			if _, dup := seen[fork.ID]; dup {
+				continue
+			}
 			seen[fork.ID] = struct{}{}
 			pageForks = append(pageForks, fork)
 			pageExtras = append(pageExtras, extra)
@@ -260,9 +274,12 @@ func (c *Client) FetchForksGraphQL(ctx context.Context, owner, repo string, onPa
 		allForks = append(allForks, pageForks...)
 		allExtras = append(allExtras, pageExtras...)
 
-		if len(pageForks) > 0 {
+		// Pages counts non-empty upstream batches, so a page whose rows were
+		// all repeats of earlier pages still counts; only the callback is
+		// skipped when nothing on the page is new.
+		if len(resp.Repository.Forks.Nodes) > 0 {
 			page++
-			if onPage != nil {
+			if onPage != nil && len(pageForks) > 0 {
 				onPage(pageForks, pageExtras, page)
 			}
 		}
@@ -282,15 +299,17 @@ func (c *Client) FetchForksGraphQL(ctx context.Context, owner, repo string, onPa
 		AuthMode:      authMode,
 		FallbackChain: []string{"graphql"},
 		Pages:         page,
-		RawRows:       len(allForks),
+		RawRows:       rawRows,
 		UniqueRows:    unique,
-		DuplicateRows: len(allForks) - unique,
+		DuplicateRows: rawRows - unique,
+		ExpectedRows:  directTotalCount,
 		CaptureAt:     time.Now(),
 		AuthScopeID:   c.AuthScopeID(),
 	}
 	// Annotate lineage on the full set. annotateDepths is cycle-safe and
 	// deterministic regardless of page order.
 	allExtras = annotateDepths(allForks, allExtras, owner+"/"+repo)
+	sortForksByStars(allForks, allExtras)
 
 	return allForks, allExtras, report, nil
 }
@@ -615,11 +634,58 @@ func (c *Client) doGraphQLWithRetry(ctx context.Context, query string, variables
 	return err
 }
 
+// extrasByID keys GraphQL T1 extras by fork ID. extras is parallel to forks;
+// nil when there are none.
+func extrasByID(forks []ForkInfo, extras []T1Extra) map[int64]T1Extra {
+	if len(extras) == 0 {
+		return nil
+	}
+	m := make(map[int64]T1Extra, len(extras))
+	for i, f := range forks {
+		if i < len(extras) {
+			m[f.ID] = extras[i]
+		}
+	}
+	return m
+}
+
+// mergePartialWithREST joins the forks GraphQL returned before it failed with
+// the REST fallback's list, minus the rows REST repeats, and orders the result
+// by stars. It returns the T1 extras keyed by fork ID for the GraphQL rows.
+//
+// The extras map is built before the sort and the result never shares memory
+// with forks: sortForksByStars reorders in place, and extras is parallel to
+// the unsorted forks, so building the map afterwards (or sorting an alias of
+// forks) attached branch and release data to the wrong repositories.
+func mergePartialWithREST(forks []ForkInfo, extras []T1Extra, restForks []ForkInfo, streamed map[int64]struct{}) ([]ForkInfo, map[int64]T1Extra) {
+	byID := extrasByID(forks, extras)
+	merged := make([]ForkInfo, 0, len(forks)+len(restForks))
+	merged = append(merged, forks...)
+	for _, f := range restForks {
+		if _, seen := streamed[f.ID]; seen {
+			continue
+		}
+		merged = append(merged, f)
+	}
+	// Each half arrives stars-sorted; the concatenation is not.
+	sortForksByStars(merged, nil)
+	return merged, byID
+}
+
 // isTransientServerError reports whether err is a retryable upstream failure
 // (HTTP 502 Bad Gateway, 503 Service Unavailable, or 504 Gateway Timeout).
 func isTransientServerError(err error) bool {
 	if err == nil {
 		return false
+	}
+	// A response body cut off mid-JSON is a server/transport hiccup, not a
+	// bad query: the same request succeeds on retry. Observed 2026-09-26 on
+	// ggml-org/llama.cpp page 371 of the fork listing, between runs of
+	// 502/504s; treating it as fatal aborted a 65-minute GraphQL walk. A bare
+	// io.EOF (empty body, or the server or a proxy closing the connection
+	// before replying) is the same hiccup; the retry budget bounds it.
+	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) || strings.Contains(err.Error(), "unexpected end of JSON input") {
+		return true
 	}
 	var httpErr *ghAPI.HTTPError
 	if asHTTPError(err, &httpErr) {
@@ -862,17 +928,13 @@ func (c *Client) FetchForksAuto(ctx context.Context, owner, repo string, onPage 
 					}
 				}
 			}
-			restPages, restRawRows := 0, 0
 			restOnPage := func(pageForks []ForkInfo, page int) {
-				if len(pageForks) > 0 {
-					restPages++
-					restRawRows += len(pageForks)
-				}
 				if dedupOnPage != nil {
 					dedupOnPage(pageForks, page)
 				}
 			}
-			restForks, restErr := c.FetchForks(ctx, owner, repo, restOnPage)
+			restForks, restStats, restErr := c.fetchForksREST(ctx, owner, repo, restOnPage)
+			restPages, restRawRows := restStats.pages, restStats.raw
 			if restErr != nil {
 				// REST fallback failed too: retain the partial GraphQL snapshot.
 				if gqlReport == nil {
@@ -885,18 +947,8 @@ func (c *Client) FetchForksAuto(ctx context.Context, owner, repo string, onPage 
 			}
 			// REST fallback succeeded: dedup the REST result against the GraphQL
 			// partial list, compute the combined report, and return the merged
-			// fork set with no extras (REST has no T1 extras).
-			merged := restForks
-			if len(streamed) > 0 {
-				filtered := make([]ForkInfo, 0, len(restForks))
-				for _, f := range restForks {
-					if _, seen := streamed[f.ID]; seen {
-						continue
-					}
-					filtered = append(filtered, f)
-				}
-				merged = append(forks, filtered...)
-			}
+			// fork set (REST rows carry no T1 extras; the GraphQL ones are kept).
+			merged, mergedExtras := mergePartialWithREST(forks, extras, restForks, streamed)
 			report := gqlReport
 			if report == nil {
 				report = &forge.AcquisitionReport{
@@ -922,32 +974,23 @@ func (c *Client) FetchForksAuto(ctx context.Context, owner, repo string, onPage 
 			}
 			report.UniqueRows = len(seen)
 			report.DuplicateRows = report.RawRows - report.UniqueRows
-			return merged, nil, report, nil
+			// mergedExtras keeps the T1 extras (branches, tip SHA, releases,
+			// open PRs) for every fork GraphQL did return. Dropping them all
+			// because a late page failed erased branch data network-wide: on
+			// llama.cpp the walk returned 18,500 forks before failing, and
+			// every one lost its branches, hiding side-branch work from the
+			// divergence batch.
+			return merged, mergedExtras, report, nil
 		}
 
-		// Build extras map
-		extrasMap := make(map[int64]T1Extra, len(extras))
-		for i, f := range forks {
-			if i < len(extras) {
-				extrasMap[f.ID] = extras[i]
-			}
-		}
-		return forks, extrasMap, gqlReport, nil
+		return forks, extrasByID(forks, extras), gqlReport, nil
 	}
 
-	// REST fallback — no extras. Count raw, non-empty REST batches before
-	// any outward callback so report accounting never depends on dedup/display.
-	restPages, restRawRows := 0, 0
-	restOnPage := func(pageForks []ForkInfo, page int) {
-		if len(pageForks) > 0 {
-			restPages++
-			restRawRows += len(pageForks)
-		}
-		if onPage != nil {
-			onPage(pageForks, page)
-		}
-	}
-	restForks, restErr := c.FetchForks(ctx, owner, repo, restOnPage)
+	// REST fallback — no extras. fetchForksREST counts raw, non-empty REST
+	// batches before dedup, so report accounting never depends on
+	// dedup/display.
+	restForks, restStats, restErr := c.fetchForksREST(ctx, owner, repo, onPage)
+	restPages, restRawRows := restStats.pages, restStats.raw
 	if restErr != nil {
 		// Pure REST failure: still surface a report so callers know what we
 		// tried. Method stays "rest" and Error marks the failure.
@@ -976,7 +1019,7 @@ func (c *Client) FetchForksAuto(ctx context.Context, owner, repo string, onPage 
 		Pages:         restPages,
 		RawRows:       restRawRows,
 		UniqueRows:    len(seen),
-		DuplicateRows: len(restForks) - len(seen),
+		DuplicateRows: restRawRows - len(seen),
 		CaptureAt:     time.Now(),
 		AuthScopeID:   c.AuthScopeID(),
 	}

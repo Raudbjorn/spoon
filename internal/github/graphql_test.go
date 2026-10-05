@@ -123,8 +123,11 @@ func TestFetchForksAuto_FallbackDedup(t *testing.T) {
 	if gqlCalls != 2 {
 		t.Fatalf("expected 2 GraphQL calls (success then failure), got %d", gqlCalls)
 	}
-	if extras != nil {
-		t.Errorf("REST fallback should return nil extras, got %v", extras)
+	// Was "should return nil extras": see
+	// TestFetchForksAuto_PartialGraphQL_RESTSuccess. The GraphQL-streamed
+	// fork keeps its extras; the REST-only fork has none.
+	if _, ok := extras[1]; !ok || len(extras) != 1 {
+		t.Errorf("extras = %v, want only fork 1's (fetched by GraphQL)", extras)
 	}
 
 	// Final slice is the complete REST result, including the overlapping fork.
@@ -1043,5 +1046,21 @@ func TestFetchForksBounded_DeadlineExpiryReportsMaxElapsed(t *testing.T) {
 	}
 	if report.Error != "" {
 		t.Errorf("Error = %q, want empty (deadline is a cap, not an error)", report.Error)
+	}
+}
+
+// A response body cut off mid-JSON is retried, not treated as fatal: it
+// aborted a 65-minute GraphQL fork walk on llama.cpp (page 371).
+func TestIsTransientServerError_TruncatedBody(t *testing.T) {
+	for _, err := range []error{
+		io.ErrUnexpectedEOF,
+		io.EOF,
+		fmt.Errorf("GraphQL query: %w", io.ErrUnexpectedEOF),
+		fmt.Errorf("GraphQL query: %w", io.EOF),
+		errors.New("unexpected end of JSON input"),
+	} {
+		if !isTransientServerError(err) {
+			t.Errorf("isTransientServerError(%v) = false, want true", err)
+		}
 	}
 }

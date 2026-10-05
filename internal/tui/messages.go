@@ -54,6 +54,10 @@ type tier2ResultMsg struct {
 	forkID string
 	t2     forge.T2Data
 	err    error
+	// unreachable is true when the fork's repository no longer exists
+	// (deleted, disabled or hidden): no compare was spent and the fork is
+	// dropped from the list rather than kept as a row that can never enrich.
+	unreachable bool
 	// budgetSkipped is true when the compare was not attempted because the
 	// rate-limit reserve floor was reached. Distinct from err: the fork is
 	// kept, just marked un-enriched rather than failed.

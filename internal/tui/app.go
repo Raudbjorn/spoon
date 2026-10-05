@@ -203,6 +203,22 @@ type Model struct {
 	// a re-enrichment pass shares one limiter with the original run instead of
 	// doubling effective concurrency against the rate limit.
 	enrichSem chan struct{}
+	// enrichQueue orders live compares for the current pass (see
+	// enrich_queue.go); nil between passes.
+	enrichQueue *enrichQueue
+	// batchResolving is true while GraphQL divergence-batch chunks remain;
+	// batchPending holds the forks not yet sent to it, in priority order.
+	// batchStats/batchErr accumulate over the chunks.
+	batchResolving   bool
+	batchProvider    forge.BatchCompareProvider
+	batchPending     []enrichEntry
+	batchChunksDone  int
+	batchChunksTotal int
+	batchStats       *forge.BatchStats
+	batchErr         string
+	// unreachable counts forks dropped from the list because their
+	// repository no longer exists (see tier2ResultMsg.unreachable).
+	unreachable int
 
 	// Global store (mandatory at runtime; nil only in unit tests). cached is
 	// the repo's stored snapshot, used to serve fork lists within forkListTTL
@@ -507,6 +523,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pendingUpdates = append(m.pendingUpdates, msg)
 		return m, nil
 
+	case batchDivergenceMsg:
+		return m.handleBatchDivergence(msg)
+
 	case patchResultMsg:
 		// Only the most recent fetch may clear the loading flag or apply a
 		// body: an older request (same fork or not) resolving after a newer
@@ -619,6 +638,10 @@ func (m *Model) handleCachedLoad(msg cachedLoadMsg) (tea.Model, tea.Cmd) {
 	m.cached = msg.snap
 	m.loading = false
 	m.loadMsg = fmt.Sprintf("Loaded %d forks from cache", len(msg.forks))
+	// A cached list carries no acquisition report; keep the previous
+	// repository's listing figures off this one.
+	m.acquisition = nil
+	m.unreachable = 0
 
 	m.scoreForks(msg.forks)
 	m.view = viewTable
@@ -719,6 +742,7 @@ func (m *Model) handleForksFetched(msg forksFetchedMsg) (tea.Model, tea.Cmd) {
 
 	// Store the terminal acquisition report if the provider supplied one.
 	m.acquisition = msg.Report
+	m.unreachable = 0
 
 	m.scoreForks(msg.forks)
 	m.view = viewTable
@@ -782,9 +806,21 @@ func (m *Model) processPendingUpdates() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	coverageDirty := false
+	// Captured before any row is dropped below, so the cursor stays on the
+	// same fork rather than the same index.
+	var selectedID string
+	if m.cursor >= 0 && m.cursor < len(m.forks) {
+		selectedID = m.forks[m.cursor].Fork.ID
+	}
+	gone := map[string]bool{}
 
 	for _, update := range m.pendingUpdates {
 		m.enrichDone++
+
+		if update.unreachable {
+			gone[update.forkID] = true
+			continue
+		}
 
 		// Rate-reserve skip: keep the fork, mark it un-enriched/degraded (not
 		// failed, not zero divergence) so the export can distinguish it.
@@ -853,21 +889,31 @@ func (m *Model) processPendingUpdates() (tea.Model, tea.Cmd) {
 		}
 	}
 	m.pendingUpdates = m.pendingUpdates[:0]
+	if len(gone) > 0 {
+		kept := m.forks[:0]
+		for _, sf := range m.forks {
+			if !gone[sf.Fork.ID] {
+				kept = append(kept, sf)
+			}
+		}
+		m.unreachable += len(m.forks) - len(kept)
+		// The tail past kept still holds the dropped rows' pointers (T2Data
+		// and friends); zero it so they can be collected.
+		clear(m.forks[len(kept):])
+		m.forks = kept
+	}
 
 	// Re-group after each settled batch: T2 landing can sharpen a fork's key
 	// from the diff-shape fallback to an exact head SHA. Gather rather than
 	// re-sort: the rows are already in the user's chosen order, and gathering
 	// only moves the members of a freshly-formed group next to each other
-	// instead of reordering everything. It can still move rows, though — so
-	// capture the fork under the cursor first and restore it afterward, same
+	// instead of reordering everything. It can still move rows, though -- so
+	// the fork under the cursor (captured above) is restored afterward, same
 	// as the sweep handler does for its own re-sort.
-	var selectedID string
-	if m.cursor >= 0 && m.cursor < len(m.forks) {
-		selectedID = m.forks[m.cursor].Fork.ID
-	}
 	m.assignDuplicateGroups()
 	m.gatherDuplicateGroups(0, len(m.forks))
 	m.restoreCursorByID(selectedID)
+	m.cursor = clampCursorVisible(m.cursor, m.visibleIdx())
 
 	cmds := make([]tea.Cmd, 0, 3)
 	if coverageDirty {
@@ -1266,6 +1312,8 @@ func (m *Model) startFetch() tea.Cmd {
 	if !m.refresh {
 		m.forks = nil
 		m.parent = nil
+		m.acquisition = nil
+		m.unreachable = 0
 	}
 	// A new fork list gets its own automatic pass. Latching per list rather
 	// than per session is what makes `r` and `n` behave like the first load.
@@ -1454,6 +1502,7 @@ func (m *Model) fetchForks() tea.Cmd {
 		var forks []forge.T1Data
 		var streamErr error
 		var report *forge.AcquisitionReport
+		seen := make(map[string]struct{})
 		for msg := range ch {
 			if msg.Err != nil {
 				streamErr = msg.Err // remember; per-fork errors are tolerated below
@@ -1465,6 +1514,15 @@ func (m *Model) fetchForks() tea.Cmd {
 				report = msg.Report
 				continue
 			}
+			// One row per fork is assumed by everything downstream: a repeat
+			// becomes a second scored row, gets its own compare, and the
+			// result lands only on the first copy (processPendingUpdates
+			// matches by ID), leaving enriched/stub twins in the export.
+			// Providers dedup; this guards against one that doesn't.
+			if _, dup := seen[msg.Fork.ID]; dup {
+				continue
+			}
+			seen[msg.Fork.ID] = struct{}{}
 			forks = append(forks, msg.Fork)
 		}
 
@@ -1661,107 +1719,51 @@ func (m *Model) startEnrichment() tea.Cmd {
 		return nil
 	}
 
-	// Enrich best-first: order by EVPR (DispatchPriority over the cheap
-	// divergence signal), so when the rate-limit reserve floor cuts the pass
-	// short, the forks that DID get compared are the ones most likely to have
-	// real divergence — not the most popular or a random sample.
+	// Only forks without a compare need one: applyCachedCompares has already
+	// served every fork whose stored compare is still valid (and on a
+	// refresh nothing was cached, so every fork qualifies).
 	parentPushed := m.parent.PushedAt
-	toEnrich := make([]int, len(m.forks))
-	for i := range toEnrich {
-		toEnrich[i] = i
+	var order []enrichEntry
+	for i := range m.forks {
+		if m.forks[i].T2 != nil {
+			continue
+		}
+		m.forks[i].Enriching = true
+		order = append(order, enrichEntry{
+			fork:     m.forks[i].Fork,
+			priority: forksops.DispatchPriority(m.forks[i].Fork, parentPushed, m.forks[i].Heat.Score),
+		})
 	}
-	sort.SliceStable(toEnrich, func(a, b int) bool {
-		fa, fb := m.forks[toEnrich[a]], m.forks[toEnrich[b]]
-		return forksops.DispatchPriority(fa.Fork, parentPushed, fa.Heat.Score) >
-			forksops.DispatchPriority(fb.Fork, parentPushed, fb.Heat.Score)
-	})
-
-	m.enrichTotal = len(toEnrich)
-	for _, idx := range toEnrich {
-		m.forks[idx].Enriching = true
+	m.enrichTotal = len(order)
+	if len(order) == 0 {
+		m.enriching = false
+		return nil
 	}
+	// Best-first: enrichQueue hands forks out in this order, so when the
+	// rate-limit reserve cuts the pass short, the forks that DID get compared
+	// are the ones most likely to have real divergence.
+	sort.SliceStable(order, func(a, b int) bool { return order[a].priority > order[b].priority })
 
-	// Concurrency from auth info
 	concurrency := m.auth.Concurrency
 	if concurrency <= 0 {
 		concurrency = 2
 	}
-
 	m.enrichSem = make(chan struct{}, concurrency)
+	m.enrichQueue = &enrichQueue{}
+	m.batchStats, m.batchErr = nil, ""
 
-	cmds := make([]tea.Cmd, 0, len(toEnrich)+1)
-	cmds = append(cmds, batchTick())
-
-	for _, idx := range toEnrich {
-		cmds = append(cmds, m.compareCmd(m.forks[idx].Fork))
+	// Resolve divergence for the whole list in one GraphQL sweep first,
+	// as `spn forks list` does: forks with nothing ahead then never spend a
+	// REST compare, and divergent ones carry a pre-chosen branch.
+	if bp, ok := m.provider.(forge.BatchCompareProvider); ok {
+		m.batchResolving = true
+		m.batchProvider = bp
+		m.batchPending = order
+		m.batchChunksDone = 0
+		m.batchChunksTotal = (len(order) + batchChunkForks - 1) / batchChunkForks
+		return tea.Batch(batchTick(), m.nextBatchChunk())
 	}
-
-	return tea.Batch(cmds...)
-}
-
-// compareCmd builds the per-fork enrichment command. Extracted so the initial
-// pass and a later re-enrichment (after the ceiling is raised) run byte-identical
-// logic -- the store fast path and the rate-limit reserve apply to both for
-// free, rather than one path drifting from the other.
-//
-// Gate order is deliberate and mirrors forksops/stream.go: a stored compare
-// costs no API budget, so it is consulted before both the ceiling and the
-// reserve floor. The consequence, worth knowing: at ceiling T1 a cached repo
-// still shows AHEAD/BEHIND. The ceiling is a spend ceiling, not a display one.
-func (m *Model) compareCmd(f forge.T1Data) tea.Cmd {
-	forkID := f.ID
-	provider := m.provider
-	refresh := m.refresh
-	cached := m.cached
-	ctx := m.enrichCtx
-	sem := m.enrichSem
-	ceiling := m.tierCeiling
-
-	// Read through the same clamping rule maxTier uses; a nil ceiling means
-	// no limit was ever set.
-	tierAllows := func() bool {
-		if ceiling == nil {
-			return defaultMaxTier >= 2
-		}
-		return clampInt(int(ceiling.Load()), 1, 3) >= 2
-	}
-
-	return func() tea.Msg {
-		// Serve the compare from the store when the fork hasn't been pushed
-		// since it was recorded.
-		if !refresh {
-			if t2 := cached.ValidT2(f); t2 != nil {
-				return tier2ResultMsg{forkID: forkID, t2: *t2, fromCache: true}
-			}
-		}
-
-		// Acquire semaphore
-		select {
-		case <-ctx.Done():
-			return tier2ResultMsg{forkID: forkID, err: ctx.Err()}
-		case sem <- struct{}{}:
-		}
-		defer func() { <-sem }()
-
-		// The user's ceiling, read here rather than when this closure was
-		// built: every command is handed to tea.Batch up front, so lowering
-		// the ceiling mid-run can only take effect if the value is read at
-		// execution time.
-		if !tierAllows() {
-			return tier2ResultMsg{forkID: forkID, tierSkipped: true}
-		}
-
-		// Auto-budget reserve: stop spending the rate window once headroom
-		// hits the floor. Best-first ordering means the forks already
-		// compared are the most promising; this one is marked degraded
-		// (not failed, not zeroed) so the export can say so.
-		if provider.Headroom() < forksops.ReserveHeadroom {
-			return tier2ResultMsg{forkID: forkID, budgetSkipped: true}
-		}
-
-		t2, err := provider.Compare(ctx, f, f.DefaultBranch)
-		return tier2ResultMsg{forkID: forkID, t2: t2, err: err}
-	}
+	return tea.Batch(append([]tea.Cmd{batchTick()}, m.dispatchQueued(order)...)...)
 }
 
 func (m *Model) cancelEnrichment() {
@@ -1770,9 +1772,13 @@ func (m *Model) cancelEnrichment() {
 		m.enrichCancel = nil
 	}
 	m.enriching = false
-	// Drop the limiter with the run it belonged to, so a fresh fetch builds a
-	// new one rather than inheriting slots held by dead closures.
+	m.batchResolving = false
+	m.batchPending = nil
+	// Drop the limiter and queue with the run they belonged to, so a fresh
+	// fetch builds new ones rather than inheriting slots held by dead
+	// closures.
 	m.enrichSem = nil
+	m.enrichQueue = nil
 }
 
 // cycleMaxTier steps the enrichment ceiling T3 → T2 → T1 → T3.
@@ -1874,12 +1880,20 @@ func (m *Model) reenrichPending() tea.Cmd {
 	if !wasEnriching {
 		cmds = append(cmds, batchTick())
 	}
+	parentPushed := m.parent.PushedAt
+	entries := make([]enrichEntry, 0, len(pending))
 	for _, i := range pending {
 		m.forks[i].Enriching = true
 		m.forks[i].TierSkipped = false
 		m.forks[i].BudgetSkipped = false
-		cmds = append(cmds, m.compareCmd(m.forks[i].Fork))
+		entries = append(entries, enrichEntry{
+			fork:     m.forks[i].Fork,
+			priority: forksops.DispatchPriority(m.forks[i].Fork, parentPushed, m.forks[i].Heat.Score),
+		})
 	}
+	// Appended to a running pass's queue, these are ordered against the
+	// forks it has not reached yet rather than queued behind them.
+	cmds = append(cmds, m.dispatchQueued(entries)...)
 	return tea.Batch(cmds...)
 }
 
