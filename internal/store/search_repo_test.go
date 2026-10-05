@@ -58,3 +58,44 @@ func TestSearchRowsFiltersByRepoIdentityAcrossForges(t *testing.T) {
 		t.Fatalf("unfiltered search failed: rows=%d err=%v", len(rows), err)
 	}
 }
+
+// SearchRows is keyed by model, so vectors left behind by a previous embedder
+// are invisible rather than absent. The counts let the CLI report that instead
+// of claiming the index is empty (#82).
+func TestEmbeddingModelCountsGroupsByModel(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "spoon.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	now := time.Unix(1, 0).UTC()
+
+	if counts, err := db.EmbeddingModelCounts(ctx); err != nil || len(counts) != 0 {
+		t.Fatalf("empty store: counts=%v err=%v", counts, err)
+	}
+
+	records := make([]EmbeddingRecord, 0, 3)
+	for i, model := range []string{"m1", "m1", "m2"} {
+		id := "fork:doc" + string(rune('a'+i))
+		if err := db.UpsertSnapshot(ctx, Snapshot{
+			Repo:     RepoRecord{Provider: "github", Host: "github.com", Owner: "o", Name: "r", FirstSeen: now, LastSeen: now},
+			Fork:     ForkRecord{ForgeID: "f" + string(rune('a'+i)), Owner: "x", Name: "f", URL: "u", UpdatedAt: now},
+			Document: DocumentRecord{DocumentID: id, ContentHash: "h", Body: "b", UpdatedAt: now},
+		}); err != nil {
+			t.Fatalf("upsert snapshot: %v", err)
+		}
+		records = append(records, EmbeddingRecord{DocumentID: id, Model: model, Dim: 1, Vector: []byte{0, 0, 128, 63}, ContentHash: "h", CreatedAt: now})
+	}
+	if err := db.UpsertEmbeddings(ctx, records); err != nil {
+		t.Fatalf("upsert embeddings: %v", err)
+	}
+
+	counts, err := db.EmbeddingModelCounts(ctx)
+	if err != nil {
+		t.Fatalf("counts: %v", err)
+	}
+	if counts["m1"] != 2 || counts["m2"] != 1 || len(counts) != 2 {
+		t.Errorf("counts = %v, want m1:2 m2:1", counts)
+	}
+}

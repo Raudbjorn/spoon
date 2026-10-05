@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/svnbjrn/spoon/internal/agentio"
+	"github.com/svnbjrn/spoon/internal/config"
 	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/store"
 )
@@ -246,6 +248,82 @@ func decodeNDJSON(t *testing.T, out string) []map[string]any {
 		records = append(records, record)
 	}
 	return records
+}
+
+// An empty result is not one state but three: a --repo filter that matched
+// nothing in a populated index, an index written by a different embedder, and a
+// genuinely empty index. Collapsing them into semantic_index_empty told a
+// caller with a typo'd --repo to re-index a repo it already had (#82).
+func TestSearchExplainsWhyItReturnedNothing(t *testing.T) {
+	seed := func(t *testing.T, modelID string) {
+		t.Helper()
+		seedSearchIndex(t, modelID, 2, []struct {
+			id, body string
+			vector   []float32
+		}{{id: "only", body: "canvas rendering", vector: []float32{1, 0}}})
+	}
+	run := func(t *testing.T, stubModel string, args ...string) (string, string, int) {
+		t.Helper()
+		deps := commandDeps{searchEmbedder: func(bool, config.EmbedderConfig, embed.VoyageConfig) (embed.SearchEmbedder, func(), *agentio.Error) {
+			return deterministicSearchEmbedder{model: stubModel}, func() {}, nil
+		}}
+		var stdout, stderr bytes.Buffer
+		exit := dispatchWithDeps(append([]string{"search"}, args...), &stdout, &stderr, deps)
+		return stdout.String(), stderr.String(), exit
+	}
+
+	t.Run("repo filter matched nothing", func(t *testing.T) {
+		isolateSpoonHome(t)
+		seed(t, "current-model")
+		stdout, stderr, exit := run(t, "current-model", "canvas", "--repo", "up/nope")
+		if exit != 0 || stdout != "" {
+			t.Fatalf("exit=%d stdout=%q, want exit 0 and no rows", exit, stdout)
+		}
+		if !strings.Contains(stderr, "semantic_repo_filter_empty") || strings.Contains(stderr, "semantic_index_empty") {
+			t.Errorf("stderr = %s, want semantic_repo_filter_empty naming the filter", stderr)
+		}
+		if !strings.Contains(stderr, "up/nope") {
+			t.Errorf("stderr = %s, want the unmatched repo named", stderr)
+		}
+	})
+
+	t.Run("index written by another embedder", func(t *testing.T) {
+		isolateSpoonHome(t)
+		seed(t, "stale-model")
+		_, stderr, exit := run(t, "current-model", "canvas")
+		if exit != 0 {
+			t.Fatalf("exit = %d, want 0", exit)
+		}
+		if !strings.Contains(stderr, "semantic_model_mismatch") {
+			t.Errorf("stderr = %s, want semantic_model_mismatch", stderr)
+		}
+		if !strings.Contains(stderr, "stale-model") {
+			t.Errorf("stderr = %s, want the stored model id named", stderr)
+		}
+	})
+
+	t.Run("genuinely empty index", func(t *testing.T) {
+		isolateSpoonHome(t)
+		var stdout, stderr bytes.Buffer
+		if code := runSearchWith([]string{"anything"}, &stdout, &stderr); code != 0 {
+			t.Fatalf("exit %d, stderr: %s", code, stderr.String())
+		}
+		if !strings.Contains(stderr.String(), "semantic_index_empty") {
+			t.Errorf("stderr = %s, want semantic_index_empty for an empty store", stderr.String())
+		}
+	})
+
+	t.Run("matching filter still returns rows", func(t *testing.T) {
+		isolateSpoonHome(t)
+		seed(t, "current-model")
+		stdout, stderr, exit := run(t, "current-model", "canvas", "--repo", "up/repo")
+		if exit != 0 || len(decodeNDJSON(t, stdout)) != 1 {
+			t.Fatalf("exit=%d stdout=%q stderr=%s, want one ranked row", exit, stdout, stderr)
+		}
+		if strings.Contains(stderr, "semantic_") {
+			t.Errorf("stderr = %s, want no empty-result warning on a hit", stderr)
+		}
+	})
 }
 
 // TestSearchVoyageFlagsRequireAKey covers the one place a Voyage failure is fatal:

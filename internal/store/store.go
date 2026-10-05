@@ -1480,6 +1480,28 @@ func (s *Store) SearchRows(ctx context.Context, model, owner, name string) ([]Se
 	return out, rows.Err()
 }
 
+// EmbeddingModelCounts returns the number of stored embeddings per model id.
+// It exists so an empty search can say *why* it is empty: vectors written by a
+// different embedder are invisible to the current model, and reporting that as
+// an empty index sends the caller to index a repo that is already indexed.
+func (s *Store) EmbeddingModelCounts(ctx context.Context) (map[string]int, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT model,COUNT(*) FROM embeddings GROUP BY model`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	counts := map[string]int{}
+	for rows.Next() {
+		var model string
+		var count int
+		if err := rows.Scan(&model, &count); err != nil {
+			return nil, err
+		}
+		counts[model] = count
+	}
+	return counts, rows.Err()
+}
+
 // documentBodyChunk bounds how many document IDs go into one IN (...) clause,
 // staying well under SQLite's bound-parameter ceiling.
 const documentBodyChunk = 400
