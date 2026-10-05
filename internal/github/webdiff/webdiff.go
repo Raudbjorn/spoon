@@ -194,6 +194,7 @@ func ParseHTML(r io.Reader) (map[string]string, int, error) {
 	acc := map[string]*strings.Builder{}
 	next := -1
 	nextAuthoritative := false // a rel="next" link outranks a text-"next" match
+	sawFile := false
 	var current string
 	// Traverse iteratively with an explicit stack rather than recursing: the
 	// DOM is externally supplied, and although html.Parse caps tree depth, an
@@ -206,6 +207,7 @@ func ParseHTML(r io.Reader) (map[string]string, int, error) {
 		if n.Type == html.ElementNode {
 			if path := filePath(n); path != "" {
 				current = path
+				sawFile = true
 			}
 			class := attr(n, "class")
 			if current != "" && n.Data == "td" && strings.Contains(class, "blob-code") {
@@ -255,7 +257,12 @@ func ParseHTML(r io.Reader) (map[string]string, int, error) {
 			stack = append(stack, child)
 		}
 	}
-	if len(acc) == 0 {
+	// A page whose file headers we recognised but which carries no blob-code
+	// cells is well-formed and merely empty — a range of binary, rename or
+	// mode-change entries renders exactly like that. Failing it would make Fetch
+	// report truncation and cost the fork every patch collected so far. Only a
+	// page that resolved no file header at all is markup we no longer understand.
+	if len(acc) == 0 && !sawFile {
 		return nil, next, fmt.Errorf("GitHub web diff markup contained no parseable files")
 	}
 	out := make(map[string]string, len(acc))

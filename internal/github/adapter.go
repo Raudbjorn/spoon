@@ -509,21 +509,9 @@ func (p *GHProvider) finishT2(ctx context.Context, sourceOwner, sourceRepo strin
 			}
 			if base == "" || head == "" {
 				t2.PatchSkipReason = "web diff unavailable: compare response omitted base/head SHA"
-			} else if patches, truncated, webErr := p.client.webDiff.Fetch(ctx, sourceOwner, sourceRepo, base, head); webErr != nil {
-				t2.PatchSkipReason = webErr.Error()
-			} else if truncated {
-				// A later page failed to parse: the collected patches are
-				// incomplete and we cannot tell which files are whole. Persisting
-				// a leading fragment as a complete diff would silently corrupt the
-				// store and the semantic index, so discard and record the skip.
-				t2.PatchSkipReason = "web diff truncated: pagination incomplete"
 			} else {
-				for i := range t2.Diffs {
-					if t2.Diffs[i].Patch == "" && patches[t2.Diffs[i].Path] != "" {
-						t2.Diffs[i].Patch = patches[t2.Diffs[i].Path]
-						t2.Diffs[i].PatchSource = "github_web"
-					}
-				}
+				patches, truncated, webErr := p.client.webDiff.Fetch(ctx, sourceOwner, sourceRepo, base, head)
+				applyWebDiffPatches(&t2, patches, truncated, webErr)
 			}
 		}
 	}
@@ -544,6 +532,27 @@ func (p *GHProvider) finishT2(ctx context.Context, sourceOwner, sourceRepo strin
 	}
 
 	return t2
+}
+
+// applyWebDiffPatches folds a web-diff scrape into t2. It is deliberately the
+// only place that decision is made: an error or a truncated pagination both
+// mean the collected patches cannot be trusted, so they are discarded and the
+// skip is recorded rather than persisted. Writing a leading fragment as a whole
+// diff would corrupt the store and the semantic index (#83).
+func applyWebDiffPatches(t2 *forge.T2Data, patches map[string]string, truncated bool, webErr error) {
+	switch {
+	case webErr != nil:
+		t2.PatchSkipReason = webErr.Error()
+	case truncated:
+		t2.PatchSkipReason = "web diff truncated: pagination incomplete"
+	default:
+		for i := range t2.Diffs {
+			if t2.Diffs[i].Patch == "" && patches[t2.Diffs[i].Path] != "" {
+				t2.Diffs[i].Patch = patches[t2.Diffs[i].Path]
+				t2.Diffs[i].PatchSource = "github_web"
+			}
+		}
+	}
 }
 
 // fillTruncatedFiles attempts to recover the files a JSON compare lost past

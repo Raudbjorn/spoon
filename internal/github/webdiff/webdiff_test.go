@@ -56,6 +56,27 @@ func TestWebDiffMarkupChangeIsGracefulError(t *testing.T) {
 	}
 }
 
+// A page whose file headers we recognise but which has no blob-code cells is a
+// well-formed empty page — an entry range of binary, rename or mode-change
+// files renders exactly like this. Failing it made Fetch report truncation,
+// which cost the fork every patch it had already collected (#83).
+func TestWebDiffPageWithHeadersAndNoDiffLinesIsNotAnError(t *testing.T) {
+	fixture := `<html><body>
+<div class="js-file-header" data-path="assets/logo.png"></div>
+<div class="diff-table"><span class="file-info">Binary files differ</span></div>
+</body></html>`
+	patches, next, err := ParseHTML(strings.NewReader(fixture))
+	if err != nil {
+		t.Fatalf("empty page rejected: %v", err)
+	}
+	if len(patches) != 0 {
+		t.Errorf("patches = %v, want none (this page has no textual hunks)", patches)
+	}
+	if next != -1 {
+		t.Errorf("next = %d, want -1 (no pagination link on the page)", next)
+	}
+}
+
 // Concurrent callers must each receive a distinct slot. The bug this guards
 // against overwrote c.next with now+interval on every call, so every queued
 // caller computed roughly the same wait and they all fired as one burst —
