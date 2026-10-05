@@ -80,6 +80,12 @@ check() {
     export CGO_CXXFLAGS="${CXXFLAGS}"
     export CGO_LDFLAGS="${LDFLAGS}"
     export GOPATH="${srcdir}/gopath"
+    # GOFLAGS deliberately stops short of build()'s -trimpath. -trimpath
+    # rewrites source paths to module-relative ones, so every test that locates
+    # its testdata through runtime.Caller (the tui goldens, the cmd/spn output
+    # boundary inventory) looks for "github.com/svnbjrn/spoon/internal/tui" and
+    # fails. -buildmode=pie is a link-only flag: adding it buys no compile-cache
+    # reuse, so the recompile this line costs is cheaper than a broken suite.
     export GOFLAGS="-mod=vendor"
     go test ./...
 }
