@@ -56,7 +56,7 @@ and appends the resulting token to `github.tokens`. Export
 `127.0.0.1:8790` for the duration of the login; the app's registered redirect
 URI (`https://spoon.s8n.is/auth` by default, `SPOON_OAUTH_REDIRECT_URI` to
 change) must reach that port through a TLS proxy. `deploy/nginx-spoon.conf` is
-the loopback-only vhost used on the author's host, with a matching
+an example loopback-only vhost (replace the certificate paths), with a matching
 `spoon IN A 127.0.0.1` record in the `s8n.is` zone. The token is verified
 against `/user` before it is stored and is never printed. Tokens (from `auth login`,
 `spoon setup` or Settings) are stored in the OS keyring by default (Keychain,
