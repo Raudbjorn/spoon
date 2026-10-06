@@ -224,7 +224,17 @@ func runSearchWithEffectiveDeps(args []string, stdout, stderr io.Writer, effecti
 		results = results[:top]
 	}
 	if len(results) == 0 {
-		emitSemanticEmpty(stderr, useVoyage)
+		// Nothing came back, but "nothing is indexed" and "your filter matched
+		// nothing" are different states with different fixes. Ask the store which
+		// one it is instead of guessing — the old unconditional semantic_index_empty
+		// told a caller with a typo'd --repo to re-index a repo it already had.
+		// When every row was unreadable the rows-skipped warning already explains
+		// the emptiness, so that case keeps the plain envelope.
+		if skipped > 0 {
+			emitSemanticEmpty(stderr, useVoyage)
+			return 0
+		}
+		emitEmptySearch(ctx, stderr, db, model.ModelID(), repoOwner, repoName, useVoyage)
 		return 0
 	}
 	if err := emitSearchResults(stdout, results); err != nil {
@@ -411,4 +421,50 @@ func emitSemanticEmpty(stderr io.Writer, useVoyage bool) {
 		"code": "semantic_index_empty", "message": "no matching semantic embeddings are indexed",
 		"remediation": remediation,
 	}})
+}
+
+// emitEmptySearch picks the empty-result envelope that matches why nothing came
+// back: a --repo filter that matched nothing in a populated index, an index
+// whose vectors were written by a different embedder, or a genuinely empty
+// index. A count-query failure degrades to the generic envelope — the search
+// itself succeeded, so the diagnosis is best-effort.
+func emitEmptySearch(ctx context.Context, stderr io.Writer, db *store.Store, modelID, repoOwner, repoName string, useVoyage bool) {
+	counts, err := db.EmbeddingModelCounts(ctx)
+	if err != nil {
+		emitSemanticEmpty(stderr, useVoyage)
+		return
+	}
+	filter := repoOwner + "/" + repoName
+	switch {
+	case repoOwner != "" && counts[modelID] > 0:
+		_ = agentio.WriteNDJSON(stderr, map[string]any{"warning": map[string]any{
+			"code":        "semantic_repo_filter_empty",
+			"message":     fmt.Sprintf("the index holds %d embedding(s) for %s, but none match --repo %s", counts[modelID], modelID, filter),
+			"details":     map[string]any{"repo": filter, "model": modelID, "indexedForModel": counts[modelID]},
+			"remediation": "Check the owner/repo spelling, then run 'spn forks list " + filter + "' if that repo has not been indexed.",
+		}})
+	case len(counts) > 0 && counts[modelID] == 0:
+		_ = agentio.WriteNDJSON(stderr, map[string]any{"warning": map[string]any{
+			"code":        "semantic_model_mismatch",
+			"message":     "no embeddings are stored for " + modelID + "; the index was written by a different embedder",
+			"details":     map[string]any{"model": modelID, "storedModels": storedModelSummary(counts)},
+			"remediation": "Re-run 'spn forks list <repo>' to rebuild the index with the current embedder.",
+		}})
+	default:
+		emitSemanticEmpty(stderr, useVoyage)
+	}
+}
+
+// storedModelSummary renders the per-model counts as a stable "id (n)" list so
+// the envelope does not shuffle between runs.
+func storedModelSummary(counts map[string]int) []string {
+	ids := make([]string, 0, len(counts))
+	for id := range counts {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for i, id := range ids {
+		ids[i] = fmt.Sprintf("%s (%d)", id, counts[id])
+	}
+	return ids
 }
