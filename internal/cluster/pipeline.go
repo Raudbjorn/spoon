@@ -226,7 +226,7 @@ func RunPipeline(ctx context.Context, opts PipelineOptions, inputs PipelineInput
 
 	cfg := Config{
 		EmbedderID:        modelName,
-		PreprocessID:      "v1",
+		PreprocessID:      "v2",
 		Weights:           [4]float32{0.3, 0.3, 0.2, 0.2},
 		WeakSignalsID:     "v1",
 		Epsilon:           opts.Epsilon,

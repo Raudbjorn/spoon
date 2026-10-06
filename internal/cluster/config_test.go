@@ -9,7 +9,7 @@ import (
 func validFixtureConfig() Config {
 	return Config{
 		EmbedderID:        "builtin",
-		PreprocessID:      "v1",
+		PreprocessID:      "v2",
 		Weights:           [4]float32{0.3, 0.3, 0.2, 0.2},
 		WeakSignalsID:     "v1",
 		Epsilon:           0.55,
@@ -139,6 +139,24 @@ func TestConfigFingerprint(t *testing.T) {
 	changed.Epsilon = 0.35
 	if fingerprint(t, base) == fingerprint(t, changed) {
 		t.Error("changed epsilon must change the fingerprint")
+	}
+}
+
+func TestConfigFingerprintChangesWithPreprocessID(t *testing.T) {
+	current := validFixtureConfig()
+	stale := current
+	stale.PreprocessID = "v1"
+
+	currentFingerprint, err := current.Fingerprint()
+	if err != nil {
+		t.Fatalf("current Fingerprint() error = %v", err)
+	}
+	staleFingerprint, err := stale.Fingerprint()
+	if err != nil {
+		t.Fatalf("stale Fingerprint() error = %v", err)
+	}
+	if currentFingerprint == staleFingerprint {
+		t.Fatal("preprocess ID must change the config fingerprint")
 	}
 }
 

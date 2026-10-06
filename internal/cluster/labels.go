@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"math"
+	"path"
 	"sort"
 	"strings"
 
@@ -48,6 +49,8 @@ func HeuristicLabel(members []embed.ForkFeatures, corpus []embed.ForkFeatures) s
 		return ""
 	}
 
+	members = labelFeaturesWithoutDependencyMaintenance(members)
+	corpus = labelFeaturesWithoutDependencyMaintenance(corpus)
 	dir := dirPrefix(members)
 	tokens := topTokens(members, corpus, 3)
 	if len(tokens) == 0 {
@@ -64,6 +67,66 @@ func HeuristicLabel(members []embed.ForkFeatures, corpus []embed.ForkFeatures) s
 	default:
 		return ""
 	}
+}
+
+var dependencyPathBasenames = map[string]struct{}{
+	"go.mod": {}, "go.sum": {}, "package-lock.json": {}, "npm-shrinkwrap.json": {},
+	"yarn.lock": {}, "pnpm-lock.yaml": {}, "Cargo.lock": {}, "Gemfile.lock": {},
+	"composer.lock": {}, "Pipfile.lock": {}, "poetry.lock": {}, "uv.lock": {},
+}
+
+var dependencyMaintenanceTerms = []string{
+	"bump", "update", "upgrade", "deps", "dependency", "dependencies", "renovate", "dependabot",
+}
+
+// labelFeaturesWithoutDependencyMaintenance returns label-only feature copies:
+// dependency paths are excluded, and a member containing only such paths loses
+// its commit text only when that text is dependency maintenance.
+func labelFeaturesWithoutDependencyMaintenance(features []embed.ForkFeatures) []embed.ForkFeatures {
+	filtered := make([]embed.ForkFeatures, len(features))
+	for i, feature := range features {
+		filtered[i] = feature
+		filtered[i].Paths = nonDependencyPaths(feature.Paths)
+		if filtered[i].Paths == "" && hasDependencyMaintenanceText(feature.Commits) {
+			filtered[i].Commits = ""
+		}
+	}
+	return filtered
+}
+
+func nonDependencyPaths(paths string) string {
+	if paths == "" {
+		return ""
+	}
+	lines := strings.Split(paths, "\n")
+	retained := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if !isDependencyPath(strings.TrimSpace(line)) {
+			retained = append(retained, line)
+		}
+	}
+	if len(retained) == len(lines) {
+		return paths
+	}
+	return strings.Join(retained, "\n")
+}
+
+func isDependencyPath(p string) bool {
+	if strings.HasPrefix(p, "vendor/") {
+		return true
+	}
+	_, ok := dependencyPathBasenames[path.Base(p)]
+	return ok
+}
+
+func hasDependencyMaintenanceText(text string) bool {
+	text = strings.ToLower(text)
+	for _, term := range dependencyMaintenanceTerms {
+		if strings.Contains(text, term) {
+			return true
+		}
+	}
+	return false
 }
 
 // dirPrefix returns the most common directory prefix across the union of

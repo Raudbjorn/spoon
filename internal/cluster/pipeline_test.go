@@ -662,7 +662,7 @@ func TestRunPipeline_CacheBypassedByThreshold(t *testing.T) {
 	// eligible forks, and MinimumCandidates is the default 10.
 	fingerprint, err := Config{
 		EmbedderID:        embed.BuiltinModelName,
-		PreprocessID:      "v1",
+		PreprocessID:      "v2",
 		Weights:           [4]float32{0.3, 0.3, 0.2, 0.2},
 		WeakSignalsID:     "v1",
 		Epsilon:           0.6,
@@ -718,6 +718,75 @@ func TestRunPipeline_CacheBypassedByThreshold(t *testing.T) {
 	for _, fork := range forks {
 		if fork.Heat.ClusterID != "" || fork.Heat.NoveltyScore != 0 {
 			t.Errorf("cached assignment applied to %s: %+v", fork.T1.ID, fork.Heat)
+		}
+	}
+}
+
+func TestRunPipeline_StalePreprocessCacheMiss(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", tmp)
+	t.Setenv("HOME", tmp)
+
+	forks := []EnrichedFork{
+		makePipelineFork("o/a1", 3, []string{"Alpha/x.go"}, 10),
+		makePipelineFork("o/a2", 3, []string{"Alpha/y.go"}, 10),
+		makePipelineFork("o/a3", 3, []string{"Alpha/z.go"}, 10),
+	}
+	fingerprint, err := Config{
+		EmbedderID:        embed.BuiltinModelName,
+		PreprocessID:      "v1",
+		Weights:           [4]float32{0.3, 0.3, 0.2, 0.2},
+		WeakSignalsID:     "v1",
+		Epsilon:           0.6,
+		MinClusterSize:    3,
+		TopN:              len(forks),
+		MinimumCandidates: 1,
+	}.Fingerprint()
+	if err != nil {
+		t.Fatalf("Fingerprint: %v", err)
+	}
+	if err := SaveCache(ClusterCache{
+		SchemaVersion:     SchemaVersion,
+		ComputedAt:        time.Now().UTC(),
+		EmbedderModel:     embed.BuiltinModelName,
+		ConfigFingerprint: fingerprint,
+		Provider:          "github",
+		Owner:             "up",
+		Repo:              "stream",
+		Epsilon:           0.6,
+		MinClusterSize:    3,
+		TopM:              len(forks),
+		Clusters:          []Cluster{{ID: "stale", Members: []string{"o/a1", "o/a2", "o/a3"}, Label: "stale"}},
+		Assignments: []Assignment{
+			{ForkID: "o/a1", Cluster: "stale", Novelty: 0.1},
+			{ForkID: "o/a2", Cluster: "stale", Novelty: 0.1},
+			{ForkID: "o/a3", Cluster: "stale", Novelty: 0.1},
+		},
+	}); err != nil {
+		t.Fatalf("SaveCache: %v", err)
+	}
+
+	var log bytes.Buffer
+	skip, err := RunPipeline(context.Background(), PipelineOptions{
+		Enabled:           true,
+		MinimumCandidates: 1,
+		TopN:              len(forks),
+		Epsilon:           0.6,
+		MinClusterSize:    3,
+		Embedder:          pipelineStubEmbedder{},
+	}, PipelineInputs{
+		Provider:      "github",
+		UpstreamOwner: "up",
+		UpstreamRepo:  "stream",
+		Upstream:      parentDataFixture(),
+		Forks:         forks,
+	}, &log)
+	if err != nil || skip != nil {
+		t.Fatalf("RunPipeline() err=%v skip=%+v log=%s", err, skip, log.String())
+	}
+	for _, fork := range forks {
+		if fork.Heat.ClusterID == "stale" || fork.Heat.ClusterLabel == "stale" {
+			t.Fatalf("stale v1 cache assignment applied to %s: %+v", fork.T1.ID, fork.Heat)
 		}
 	}
 }

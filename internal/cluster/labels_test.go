@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -207,5 +208,57 @@ func TestHeuristicLabel_FewerThanThreeTokens(t *testing.T) {
 	got := HeuristicLabel(members, nil)
 	if got != "oauth" {
 		t.Fatalf("expected just %q, got %q", "oauth", got)
+	}
+}
+
+func TestHeuristicLabel_IgnoresDependencyMaintenanceOnlyEvidence(t *testing.T) {
+	members := []embed.ForkFeatures{
+		{Paths: "go.mod\ngo.sum", Commits: "Bump dependencies to the latest release"},
+		{Paths: "vendor/example/module.go", Commits: "renovate: update dependency"},
+	}
+	corpus := []embed.ForkFeatures{{Paths: "package-lock.json", Commits: "Dependabot: bump dependency"}}
+	originalMembers := append([]embed.ForkFeatures(nil), members...)
+	originalCorpus := append([]embed.ForkFeatures(nil), corpus...)
+
+	if got := HeuristicLabel(members, corpus); got != "" {
+		t.Fatalf("HeuristicLabel() = %q, want empty dependency-only label", got)
+	}
+	if !reflect.DeepEqual(members, originalMembers) {
+		t.Fatalf("HeuristicLabel mutated members: got %#v, want %#v", members, originalMembers)
+	}
+	if !reflect.DeepEqual(corpus, originalCorpus) {
+		t.Fatalf("HeuristicLabel mutated corpus: got %#v, want %#v", corpus, originalCorpus)
+	}
+}
+
+func TestHeuristicLabel_MixedChangesKeepNonDependencyEvidence(t *testing.T) {
+	members := []embed.ForkFeatures{
+		{
+			Paths:   "vendor/example/a.go\nvendor/example/b.go\ninternal/auth/oidc.go",
+			Commits: "Update dependencies with aardvark authorization",
+		},
+		{
+			Paths:   "vendor/example/c.go\nvendor/example/d.go\ninternal/auth/session.go",
+			Commits: "Bump dependencies for aardvark sessions",
+		},
+	}
+
+	got := HeuristicLabel(members, nil)
+	if !strings.HasPrefix(got, "internal/auth/") {
+		t.Fatalf("HeuristicLabel() = %q, want mixed-change non-dependency path label", got)
+	}
+	if !strings.Contains(got, "aardvark") {
+		t.Fatalf("HeuristicLabel() = %q, want mixed-change commit evidence", got)
+	}
+}
+
+func TestHeuristicLabel_OrdinaryEvidenceIsUnchanged(t *testing.T) {
+	members := []embed.ForkFeatures{
+		{Paths: "internal/auth/oidc.go", Commits: "Implement oidc provider"},
+		{Paths: "internal/auth/session.go", Commits: "Tighten oidc provider session"},
+	}
+
+	if got, want := HeuristicLabel(members, nil), "internal/auth/  ·  implement, oidc, provider"; got != want {
+		t.Fatalf("HeuristicLabel() = %q, want %q", got, want)
 	}
 }

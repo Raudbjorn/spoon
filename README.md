@@ -466,9 +466,10 @@ deterministic lexical embedder** over each fork's touched paths, commit
 messages, README, and diff shape (zero setup). The interactive `spoon` TUI
 always clusters with this lexical engine — semantic search and persistence live
 in the `spn` agent CLI. Clusters get deterministic heuristic labels (dominant
-directory prefix + the most discriminative commit/path tokens). Tune with
-`--cluster-epsilon` / `--cluster-min-size`, cap the embedded set with
-`--cluster-top`, or disable with `--no-cluster`.
+directory prefix + the most discriminative commit/path tokens). Labels ignore
+dependency-maintenance-only evidence; classification and raw fork features stay
+unchanged. Tune with `--cluster-epsilon` / `--cluster-min-size`, cap the embedded
+set with `--cluster-top`, or disable with `--no-cluster`.
 
 `--query` relevance is scored over each fork's change digest — by the built-in
 lexical scorer with no extra runtime, or by the Voyage cross-encoder when a key

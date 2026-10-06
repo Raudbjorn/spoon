@@ -236,7 +236,9 @@ cutoff. The default `--cluster-epsilon` is **0.35** when fastembed is active
 (dense-encoder cosines separate at a tighter scale) and **0.55** for the lexical
 fallback. Cluster labels are heuristic and deterministic: the dominant directory
 prefix (up to two levels) plus the top TF-IDF discriminators from member commit
-messages, with a path-segment fallback when commit text is unavailable.
+messages, with a path-segment fallback when commit text is unavailable. Labels
+ignore dependency-maintenance-only evidence; classification and raw fork features
+remain unchanged.
 
 ```sh
 spoon --cluster-epsilon 0.45 golang/go     # tighter clusters

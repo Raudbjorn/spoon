@@ -224,7 +224,8 @@ Nouns and verbs:
         lexical fallback otherwise), sorts by relevance, and adds
         queryScore/queryMethod to each record. With fastembed active each
         fork also gets a zero-shot 'category' facet. Cluster labels are
-        always heuristic and deterministic.
+        heuristic and deterministic, ignore dependency-maintenance-only
+        evidence, and never alter classification or raw fork features.
         VOYAGE_AI_API_KEY additionally indexes each document with
         voyage-code-3 alongside fastembed (both are kept, neither replaces
         the other) for 'spn search --voyage'. Voyage is billed per token, so
