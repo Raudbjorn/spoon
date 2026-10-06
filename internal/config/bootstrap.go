@@ -36,6 +36,11 @@ var (
 func Bootstrap(stderr io.Writer) BootstrapResult {
 	layer := LoadDefaultWithLayer()
 	if layer.State != LayerMissing {
+		if layer.State == LayerLoaded {
+			// Keyring-by-default: tokens written by an older spoon sit inline in
+			// the file; move them once. A no-op when none are inline.
+			MigrateInlineSecrets(layer.Path, layer.Config, stderr)
+		}
 		return BootstrapResult{Config: layer.Config, Layer: layer, Warning: layer.Reason}
 	}
 

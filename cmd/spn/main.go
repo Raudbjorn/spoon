@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/svnbjrn/spoon/internal/agentio"
+	"github.com/svnbjrn/spoon/internal/authops"
 	"github.com/svnbjrn/spoon/internal/config"
 )
 
@@ -37,7 +38,7 @@ func (d commandDeps) withDefaults() commandDeps {
 }
 
 // usageRemediation lists the valid nouns for the two top-level failure paths.
-const usageRemediation = "Run 'spn --help' for usage. Nouns: threads, pr, forks, search, repo."
+const usageRemediation = "Run 'spn --help' for usage. Nouns: threads, pr, forks, search, repo, auth."
 
 func main() { os.Exit(dispatch(os.Args[1:], os.Stdout, os.Stderr)) }
 
@@ -70,7 +71,7 @@ func dispatchWithDeps(args []string, stdout, stderr io.Writer, deps commandDeps)
 	case "-v", "--version":
 		_ = writeHuman(stdout, presentation, roleAccent, fmt.Sprintf("spn %s\n", version))
 		return 0
-	case "threads", "pr", "forks", "search", "repo":
+	case "threads", "pr", "forks", "search", "repo", "auth":
 		return dispatchConfigured(args, stdout, stderr, presentation, deps)
 	default:
 		return agentio.NewError(agentio.CodeBadInput, fmt.Sprintf("unknown subcommand %q", args[0]), usageRemediation).Emit(stderr)
@@ -119,6 +120,8 @@ func dispatchConfigured(args []string, stdout, stderr io.Writer, presentation pr
 		return runSearchWithEffectiveDeps(args[1:], stdout, stderr, effective, env, deps)
 	case "repo":
 		return runRepoWithEffective(args[1:], stdout, stderr, effective)
+	case "auth":
+		return authops.Run("spn", args[1:], stdout, stderr, boot, env)
 	}
 	panic("configured dispatch called with unrecognized noun")
 }
@@ -271,6 +274,23 @@ Nouns and verbs:
         --rerank-overfetch N widens the candidate pool (N x --top, default 5).
         A reranker outage degrades to cosine order with a warning; --voyage or
         --rerank without a key is an error, not a silent fallback.
+  auth storage status | test | migrate --to keyring|file [--dry-run]
+        GitHub tokens are stored in the OS keyring by default (the config file
+        keeps "keyring:<entry>" references); SPOON_SECRET_STORE=file keeps them
+        inline in the 0600 config file. With no usable keyring they stay inline
+        with a warning, and an existing inline token is moved on first run.
+        status reports where tokens live, test round-trips a probe entry,
+        migrate moves them either way (--dry-run changes nothing).
+  auth login [--scope S] [--listen ADDR] [--timeout DUR]
+        GitHub OAuth web flow. Needs SPOON_OAUTH_CLIENT_ID and
+        SPOON_OAUTH_CLIENT_SECRET in the environment. Starts a loopback
+        listener (default 127.0.0.1:8790, or SPOON_OAUTH_LISTEN) that the
+        registered redirect URI (default https://spoon.s8n.is/auth, or
+        SPOON_OAUTH_REDIRECT_URI) must reach through a TLS proxy; prints the
+        authorize URL as an info envelope on stderr, waits for the callback,
+        verifies the token against /user and appends it to github.tokens in
+        the config file. The token is never printed. --scope defaults to
+        public_repo.
   repo centrality <owner/repo> [--forge github] [--forge-host H]
   repo search "<github-query>" [--limit N] [--page N] [--sort S] [--forge github]
         One bounded GitHub repository search (one request; never pages on its

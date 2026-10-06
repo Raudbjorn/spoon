@@ -49,6 +49,24 @@ Windows). `CGO_ENABLED=1` is the Go default; do not unset it.
 
 Unauthenticated requests work but hit much lower rate limits.
 
+**GitHub OAuth (`spn auth login` or `spoon auth login`)**: authorizes spoon through a GitHub OAuth app
+and appends the resulting token to `github.tokens`. Export
+`SPOON_OAUTH_CLIENT_ID` and `SPOON_OAUTH_CLIENT_SECRET` (environment only), run
+`spn auth login` (or `spoon auth login`), and open the URL it prints on stderr. The command listens on
+`127.0.0.1:8790` for the duration of the login; the app's registered redirect
+URI (`https://spoon.s8n.is/auth` by default, `SPOON_OAUTH_REDIRECT_URI` to
+change) must reach that port through a TLS proxy. `deploy/nginx-spoon.conf` is
+the loopback-only vhost used on the author's host, with a matching
+`spoon IN A 127.0.0.1` record in the `s8n.is` zone. The token is verified
+against `/user` before it is stored and is never printed. Tokens (from `auth login`,
+`spoon setup` or Settings) are stored in the OS keyring by default (Keychain,
+Secret Service/KWallet, Windows Credential Manager); the config file then holds
+only `keyring:<entry>` references. `SPOON_SECRET_STORE=file` keeps them inline in
+the 0600 config instead, as does a machine with no usable keyring (spoon warns).
+Tokens already inline are moved on the next run. `spn auth storage
+status|test|migrate` inspects and moves them. `--scope` defaults to
+`public_repo`.
+
 ### Acquisition contract
 
 GitHub REST calls pin `X-GitHub-Api-Version: 2022-11-28`. Fork lists are **direct children** by default; `--network-scope=all` is an opt-in bounded walk of the wider network. Cached fork lists are scoped to API version and credential identity so a broader login cannot be replayed as a narrower one. Private `/network/meta` and related undocumented routes are not used — see [docs/research/2026-08-19-spoon-endpoint-networking.md](docs/research/2026-08-19-spoon-endpoint-networking.md).

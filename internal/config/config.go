@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/svnbjrn/spoon/internal/secrets"
 	"math"
 	"net/url"
 	"os"
@@ -35,11 +36,25 @@ type Config struct {
 	GitHub   GitHubConfig   `json:"github,omitempty"`
 	Embedder EmbedderConfig `json:"embedder,omitempty"`
 	UI       UIConfig       `json:"ui,omitempty"`
+	Secrets  SecretsConfig  `json:"secrets,omitempty"`
 
 	// present/raw are load/save metadata, deliberately outside the persisted
 	// schema. Together they distinguish explicit false/zero from absent values.
 	present map[string]bool
 	raw     map[string]json.RawMessage
+
+	// secretRefs maps each GitHub token loaded from (or saved to) the OS keyring
+	// to its entry name; see secrets.go. Also outside the persisted schema.
+	secretRefs map[string]string
+}
+
+// SecretsConfig records where GitHub tokens are stored. Store is "" or
+// "keyring" (the default: OS keyring, with an inline fallback when none is
+// usable) or "file" (always inline in this 0600 file). "file" is sticky so that
+// leaving the keyring is not undone by the next startup migration;
+// SPOON_SECRET_STORE overrides it for one process.
+type SecretsConfig struct {
+	Store string `json:"store,omitempty"`
 }
 
 // UIConfig stores terminal appearance preferences. Environment variables remain
@@ -172,6 +187,9 @@ func Load(path string) (*Config, error) {
 	}
 	c.present, c.raw = leafMetadata(data)
 	c.normalizeLegacy()
+	if err := c.resolveSecrets(); err != nil {
+		return nil, fmt.Errorf("config %s: %w", path, err)
+	}
 	if err := c.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config %s: %w", path, err)
 	}
@@ -194,7 +212,9 @@ var (
 	osRemove           = os.Remove
 )
 
-func Save(path string, c *Config) error {
+func Save(path string, c *Config) error { return save(path, c, false) }
+
+func save(path string, c *Config, forceInline bool) error {
 	if err := c.Validate(); err != nil {
 		return err
 	}
@@ -209,7 +229,12 @@ func Save(path string, c *Config) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
 	}
-	data, err := json.MarshalIndent(c, "", "  ")
+	// Keyring first, file second, prune last: a failure at any step leaves every
+	// token reachable from either the old or the new file.
+	persistTokens, newRefs, stale := c.externalizeSecrets(forceInline)
+	toWrite := *c
+	toWrite.GitHub.Tokens = persistTokens
+	data, err := json.MarshalIndent(toWrite, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -233,6 +258,8 @@ func Save(path string, c *Config) error {
 		return fmt.Errorf("rename %s -> %s: %w", tmp, path, err)
 	}
 	c.present, c.raw = leafMetadata(data)
+	c.secretRefs = newRefs
+	pruneSecrets(stale)
 	return nil
 }
 
@@ -545,6 +572,9 @@ var (
 
 // Validate checks enum fields. Empty values are allowed (mean "unset").
 func (c *Config) Validate() error {
+	if s := strings.ToLower(c.Secrets.Store); s != "" && s != secrets.BackendKeyring && s != secrets.BackendFile {
+		return fmt.Errorf("secrets.store %q must be 'keyring' or 'file' (or empty)", c.Secrets.Store)
+	}
 	if !validProviders[strings.ToLower(c.Forge.Provider)] {
 		return fmt.Errorf("forge.provider %q must be 'github' or 'gitlab'", c.Forge.Provider)
 	}

@@ -89,6 +89,7 @@ layer for users who have no personal config.
 | SPOON_VOYAGE_API_KEY_FILE | Override embedder.voyage.apiKeyFile (path to a 0600 key file) |
 | SPOON_VOYAGE_AUTO_INDEX=1 | Embed every listed fork through Voyage automatically (billed) |
 | SPOON_NO_VOYAGE=1 | Skip Voyage even when a key is set; fastembed still runs |
+| SPOON_SECRET_STORE | "keyring" (default) keeps GitHub tokens in the OS keyring, with "keyring:<entry>" references in this file; "file" keeps them inline in this 0600 file. Falls back to inline, with a warning, when no keyring is usable |
 | SPOON_VOYAGE_NO_CACHE=1 | Bypass the cached Voyage responses (re-pays for them) |
 | SPOON_VOYAGE_DIM | Override embedder.voyage.outputDimension |
 | SPOON_VOYAGE_EMBED_MODEL | Override embedder.voyage.embedModel |
