@@ -117,13 +117,27 @@ Also: that export lists 455 forks against 472 expected, with
 Pipeline, cheapest tier first (matches the existing tiered API pipeline):
 
 1. Candidate source: GH Archive hourly files (`data.gharchive.org/YYYY-MM-DD-H.json.gz`,
-   hour not zero-padded, about 16 MB each) filtered to PushEvents with a
-   non-zero `before`, scoped to a repository or fork network of interest.
+   hour not zero-padded, about 16 MB each) filtered to PushEvents whose `before`
+   **and** `head` are both non-zero, scoped to a repository or fork network of
+   interest. The `head` half is not optional: branch and tag deletions arrive as
+   push events with a real `before` and a null SHA for `head`, so a non-zero-`before`
+   filter alone admits every ref deletion in the archive. Its `before` commit
+   survives the step-2 existence check, and the pipeline then spends a REST
+   `before...null` compare on it before failing.
 2. Existence: GraphQL batches of about 20 `object(oid: before)`.
 3. Rewrite check: REST `compare before...head` on survivors; keep `diverged`,
    `behind`, no-common-ancestor.
 4. Content: fetch the diff blobs via the existing contents / `unidiff` path
    and run `internal/secretscan` over added lines only.
+   For a rewrite, that head-side diff is the wrong side to read. The compare
+   path is merge-base relative (`compare/{before}...{head}`), so when a force push
+   removes a commit — `before=B` where `B` descends from `head=A` — the result is
+   `behind` with no head-side additions, and a divergent rewrite yields the
+   replacement commits rather than the discarded ones. The content stage must
+   therefore walk the commits reachable from `before` but not from `head` and
+   scan the additions those discarded commits introduced. That side is the whole
+   point of the feature: it is where a secret-bearing commit lives after it has
+   been rewritten away.
 5. Output: NDJSON via `agentio`; optional SARIF.
 
 `internal/secretscan`: signature struct `{Name, Part, Match|Regex, Keywords,
