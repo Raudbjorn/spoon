@@ -12,7 +12,7 @@
 - Read the export with `jq`; never trusted the heuristic `why_distinct` strings for novelty — every recommendation below is grounded in `gh api repos/.../compare/main...<fork>:main` against the current upstream `main` HEAD at 2026-08-21.
 - Tier-3 heat score was used as a *ranking* signal only. Live `compare` numbers were used as the *truth* signal — many top-of-export forks turn out to be far behind upstream (`ahead: 0, behind: 1500+`) once you re-verify.
 - Auto-fork farms were detected by signature-clustering `(ahead, files_changed, additions, deletions)` for tier-3 forks: no shared signatures (each fork has a unique divergence fingerprint). The dominant pattern in this export is **not** a fork farm — it is one-off per-developer forks with no automated duplication. The auto-farm trap that hit the warpdotdev/warp network is largely absent here.
-- 507 forks are unenriched (no `divergence`). These are typically brand-new forks created minutes before the export ran; they show up in `recently pushed` but have nothing to compare. Treat as noise.
+- 507 forks are unenriched (no `divergence`). **`enriched: false` means the compare was skipped at the rate-limit reserve, not that the fork is inert** — `internal/tui/export.go` documents it as such, and the export's own top-level `degraded: true` says the same. Refuted on this repo's own export file: of its unenriched forks the oldest was created 2026-07-03, nearly two months before the run, so the brand-new-fork story is wrong. They stay **unclassified**, not noise: an unexamined fork is not evidence of no work. Re-run after the rate window resets (cached compares resume) to complete the network.
 
 ---
 
@@ -89,7 +89,7 @@ Surface-level fork. Recent commits are:
 - `refactor(integrations): remove API credential settings` (warning sign: a refactor that strips API credential plumbing is the kind of change that breaks sign-in flows upstream wouldn't accept)
 - `build(electron): bundle sandboxed preloads`
 
-**What it means for SAUR packaging:** none directly. **Skip.** The "remove API credential settings" commit is the opposite of what a packaging user wants; this fork trades security for surface breadth.
+**What it means for SAUR packaging:** none directly. **Skip for now** — the "remove API credential settings" commit is the opposite of what a packaging user wants and is worth an explicit look before any integration. But this report performed no byte-level diff, build or runtime verification (see methodology), and that commit subject alone cannot establish a security regression: it may remove obsolete credential storage rather than weaken it. Treat the security verdict as an unverified hypothesis, not a finding.
 
 ### 4. `andrewyatesai/orca-alab` — *Rust-terminal-engine wrapper*
 
@@ -223,7 +223,7 @@ The export's `why_distinct` strings often say "Single contributor · Feature Bui
 ## What I did not verify
 
 - I did not open 5-10 commits from every fork. For the 8 deep-dives above, I checked the README and the last 15–25 commits. The remaining 125 tier-3 forks have only been screened by signature and live divergence.
-- The export is `degraded: true` with 507 forks unenriched. Most of those are brand-new forks (e.g. `CreatorComputeCompany/orca` pushed 2026-08-21 10:12 UTC) — they don't yet have enough history to compute divergence. They're real forks but contribute nothing to a packaging recommendation.
+- The export is `degraded: true` with 507 forks unenriched, so this report's recommendations cover an incomplete network. Those forks were skipped at the rate-limit reserve (`enriched: false`), not judged inert; the same field in this repo's later export file includes forks created a month earlier, so 'brand-new' does not describe them. Nothing here should be read as evidence about the unenriched remainder.
 - I did not attempt to actually build any fork or diff their `package.json` against upstream — the comparison here is `compare` API + commit messages + README intent, not byte-level.
 
 ---

@@ -49,7 +49,7 @@ Shrinkage of μ is half the correction — widening σ alone is not enough [@lai
 | # | Change | Source | Size |
 |---|---|---|---|
 | A (P0) | Emit `PScore = (n − E_rank)/(n − 1)` and shortlist pairwise win probabilities | @rucker2015; multinma ranks.R | 1 line + schema |
-| B (P0) | `P(rank ≤ k)`, `P(rank = 1)`, 95% rank interval via exact Poisson-binomial DP | @lin2006; @trinquart2016; gemtc rank.c | small |
+| B (P0) | `P(rank ≤ k)`, `P(rank = 1)`, 95% rank interval via the **conditional-on-`U_i`** DP plus integration over `U_i` (see 4.2) — *not* a marginal Poisson-binomial DP, which is wrong: for three equal independent utilities the true `P(rank_i=1)` is 1/3 and the marginal DP returns 1/4 | @lin2006; @trinquart2016; gemtc rank.c | small |
 | C (P1) | Select shortlist by P(rank ≤ k); order within by E_rank | @lin2006 Thm 1/3 | small; output order changes near cut — document |
 | D (P1) | Empirical-Bayes normal–normal: τ̂ (DL), shrunken μ, posterior σ; print τ̂ regime; fallback to tier σ when k < 3 or τ̂ = 0; MAD scale + `--prior-scale` | @rover2021; TSD2; @laird1989; @vanvalkenhoef2012 | medium; must be scored against `internal/eval` judgments (nDCG/AUC) |
 | E (P2) | POTH, cPOTH_k, POTH residuals → deeper-fetch trigger | @wigle2025 | small |

@@ -2,7 +2,7 @@
 
 **Status**: Complete — **No Integration for Fork Similarity/Clustering**
 
-**Research Artifact**: `GleanIntegrationResearch` agent yield, 2026-08-25
+**Research Artifact**: `GleanIntegrationResearch` agent yield, 2026-08-25. **Not committed** — neither that yield nor the supplied Glean fork export exists in this repository, so the quantitative claims below (93 forks, 31 ahead, no actionable changes) cannot be re-verified from a fresh checkout. Treat them as agent-yield assertions until the artifact or export is committed.
 
 ## Executive Summary
 

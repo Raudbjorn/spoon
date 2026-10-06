@@ -132,9 +132,9 @@
 
 **Failure modes** (for recommended commitment B — keep current pipeline):
 
-1. **Slow path**: FastEmbed unavailable (ONNX missing) -> lexical fallback activates -> clustering still works but semantic search degrades to substring filter. Detection: embed_unavailable warning in stderr; spn search emits semantic_index_empty [S1]
+1. **Slow path**: FastEmbed unavailable (ONNX missing) -> the lexical fallback activates for *clustering* and `forks list --query`, which keep working. Semantic **search** does not degrade: `spn search` constructs the FastEmbed query model and returns `embedder_unavailable` (exit 2) if it cannot load or embed — there is no substring path in `cmd/spn/search.go`. Detection: embed_unavailable warning in stderr from forks list; `spn search` exits 2 with embedder_unavailable [S1]
 2. **Wrong path**: User expects regex search over fork code -> spoon only does semantic/lexical over metadata. Detection: Feature request for "code search in forks"; current --query doesn't match regex patterns
-3. **Unsafe path**: Voyage key rotates -> cached embeddings stale but hash matches -> silent wrong results. Detection: VoyageCacheTTL (30 days) bounds staleness; VoyageCacheWritable probes on write [S3]
+3. **Unsafe path**: the Voyage *model* is revised under an unchanged name -> stored vectors keep matching on (model, content_hash) -> silent wrong results, indefinitely. Key rotation is not this failure mode: a new key does not change the model, prompt scheme or dimension, so existing vectors stay valid. The 30-day VoyageCacheTTL bounds the cached *responses*, not the semantic index — `Store.PendingDocuments` selects on model and content hash only, so a same-named model update never marks anything pending. Detection: none today; the fix is a model-revision component in the embeddings key (e.g. an embedding revision date), which would make PendingDocuments re-embed on upgrade [S3]
 4. **Scale path**: Fork count >10k -> cosine ranking over all vectors slows. Detection: SearchRows returns all rows; rankSearchRows is O(n). Fix: ANN index (hnswlib) or top-k pre-filter — not Hound.
 
 **Adjacent / cross-domain leads**:
