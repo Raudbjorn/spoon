@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/svnbjrn/spoon/internal/authops"
 	"github.com/svnbjrn/spoon/internal/config"
 	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/forge"
@@ -42,6 +43,11 @@ func main() {
 		os.Exit(runThreadsWithEffective(os.Args[2:], effective))
 	}
 
+	// Subcommand dispatch: "spoon auth login ..." (GitHub OAuth web flow)
+	if len(os.Args) >= 2 && os.Args[1] == "auth" {
+		os.Exit(authops.Run("spoon", os.Args[2:], os.Stdout, os.Stderr, boot, config.EnvironmentSnapshot()))
+	}
+
 	// Subcommand dispatch: "spoon setup ..."
 	if len(os.Args) >= 2 && os.Args[1] == "setup" {
 		os.Exit(runSetup(os.Args[2:]))
@@ -60,6 +66,7 @@ func main() {
 	maxTier := 3
 	clusterTop := 50
 	clusterEpsilon := 0.0 // 0.55 (lexical) unless set explicitly
+	clusterEpsilonSet := false
 	clusterMinSize := 3
 
 	// MDG centrality backend. Off by default; --full-mdg opts in. --no-mdg
@@ -151,6 +158,7 @@ func main() {
 				os.Exit(1)
 			}
 			clusterEpsilon = f
+			clusterEpsilonSet = true
 		case "--cluster-min-size":
 			if i+1 >= len(args) {
 				fmt.Fprintln(os.Stderr, "Error: --cluster-min-size requires a value")
@@ -207,7 +215,7 @@ func main() {
 	// The interactive TUI clusters with the built-in lexical embedder
 	// (zero-setup, portable, no native runtime). Semantic search and
 	// persistence — the fastembed paths — live in the `spn` agent CLI.
-	if clusterEpsilon == 0 {
+	if !clusterEpsilonSet {
 		clusterEpsilon = 0.55
 	}
 
@@ -442,6 +450,7 @@ Keybindings (TUI mode):
 
 Subcommands:
   spoon setup              Check credentials + the FastEmbed embedder
+  spoon auth login         Authorize spoon with GitHub via OAuth (see README)
   spoon threads <pr-ref>   Operate on PR review threads (see 'spoon threads --help')
 
 Concepts:
