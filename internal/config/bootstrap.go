@@ -101,14 +101,11 @@ func detectHost() []string {
 			lines = append(lines, "- "+no)
 		}
 	}
-	_, ghErr := exec.LookPath("gh")
-	report(ghErr == nil, "gh CLI found (GitHub auth via gh auth login)",
-		"gh CLI not found — install https://cli.github.com or export GH_TOKEN for authenticated GitHub access")
 	_, glabErr := exec.LookPath("glab")
 	report(glabErr == nil, "glab CLI found (GitLab auth via glab auth login)",
 		"glab CLI not found — export GITLAB_TOKEN for authenticated GitLab access")
 	report(os.Getenv("GH_TOKEN") != "" || os.Getenv("GITHUB_TOKEN") != "", "GitHub token present in environment",
-		"no GH_TOKEN/GITHUB_TOKEN in environment")
+		"no GH_TOKEN/GITHUB_TOKEN in environment — use `spoon auth login` (requires SPOON_OAUTH_CLIENT_ID and SPOON_OAUTH_CLIENT_SECRET) or export GH_TOKEN")
 	report(os.Getenv("GITLAB_TOKEN") != "", "GitLab token present in environment",
 		"no GITLAB_TOKEN in environment")
 	lines = append(lines, "run `spoon setup` anytime to re-check credentials and the embedder")

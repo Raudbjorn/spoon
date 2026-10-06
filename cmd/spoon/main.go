@@ -241,7 +241,7 @@ func main() {
 	if err != nil && errors.Is(err, store.ErrSchemaNewerThanSupported) && store.SupportsDowngrade() {
 		if path, perr := store.DefaultPath(); perr == nil {
 			fmt.Fprintf(os.Stderr, "spoon store at %s is one schema step ahead of this binary; downgrading in place (newer columns preserved in repos_v4backup)...\n", path)
-		if raw, oerr := store.OpenForDowngrade(path); oerr == nil {
+			if raw, oerr := store.OpenForDowngrade(path); oerr == nil {
 				if derr := raw.Downgrade(context.Background()); derr == nil {
 					raw.Close()
 					db, err = store.OpenDefault()
@@ -412,8 +412,8 @@ Flags:
                            using personalized PageRank centrality. Phase A
                            supports Go repositories; other languages silently
                            fall back to the directory-centrality proxy. Requires
-                           'git' (and 'gh' for GitHub) on PATH. Adds 10-60 s and
-                           up to ~1 GB peak disk on first run; cached for 24 h
+                           'git' on PATH. Adds 10-60 s and up to ~1 GB peak disk
+                           on first run; cached for 24 h
                            under ~/.cache/spoon/mdg/. Default: off.
   --no-mdg                 Force the directory-centrality proxy even if an
                            earlier flag enabled --full-mdg.
@@ -450,7 +450,9 @@ Keybindings (TUI mode):
 
 Subcommands:
   spoon setup              Check credentials + the FastEmbed embedder
-  spoon auth login         Authorize spoon with GitHub via OAuth (see README)
+  spoon auth login         Authorize spoon with GitHub via OAuth (see README).
+                           Requires SPOON_OAUTH_CLIENT_ID and
+                           SPOON_OAUTH_CLIENT_SECRET in the environment.
   spoon threads <pr-ref>   Operate on PR review threads (see 'spoon threads --help')
 
 Concepts:
@@ -458,8 +460,8 @@ Concepts:
                      It is auto-detected from the repo URL (e.g. a gitlab.com
                      link forces GitLab); override detection with --forge and
                      point at a self-hosted GitLab/GHES instance with
-                     --forge-host. Auth is per-provider: the gh CLI / a GitHub
-                     token, or the glab CLI / GITLAB_TOKEN.
+                     --forge-host. Auth is per-provider: spoon auth login / a
+                     GitHub token, or the glab CLI / GITLAB_TOKEN.
 
   Clustering         spoon turns each fork into a vector and groups similar
                      forks using an in-process deterministic lexical embedder
@@ -467,6 +469,6 @@ Concepts:
                      services. Tune with --cluster-epsilon / --cluster-min-size;
                      disable with --no-cluster.
 
-Tip: Run 'gh auth login' (GitHub) or set GITLAB_TOKEN (GitLab) for higher rate limits.
+Tip: Run 'spoon auth login' (GitHub) or set GITLAB_TOKEN (GitLab) for higher rate limits.
 `)
 }

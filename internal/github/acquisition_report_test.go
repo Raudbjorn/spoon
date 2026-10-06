@@ -375,12 +375,27 @@ func TestAuthScopeIDSafeWithTokens(t *testing.T) {
 // forks tie at 0 stars, so cursor pages overlap and skip); CREATED_AT returned
 // all 19,981 exactly once (live, 2026-09-26).
 func TestForksGraphQLQuery_PagesByCreationTime(t *testing.T) {
-	if !strings.Contains(forksGraphQLQuery, "orderBy: {field: CREATED_AT, direction: ASC}") {
-		t.Fatalf("forks query must page by CREATED_AT ASC; got:\n%s", forksGraphQLQuery)
+	// githubv4 generates the document from tags; inspect the actual request.
+	var query string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct{ Query string }
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Error(err)
+		}
+		query = req.Query
+		_, _ = io.WriteString(w, `{"data":{"repository":{"forks":{"nodes":[]}}}}`)
+	}))
+	defer srv.Close()
+	if _, _, _, err := newTestClientGQL(t, srv).FetchForksGraphQL(context.Background(), "o", "r", nil); err != nil {
+		t.Fatal(err)
 	}
-	if strings.Contains(forksGraphQLQuery, "field: STARGAZERS") {
+	if !strings.Contains(query, "orderBy: {field: CREATED_AT, direction: ASC}") {
+		t.Fatalf("forks query must page by CREATED_AT ASC; got:\n%s", query)
+	}
+	if strings.Contains(query, "field: STARGAZERS") {
 		t.Fatal("forks query pages by STARGAZERS, a heavily tied key")
 	}
+
 }
 
 // REST fallback: pages requested oldest-first, repeats across pages dropped

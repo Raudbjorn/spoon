@@ -18,6 +18,7 @@ import (
 )
 
 func TestProviderStatusLines(t *testing.T) {
+	// GitHub reports saved and environment credentials as AuthToken; login no longer depends on gh.
 	tests := []struct {
 		name       string
 		provider   forge.Provider
@@ -26,12 +27,12 @@ func TestProviderStatusLines(t *testing.T) {
 		wantOK     bool
 		wantSubstr string
 	}{
-		{"github authed", forge.ProviderGitHub, forge.AuthInfo{Tier: forge.AuthCLI, RateLimit: 5000, RateUnit: "hour"}, nil, true, "gh CLI"},
+		{"github authed", forge.ProviderGitHub, forge.AuthInfo{Tier: forge.AuthToken, RateLimit: 5000, RateUnit: "hour"}, nil, true, "saved or environment token"},
 		{"github configured unverified", forge.ProviderGitHub, forge.AuthInfo{Configured: true, RateLimit: 60, RateUnit: "hour"}, nil, true, "configured but unverified"},
-		{"github unauthed", forge.ProviderGitHub, forge.AuthInfo{Tier: forge.AuthNone, RateLimit: 60, RateUnit: "hour"}, nil, false, "gh auth login"},
+		{"github unauthed", forge.ProviderGitHub, forge.AuthInfo{Tier: forge.AuthNone, RateLimit: 60, RateUnit: "hour"}, nil, false, "spoon auth login"},
 		{"gitlab token", forge.ProviderGitLab, forge.AuthInfo{Tier: forge.AuthToken, Username: "alice", RateLimit: 2000, RateUnit: "minute"}, nil, true, "GITLAB_TOKEN"},
 		{"gitlab unauthed", forge.ProviderGitLab, forge.AuthInfo{Tier: forge.AuthNone, RateLimit: 500, RateUnit: "minute"}, nil, false, "glab auth login"},
-		{"error path", forge.ProviderGitHub, forge.AuthInfo{}, errors.New("boom"), false, "gh auth login"},
+		{"error path", forge.ProviderGitHub, forge.AuthInfo{}, errors.New("boom"), false, "spoon auth login"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -59,7 +60,7 @@ func stubProvider(t *testing.T, auth forge.AuthInfo, err error) {
 }
 
 func TestRunSetup_allGreenExitsZero(t *testing.T) {
-	stubProvider(t, forge.AuthInfo{Tier: forge.AuthCLI, RateLimit: 5000, RateUnit: "hour"}, nil)
+	stubProvider(t, forge.AuthInfo{Tier: forge.AuthToken, RateLimit: 5000, RateUnit: "hour"}, nil)
 
 	var stdout, stderr bytes.Buffer
 	exit := runSetupWith(context.Background(), []string{"--no-color"}, strings.NewReader(""), false, &stdout, &stderr)
@@ -81,7 +82,8 @@ func TestRunSetup_unauthedExitsOne(t *testing.T) {
 	if exit != 1 {
 		t.Fatalf("exit=%d want 1\n%s", exit, stdout.String())
 	}
-	if !strings.Contains(stdout.String(), "gh auth login") {
+	// Missing credentials now point to spoon's OAuth flow, not an external CLI.
+	if !strings.Contains(stdout.String(), "spoon auth login") {
 		t.Errorf("missing fix guidance:\n%s", stdout.String())
 	}
 }
@@ -95,7 +97,7 @@ func TestRunSetup_badFlag(t *testing.T) {
 }
 
 func TestRunSetup_writesConfig(t *testing.T) {
-	stubProvider(t, forge.AuthInfo{Tier: forge.AuthCLI, RateLimit: 5000, RateUnit: "hour"}, nil)
+	stubProvider(t, forge.AuthInfo{Tier: forge.AuthToken, RateLimit: 5000, RateUnit: "hour"}, nil)
 
 	var stdout, stderr bytes.Buffer
 	exit := runSetupWith(context.Background(), []string{"--no-color"}, strings.NewReader(""), false, &stdout, &stderr)
@@ -116,7 +118,7 @@ func TestRunSetup_writesConfig(t *testing.T) {
 }
 
 func TestRunSetup_noConfigSkipsWrite(t *testing.T) {
-	stubProvider(t, forge.AuthInfo{Tier: forge.AuthCLI, RateLimit: 5000, RateUnit: "hour"}, nil)
+	stubProvider(t, forge.AuthInfo{Tier: forge.AuthToken, RateLimit: 5000, RateUnit: "hour"}, nil)
 
 	var stdout, stderr bytes.Buffer
 	runSetupWith(context.Background(), []string{"--no-color", "--no-config"}, strings.NewReader(""), false, &stdout, &stderr)
@@ -127,7 +129,7 @@ func TestRunSetup_noConfigSkipsWrite(t *testing.T) {
 }
 
 func TestRunSetup_storeSectionReported(t *testing.T) {
-	stubProvider(t, forge.AuthInfo{Tier: forge.AuthCLI, RateLimit: 5000, RateUnit: "hour"}, nil)
+	stubProvider(t, forge.AuthInfo{Tier: forge.AuthToken, RateLimit: 5000, RateUnit: "hour"}, nil)
 
 	var stdout, stderr bytes.Buffer
 	exit := runSetupWith(context.Background(), []string{"--no-color"}, strings.NewReader(""), false, &stdout, &stderr)
@@ -140,7 +142,7 @@ func TestRunSetup_storeSectionReported(t *testing.T) {
 }
 
 func TestRunSetup_unusableStoreExitsOne(t *testing.T) {
-	stubProvider(t, forge.AuthInfo{Tier: forge.AuthCLI, RateLimit: 5000, RateUnit: "hour"}, nil)
+	stubProvider(t, forge.AuthInfo{Tier: forge.AuthToken, RateLimit: 5000, RateUnit: "hour"}, nil)
 	prev := setupStoreFn
 	t.Cleanup(func() { setupStoreFn = prev })
 	setupStoreFn = func() (*store.Store, error) { return nil, errors.New("disk full") }
@@ -156,7 +158,7 @@ func TestRunSetup_unusableStoreExitsOne(t *testing.T) {
 }
 
 func TestRunSetup_refreshesReadme(t *testing.T) {
-	stubProvider(t, forge.AuthInfo{Tier: forge.AuthCLI, RateLimit: 5000, RateUnit: "hour"}, nil)
+	stubProvider(t, forge.AuthInfo{Tier: forge.AuthToken, RateLimit: 5000, RateUnit: "hour"}, nil)
 
 	var stdout, stderr bytes.Buffer
 	if exit := runSetupWith(context.Background(), []string{"--no-color"}, strings.NewReader(""), false, &stdout, &stderr); exit != 0 {

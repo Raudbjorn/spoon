@@ -38,7 +38,8 @@ func TestEnsureDefault_firstRunWritesConfigAndReadme(t *testing.T) {
 	if rerr != nil {
 		t.Fatalf("README not written: %v", rerr)
 	}
-	for _, want := range []string{"SPOON_NO_CONFIG", "TURSO_DATABASE_URL", "embedder.backend", "spoon setup"} {
+	// Generated instructions must describe native OAuth and its required credentials.
+	for _, want := range []string{"SPOON_NO_CONFIG", "TURSO_DATABASE_URL", "embedder.backend", "spoon setup", "spoon auth login", "SPOON_OAUTH_CLIENT_ID", "SPOON_OAUTH_CLIENT_SECRET"} {
 		if !strings.Contains(string(readme), want) {
 			t.Errorf("README missing %q", want)
 		}
@@ -145,5 +146,18 @@ func TestLoad_legacyOpenVINOBackendNormalizes(t *testing.T) {
 	}
 	if cfg.Embedder.Model != "fast-bge-small-en-v1.5" {
 		t.Errorf("non-backend embedder fields must survive normalization, got %q", cfg.Embedder.Model)
+	}
+}
+
+func TestDetectHostUsesNativeGitHubAuthGuidance(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("GITHUB_TOKEN", "")
+	guidance := strings.Join(detectHost(), "\n")
+	if !strings.Contains(guidance, "spoon auth login") || !strings.Contains(guidance, "SPOON_OAUTH_CLIENT_ID") || !strings.Contains(guidance, "SPOON_OAUTH_CLIENT_SECRET") {
+		t.Errorf("missing native OAuth guidance: %s", guidance)
+	}
+	if strings.Contains(guidance, "gh CLI") || strings.Contains(guidance, "gh auth") || strings.Contains(guidance, "cli.github.com") {
+		t.Errorf("first run still requires gh: %s", guidance)
 	}
 }

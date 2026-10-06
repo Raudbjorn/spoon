@@ -62,13 +62,13 @@ func (e *RateLimitError) RetryAfterSeconds() int {
 }
 
 // detectRateLimitFromHTTPError returns a *RateLimitError if the error is a
-// go-github *ErrorResponse (REST) or go-gh *HTTPError (GraphQL) signalling a rate-limit condition; nil otherwise.
+// go-github *ErrorResponse (REST or GraphQL transport) signalling a rate-limit condition; nil otherwise.
 //
 // Detection rules:
 //   - HTTP 429 (Too Many Requests): parse Retry-After header
 //   - HTTP 403 with X-RateLimit-Remaining: 0: parse X-RateLimit-Reset header
 //
-// GraphQL-level errors (ghAPI.GraphQLError) carry no response headers, so for
+// GraphQL-level errors (gqlResponseError) carry no response headers, so for
 // GraphQL only a non-2xx HTTP failure can be classified.
 func detectRateLimitFromHTTPError(err error) *RateLimitError {
 	if err == nil {

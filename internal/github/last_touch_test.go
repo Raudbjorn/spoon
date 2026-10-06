@@ -23,7 +23,8 @@ func pathLastTouchStub(t *testing.T, phaseA, phaseB string) (*httptest.Server, f
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var req struct {
-			Query string `json:"query"`
+			Query     string            `json:"query"`
+			Variables map[string]string `json:"variables"`
 		}
 		_ = json.Unmarshal(body, &req)
 
@@ -32,9 +33,16 @@ func pathLastTouchStub(t *testing.T, phaseA, phaseB string) (*httptest.Server, f
 		mu.Unlock()
 
 		w.Header().Set("Content-Type", "application/json")
+		// Paths and SHAs must travel as variables so query shapes remain reusable.
 		if strings.Contains(req.Query, "history(") {
+			if req.Variables["path0"] == "" || !strings.Contains(req.Query, "path: $path0") {
+				t.Errorf("history query missing its path variable: %+v", req)
+			}
 			_, _ = w.Write([]byte(phaseA))
 			return
+		}
+		if req.Variables["sha0"] == "" || !strings.Contains(req.Query, "headRef: $sha0") {
+			t.Errorf("compare query missing its SHA variable: %+v", req)
 		}
 		_, _ = w.Write([]byte(phaseB))
 	}))

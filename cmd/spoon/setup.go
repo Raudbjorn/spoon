@@ -272,14 +272,12 @@ func providerStatusLines(provider forge.Provider, auth forge.AuthInfo, err error
 // authSource renders " via <source>" for an authenticated tier, or "".
 func authSource(provider forge.Provider, tier forge.AuthTier) string {
 	switch {
-	case provider == forge.ProviderGitHub && tier == forge.AuthCLI:
-		return " via the gh CLI"
 	case provider == forge.ProviderGitLab && tier == forge.AuthCLI:
 		return " via the glab CLI"
 	case provider == forge.ProviderGitLab && tier == forge.AuthToken:
 		return " via GITLAB_TOKEN"
 	case tier == forge.AuthToken:
-		return " via an environment token"
+		return " via a saved or environment token"
 	default:
 		return ""
 	}
@@ -295,7 +293,7 @@ func providerFixLines(provider forge.Provider) []string {
 	}
 	return []string{
 		"Fix — authenticate for higher rate limits (60 → 5000 req/hour):",
-		"  • gh auth login            (install: https://cli.github.com)",
+		"  • spoon auth login (requires SPOON_OAUTH_CLIENT_ID and SPOON_OAUTH_CLIENT_SECRET)",
 		"  • or export GH_TOKEN=...  /  GITHUB_TOKEN=...",
 	}
 }

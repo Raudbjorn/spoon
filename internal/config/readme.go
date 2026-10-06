@@ -33,10 +33,12 @@ layer for users who have no personal config.
 - ` + "`forge.provider`" + ` — "github" or "gitlab". Empty = auto-detect from the
   repo URL/flags each run (the default; usually what you want).
 - ` + "`forge.host`" + ` — self-hosted GitLab/GHES hostname. Empty = the public host.
-- ` + "`github.tokens`" + ` — extra GitHub tokens for parallel rate budgets.
-  OPTIONAL and normally unnecessary: spoon uses the gh CLI login or
-  GH_TOKEN/GITHUB_TOKEN from the environment. If you do put tokens here,
-  chmod 600 config.json (spoon refuses a group/other-readable token file).
+- ` + "`github.tokens`" + ` — GitHub tokens saved by spoon auth login, or
+  configured for parallel rate budgets. Tokens use the OS keyring by default;
+  the config stores keyring references. GH_TOKEN/GITHUB_TOKEN also work.
+  Inline tokens require chmod 600 config.json. Native login requires
+  SPOON_OAUTH_CLIENT_ID and SPOON_OAUTH_CLIENT_SECRET in the environment
+  and the OAuth app callback setup described in the project README.
 - ` + "`github.requestsPerMinute`" + ` — client-side pacing cap (default 300, max 900).
 - ` + "`github.proxy`" + ` — optional ProxyScrape-backed transport: enabled,
   apiKeyFile/staticFile (paths to 0600 files; contents are never copied
@@ -107,7 +109,10 @@ layer for users who have no personal config.
 | SPOON_PROXY_STATIC_PATH | ProxyScrape static-pool file adopted by spoon setup |
 | TURSO_DATABASE_URL | Sync the store to a remote Turso database |
 | TURSO_AUTH_TOKEN | Auth token for TURSO_DATABASE_URL |
-| GH_TOKEN / GITHUB_TOKEN | GitHub auth (or use: gh auth login) |
+| SPOON_OAUTH_CLIENT_ID / SPOON_OAUTH_CLIENT_SECRET | OAuth app credentials required by spoon auth login; environment only |
+| SPOON_OAUTH_REDIRECT_URI | Registered OAuth callback URI (default https://spoon.s8n.is/auth); must reach the loopback listener through a TLS proxy |
+| SPOON_OAUTH_LISTEN | OAuth callback listener address (default 127.0.0.1:8790) |
+| GH_TOKEN / GITHUB_TOKEN | GitHub auth (or use: spoon auth login) |
 | GITLAB_TOKEN | GitLab auth (or use: glab auth login) |
 | ONNX_PATH | Path to libonnxruntime.so if not on the loader path |
 | NO_COLOR | Disable colors |

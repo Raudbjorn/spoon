@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"github.com/svnbjrn/spoon/internal/config"
+	"github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/oauth"
+	"github.com/svnbjrn/spoon/internal/secrets"
 )
 
 const testOAuthToken = "gho_test_token_value"
@@ -75,12 +77,62 @@ func TestAuthLoginSavesTokenAndNeverPrintsIt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reload config: %v", err)
 	}
-	if got := saved.GitHub.Tokens; len(got) != 2 || got[0] != "existing" || got[1] != testOAuthToken {
-		t.Errorf("saved tokens = %v, want existing token kept and new one appended", got)
+	// Identity dedup keeps the first token, so a scope upgrade must be first.
+	if got := saved.GitHub.Tokens; len(got) != 2 || got[0] != testOAuthToken || got[1] != "existing" {
+		t.Errorf("saved tokens = %v, want new token first and existing token retained", got)
 	}
 	var out map[string]any
 	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil || out["login"] != "octocat" || out["saved"] != true {
 		t.Errorf("stdout = %q", stdout.String())
+	}
+}
+
+func TestAuthLoginPrioritizesExistingTokenWithoutDuplication(t *testing.T) {
+	stubOAuth(t, oauth.Token{AccessToken: testOAuthToken, Scope: "repo"}, nil)
+	boot := authBoot(t, "older-token", testOAuthToken)
+	var stdout, stderr bytes.Buffer
+	if code := Run("spoon", []string{"login", "--scope", "repo"}, &stdout, &stderr, boot, authEnv()); code != 0 {
+		t.Fatalf("login exit %d: %s", code, stderr.String())
+	}
+	loaded, err := config.Load(boot.Layer.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.GitHub.Tokens) != 2 || loaded.GitHub.Tokens[0] != testOAuthToken || loaded.GitHub.Tokens[1] != "older-token" {
+		t.Fatal("reauthorization must promote its token without discarding other identities or duplicating it")
+	}
+}
+
+func TestSpoonOAuthCredentialsReachClientWithoutGH(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	t.Cleanup(config.UseSecretStore(secrets.NewMemoryStore()))
+	stubOAuth(t, oauth.Token{AccessToken: testOAuthToken, Scope: "repo"}, nil)
+	boot := authBoot(t)
+	var stdout, stderr bytes.Buffer
+	if code := Run("spoon", []string{"login", "--scope", "repo"}, &stdout, &stderr, boot, authEnv()); code != 0 {
+		t.Fatalf("login exit %d: %s", code, stderr.String())
+	}
+	loaded, err := config.Load(boot.Layer.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.TokenStorage(loaded) != "keyring" {
+		t.Fatal("OAuth token was not saved in Spoon's keyring")
+	}
+	opts, err := github.ResolveClientOptionsFromEffective(config.ResolveEffectiveConfig(loaded, nil, map[string]string{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(opts.Tokens) != 1 || opts.Tokens[0] != testOAuthToken {
+		t.Fatal("saved OAuth token did not reach client options")
+	}
+	client, err := github.NewClientWithOptions(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if !client.IsAuthenticated() || !client.HasGraphQL() {
+		t.Fatal("saved OAuth token did not enable authenticated API clients")
 	}
 }
 

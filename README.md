@@ -42,15 +42,17 @@ Windows). `CGO_ENABLED=1` is the Go default; do not unset it.
 
 ## Auth
 
-- **GitHub**: `gh auth login` (uses the `gh` CLI's stored token). For the
-  round-robin dispatcher, add one or more PATs under `github.tokens` in the
-  config file (mode `0600`) — see the rate-limit note below.
+- **GitHub**: `spoon auth login` (native OAuth; requires the app credentials
+  and callback setup below), or set `GH_TOKEN` / `GITHUB_TOKEN`. For the
+  round-robin dispatcher, add one or more PATs under `github.tokens` — see the
+  token-storage and rate-limit notes below.
 - **GitLab**: `glab auth login`, or set `GITLAB_TOKEN`
 
 Unauthenticated requests work but hit much lower rate limits.
 
 **GitHub OAuth (`spn auth login` or `spoon auth login`)**: authorizes spoon through a GitHub OAuth app
-and appends the resulting token to `github.tokens`. Export
+and saves the resulting token first in `github.tokens`, so reauthorizing with
+new scopes takes precedence over older tokens for the same account. Export
 `SPOON_OAUTH_CLIENT_ID` and `SPOON_OAUTH_CLIENT_SECRET` (environment only), run
 `spn auth login` (or `spoon auth login`), and open the URL it prints on stderr. The command listens on
 `127.0.0.1:8790` for the duration of the login; the app's registered redirect
@@ -65,7 +67,8 @@ only `keyring:<entry>` references. `SPOON_SECRET_STORE=file` keeps them inline i
 the 0600 config instead, as does a machine with no usable keyring (spoon warns).
 Tokens already inline are moved on the next run. `spn auth storage
 status|test|migrate` inspects and moves them. `--scope` defaults to
-`public_repo`.
+`public_repo`. Use `spoon auth login --scope repo` for the review-thread commands
+and private repositories. Spoon does not read credentials saved by `gh`.
 
 ### Acquisition contract
 
@@ -80,8 +83,8 @@ enabling it never changes what the local path does.
 ## Configuration
 
 spoon is **zero-configuration**: the first run detects what the host offers
-(gh/glab CLIs, token environment variables), writes a fully-populated default
-config to `~/.config/spoon/config.json`, and drops a `README.md` beside it
+(token environment variables and the optional GitLab `glab` CLI), writes a
+fully-populated default config to `~/.config/spoon/config.json`, and drops a `README.md` beside it
 documenting every field and `SPOON_*` environment variable. Everything is
 enabled by default; edit the file or re-run `spoon setup` to change things.
 Hosts without a home directory use `/etc/spoon/config.json` (which also serves
@@ -242,6 +245,10 @@ lower bound only when that fallback itself could not confirm completeness.
 what the store retains. `--commit-files` implies both and attributes files
 to at most 100 commits per run by default; override with
 `--commit-file-budget N`.
+
+GitHub GraphQL queries and mutations use [`githubv4`](https://github.com/shurcooL/githubv4).
+Credentials come from tokens saved by `spoon auth login`, configured tokens, or
+`GH_TOKEN`/`GITHUB_TOKEN`.
 
 GitHub traffic is capped at 300 requests/minute by default. Set `--rpm`,
 `SPOON_GITHUB_RPM`, or `github.requestsPerMinute` (maximum 900). Configured
@@ -583,7 +590,7 @@ internal/
   store/            Global libsql store: repo/fork/compare cache + embeddings
   cluster/          Clustering, novelty, heuristic labels, sibling search
   topics/           Topic-mode selection (best-of-topic scoring, picker UI)
-  setupcheck/       Pre-flight detection (gh/glab CLIs, ONNX runtime, model cache)
+  setupcheck/       Pre-flight detection (tokens, glab CLI, ONNX runtime, model cache)
   repo/             Shared repo-key derivation + cache helpers
   eval/             Embedding evaluation harnesses (HCA, momentum, schema)
   tui/              Bubbletea TUI (model, view, embed run, edit overlay, keymap)

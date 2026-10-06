@@ -288,7 +288,7 @@ Nouns and verbs:
         registered redirect URI (default https://spoon.s8n.is/auth, or
         SPOON_OAUTH_REDIRECT_URI) must reach through a TLS proxy; prints the
         authorize URL as an info envelope on stderr, waits for the callback,
-        verifies the token against /user and appends it to github.tokens in
+        verifies the token against /user and saves it first in github.tokens in
         the config file. The token is never printed. --scope defaults to
         public_repo.
   repo centrality <owner/repo> [--forge github] [--forge-host H]
@@ -314,6 +314,7 @@ Output:
 
 Exit codes: 0 success; 2 user error / policy; 1 everything else.
 
-Authentication: gh auth login (GitHub).
+Authentication: spn auth login (GitHub; OAuth app credentials required as above),
+or set GH_TOKEN/GITHUB_TOKEN.
 `
 }

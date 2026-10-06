@@ -122,7 +122,9 @@ func Run(prog string, args []string, stdout, stderr io.Writer, boot config.Boots
 	}
 
 	cfgCopy := *boot.Config
-	cfgCopy.GitHub.Tokens = appendUnique(cfgCopy.GitHub.Tokens, tok.AccessToken)
+	// The dispatcher keeps the first token for each identity. A new login
+	// (including --scope upgrades) must take precedence over older credentials.
+	cfgCopy.GitHub.Tokens = prioritizeToken(cfgCopy.GitHub.Tokens, tok.AccessToken)
 	if err := config.Save(boot.Layer.Path, &cfgCopy); err != nil {
 		return agentio.NewError(agentio.CodeInternal, "authorized as "+login+" but saving the token failed: "+err.Error(), agentio.RemediationInternal()).Emit(stderr)
 	}
@@ -135,11 +137,9 @@ func Run(prog string, args []string, stdout, stderr io.Writer, boot config.Boots
 	return 0
 }
 
-func appendUnique(list []string, v string) []string {
-	if slices.Contains(list, v) {
-		return list
-	}
-	return append(slices.Clone(list), v)
+func prioritizeToken(list []string, v string) []string {
+	others := slices.DeleteFunc(slices.Clone(list), func(token string) bool { return token == v })
+	return append([]string{v}, others...)
 }
 
 func githubLoginFor(ctx context.Context, token string) (string, error) {

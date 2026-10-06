@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"strings"
 
-	ghAPI "github.com/cli/go-gh/v2/pkg/api"
 	gogithub "github.com/google/go-github/v90/github"
 )
 
@@ -90,14 +89,9 @@ func isUnprocessableEntity(err error) bool {
 }
 
 // httpFailure extracts the HTTP status and response headers from err,
-// whichever client produced it: go-github for REST (an *ErrorResponse, or one of
-// its rate-limit specialisations) or go-gh for GraphQL (an *HTTPError). ok is
+// from go-github for REST or the githubv4 transport. ok is
 // false when err carries no HTTP response at all, e.g. a transport failure.
 func httpFailure(err error) (status int, header http.Header, ok bool) {
-	var ghHTTP *ghAPI.HTTPError
-	if errors.As(err, &ghHTTP) {
-		return ghHTTP.StatusCode, ghHTTP.Headers, true
-	}
 	var resp *http.Response
 	var errResp *gogithub.ErrorResponse
 	var rateErr *gogithub.RateLimitError

@@ -12,7 +12,6 @@ import (
 	"sync"
 	"testing"
 
-	ghAPI "github.com/cli/go-gh/v2/pkg/api"
 	gogithub "github.com/google/go-github/v90/github"
 )
 
@@ -187,7 +186,7 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
 // httpFailure must read status and headers off go-github's REST errors and
-// go-gh's GraphQL error alike, through wrapping, and report ok=false for errors
+// the GraphQL transport's HTTP error alike, through wrapping, and report ok=false for errors
 // that carry no HTTP response.
 func TestHTTPFailureCoversBothClients(t *testing.T) {
 	resp := func(code int, h http.Header) *http.Response { return &http.Response{StatusCode: code, Header: h} }
@@ -202,7 +201,7 @@ func TestHTTPFailureCoversBothClients(t *testing.T) {
 		{"primary rate limit", &gogithub.RateLimitError{Response: resp(403, limited)}, 403, true},
 		{"secondary rate limit", &gogithub.AbuseRateLimitError{Response: resp(429, nil)}, 429, true},
 		{"wrapped", fmt.Errorf("repo search: %w", &gogithub.ErrorResponse{Response: resp(422, nil)}), 422, true},
-		{"graphql http error", &ghAPI.HTTPError{StatusCode: 502}, 502, true},
+		{"graphql http error", &gogithub.ErrorResponse{Response: &http.Response{StatusCode: 502}}, 502, true},
 		{"nil response", &gogithub.ErrorResponse{}, 0, false},
 		{"transport", errors.New("connection reset"), 0, false},
 	}

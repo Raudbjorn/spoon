@@ -27,9 +27,8 @@ import (
 	"sync"
 	"time"
 
-	ghAPI "github.com/cli/go-gh/v2/pkg/api"
-	ghauth "github.com/cli/go-gh/v2/pkg/auth"
 	gogithub "github.com/google/go-github/v90/github"
+	"github.com/shurcooL/githubv4"
 	"github.com/svnbjrn/spoon/internal/github/treecommitinfo"
 	"github.com/svnbjrn/spoon/internal/github/webdiff"
 )
@@ -108,7 +107,7 @@ type budgetState struct {
 
 type backend struct {
 	Rest          *gogithub.Client
-	GraphQL       *ghAPI.GraphQLClient
+	GraphQL       *githubv4.Client
 	Login         string
 	REST          budgetState
 	GraphQLBudget budgetState
@@ -143,7 +142,7 @@ type Client struct {
 	localBranchScan bool
 
 	rest                *gogithub.Client
-	gql                 *ghAPI.GraphQLClient
+	gql                 *githubv4.Client
 	authenticated       bool
 	authScopeID         string // computed once; non-reversible scope fingerprint
 	duplicateIdentities int
@@ -226,37 +225,21 @@ func NewClientWithOptions(opts ClientOptions) (*Client, error) {
 	// Compute the AuthScopeID once per Client lifetime. It is deterministic
 	// for (provider, host, sorted trimmed credential token set); anonymous
 	// clients get a stable scope ID for an empty token set.
-	host, _ := ghauth.DefaultHost()
-	if host == "" {
-		host = defaultHost
-	}
-	ghToken, _ := ghauth.TokenForHost(host)
+	host, envToken := githubEnvironmentAuth()
 	tokens := append([]string(nil), opts.Tokens...)
-	if len(tokens) == 0 && ghToken != "" {
-		tokens = []string{ghToken}
+	if len(tokens) == 0 && envToken != "" {
+		tokens = []string{envToken}
 	}
 	c.authScopeID = computeAuthScopeID("github", host, tokens)
 
 	if len(opts.Tokens) == 0 {
-		// Proxy routing only attaches to explicit config-token backends (and the
-		// unauthenticated fallback). The gh-default GraphQL client builds its own
-		// transport, so a proxy configured without config tokens silently does
-		// nothing there — warn rather than mislead.
-		if opts.Proxy.Enabled {
-			slog.Warn("github: proxy configured but no github.tokens set; proxy routing is inactive on the gh-default token path (add github.tokens to enable it)")
-		}
-		// The token comes from the gh CLI config or GH_TOKEN/GITHUB_TOKEN, exactly
-		// as before; with none, fall back to an anonymous REST-only backend.
-		if ghToken != "" {
-			rest, err := newRESTClient(ghToken, rotating)
+		// Spoon OAuth tokens arrive through opts.Tokens. With no saved token,
+		// use the environment or an anonymous REST-only backend.
+		if envToken != "" {
+			rest, err := newRESTClient(envToken, rotating)
 			if err == nil {
 				b := &backend{Rest: rest, REST: newBudget(), GraphQLBudget: newBudget()}
-				// An empty Host and AuthToken make go-gh read both from the gh
-				// config; Timeout must still be set or the client has no deadline.
-				defaultOpts := ghAPI.ClientOptions{Timeout: requestTimeout, Transport: rotating}
-				if gql, gqlErr := ghAPI.NewGraphQLClient(defaultOpts); gqlErr == nil {
-					b.GraphQL = gql
-				}
+				b.GraphQL = newGraphQLClient(envToken, host, rotating)
 				c.authenticated = true
 				c.installBackends([]*backend{b})
 				c.initRateControls()
@@ -284,15 +267,7 @@ func NewClientWithOptions(opts ClientOptions) (*Client, error) {
 		if err != nil {
 			return nil, fmt.Errorf("creating GitHub REST backend: %w", err)
 		}
-		gql, err := ghAPI.NewGraphQLClient(ghAPI.ClientOptions{
-			AuthToken: token,
-			Host:      defaultHost,
-			Transport: rotating,
-			Timeout:   requestTimeout,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("creating GitHub GraphQL backend: %w", err)
-		}
+		gql := newGraphQLClient(token, defaultHost, rotating)
 		backends = append(backends, &backend{Rest: rest, GraphQL: gql, REST: newBudget(), GraphQLBudget: newBudget()})
 	}
 	c.installBackends(backends)
@@ -662,7 +637,7 @@ type gqlRateLimitCarrier interface {
 	graphqlRateLimit() *gqlRateLimit
 }
 
-func (c *Client) doGraphQL(ctx context.Context, query string, variables map[string]interface{}, out interface{}) error {
+func (c *Client) doGraphQL(ctx context.Context, query interface{}, variables map[string]interface{}, out interface{}) error {
 	c.ensurePool()
 	var b *backend
 	// Wrapped in doWithRetry for the same reason as doGet, and selecting inside
@@ -680,7 +655,7 @@ func (c *Client) doGraphQL(ctx context.Context, query string, variables map[stri
 		if err := c.waitRequest(ctx, b.GraphQLBudget.Limiter); err != nil {
 			return err
 		}
-		if err := b.GraphQL.DoWithContext(ctx, query, variables, out); err != nil {
+		if err := queryGraphQL(ctx, b.GraphQL, query, variables, out); err != nil {
 			if rl := detectRateLimitFromHTTPError(err); rl != nil {
 				c.pool.disableUntil(b, rl.ResetAt, false)
 				return rl

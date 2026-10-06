@@ -17,11 +17,11 @@ func RemediationBadInput(noun, verb string) string {
 }
 
 func RemediationAuthRequired() string {
-	return "Authenticate with `gh auth login` (GitHub) or set `GITLAB_TOKEN` (GitLab), then retry."
+	return "Authenticate with `spoon auth login` (GitHub) or set `GITLAB_TOKEN` (GitLab), then retry."
 }
 
 func RemediationAuthScope(scope string) string {
-	return fmt.Sprintf("Refresh your token with the required scope: `gh auth refresh -s %s`, then retry.", scope)
+	return fmt.Sprintf("Authorize with the required scope: `spoon auth login --scope %s`, then retry.", scope)
 }
 
 func RemediationPolicyBodyRequired(prRef, threadID string) string {
@@ -42,7 +42,7 @@ func RemediationUpstream() string {
 }
 
 func RemediationRateLimited(resetAt string, retryAfterSec int) string {
-	return fmt.Sprintf("Rate limit exceeded. Wait until %s (%ds), then retry. Authenticate (`gh auth login`) for a higher limit.", resetAt, retryAfterSec)
+	return fmt.Sprintf("Rate limit exceeded. Wait until %s (%ds), then retry. Authenticate (`spoon auth login`) for a higher limit.", resetAt, retryAfterSec)
 }
 
 func RemediationResolvePartialFailure(prRef, threadID string) string {
