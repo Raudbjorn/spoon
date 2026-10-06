@@ -279,30 +279,68 @@ func ParseHTML(r io.Reader) (map[string]string, int, error) {
 }
 
 // nontextualMarkers are the phrases GitHub renders in place of diff hunks for
-// entries that have none.
-var nontextualMarkers = []string{"binary file", "too large", "not shown", "no changes"}
+// entries that have none: binary content, oversized files, and the rename and
+// mode-only entries that a file-list page is otherwise made of.
+var nontextualMarkers = []string{"binary file", "too large", "not shown", "renamed", "mode changed", "no changes"}
 
-// explainsItself reports whether the page says why its files have no textual
-// hunks. It is a second walk over the DOM, taken only on the rare path where a
-// page yielded no cells, so the hot path pays nothing for it.
+// nontextualMaxLen keeps an unparsed source line from counting as a
+// placeholder. GitHub's placeholders are short sentences ("File renamed
+// without changes", "File mode changed from 100644 to 100755"); a line of
+// source that merely mentions a rename is longer, and a long one that happens
+// to be short must still be rejected rather than pass the page.
+const nontextualMaxLen = 80
+
+// explainsItself reports whether the page says, per file, why that file has no
+// textual hunks. Scoping matters: a page-wide phrase match would let one
+// binary entry vouch for a sibling whose hunks went unparsed, which is exactly
+// the silent truncation this guards against. Every file the page listed must
+// have its own explanation.
+//
+// It is a second walk over the DOM, taken only on the rare path where a page
+// yielded no cells, so the hot path pays nothing for it.
 func explainsItself(root *html.Node) bool {
+	listed := map[string]bool{}
+	explained := map[string]bool{}
+	current := ""
 	stack := []*html.Node{root}
 	for len(stack) > 0 {
 		n := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
-		if n.Type == html.TextNode {
-			lower := strings.ToLower(n.Data)
+		if n.Type == html.ElementNode {
+			if path := filePath(n); path != "" {
+				current = path
+				listed[path] = true
+			}
+		}
+		if n.Type == html.TextNode && current != "" {
+			line := strings.TrimSpace(n.Data)
+			if line == "" || len(line) > nontextualMaxLen {
+				goto children
+			}
+			lower := strings.ToLower(line)
 			for _, marker := range nontextualMarkers {
 				if strings.Contains(lower, marker) {
-					return true
+					explained[current] = true
+					break
 				}
 			}
 		}
-		for child := n.FirstChild; child != nil; child = child.NextSibling {
+	children:
+		// Right-to-left, so the stack pops in document order: a placeholder is
+		// attributed to the header that precedes it, not to the next file's.
+		for child := n.LastChild; child != nil; child = child.PrevSibling {
 			stack = append(stack, child)
 		}
 	}
-	return false
+	if len(listed) == 0 {
+		return false
+	}
+	for path := range listed {
+		if !explained[path] {
+			return false
+		}
+	}
+	return true
 }
 
 func filePath(n *html.Node) string {
