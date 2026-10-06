@@ -257,12 +257,18 @@ func ParseHTML(r io.Reader) (map[string]string, int, error) {
 			stack = append(stack, child)
 		}
 	}
-	// A page whose file headers we recognised but which carries no blob-code
-	// cells is well-formed and merely empty — a range of binary, rename or
-	// mode-change entries renders exactly like that. Failing it would make Fetch
-	// report truncation and cost the fork every patch collected so far. Only a
-	// page that resolved no file header at all is markup we no longer understand.
-	if len(acc) == 0 && !sawFile {
+	// An empty page is only accepted when the page explains itself: it must have
+	// listed files AND said why they have no textual hunks (a binary, an
+	// oversized file, an entry with no changes). Failing those would make Fetch
+	// report truncation and cost the fork every patch collected so far.
+	//
+	// A file header alone is deliberately NOT enough. Markup that keeps its
+	// headers but moves the hunks away from blob-code resolves a header and no
+	// cells, which is indistinguishable from the benign case by shape — and
+	// treating it as benign is what let a partial diff reach the store as a
+	// complete one (#83). If GitHub rewords its placeholders this degrades to the
+	// old loud failure rather than to a silent one.
+	if len(acc) == 0 && !(sawFile && explainsItself(root)) {
 		return nil, next, fmt.Errorf("GitHub web diff markup contained no parseable files")
 	}
 	out := make(map[string]string, len(acc))
@@ -270,6 +276,33 @@ func ParseHTML(r io.Reader) (map[string]string, int, error) {
 		out[path] = b.String()
 	}
 	return out, next, nil
+}
+
+// nontextualMarkers are the phrases GitHub renders in place of diff hunks for
+// entries that have none.
+var nontextualMarkers = []string{"binary file", "too large", "not shown", "no changes"}
+
+// explainsItself reports whether the page says why its files have no textual
+// hunks. It is a second walk over the DOM, taken only on the rare path where a
+// page yielded no cells, so the hot path pays nothing for it.
+func explainsItself(root *html.Node) bool {
+	stack := []*html.Node{root}
+	for len(stack) > 0 {
+		n := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if n.Type == html.TextNode {
+			lower := strings.ToLower(n.Data)
+			for _, marker := range nontextualMarkers {
+				if strings.Contains(lower, marker) {
+					return true
+				}
+			}
+		}
+		for child := n.FirstChild; child != nil; child = child.NextSibling {
+			stack = append(stack, child)
+		}
+	}
+	return false
 }
 
 func filePath(n *html.Node) string {

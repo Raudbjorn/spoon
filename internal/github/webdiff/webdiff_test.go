@@ -56,14 +56,13 @@ func TestWebDiffMarkupChangeIsGracefulError(t *testing.T) {
 	}
 }
 
-// A page whose file headers we recognise but which has no blob-code cells is a
-// well-formed empty page — an entry range of binary, rename or mode-change
-// files renders exactly like this. Failing it made Fetch report truncation,
-// which cost the fork every patch it had already collected (#83).
-func TestWebDiffPageWithHeadersAndNoDiffLinesIsNotAnError(t *testing.T) {
+// A page whose files are all binary explains its own lack of hunks, so it is a
+// valid empty page. Failing it made Fetch report truncation, which cost the
+// fork every patch it had already collected (#83).
+func TestWebDiffSelfExplainingEmptyPageIsNotAnError(t *testing.T) {
 	fixture := `<html><body>
 <div class="js-file-header" data-path="assets/logo.png"></div>
-<div class="diff-table"><span class="file-info">Binary files differ</span></div>
+<div class="diff-table"><span class="file-info">Binary files a/assets/logo.png and b/assets/logo.png differ</span></div>
 </body></html>`
 	patches, next, err := ParseHTML(strings.NewReader(fixture))
 	if err != nil {
@@ -74,6 +73,21 @@ func TestWebDiffPageWithHeadersAndNoDiffLinesIsNotAnError(t *testing.T) {
 	}
 	if next != -1 {
 		t.Errorf("next = %d, want -1 (no pagination link on the page)", next)
+	}
+}
+
+// A header with no cells and no explanation is the dangerous case, not the
+// benign one: markup that moved away from blob-code while keeping its headers
+// looks exactly like this. Accepting it would let Fetch report a partial
+// pagination as complete and the adapter persist a fragment as a whole diff
+// (#83).
+func TestWebDiffUnexplainedEmptyPageIsStillAnError(t *testing.T) {
+	fixture := `<html><body>
+<div class="js-file-header" data-path="internal/auth.go"></div>
+<table class="diff-table"><tr><td class="diff-hunk-cell">+func New()</td></tr></table>
+</body></html>`
+	if _, _, err := ParseHTML(strings.NewReader(fixture)); err == nil {
+		t.Fatal("expected an error: file headers alone do not explain a page with no hunks")
 	}
 }
 
