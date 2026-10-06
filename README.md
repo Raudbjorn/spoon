@@ -186,6 +186,15 @@ spn repo search "<github-query>" [--limit N] [--page N] [--sort S]
 
 Run `spn --help` for the complete flag surface and mutation policy.
 
+### Recon scanner rule format
+
+The bounded redacted recon scanner uses operator-supplied **strict JSON v1**
+rule files, deliberately not Gitleaks TOML. A document has exactly
+`schemaVersion: 1`, a non-empty `version`, and `rules`; unknown fields and
+trailing JSON are rejected. Rules carry an ID, name, severity, RE2 pattern,
+and optional capture, keyword, entropy, path, and allow-pattern gates. spoon
+does not bundle a third-party rule corpus.
+
 `spn repo search` is one bounded GitHub repository search: a single request,
 never paged on its own, that finds candidates for the fork pipeline. It prints
 one JSON envelope (`query`, `total_count`, `incomplete_results`, `fetched`,

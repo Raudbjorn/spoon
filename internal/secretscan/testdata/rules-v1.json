@@ -1,0 +1,1 @@
+{"schemaVersion":1,"version":"test-rules-v1","rules":[{"id":"spoon-test-secret","name":"Spoon test secret","severity":"warning","pattern":"(spoon_test_secret_7f3c9a1e)","secretGroup":1,"keywords":["spoon_test_secret"]}]}

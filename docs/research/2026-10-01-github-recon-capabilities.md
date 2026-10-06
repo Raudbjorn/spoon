@@ -140,9 +140,18 @@ Pipeline, cheapest tier first (matches the existing tiered API pipeline):
    been rewritten away.
 5. Output: NDJSON via `agentio`; optional SARIF.
 
-`internal/secretscan`: signature struct `{Name, Part, Match|Regex, Keywords,
-Entropy, Allowlist}`, loadable from gitleaks-style TOML; map-based Shannon
-entropy; denylists for extensions, paths and strings; bounded LRU for dedup.
+`internal/secretscan`: an operator-supplied strict JSON v1 `RuleFile` with
+RE2 patterns, capture, keyword, entropy, path, and allow-pattern gates; a
+fixed byte-frequency entropy calculation; and bounded LRU deduplication. It
+does not parse Gitleaks TOML or bundle a third-party rule corpus.
+
+## Implementation status
+
+- **2026-10-06 (Step 2):** implemented the bounded, redacted
+  `internal/secretscan` session. The earlier Gitleaks-style TOML sketch is
+  intentionally replaced with a strict JSON v1 rule document so validation,
+  size limits, and safe operator metadata are explicit.
+
 
 ## Open decision: go-github
 
