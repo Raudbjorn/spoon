@@ -116,3 +116,59 @@ func (rt *rewriteToServer) RoundTrip(req *http.Request) (*http.Response, error) 
 	}
 	return resp, err
 }
+
+// A trailing page of binary / rename / mode-change entries has no blob-code
+// cells but is perfectly well-formed. Treating it as a parse failure reported
+// truncation and the adapter threw away every patch the earlier pages had
+// already produced, so one such page cost a whole fork its web diff (#83).
+func TestFetchKeepsPatchesWhenTrailingPageHasNoDiffLines(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start, _ := strconv.Atoi(r.URL.Query().Get("start_entry"))
+		if start == 0 {
+			fmt.Fprint(w, pageHTML("a.go", 1))
+			return
+		}
+		// Page 2 explains its own emptiness: a binary entry, no textual hunks.
+		fmt.Fprint(w, `<html><body><div class="js-file-header" data-path="logo.png"></div>
+<span class="file-info">Binary files a/logo.png and b/logo.png differ</span></body></html>`)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	patches, truncated, err := c.Fetch(context.Background(), "o", "r", "b", "h")
+	if err != nil {
+		t.Fatalf("Fetch errored: %v", err)
+	}
+	if truncated {
+		t.Fatal("truncated=true; an empty-but-valid trailing page must not discard the collected patches")
+	}
+	if got := patches["a.go"]; got != "+x()\n" {
+		t.Fatalf("a.go patch = %q, want the first page's patch retained", got)
+	}
+}
+
+// The counterpart: a page with headers, no hunks and no explanation is drift,
+// and must truncate. Otherwise the caller persists the earlier pages as a
+// complete diff (#83).
+func TestFetchTruncatesOnUnexplainedEmptyPage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start, _ := strconv.Atoi(r.URL.Query().Get("start_entry"))
+		if start == 0 {
+			fmt.Fprint(w, pageHTML("a.go", 1))
+			return
+		}
+		// Headers survive, hunks do not, and nothing says why.
+		fmt.Fprint(w, `<html><body><div class="js-file-header" data-path="b.go"></div>
+<table><tr><td class="diff-hunk-cell">+func New()</td></tr></table></body></html>`)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	_, truncated, err := c.Fetch(context.Background(), "o", "r", "b", "h")
+	if err != nil {
+		t.Fatalf("Fetch errored: %v", err)
+	}
+	if !truncated {
+		t.Fatal("truncated=false; markup that kept its headers but lost its hunks must not pass as a valid empty page")
+	}
+}

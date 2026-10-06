@@ -56,6 +56,94 @@ func TestWebDiffMarkupChangeIsGracefulError(t *testing.T) {
 	}
 }
 
+// A page whose files are all binary explains its own lack of hunks, so it is a
+// valid empty page. Failing it made Fetch report truncation, which cost the
+// fork every patch it had already collected (#83).
+func TestWebDiffSelfExplainingEmptyPageIsNotAnError(t *testing.T) {
+	fixture := `<html><body>
+<div class="js-file-header" data-path="assets/logo.png"></div>
+<div class="diff-table"><span class="file-info">Binary files a/assets/logo.png and b/assets/logo.png differ</span></div>
+</body></html>`
+	patches, next, err := ParseHTML(strings.NewReader(fixture))
+	if err != nil {
+		t.Fatalf("empty page rejected: %v", err)
+	}
+	if len(patches) != 0 {
+		t.Errorf("patches = %v, want none (this page has no textual hunks)", patches)
+	}
+	if next != -1 {
+		t.Errorf("next = %d, want -1 (no pagination link on the page)", next)
+	}
+}
+
+// A header with no cells and no explanation is the dangerous case, not the
+// benign one: markup that moved away from blob-code while keeping its headers
+// looks exactly like this. Accepting it would let Fetch report a partial
+// pagination as complete and the adapter persist a fragment as a whole diff
+// (#83).
+func TestWebDiffUnexplainedEmptyPageIsStillAnError(t *testing.T) {
+	fixture := `<html><body>
+<div class="js-file-header" data-path="internal/auth.go"></div>
+<table class="diff-table"><tr><td class="diff-hunk-cell">+func New()</td></tr></table>
+</body></html>`
+	if _, _, err := ParseHTML(strings.NewReader(fixture)); err == nil {
+		t.Fatal("expected an error: file headers alone do not explain a page with no hunks")
+	}
+}
+
+// The rename and mode-only entries this change exists to accept are just as
+// common as binary ones, and GitHub words their placeholders differently. A
+// page of them must not read as drift, or the fork loses every patch again.
+func TestWebDiffAcceptsRenameAndModeOnlyPages(t *testing.T) {
+	for _, tc := range []struct{ name, path, note string }{
+		{"rename without changes", "old/name.go", "File renamed without changes"},
+		{"rename with changes", "new/name.go", "renamed from old/name.go"},
+		{"mode only", "bin/tool", "File mode changed from 100644 to 100755"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := `<html><body><div class="js-file-header" data-path="` + tc.path + `"></div>
+<span class="file-info">` + tc.note + `</span></body></html>`
+			patches, _, err := ParseHTML(strings.NewReader(fixture))
+			if err != nil {
+				t.Fatalf("%q rejected as drift: %v", tc.note, err)
+			}
+			if len(patches) != 0 {
+				t.Errorf("patches = %v, want none", patches)
+			}
+		})
+	}
+}
+
+// Evidence is per file, not per page. One binary entry must not vouch for a
+// sibling whose hunks went unparsed — that is how a partial pagination would
+// pass as complete (#83).
+func TestWebDiffUnexplainedSiblingFileStillFails(t *testing.T) {
+	fixture := `<html><body>
+<div class="js-file-header" data-path="assets/logo.png"></div>
+<span class="file-info">Binary files a/assets/logo.png and b/assets/logo.png differ</span>
+<div class="js-file-header" data-path="internal/auth.go"></div>
+<table><tr><td class="diff-hunk-cell">+func New()</td></tr></table>
+</body></html>`
+	if _, _, err := ParseHTML(strings.NewReader(fixture)); err == nil {
+		t.Fatal("expected an error: the binary file's explanation must not cover the unexplained sibling")
+	}
+}
+
+// A source line that merely mentions a rename is not a placeholder. Without the
+// length bound, unparsed source text containing "renamed" would accept a page
+// whose markup had drifted.
+func TestWebDiffLongSourceLineIsNotAPlaceholder(t *testing.T) {
+	long := "the migration renamed the column and the index and the constraint and the view and the trigger"
+	fixture := `<html><body><div class="js-file-header" data-path="internal/auth.go"></div>
+<span class="file-info">` + long + `</span></body></html>`
+	if len(long) <= 80 {
+		t.Fatalf("fixture must exceed nontextualMaxLen to be meaningful, got %d", len(long))
+	}
+	if _, _, err := ParseHTML(strings.NewReader(fixture)); err == nil {
+		t.Fatal("expected an error: a long source line is not a placeholder")
+	}
+}
+
 // Concurrent callers must each receive a distinct slot. The bug this guards
 // against overwrote c.next with now+interval on every call, so every queued
 // caller computed roughly the same wait and they all fired as one burst —
