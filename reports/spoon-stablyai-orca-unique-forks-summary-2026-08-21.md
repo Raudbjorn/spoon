@@ -38,7 +38,7 @@
 - `behind=2,172` triple (`18163623522/orca`, `taeungshin/orca`, `ttkhanh-keylp/orca`) — same `base_sha` + `head_sha: None`.
 - `behind=2,724` pair (`GokhanSanchez42461/orca`, `ValuxiCoj3/orca`) — same `base_sha` + `head_sha: None`.
 
-All five are automated fork farms or tutorial forks. The remaining 63 forks all have unique divergence fingerprints and are independent per-developer forks.
+The triple/pair shape is consistent with tutorial or batch-mirror forks cut from the same upstream snapshot, but this report has no commit-message or rename-pattern evidence, so it cannot call them automated farms — see §9. The remaining 63 forks have unique divergence fingerprints, which distinguishes their divergence, not their authorship; read as *no collision with another fork*, not as *independent per-developer*.
 
 ---
 

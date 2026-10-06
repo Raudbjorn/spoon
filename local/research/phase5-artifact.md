@@ -2,13 +2,15 @@
 
 **Question**: Whether and how to integrate Google/Sourcegraph Zoekt (a trigram-based code search engine) into Spoon (a Go+TS GitHub fork analyzer with FastEmbed/lexical fallback for fork novelty scoring and clustering) — specifically, whether Zoekt's code-search architecture can replace, augment, or pre-filter Spoon's current embedding-based similarity pipeline for fork-level comparison.
 
-**Framing Pushback**: The framing "integrate Zoekt into Spoon" conflates three distinct problems that Zoekt does not natively solve: (1) **Fork-level similarity**, not file-level code search — Zoekt indexes and queries individual files/functions/symbols; Spoon needs to compare entire forks (metadata + diff + commits + README) as single semantic units. (2) **Semantic similarity**, not lexical trigram overlap — Zoekt's ranking is BM25 + symbol/code signals over trigrams; Spoon's FastEmbed (BGE-small-en-v1.5, 384-dim) captures semantic code similarity that trigram overlap cannot (e.g., renamed variables, refactored logic, different implementations of same algorithm). (3) **Index freshness for ad-hoc fork sets** — Zoekt assumes a relatively stable corpus with incremental git ingestion; Spoon evaluates arbitrary fork sets per-run with content-hash+model-keyed cache invalidation. The framing also ignores license friction: Zoekt is Apache-2.0 with NOTICE redistribution obligation; Spoon is MIT. Vendoring Zoekt (27+ transitive deps, 60k+ LoC) into an MIT project forces NOTICE propagation and patent-grant tracking. No evidence in either codebase suggests a clean library boundary — Zoekt exports concrete `*index.Builder` and `*search.Searcher`, not interfaces, making mocking/testing harder.
+**Framing Pushback**: The framing "integrate Zoekt into Spoon" conflates three distinct problems that Zoekt does not natively solve: (1) **Fork-level similarity**, not file-level code search — Zoekt indexes and queries individual files/functions/symbols; Spoon needs to compare entire forks (metadata + diff + commits + README) as single semantic units. (2) **Semantic similarity**, not lexical trigram overlap — Zoekt's ranking is BM25 + symbol/code signals over trigrams; Spoon's FastEmbed (BGE-small-en-v1.5, 384-dim) captures semantic code similarity that trigram overlap cannot (e.g., renamed variables, refactored logic, different implementations of same algorithm). (3) **Index freshness for ad-hoc fork sets** — Zoekt assumes a relatively stable corpus with incremental git ingestion; Spoon evaluates arbitrary fork sets per-run with content-hash+model-keyed cache invalidation. The framing also ignores license friction: Zoekt is Apache-2.0 and Spoon is MIT, so vendoring Zoekt (27+ transitive deps, 60k+ LoC) forces license-copy, attribution-retention and patent-grant tracking. (NOTICE propagation is not among them: §4(d) is conditional on the upstream work including a NOTICE file, and the pinned commit has none.) No evidence in either codebase suggests a clean library boundary at the indexing seam, which is concrete — `*index.Builder`, `*index.ShardBuilder` — though the root API does export `Searcher`/`Sender`/`Streamer`, so query-side seams would be mockable.
 
 **Versions Pinned**:
 
 - zoekt: commit 6e01b543d1834fbe9f0659a1fd844150e2a3991a (main, grafted single commit, no tags/history) — go 1.25.9, toolchain go1.26.5
 - spoon: commit 1a74fa2e490487f0efc9b8e06b0bd10c66fcbf60 (hound branch) — FastEmbed-Go v1.0.0 (anush008/fastembed-go), model fast-bge-small-en-v1.5 (384-dim, maxlen 512), libSQL persistence
-- Go: 1.22+ (both), CGO_ENABLED=0 for zoekt Docker build
+- Go: not 1.22 for either pinned project — zoekt's `go.mod` declares `go 1.25.9`
+  with `toolchain go1.26.5`, and spoon's declares `go 1.26.2`. A toolchain older
+  than 1.26.2 cannot build this checkout. CGO_ENABLED=0 for the zoekt Docker build
 - No submodules/vendored deps in zoekt (go.mod only); spoon vendors fastembed-go in vendor/
 
 **Scope**:
@@ -25,8 +27,15 @@
 
 1. **Fork-level vs file-level** — Zoekt indexes files; Spoon compares forks (semantic.go:18-102 builds one document per fork). [S1: semantic.go:18-102]
 2. **Semantic vs lexical** — Zoekt trigram/BM25; Spoon FastEmbed 384-dim semantic. [S2: fastembed.go:13-156, S3: local.go:12-110]
-3. **License** — Zoekt Apache-2.0 (NOTICE redistribution LICENSE:79-126); Spoon MIT. [S4: LICENSE:1-9,79-126]
-4. **No library interface** — Zoekt exports concrete types (*index.Builder,*search.Searcher), not interfaces. [S5: builder.go:562-650, api.go:917-927]
+3. **License** — Zoekt Apache-2.0; Spoon MIT. §4(d) NOTICE propagation is *not*
+   triggered: it applies only where the upstream work includes a NOTICE file, and
+   the pinned commit has none. License-copy (§4a) and attribution-retention (§4c)
+   obligations still apply to any vendored portion. [S4: LICENSE:1-9,79-126]
+4. **Indexing has no interface seam** — index construction is concrete
+   (*index.Builder, *index.ShardBuilder). The root API *does* export interfaces
+   (Searcher api.go:917, Sender api.go:1102, Streamer api.go:1116), so the mocking
+   cost is confined to the indexing path, not the whole surface.
+   [S5: builder.go:562-650, api.go:917-927,1102-1125]
 5. **Index freshness model mismatch** — Zoekt gitindex incremental (gitindex/index.go:387-480); Spoon content-hash+model-keyed cache invalidation (semantic.go:113-133, store.go:1364-1459). [S6: gitindex/index.go:387-480, S7: semantic.go:113-133]
 6. **Dependency surface** — Zoekt 27+ transitive deps (roaring, go-git, go-enry, go-ctags, gRPC, OpenTelemetry, RE2/wazero, etc.) [S8: go.mod:1-160]
 7. **No release history locally** — Grafted single commit, no tags. [S9: ExploreZoekt summary]

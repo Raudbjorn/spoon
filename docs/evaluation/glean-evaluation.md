@@ -8,7 +8,7 @@
 
 Facebook's Glean was evaluated for possible integration into Spoon, a Go-based GitHub fork analyzer that uses FastEmbed plus a lexical fallback for fork novelty scoring and single-link clustering. The evaluation reached a **primary recommendation of No Integration (D)**. Glean's schema and codemarkup unification ideas are useful as design references only (C), while the supplied Glean fork export contains no actionable indexer, schema, or query changes worth porting (B).
 
-Glean is a file- and symbol-level code-intelligence platform. It collects language-specific facts, stores them in versioned schemas, and exposes cross-references through Angle queries and Thrift services. Spoon evaluates whole repositories: it builds one document per fork from metadata, diff, commit messages, and README content, then compares fork-level vectors and heat signals. The units of analysis, deployment model, and correctness goals do not align.
+Glean is a file- and symbol-level code-intelligence platform. It collects language-specific facts, stores them in versioned schemas, and exposes cross-references through Angle queries and Thrift services. Spoon evaluates whole repositories, but through two distinct pipelines: the semantic search index builds one combined document per fork (metadata, diff, commit messages, README) via `semantic.BuildDocument`, while clustering embeds each modality separately and concatenates four weighted blocks — paths .3, commits .3, readme .2, diff .2 — via `embed.MultiModalEmbed` (`internal/embed/multimodal.go:39-45`). Both are fork-level; conflating them hides that clustering has no single-document path to lose. The units of analysis, deployment model, and correctness goals do not align.
 
 ## Decision Rationale
 

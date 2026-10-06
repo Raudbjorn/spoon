@@ -2,7 +2,7 @@
 
 **Status**: Complete — **No Integration for Fork Similarity/Clustering**
 
-**Research Artifact**: `local://research/phase5-artifact.md`
+**Research Artifact**: `local/research/phase5-artifact.md`
 
 ## Executive Summary
 
@@ -33,10 +33,10 @@ Spoon's FastEmbed (BGE-small-en-v1.5, 384-dim) captures these by design. No inde
 
 ### License & Maintenance Friction
 
-- Zoekt: **Apache-2.0 with NOTICE redistribution clause** (no top-level NOTICE file)
+- Zoekt: **Apache-2.0**, and **no top-level NOTICE file** at the pinned commit
 - Spoon: **MIT**
 
-Vendoring Zoekt (60k+ LoC, 27+ transitive dependencies) into an MIT project forces NOTICE propagation and patent-grant tracking. Zoekt exports concrete types (`*index.Builder`, `*search.Searcher`), not interfaces — making mocking and testing harder.
+Vendoring Zoekt (60k+ LoC, 27+ transitive dependencies) into an MIT project forces license and attribution-notice preservation plus patent-grant tracking. It does **not** force NOTICE propagation: Apache-2.0 §4(d) applies only where the upstream work includes a NOTICE file, and there is none at the pinned commit. Index construction is also not interface-shaped — `*index.Builder` is concrete — though the root API does export `Searcher`/`Sender`/`Streamer` (`api.go:917`, `:1102`, `:1116`), so the mocking cost is confined to the indexing path rather than every seam.
 
 ### Index Freshness Mismatch
 
@@ -48,7 +48,7 @@ Zoekt assumes a relatively stable corpus with incremental git ingestion. Spoon e
 | ------- | ---------------- | ------ |
 | **D (Primary)** | **No Zoekt integration for fork similarity/clustering** | Always |
 | **C (Conditional)** | Pattern adaptation ONLY (trigram extraction for lexical pre-filter) | If query-time search becomes a measured bottleneck |
-| **B (Fallback)** | Library dependency for `cmd/spn/search.go` only, behind feature flag, with NOTICE generation | If `spn search` becomes primary user workflow |
+| **B (Fallback)** | Library dependency for `cmd/spn/search.go` only, behind feature flag, carrying the Apache-2.0 license and attribution notices (no NOTICE generation unless a later Zoekt release adds a NOTICE file) | If `spn search` becomes primary user workflow |
 | **A (Veto)** | **Never vendor Zoekt for fork clustering/similarity** | Never |
 
 ### Falsifiers
@@ -65,7 +65,7 @@ Zoekt assumes a relatively stable corpus with incremental git ingestion. Spoon e
 **For B (would invalidate fallback):**
 
 - `go get github.com/sourcegraph/zoekt` pulls incompatible Go version or breaks build
-- NOTICE generation at build fails
+- license/attribution-notice handling in the build is wrong (there is no upstream NOTICE to propagate; if a later Zoekt release adds one, this becomes a NOTICE-generation failure instead)
 - `spn search` latency without Zoekt <100ms p99
 
 **For A (would make vendoring viable — unlikely):**
@@ -108,4 +108,4 @@ The research framing assumed Zoekt could plug into Spoon's fork analysis pipelin
 
 The adversarial self-attack correctly identified the semantic gap, license friction, and maintenance burden as veto signals. Spoon's pipeline (multimodal embedding, content-hash cache, model-swap awareness, libSQL persistence) is more sophisticated than initially assumed and doesn't need Zoekt's machinery.
 
-**Next cycle**: If user confirms `spn search` is priority, prototype Fallback B (Zoekt library for search only) with NOTICE generation and feature flag.
+**Next cycle**: If user confirms `spn search` is priority, prototype Fallback B (Zoekt library for search only) with the Apache-2.0 license and attribution notices carried through the build, behind a feature flag.
