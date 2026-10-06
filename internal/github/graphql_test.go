@@ -54,11 +54,7 @@ func newTestClientGQL(t *testing.T, srv *httptest.Server) *Client {
 		t.Fatalf("parse server URL: %v", err)
 	}
 	tr := &rewriteTransport{target: u, base: http.DefaultTransport}
-	rest, err := ghAPI.NewRESTClient(ghAPI.ClientOptions{
-		AuthToken: "x",
-		Host:      "github.com",
-		Transport: tr,
-	})
+	rest, err := newRESTClient("x", tr)
 	if err != nil {
 		t.Fatalf("NewRESTClient: %v", err)
 	}

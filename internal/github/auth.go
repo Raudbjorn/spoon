@@ -148,7 +148,7 @@ func (c *Client) probeLogin(ctx context.Context, b *backend) (string, error) {
 	if err := c.waitRequest(ctx, b.REST.Limiter); err != nil {
 		return "", err
 	}
-	resp, err := b.Rest.RequestWithContext(ctx, http.MethodGet, "user", nil)
+	resp, err := restGet(ctx, b.Rest, "user", "")
 	if err != nil {
 		return "", err
 	}
@@ -170,7 +170,7 @@ func (c *Client) probeRateLimit(ctx context.Context, b *backend, status *AuthSta
 	if err := c.waitRequest(ctx, b.REST.Limiter); err != nil {
 		return
 	}
-	resp, err := b.Rest.RequestWithContext(ctx, http.MethodGet, "rate_limit", nil)
+	resp, err := restGet(ctx, b.Rest, "rate_limit", "")
 	if err != nil {
 		return
 	}

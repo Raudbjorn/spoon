@@ -20,10 +20,7 @@ func backendForServer(t *testing.T, login string, srv *httptest.Server) *backend
 	if err != nil {
 		t.Fatalf("parse server URL: %v", err)
 	}
-	rest, err := ghAPI.NewRESTClient(ghAPI.ClientOptions{
-		AuthToken: "x", Host: "github.com",
-		Transport: &rewriteTransport{target: u, base: http.DefaultTransport},
-	})
+	rest, err := newRESTClient("x", &rewriteTransport{target: u, base: http.DefaultTransport})
 	if err != nil {
 		t.Fatalf("NewRESTClient: %v", err)
 	}

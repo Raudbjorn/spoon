@@ -1,6 +1,11 @@
 package github
 
-import ghAPI "github.com/cli/go-gh/v2/pkg/api"
+import (
+	"fmt"
+	"net/http"
+
+	gogithub "github.com/google/go-github/v90/github"
+)
 
 // defaultRESTVersion is the wire value sent to the GitHub REST API.
 const defaultRESTVersion = "2022-11-28"
@@ -16,32 +21,58 @@ const restVersionHeader = "X-GitHub-Api-Version"
 // diffAcceptHeader requests GitHub's unified-diff compare representation
 // instead of JSON. Unlike the JSON compare response, it is not subject to
 // forge.CompareFilesCap -- see FetchCompareDiff in compare_diff.go, the only
-// consumer of the REST client this header builds.
+// consumer of the per-request Accept override built from it.
 const diffAcceptHeader = "application/vnd.github.v3.diff"
 
-// newVersionedRESTClient builds a ghAPI.RESTClient with the pinned API version
-// header set, without mutating the caller's ghAPI.ClientOptions.Headers map.
-// If the caller already has a Headers map, entries are preserved. The version
-// header is added or overwritten. The caller's Transport, AuthToken, Host, and
-// Timeout are preserved as supplied.
-func newVersionedRESTClient(opts ghAPI.ClientOptions) (*ghAPI.RESTClient, error) {
-	headers := make(map[string]string, len(opts.Headers)+1)
-	for k, v := range opts.Headers {
-		headers[k] = v
+// restUserAgent identifies spoon to GitHub; the API rejects requests without one.
+const restUserAgent = "spoon"
+
+// newRESTClient builds the go-github client for one GitHub identity. The pinned
+// API version is sent on every request (go-github defaults to the same value;
+// doGetSelect also passes it explicitly so a library bump cannot move it). An
+// empty token builds an anonymous client.
+//
+// Rate-limit pacing is owned by the backend pool and limiter, so go-github's own
+// pre-flight check is disabled: it would short-circuit a request the pool wants
+// to route to a different identity. Redirects to another host are refused, since
+// go-github attaches the Authorization header at the transport and would
+// otherwise replay it on every hop.
+func newRESTClient(token string, transport http.RoundTripper) (*gogithub.Client, error) {
+	httpClient := &http.Client{
+		Timeout: requestTimeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= maxRESTRedirects {
+				return fmt.Errorf("stopped after %d redirects", maxRESTRedirects)
+			}
+			if req.URL.Host != via[0].URL.Host {
+				return fmt.Errorf("refusing cross-host redirect from %q to %q", via[0].URL.Host, req.URL.Host)
+			}
+			return nil
+		},
 	}
-	headers[restVersionHeader] = defaultRESTVersion
-	opts.Headers = headers
-	return ghAPI.NewRESTClient(opts)
+	opts := []gogithub.ClientOptionsFunc{
+		gogithub.WithHTTPClient(httpClient),
+		gogithub.WithUserAgent(restUserAgent),
+		gogithub.WithDisableRateLimitCheck(),
+	}
+	if transport != nil {
+		opts = append(opts, gogithub.WithTransport(transport))
+	}
+	if token != "" {
+		opts = append(opts, gogithub.WithAuthToken(token))
+	}
+	return gogithub.NewClient(opts...)
 }
 
-// diffClientOptions returns opts with Headers replaced by a single Accept:
-// diffAcceptHeader entry, for building the RestDiff sibling of a Rest client
-// beside it (same AuthToken, Host, Transport, Timeout -- same identity and
-// budget, different representation). None of the three backend construction
-// sites in client.go set Headers on the options they pass in here, so there
-// is nothing to preserve; if that ever changes, this must start merging
-// instead of replacing.
-func diffClientOptions(opts ghAPI.ClientOptions) ghAPI.ClientOptions {
-	opts.Headers = map[string]string{"Accept": diffAcceptHeader}
+// maxRESTRedirects bounds redirect chains on REST requests (net/http's default).
+const maxRESTRedirects = 10
+
+// restRequestOptions returns the per-request options every REST call carries:
+// the pinned API version, plus an Accept override when accept is non-empty.
+func restRequestOptions(accept string) []gogithub.RequestOption {
+	opts := []gogithub.RequestOption{gogithub.WithVersion(defaultRESTVersion)}
+	if accept != "" {
+		opts = append(opts, func(req *http.Request) { req.Header.Set("Accept", accept) })
+	}
 	return opts
 }

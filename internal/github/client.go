@@ -10,6 +10,7 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -28,14 +29,14 @@ import (
 
 	ghAPI "github.com/cli/go-gh/v2/pkg/api"
 	ghauth "github.com/cli/go-gh/v2/pkg/auth"
+	gogithub "github.com/google/go-github/v90/github"
 	"github.com/svnbjrn/spoon/internal/github/treecommitinfo"
 	"github.com/svnbjrn/spoon/internal/github/webdiff"
 )
 
 // requestTimeout bounds a single GitHub HTTP request end to end.
 //
-// go-gh builds &http.Client{Transport: ..., Timeout: opts.Timeout}, so leaving
-// Timeout zero means no deadline at all. A backend that completes the TCP
+// An http.Client with a zero Timeout has no deadline at all. A backend that completes the TCP
 // handshake and then never sends response headers — the characteristic failure
 // of a free datacenter proxy — otherwise blocks forever: the gateway-retry loop
 // never runs because no error is returned, and the proxy is never scored
@@ -106,15 +107,7 @@ type budgetState struct {
 }
 
 type backend struct {
-	Rest *ghAPI.RESTClient
-	// RestDiff is Rest's sibling for FetchCompareDiff: same identity
-	// (AuthToken/Host/Transport), but built with Accept: diffAcceptHeader so
-	// GitHub returns a unified diff instead of JSON. May be nil -- a backend
-	// whose RestDiff failed to build (or was never given one, e.g. a
-	// pre-existing test that only sets Rest) simply can't run the diff
-	// fallback; doGetDiff reports that as an ordinary error rather than
-	// panicking.
-	RestDiff      *ghAPI.RESTClient
+	Rest          *gogithub.Client
 	GraphQL       *ghAPI.GraphQLClient
 	Login         string
 	REST          budgetState
@@ -149,8 +142,7 @@ type Client struct {
 	// mode ScanBranches doesn't have.
 	localBranchScan bool
 
-	rest                *ghAPI.RESTClient
-	restDiff            *ghAPI.RESTClient // aliases backends[0].RestDiff; see installBackends/ensurePool
+	rest                *gogithub.Client
 	gql                 *ghAPI.GraphQLClient
 	authenticated       bool
 	authScopeID         string // computed once; non-reversible scope fingerprint
@@ -247,47 +239,37 @@ func NewClientWithOptions(opts ClientOptions) (*Client, error) {
 
 	if len(opts.Tokens) == 0 {
 		// Proxy routing only attaches to explicit config-token backends (and the
-		// unauthenticated fallback). go-gh's DefaultRESTClient builds its own
+		// unauthenticated fallback). The gh-default GraphQL client builds its own
 		// transport, so a proxy configured without config tokens silently does
-		// nothing — warn rather than mislead.
+		// nothing there — warn rather than mislead.
 		if opts.Proxy.Enabled {
 			slog.Warn("github: proxy configured but no github.tokens set; proxy routing is inactive on the gh-default token path (add github.tokens to enable it)")
 		}
-		// Not ghAPI.DefaultRESTClient(): that is NewRESTClient(ClientOptions{}),
-		// which leaves Timeout zero. Passing only Timeout still triggers go-gh's
-		// option resolution (it keys off an empty Host), so host and token are
-		// read from the gh config exactly as before — this is the default path
-		// when no github.tokens are configured, so it must be bounded too.
-		defaultOpts := ghAPI.ClientOptions{Timeout: requestTimeout, Transport: rotating}
-		rest, err := newVersionedRESTClient(defaultOpts)
-		if err == nil {
-			b := &backend{Rest: rest, REST: newBudget(), GraphQLBudget: newBudget()}
-			if restDiff, diffErr := newVersionedRESTClient(diffClientOptions(defaultOpts)); diffErr == nil {
-				b.RestDiff = restDiff
-			} else {
-				slog.Debug("github: building diff-accept REST client failed; unbounded compare-diff fallback disabled for this backend", "error", diffErr)
+		// The token comes from the gh CLI config or GH_TOKEN/GITHUB_TOKEN, exactly
+		// as before; with none, fall back to an anonymous REST-only backend.
+		if ghToken != "" {
+			rest, err := newRESTClient(ghToken, rotating)
+			if err == nil {
+				b := &backend{Rest: rest, REST: newBudget(), GraphQLBudget: newBudget()}
+				// An empty Host and AuthToken make go-gh read both from the gh
+				// config; Timeout must still be set or the client has no deadline.
+				defaultOpts := ghAPI.ClientOptions{Timeout: requestTimeout, Transport: rotating}
+				if gql, gqlErr := ghAPI.NewGraphQLClient(defaultOpts); gqlErr == nil {
+					b.GraphQL = gql
+				}
+				c.authenticated = true
+				c.installBackends([]*backend{b})
+				c.initRateControls()
+				return c, nil
 			}
-			if gql, gqlErr := ghAPI.NewGraphQLClient(defaultOpts); gqlErr == nil {
-				b.GraphQL = gql
-			}
-			c.authenticated = true
-			c.installBackends([]*backend{b})
-			c.initRateControls()
-			return c, nil
+			slog.Debug("github: building authenticated REST client failed; falling back to anonymous", "error", err)
 		}
-		anonOpts := ghAPI.ClientOptions{AuthToken: "x", Host: defaultHost, Transport: &unauthTransport{base: rotating}, Timeout: requestTimeout}
-		rest, err = newVersionedRESTClient(anonOpts)
+		rest, err := newRESTClient("", rotating)
 		if err != nil {
 			return nil, fmt.Errorf("creating unauthenticated client: %w", err)
 		}
 		c.authenticated = false
-		b := &backend{Rest: rest, REST: newBudget(), GraphQLBudget: newBudget()}
-		if restDiff, diffErr := newVersionedRESTClient(diffClientOptions(anonOpts)); diffErr == nil {
-			b.RestDiff = restDiff
-		} else {
-			slog.Debug("github: building diff-accept REST client failed; unbounded compare-diff fallback disabled for this backend", "error", diffErr)
-		}
-		c.installBackends([]*backend{b})
+		c.installBackends([]*backend{{Rest: rest, REST: newBudget(), GraphQLBudget: newBudget()}})
 		c.initRateControls()
 		return c, nil
 	}
@@ -298,27 +280,20 @@ func NewClientWithOptions(opts ClientOptions) (*Client, error) {
 		if token == "" {
 			return nil, fmt.Errorf("github token list contains an empty entry")
 		}
-		clientOpts := ghAPI.ClientOptions{
+		rest, err := newRESTClient(token, rotating)
+		if err != nil {
+			return nil, fmt.Errorf("creating GitHub REST backend: %w", err)
+		}
+		gql, err := ghAPI.NewGraphQLClient(ghAPI.ClientOptions{
 			AuthToken: token,
 			Host:      defaultHost,
 			Transport: rotating,
 			Timeout:   requestTimeout,
-		}
-		rest, err := newVersionedRESTClient(clientOpts)
-		if err != nil {
-			return nil, fmt.Errorf("creating GitHub REST backend: %w", err)
-		}
-		gql, err := ghAPI.NewGraphQLClient(clientOpts)
+		})
 		if err != nil {
 			return nil, fmt.Errorf("creating GitHub GraphQL backend: %w", err)
 		}
-		b := &backend{Rest: rest, GraphQL: gql, REST: newBudget(), GraphQLBudget: newBudget()}
-		if restDiff, diffErr := newVersionedRESTClient(diffClientOptions(clientOpts)); diffErr == nil {
-			b.RestDiff = restDiff
-		} else {
-			slog.Debug("github: building diff-accept REST client failed; unbounded compare-diff fallback disabled for this backend", "error", diffErr)
-		}
-		backends = append(backends, b)
+		backends = append(backends, &backend{Rest: rest, GraphQL: gql, REST: newBudget(), GraphQLBudget: newBudget()})
 	}
 	c.installBackends(backends)
 	c.initRateControls()
@@ -334,7 +309,6 @@ func (c *Client) installBackends(backends []*backend) {
 	c.pool = &backendPool{backends: backends}
 	if len(backends) > 0 {
 		c.rest = backends[0].Rest
-		c.restDiff = backends[0].RestDiff
 		c.gql = backends[0].GraphQL
 	}
 }
@@ -348,7 +322,7 @@ func (c *Client) ensurePool() {
 	if c.pool != nil {
 		return
 	}
-	b := &backend{Rest: c.rest, RestDiff: c.restDiff, GraphQL: c.gql, REST: newBudget(), GraphQLBudget: newBudget()}
+	b := &backend{Rest: c.rest, GraphQL: c.gql, REST: newBudget(), GraphQLBudget: newBudget()}
 	c.backends = []*backend{b}
 	c.pool = &backendPool{backends: c.backends}
 	if c.global == nil {
@@ -399,14 +373,6 @@ func (c *Client) EnableTreeCommitInfo() {
 // EnableTreeCommitInfo was never called.
 func (c *Client) TreeCommitInfo() *treecommitinfo.Client {
 	return c.treeCommitInfo
-}
-
-type unauthTransport struct{ base http.RoundTripper }
-
-func (t *unauthTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	req = req.Clone(req.Context())
-	req.Header.Del("Authorization")
-	return t.base.RoundTrip(req)
 }
 
 func (c *Client) IsAuthenticated() bool { return c.authenticated }
@@ -510,24 +476,44 @@ func (c *Client) waitRequest(ctx context.Context, lim *limiter) error {
 }
 
 func (c *Client) doGet(ctx context.Context, path string) (*http.Response, error) {
-	return c.doGetSelect(ctx, path, func(b *backend) *ghAPI.RESTClient { return b.Rest })
+	return c.doGetAccept(ctx, path, "")
 }
 
 // doGetDiff is doGet's counterpart for FetchCompareDiff: identical backend
-// selection, retry, limiter wait, and rate-limit accounting, but issues the
-// request through b.RestDiff (Accept: diffAcceptHeader) instead of b.Rest.
-// It still draws on the REST budget/limiter — GitHub bills this as one
-// ordinary core API call; only the Accept header differs, not the resource.
+// selection, retry, limiter wait, and rate-limit accounting, but with Accept:
+// diffAcceptHeader so GitHub returns a unified diff instead of JSON. It still
+// draws on the REST budget/limiter — GitHub bills this as one ordinary core API
+// call; only the Accept header differs, not the resource.
 func (c *Client) doGetDiff(ctx context.Context, path string) (*http.Response, error) {
-	return c.doGetSelect(ctx, path, func(b *backend) *ghAPI.RESTClient { return b.RestDiff })
+	return c.doGetAccept(ctx, path, diffAcceptHeader)
 }
 
-// doGetSelect is doGet's shared implementation, parameterized on which of a
-// backend's REST clients to use. selectClient runs inside doWithRetry's
-// closure for the same reason backend selection does: a retry after a
-// rate-limit sleep must be able to land on a different backend (and that
-// backend's own RestDiff/Rest), not silently reuse the one just disabled.
-func (c *Client) doGetSelect(ctx context.Context, path string, selectClient func(*backend) *ghAPI.RESTClient) (*http.Response, error) {
+// restGet issues one GET through a go-github client and returns the raw
+// response, so callers keep the path-based, raw-JSON contract the rest of the
+// package is written against. go-github reports 202 Accepted as an error with
+// the payload attached; here it is an ordinary success, as the stats endpoints
+// (FetchContributors) expect.
+func restGet(ctx context.Context, rc *gogithub.Client, path, accept string) (*http.Response, error) {
+	req, err := rc.NewRequest(ctx, http.MethodGet, path, nil, restRequestOptions(accept)...)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := rc.BareDo(req)
+	if err != nil {
+		var accepted *gogithub.AcceptedError
+		if errors.As(err, &accepted) && resp != nil && resp.Response != nil {
+			resp.Response.Body = io.NopCloser(bytes.NewReader(accepted.Raw))
+			return resp.Response, nil
+		}
+		return nil, err
+	}
+	return resp.Response, nil
+}
+
+// doGetAccept is the shared implementation of doGet and doGetDiff. The backend
+// is selected inside doWithRetry's closure so a retry after a rate-limit sleep
+// can land on a different backend, not silently reuse the one just disabled.
+func (c *Client) doGetAccept(ctx context.Context, path, accept string) (*http.Response, error) {
 	c.ensurePool()
 	var (
 		resp *http.Response
@@ -538,7 +524,7 @@ func (c *Client) doGetSelect(ctx context.Context, path string, selectClient func
 		if b, berr = c.pool.nextBackend(time.Now()); berr != nil {
 			return berr
 		}
-		rc := selectClient(b)
+		rc := b.Rest
 		if rc == nil {
 			return fmt.Errorf("github: no REST client configured for this backend/request")
 		}
@@ -547,7 +533,7 @@ func (c *Client) doGetSelect(ctx context.Context, path string, selectClient func
 			if err := c.waitRequest(ctx, b.REST.Limiter); err != nil {
 				return err
 			}
-			resp, requestErr = rc.RequestWithContext(ctx, http.MethodGet, path, nil)
+			resp, requestErr = restGet(ctx, rc, path, accept)
 			if requestErr == nil || !isGatewayOrTransportError(requestErr) || attempt == 2 {
 				break
 			}
@@ -753,11 +739,8 @@ func (c *Client) sleep() func(context.Context, time.Duration) error {
 }
 
 func statusCode(err error) int {
-	var httpErr *ghAPI.HTTPError
-	if errors.As(err, &httpErr) {
-		return httpErr.StatusCode
-	}
-	return 0
+	status, _, _ := httpFailure(err)
+	return status
 }
 
 func isGatewayOrTransportError(err error) bool {

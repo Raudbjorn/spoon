@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	ghAPI "github.com/cli/go-gh/v2/pkg/api"
 	"github.com/svnbjrn/spoon/internal/forge"
 )
 
@@ -687,9 +686,8 @@ func isTransientServerError(err error) bool {
 	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) || strings.Contains(err.Error(), "unexpected end of JSON input") {
 		return true
 	}
-	var httpErr *ghAPI.HTTPError
-	if asHTTPError(err, &httpErr) {
-		switch httpErr.StatusCode {
+	if status, _, ok := httpFailure(err); ok {
+		switch status {
 		case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
 			return true
 		default:
