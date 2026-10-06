@@ -411,8 +411,8 @@ Flags:
   --full-mdg               Build a real Module Dependency Graph for the upstream
                            using personalized PageRank centrality. Phase A
                            supports Go repositories; other languages silently
-                           fall back to the directory-centrality proxy. Requires
-                           'git' on PATH. Adds 10-60 s and up to ~1 GB peak disk
+                           fall back to the directory-centrality proxy. Downloads
+                           a source archive. Adds 10-60 s and up to ~1 GB peak disk
                            on first run; cached for 24 h
                            under ~/.cache/spoon/mdg/. Default: off.
   --no-mdg                 Force the directory-centrality proxy even if an
