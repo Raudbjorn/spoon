@@ -324,6 +324,39 @@ func TestSearchExplainsWhyItReturnedNothing(t *testing.T) {
 			t.Errorf("stderr = %s, want no empty-result warning on a hit", stderr)
 		}
 	})
+
+	// Every vector for this model went stale: the document was edited after it
+	// was embedded and re-embedding never ran, so search legitimately returns
+	// nothing even though the rows exist. The count must not read that as a
+	// model mismatch — that claim is about a *different* embedder's output.
+	t.Run("all vectors stale is not a model mismatch", func(t *testing.T) {
+		isolateSpoonHome(t)
+		seed(t, "current-model")
+		db, err := store.OpenDefault()
+		if err != nil {
+			t.Fatalf("OpenDefault: %v", err)
+		}
+		repoKey := store.RepoKey("github", "github.com", "up", "repo")
+		if err := db.UpsertSnapshot(context.Background(), store.Snapshot{
+			Repo:     store.RepoRecord{Provider: "github", Host: "github.com", Owner: "up", Name: "repo", FirstSeen: time.Unix(1, 0).UTC(), LastSeen: time.Unix(1, 0).UTC()},
+			Fork:     store.ForkRecord{ForgeID: "only", Owner: "o", Name: "only", URL: "https://example/only", UpdatedAt: time.Unix(1, 0).UTC()},
+			Document: store.DocumentRecord{DocumentID: store.DocumentID(store.ForkKey(repoKey, "only")), ContentHash: "edited-after-indexing", Body: "new body", UpdatedAt: time.Unix(1, 0).UTC()},
+		}); err != nil {
+			t.Fatalf("UpsertSnapshot: %v", err)
+		}
+		db.Close()
+
+		stdout, stderr, exit := run(t, "current-model", "canvas")
+		if exit != 0 || stdout != "" {
+			t.Fatalf("exit=%d stdout=%q, want exit 0 and no rows", exit, stdout)
+		}
+		if strings.Contains(stderr, "semantic_model_mismatch") {
+			t.Errorf("stderr = %s, want no model mismatch — the vectors are stale, not foreign", stderr)
+		}
+		if !strings.Contains(stderr, "semantic_index_empty") {
+			t.Errorf("stderr = %s, want semantic_index_empty (nothing searchable remains)", stderr)
+		}
+	})
 }
 
 // TestSearchVoyageFlagsRequireAKey covers the one place a Voyage failure is fatal:

@@ -1480,12 +1480,19 @@ func (s *Store) SearchRows(ctx context.Context, model, owner, name string) ([]Se
 	return out, rows.Err()
 }
 
-// EmbeddingModelCounts returns the number of stored embeddings per model id.
-// It exists so an empty search can say *why* it is empty: vectors written by a
-// different embedder are invisible to the current model, and reporting that as
-// an empty index sends the caller to index a repo that is already indexed.
+// EmbeddingModelCounts returns the number of *searchable* embeddings per model
+// id. It exists so an empty search can say *why* it is empty: vectors written by
+// a different embedder are invisible to the current model, and reporting that
+// as an empty index sends the caller to index a repo that is already indexed.
+//
+// It applies the same content-hash condition as SearchRows. Counting rows that
+// search can never return would make a model whose vectors are all stale
+// (document edited since, re-embedding failed) look populated, and the empty
+// result would then be explained as a model mismatch when it is really staleness.
 func (s *Store) EmbeddingModelCounts(ctx context.Context) (map[string]int, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT model,COUNT(*) FROM embeddings GROUP BY model`)
+	rows, err := s.db.QueryContext(ctx, `SELECT e.model,COUNT(*) FROM embeddings e
+		JOIN documents d ON d.document_id=e.document_id AND e.content_hash=d.content_hash
+		GROUP BY e.model`)
 	if err != nil {
 		return nil, err
 	}

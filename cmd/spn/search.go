@@ -234,7 +234,7 @@ func runSearchWithEffectiveDeps(args []string, stdout, stderr io.Writer, effecti
 			emitSemanticEmpty(stderr, useVoyage)
 			return 0
 		}
-		emitEmptySearch(stderr, db, model.ModelID(), repoOwner, repoName, useVoyage)
+		emitEmptySearch(ctx, stderr, db, model.ModelID(), repoOwner, repoName, useVoyage)
 		return 0
 	}
 	if err := emitSearchResults(stdout, results); err != nil {
@@ -428,8 +428,8 @@ func emitSemanticEmpty(stderr io.Writer, useVoyage bool) {
 // whose vectors were written by a different embedder, or a genuinely empty
 // index. A count-query failure degrades to the generic envelope — the search
 // itself succeeded, so the diagnosis is best-effort.
-func emitEmptySearch(stderr io.Writer, db *store.Store, modelID, repoOwner, repoName string, useVoyage bool) {
-	counts, err := db.EmbeddingModelCounts(context.Background())
+func emitEmptySearch(ctx context.Context, stderr io.Writer, db *store.Store, modelID, repoOwner, repoName string, useVoyage bool) {
+	counts, err := db.EmbeddingModelCounts(ctx)
 	if err != nil {
 		emitSemanticEmpty(stderr, useVoyage)
 		return
@@ -443,7 +443,7 @@ func emitEmptySearch(stderr io.Writer, db *store.Store, modelID, repoOwner, repo
 			"details":     map[string]any{"repo": filter, "model": modelID, "indexedForModel": counts[modelID]},
 			"remediation": "Check the owner/repo spelling, then run 'spn forks list " + filter + "' if that repo has not been indexed.",
 		}})
-	case len(counts) > 0:
+	case len(counts) > 0 && counts[modelID] == 0:
 		_ = agentio.WriteNDJSON(stderr, map[string]any{"warning": map[string]any{
 			"code":        "semantic_model_mismatch",
 			"message":     "no embeddings are stored for " + modelID + "; the index was written by a different embedder",

@@ -98,4 +98,29 @@ func TestEmbeddingModelCountsGroupsByModel(t *testing.T) {
 	if counts["m1"] != 2 || counts["m2"] != 1 || len(counts) != 2 {
 		t.Errorf("counts = %v, want m1:2 m2:1", counts)
 	}
+
+	// A vector whose document changed since is one SearchRows will never return,
+	// so counting it would report a model as populated when search sees nothing.
+	if err := db.UpsertSnapshot(ctx, Snapshot{
+		Repo:     RepoRecord{Provider: "github", Host: "github.com", Owner: "o", Name: "r", FirstSeen: now, LastSeen: now},
+		Fork:     ForkRecord{ForgeID: "stale", Owner: "x", Name: "stale", URL: "u", UpdatedAt: now},
+		Document: DocumentRecord{DocumentID: "fork:stale", ContentHash: "new-hash", Body: "edited after indexing", UpdatedAt: now},
+	}); err != nil {
+		t.Fatalf("upsert stale snapshot: %v", err)
+	}
+	if err := db.UpsertEmbeddings(ctx, []EmbeddingRecord{{
+		DocumentID: "fork:stale", Model: "m3", Dim: 1, Vector: []byte{0, 0, 128, 63}, ContentHash: "old-hash", CreatedAt: now,
+	}}); err != nil {
+		t.Fatalf("upsert stale embedding: %v", err)
+	}
+	counts, err = db.EmbeddingModelCounts(ctx)
+	if err != nil {
+		t.Fatalf("counts after staleness: %v", err)
+	}
+	if _, ok := counts["m3"]; ok {
+		t.Errorf("counts = %v, want m3 absent — a stale vector is not searchable and must not count", counts)
+	}
+	if rows, err := db.SearchRows(ctx, "m3", "", ""); err != nil || len(rows) != 0 {
+		t.Fatalf("SearchRows must agree with the counts: rows=%d err=%v", len(rows), err)
+	}
 }
