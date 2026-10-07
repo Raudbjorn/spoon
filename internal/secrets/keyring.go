@@ -45,10 +45,10 @@ func NewKeyringStore(cfg KeyringConfig) (*KeyringStore, error) {
 		cfg.Timeout = opTimeout
 	}
 	backends := cfg.AllowedBackends
-	if len(backends) == 0 {
+	if backends == nil {
 		backends = platformBackends()
 	}
-	kr, err := openKeyring(keyring.Config{
+	kr, err := openBounded(keyring.Config{
 		ServiceName:     cfg.ServiceName,
 		AllowedBackends: backends,
 		// KWallet and Secret Service are namespaced by these, not by ServiceName alone.
@@ -56,11 +56,32 @@ func NewKeyringStore(cfg KeyringConfig) (*KeyringStore, error) {
 		KWalletFolder:            cfg.ServiceName,
 		LibSecretCollectionName:  "login",
 		KeychainTrustApplication: true,
-	})
+	}, cfg.Timeout)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 	return &KeyringStore{kr: kr, service: cfg.ServiceName, timeout: cfg.Timeout}, nil
+}
+
+// openBounded runs openKeyring under the operation timeout: backend
+// initialisation (KWallet openWallet, the Secret Service D-Bus session) can
+// block on an unlock prompt just like a later call.
+func openBounded(cfg keyring.Config, timeout time.Duration) (keyring.Keyring, error) {
+	type result struct {
+		kr  keyring.Keyring
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		kr, err := openKeyring(cfg)
+		done <- result{kr, err}
+	}()
+	select {
+	case r := <-done:
+		return r.kr, r.err
+	case <-time.After(timeout):
+		return nil, fmt.Errorf("open: %w", ErrTimeout)
+	}
 }
 
 // platformBackends lists only backends that need no interactive password. The
@@ -75,7 +96,9 @@ func platformBackends() []keyring.BackendType {
 	case "windows":
 		return []keyring.BackendType{keyring.WinCredBackend}
 	default:
-		return nil
+		// Non-nil and empty: a nil slice means "every available backend" to
+		// keyring.Open, which would pull in pass or the password-less file backend.
+		return []keyring.BackendType{}
 	}
 }
 

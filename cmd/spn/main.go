@@ -97,7 +97,11 @@ func parseGlobalOptions(args []string) ([]string, bool, error) {
 // confirms that the requested noun consumes configuration.
 func dispatchConfigured(args []string, stdout, stderr io.Writer, presentation presentation, deps commandDeps) int {
 	var bootstrapStderr bytes.Buffer
-	boot := config.Bootstrap(&bootstrapStderr)
+	bootstrap := config.Bootstrap
+	if isAuthStorage(args) {
+		bootstrap = config.BootstrapSnapshot
+	}
+	boot := bootstrap(&bootstrapStderr)
 	if bootstrapStderr.Len() > 0 {
 		_ = writeError(stderr, presentation, roleWarning, bootstrapStderr.String())
 	}
@@ -124,6 +128,12 @@ func dispatchConfigured(args []string, stdout, stderr io.Writer, presentation pr
 		return authops.Run("spn", args[1:], stdout, stderr, boot, env)
 	}
 	panic("configured dispatch called with unrecognized noun")
+}
+
+// isAuthStorage reports whether args select "auth storage", which must see the
+// config before any automatic token migration.
+func isAuthStorage(args []string) bool {
+	return len(args) >= 2 && args[0] == "auth" && args[1] == "storage"
 }
 
 func helpText() string {

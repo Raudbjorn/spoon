@@ -127,3 +127,26 @@ func TestRefsAndSelection(t *testing.T) {
 		t.Errorf("Default() under go test = %v %v, want (nil, nil) so tests never touch the real keyring", st, err)
 	}
 }
+
+func TestUnsupportedPlatformBackendsAreNonNilEmpty(t *testing.T) {
+	// keyring.Open treats a nil AllowedBackends as "every backend", which would
+	// admit pass or the password-less file backend.
+	var got []keyring.BackendType
+	prev := openKeyring
+	openKeyring = func(c keyring.Config) (keyring.Keyring, error) { got = c.AllowedBackends; return nil, keyring.ErrNoAvailImpl }
+	defer func() { openKeyring = prev }()
+	_, _ = NewKeyringStore(KeyringConfig{AllowedBackends: []keyring.BackendType{}})
+	if got == nil {
+		t.Fatal("empty AllowedBackends was replaced by nil (= all backends)")
+	}
+}
+
+func TestKeyringOpenIsBoundedByTimeout(t *testing.T) {
+	prev := openKeyring
+	release := make(chan struct{})
+	openKeyring = func(keyring.Config) (keyring.Keyring, error) { <-release; return nil, keyring.ErrNoAvailImpl }
+	defer func() { close(release); openKeyring = prev }()
+	if _, err := NewKeyringStore(KeyringConfig{Timeout: 20 * time.Millisecond}); !errors.Is(err, ErrUnavailable) || !strings.Contains(err.Error(), ErrTimeout.Error()) {
+		t.Fatalf("err = %v, want unavailable caused by timeout", err)
+	}
+}

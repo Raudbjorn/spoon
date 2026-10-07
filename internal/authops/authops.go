@@ -86,6 +86,12 @@ func Run(prog string, args []string, stdout, stderr io.Writer, boot config.Boots
 		return agentio.NewError(agentio.CodeBadInput, "no writable spoon config to store the token in",
 			"Unset SPOON_NO_CONFIG and fix any config error, then retry.").Emit(stderr)
 	}
+	// A loaded layer is not necessarily writable (a readable /etc/spoon, say), so
+	// probe publication now instead of after GitHub has issued a credential.
+	if err := config.ProbeAtomicPublication(boot.Layer.Path); err != nil {
+		return agentio.NewError(agentio.CodeBadInput, "cannot store the token: "+err.Error(),
+			"Make the directory holding the config writable for this user, then retry.").Emit(stderr)
+	}
 	redirect := env[RedirectEnv]
 	if redirect == "" {
 		redirect = oauth.DefaultRedirectURI
@@ -128,6 +134,7 @@ func Run(prog string, args []string, stdout, stderr io.Writer, boot config.Boots
 	if err := config.Save(boot.Layer.Path, &cfgCopy); err != nil {
 		return agentio.NewError(agentio.CodeInternal, "authorized as "+login+" but saving the token failed: "+err.Error(), agentio.RemediationInternal()).Emit(stderr)
 	}
+	emitInlineFallback(stderr, &cfgCopy)
 	if err := agentio.WriteJSON(stdout, map[string]any{
 		"login": login, "scope": tok.Scope, "saved": true, "config": boot.Layer.Path,
 		"storage": config.TokenStorage(&cfgCopy),
@@ -135,6 +142,20 @@ func Run(prog string, args []string, stdout, stderr io.Writer, boot config.Boots
 		return agentio.NewError(agentio.CodeInternal, err.Error(), agentio.RemediationInternal()).Emit(stderr)
 	}
 	return 0
+}
+
+// emitInlineFallback reports, as a structured envelope on the command's own
+// stderr, that Save kept tokens in the config file because the keyring failed.
+func emitInlineFallback(stderr io.Writer, c *config.Config) {
+	cause := c.InlineFallback()
+	if cause == nil {
+		return
+	}
+	_ = agentio.WriteNDJSON(stderr, map[string]any{"warning": map[string]any{
+		"code":        "keyring_unavailable",
+		"message":     "GitHub tokens stay in the 0600 config file: the OS keyring could not be used: " + cause.Error(),
+		"remediation": keyringRemediation,
+	}})
 }
 
 func prioritizeToken(list []string, v string) []string {

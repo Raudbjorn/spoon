@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/svnbjrn/spoon/internal/secrets"
 )
 
 func TestEnsureDefault_firstRunWritesConfigAndReadme(t *testing.T) {
@@ -159,5 +161,35 @@ func TestDetectHostUsesNativeGitHubAuthGuidance(t *testing.T) {
 	}
 	if strings.Contains(guidance, "gh CLI") || strings.Contains(guidance, "gh auth") || strings.Contains(guidance, "cli.github.com") {
 		t.Errorf("first run still requires gh: %s", guidance)
+	}
+}
+
+func TestBootstrapSnapshotLeavesInlineTokensAlone(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("SPOON_NO_CONFIG", "")
+	t.Setenv("SPOON_SECRET_STORE", "")
+	path, err := DefaultPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	func() {
+		defer UseSecretStore(nil)()
+		if err := Save(path, tokenConfig(tokA)); err != nil {
+			t.Fatal(err)
+		}
+	}()
+	mem := secrets.NewMemoryStore()
+	defer UseSecretStore(mem)()
+
+	snap := BootstrapSnapshot(&bytes.Buffer{})
+	if TokenStorage(snap.Config) != "file" || !strings.Contains(readFile(t, path), tokA) {
+		t.Fatal("BootstrapSnapshot migrated tokens; auth storage needs the pre-migration state")
+	}
+	if names, _ := mem.Names(); len(names) != 0 {
+		t.Fatalf("snapshot wrote keyring entries: %v", names)
+	}
+	if got := Bootstrap(&bytes.Buffer{}); TokenStorage(got.Config) != "keyring" {
+		t.Errorf("Bootstrap storage = %q, want keyring (startup migration)", TokenStorage(got.Config))
 	}
 }

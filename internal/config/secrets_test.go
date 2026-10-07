@@ -226,3 +226,64 @@ func TestMigrateInlineSecrets(t *testing.T) {
 		t.Fatalf("Load after migration = %v %v", got, err)
 	}
 }
+
+func TestTokenStorageCountsDuplicateTokensOnce(t *testing.T) {
+	defer UseSecretStore(secrets.NewMemoryStore())()
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := Save(path, tokenConfig(tokA, tokA)); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := TokenStorage(loaded); got != "keyring" {
+		t.Errorf("TokenStorage = %q, want keyring", got)
+	}
+	var stderr bytes.Buffer
+	if moved := MigrateInlineSecrets(path, loaded, &stderr); moved != 0 || stderr.Len() != 0 {
+		t.Errorf("migration retried for an already-migrated config: moved=%d stderr=%q", moved, stderr.String())
+	}
+}
+
+func TestSaveRemovesNewKeyringEntriesWhenPublishFails(t *testing.T) {
+	mem := secrets.NewMemoryStore()
+	defer UseSecretStore(mem)()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.Mkdir(path+".tmp", 0o700); err != nil { // WriteFile onto a directory fails
+		t.Fatal(err)
+	}
+	if err := Save(path, tokenConfig(tokA)); err == nil {
+		t.Fatal("Save succeeded, want publish failure")
+	}
+	if names, _ := mem.Names(); len(names) != 0 {
+		t.Errorf("orphaned keyring entries after failed Save: %v", names)
+	}
+}
+
+func TestMigrateWarnsWhenKeyringUnusable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	func() {
+		defer UseSecretStore(nil)()
+		if err := Save(path, tokenConfig(tokA)); err != nil {
+			t.Fatal(err)
+		}
+	}()
+	restore := UseSecretStore(nil)
+	defer restore()
+	secretStoreMu.Lock()
+	secretStoreErr = errors.New("no secret service")
+	secretStoreMu.Unlock()
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	if moved := MigrateInlineSecrets(path, loaded, &stderr); moved != 0 || !strings.Contains(stderr.String(), "no secret service") {
+		t.Fatalf("moved=%d stderr=%q, want a keyring warning", moved, stderr.String())
+	}
+	if strings.Contains(stderr.String(), tokA) {
+		t.Error("warning leaks the token")
+	}
+}

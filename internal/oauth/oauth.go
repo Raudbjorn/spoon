@@ -23,6 +23,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -126,6 +127,9 @@ func (c Config) Login(ctx context.Context, timeout time.Duration, announce func(
 	}
 	done := make(chan outcome, 1)
 	var once sync.Once
+	// claimed is set by the first valid callback so a duplicate cannot redeem
+	// the same single-use code while the first exchange is in flight.
+	var claimed atomic.Bool
 	finish := func(tok Token, err error) { once.Do(func() { done <- outcome{tok, err} }) }
 
 	mux := http.NewServeMux()
@@ -149,6 +153,10 @@ func (c Config) Login(ctx context.Context, timeout time.Duration, announce func(
 		code := q.Get("code")
 		if code == "" {
 			writePage(w, http.StatusBadRequest, "Missing code", "The callback carried no authorization code.")
+			return
+		}
+		if !claimed.CompareAndSwap(false, true) {
+			writePage(w, http.StatusConflict, "Already handled", "This login is already being completed; see the terminal.")
 			return
 		}
 		ectx, cancel := context.WithTimeout(r.Context(), tokenExchangeBudget)
@@ -240,6 +248,8 @@ func (c Config) exchange(ctx context.Context, code, verifier string) (Token, err
 		AccessToken string `json:"access_token"`
 		TokenType   string `json:"token_type"`
 		Scope       string `json:"scope"`
+		ExpiresIn   int64  `json:"expires_in"`
+		Refresh     string `json:"refresh_token"`
 		Error       string `json:"error"`
 		Description string `json:"error_description"`
 	}
@@ -251,6 +261,11 @@ func (c Config) exchange(ctx context.Context, code, verifier string) (Token, err
 	}
 	if resp.StatusCode != http.StatusOK || out.AccessToken == "" {
 		return Token{}, fmt.Errorf("oauth: token endpoint returned HTTP %d without an access token", resp.StatusCode)
+	}
+	if out.Refresh != "" || out.ExpiresIn > 0 {
+		// Only the access token is stored and there is no refresh path, so an
+		// expiring token would silently stop working.
+		return Token{}, errors.New("oauth: the app issued an expiring token (expires_in/refresh_token); disable token expiration on the OAuth app and do not request offline_access")
 	}
 	return Token{AccessToken: out.AccessToken, Scope: out.Scope, TokenType: out.TokenType}, nil
 }
@@ -286,8 +301,8 @@ func sanitize(s string) string {
 		}
 		return r
 	}, s)
-	if len(s) > maxLen {
-		s = s[:maxLen]
+	if runes := []rune(s); len(runes) > maxLen {
+		s = string(runes[:maxLen])
 	}
 	return s
 }

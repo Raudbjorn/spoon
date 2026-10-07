@@ -412,7 +412,7 @@ func TestFetchForksAuto_RESTDedupAndOrder(t *testing.T) {
 			})
 			return
 		}
-		w.Header().Set("Link", `<`+"http://"+r.Host+r.URL.Path+`?sort=oldest&per_page=100&page=2>; rel="next"`)
+		w.Header().Set("Link", `<`+"https://api.github.com"+r.URL.Path+`?sort=oldest&per_page=100&page=2>; rel="next"`)
 		_ = json.NewEncoder(w).Encode([]ForkInfo{
 			{ID: 1, FullName: "a/r"},
 			{ID: 2, FullName: "b/r", Stars: 7},
@@ -508,7 +508,7 @@ func TestFetchForksAuto_DuplicateOnlyPagesStillCounted(t *testing.T) {
 				_ = json.NewEncoder(w).Encode([]ForkInfo{{ID: 1, FullName: "a/r"}}) // repeats only
 				return
 			}
-			w.Header().Set("Link", `<`+"http://"+r.Host+r.URL.Path+`?sort=oldest&per_page=100&page=2>; rel="next"`)
+			w.Header().Set("Link", `<`+"https://api.github.com"+r.URL.Path+`?sort=oldest&per_page=100&page=2>; rel="next"`)
 			_ = json.NewEncoder(w).Encode([]ForkInfo{{ID: 1, FullName: "a/r"}})
 		}))
 		defer srv.Close()

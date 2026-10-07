@@ -35,7 +35,6 @@ var (
 	secretStoreVal secrets.Store
 	secretStoreErr error
 	secretStoreSet bool
-	fallbackWarned sync.Once
 )
 
 // UseSecretStore replaces the process-wide secret store (nil keeps secrets
@@ -111,23 +110,22 @@ func unavailableReason(err error) string {
 // list to persist (references on success, the inline values when the keyring
 // cannot be used), the reference map to remember, and the names of loaded
 // entries that are no longer used. It writes only to the keyring.
-func (c *Config) externalizeSecrets(forceInline bool) (persist []string, refs map[string]string, stale []string) {
+func (c *Config) externalizeSecrets(forceInline bool) (persist []string, refs map[string]string, stale, created []string) {
 	inline := slices.Clone(c.GitHub.Tokens)
 	if len(inline) == 0 || forceInline || c.wantsInline() {
 		// Nothing to store, or the caller wants plaintext: every loaded entry is
 		// now unreferenced and may be pruned once the file is published.
-		return inline, nil, c.staleRefs(nil)
+		return inline, nil, c.staleRefs(nil), nil
 	}
 	st, err := SecretStore()
 	if st == nil {
 		if err != nil {
-			warnInline(err)
+			c.inlineFallback = err
 		}
-		return inline, nil, nil
+		return inline, nil, nil, nil
 	}
 	refs = make(map[string]string, len(inline))
 	persist = make([]string, 0, len(inline))
-	var created []string
 	for _, token := range inline {
 		name, known := refs[token]
 		if !known {
@@ -154,16 +152,42 @@ func (c *Config) externalizeSecrets(forceInline bool) (persist []string, refs ma
 		refs[token] = name
 		persist = append(persist, secrets.FormatRef(name))
 	}
-	return persist, refs, c.staleRefs(refs)
+	return persist, refs, c.staleRefs(refs), created
 }
 
 // rollback undoes this save's new keyring entries and keeps the tokens inline.
-func (c *Config) rollback(st secrets.Store, created, inline []string, cause error) ([]string, map[string]string, []string) {
-	for _, name := range created {
+func (c *Config) rollback(st secrets.Store, created, inline []string, cause error) ([]string, map[string]string, []string, []string) {
+	removeEntries(st, created)
+	c.inlineFallback = cause
+	return inline, nil, nil, nil
+}
+
+// removeEntries best-effort deletes keyring entries this save created.
+func removeEntries(st secrets.Store, names []string) {
+	for _, name := range names {
 		_ = st.Remove(name)
 	}
-	warnInline(cause)
-	return inline, nil, nil
+}
+
+// discardCreated undoes externalizeSecrets' keyring writes when publishing
+// the file failed, so a failed save leaves no unreferenced credential behind.
+func discardCreated(created []string) {
+	if len(created) == 0 {
+		return
+	}
+	if st, _ := SecretStore(); st != nil {
+		removeEntries(st, created)
+	}
+}
+
+// InlineFallback reports why the most recent Save kept GitHub tokens inline
+// although the keyring was wanted (nil when it did not). Callers surface it
+// through their own output channel; Save never writes to stderr itself.
+func (c *Config) InlineFallback() error {
+	if c == nil {
+		return nil
+	}
+	return c.inlineFallback
 }
 
 // staleRefs lists loaded keyring entries that the saved config no longer uses.
@@ -175,12 +199,6 @@ func (c *Config) staleRefs(keep map[string]string) []string {
 		}
 	}
 	return stale
-}
-
-func warnInline(cause error) {
-	fallbackWarned.Do(func() {
-		slog.Warn("github tokens stay in the 0600 config file: the OS keyring could not be used", "error", cause, "override", secrets.EnvBackend+"=file silences this")
-	})
 }
 
 func newTokenName() (string, error) {
@@ -214,11 +232,22 @@ func TokenStorage(c *Config) string {
 	switch {
 	case c == nil || len(c.GitHub.Tokens) == 0:
 		return "none"
-	case len(c.secretRefs) == len(c.GitHub.Tokens):
+	case c.allInKeyring():
 		return "keyring"
 	default:
 		return "file"
 	}
+}
+
+// allInKeyring reports whether every token is backed by a keyring entry.
+// Duplicate tokens share one entry, so this checks membership, not counts.
+func (c *Config) allInKeyring() bool {
+	for _, token := range c.GitHub.Tokens {
+		if _, ok := c.secretRefs[token]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // MigrateInlineSecrets moves inline GitHub tokens of the loaded config at path
@@ -226,16 +255,22 @@ func TokenStorage(c *Config) string {
 // keyring, and never leaves a token unrecorded: Save stores and verifies the
 // keyring entries before the file is rewritten. Returns the number moved.
 func MigrateInlineSecrets(path string, c *Config, stderr io.Writer) int {
-	if c == nil || len(c.GitHub.Tokens) == 0 || len(c.secretRefs) == len(c.GitHub.Tokens) || c.wantsInline() {
+	if c == nil || len(c.GitHub.Tokens) == 0 || c.allInKeyring() || c.wantsInline() {
 		return 0
 	}
 	if st, err := SecretStore(); st == nil || err != nil {
+		if err != nil {
+			fmt.Fprintf(stderr, "warning: GitHub tokens stay in the 0600 config file: the OS keyring could not be used (%v); set %s=file to silence this\n", err, secrets.EnvBackend)
+		}
 		return 0
 	}
 	before := len(c.secretRefs)
 	if err := Save(path, c); err != nil {
 		fmt.Fprintf(stderr, "warning: could not move GitHub tokens into the OS keyring: %v\n", err)
 		return 0
+	}
+	if cause := c.InlineFallback(); cause != nil {
+		fmt.Fprintf(stderr, "warning: GitHub tokens stay in the 0600 config file: the OS keyring could not be used (%v); set %s=file to silence this\n", cause, secrets.EnvBackend)
 	}
 	moved := len(c.secretRefs) - before
 	if moved > 0 {

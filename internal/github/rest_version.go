@@ -3,7 +3,9 @@ package github
 import (
 	"fmt"
 	"net/http"
+	"strings"
 
+	ghauth "github.com/cli/go-gh/v2/pkg/auth"
 	gogithub "github.com/google/go-github/v90/github"
 )
 
@@ -38,14 +40,22 @@ const restUserAgent = "spoon"
 // go-github attaches the Authorization header at the transport and would
 // otherwise replay it on every hop.
 func newRESTClient(token string, transport http.RoundTripper) (*gogithub.Client, error) {
+	return newRESTClientForHost(defaultHost, token, transport)
+}
+
+// newRESTClientForHost is newRESTClient bound to one GitHub host, so a token
+// issued for an enterprise installation is never sent to api.github.com.
+func newRESTClientForHost(host, token string, transport http.RoundTripper) (*gogithub.Client, error) {
 	httpClient := &http.Client{
 		Timeout: requestTimeout,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= maxRESTRedirects {
 				return fmt.Errorf("stopped after %d redirects", maxRESTRedirects)
 			}
-			if req.URL.Host != via[0].URL.Host {
-				return fmt.Errorf("refusing cross-host redirect from %q to %q", via[0].URL.Host, req.URL.Host)
+			// Same host is not enough: an https->http hop keeps Authorization
+			// on the same host and would send the credential in plaintext.
+			if req.URL.Host != via[0].URL.Host || req.URL.Scheme != via[0].URL.Scheme {
+				return fmt.Errorf("refusing redirect from %s://%s to %s://%s", via[0].URL.Scheme, via[0].URL.Host, req.URL.Scheme, req.URL.Host)
 			}
 			return nil
 		},
@@ -58,10 +68,31 @@ func newRESTClient(token string, transport http.RoundTripper) (*gogithub.Client,
 	if transport != nil {
 		opts = append(opts, gogithub.WithTransport(transport))
 	}
+	if base := restBaseURL(host); base != "" {
+		opts = append(opts, gogithub.WithEnterpriseURLs(base, base))
+	}
 	if token != "" {
 		opts = append(opts, gogithub.WithAuthToken(token))
 	}
 	return gogithub.NewClient(opts...)
+}
+
+// restBaseURL returns the REST root for host, or "" for github.com, whose
+// root is go-github's default. It mirrors newGraphQLClient's host mapping.
+func restBaseURL(host string) string {
+	if strings.EqualFold(host, "garage.github.com") {
+		return "https://garage.github.com/api/v3/"
+	}
+	host = ghauth.NormalizeHostname(host)
+	switch {
+	case host == "" || host == defaultHost:
+		return ""
+	case ghauth.IsEnterprise(host):
+		return "https://" + host + "/api/v3/"
+	case host == "github.localhost":
+		return "http://api.github.localhost/"
+	}
+	return "https://api." + host + "/"
 }
 
 // maxRESTRedirects bounds redirect chains on REST requests (net/http's default).

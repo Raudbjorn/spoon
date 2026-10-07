@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -212,5 +213,29 @@ func TestAuthLoginUnverifiedTokenIsNotStored(t *testing.T) {
 	}
 	if saved, _ := config.Load(boot.Layer.Path); saved != nil && len(saved.GitHub.Tokens) != 0 {
 		t.Errorf("unverified token was stored: %v", saved.GitHub.Tokens)
+	}
+}
+
+func TestAuthLoginProbesPublicationBeforeAuthorizing(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	stubOAuth(t, oauth.Token{AccessToken: testOAuthToken}, nil)
+	boot := authBoot(t)
+	dir := filepath.Dir(boot.Layer.Path)
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(dir, 0o700)
+	called := false
+	prev := oauthLogin
+	oauthLogin = func(ctx context.Context, c oauth.Config, d time.Duration, a func(string)) (oauth.Token, error) {
+		called = true
+		return prev(ctx, c, d, a)
+	}
+	defer func() { oauthLogin = prev }()
+	var stdout, stderr bytes.Buffer
+	if code := Run("spn", []string{"login"}, &stdout, &stderr, boot, authEnv()); code == 0 || called {
+		t.Fatalf("exit %d, oauth started=%v; want refusal before authorizing", code, called)
 	}
 }

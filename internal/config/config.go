@@ -46,6 +46,9 @@ type Config struct {
 	// secretRefs maps each GitHub token loaded from (or saved to) the OS keyring
 	// to its entry name; see secrets.go. Also outside the persisted schema.
 	secretRefs map[string]string
+	// inlineFallback is why the last Save kept tokens inline despite wanting
+	// the keyring; see InlineFallback.
+	inlineFallback error
 }
 
 // SecretsConfig records where GitHub tokens are stored. Store is "" or
@@ -231,7 +234,14 @@ func save(path string, c *Config, forceInline bool) error {
 	}
 	// Keyring first, file second, prune last: a failure at any step leaves every
 	// token reachable from either the old or the new file.
-	persistTokens, newRefs, stale := c.externalizeSecrets(forceInline)
+	c.inlineFallback = nil
+	persistTokens, newRefs, stale, created := c.externalizeSecrets(forceInline)
+	published := false
+	defer func() {
+		if !published {
+			discardCreated(created)
+		}
+	}()
 	toWrite := *c
 	toWrite.GitHub.Tokens = persistTokens
 	data, err := json.MarshalIndent(toWrite, "", "  ")
@@ -257,6 +267,7 @@ func save(path string, c *Config, forceInline bool) error {
 	if err := os.Rename(tmp, path); err != nil {
 		return fmt.Errorf("rename %s -> %s: %w", tmp, path, err)
 	}
+	published = true
 	c.present, c.raw = leafMetadata(data)
 	c.secretRefs = newRefs
 	pruneSecrets(stale)

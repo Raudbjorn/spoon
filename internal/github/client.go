@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
@@ -236,7 +237,7 @@ func NewClientWithOptions(opts ClientOptions) (*Client, error) {
 		// Spoon OAuth tokens arrive through opts.Tokens. With no saved token,
 		// use the environment or an anonymous REST-only backend.
 		if envToken != "" {
-			rest, err := newRESTClient(envToken, rotating)
+			rest, err := newRESTClientForHost(host, envToken, rotating)
 			if err == nil {
 				b := &backend{Rest: rest, REST: newBudget(), GraphQLBudget: newBudget()}
 				b.GraphQL = newGraphQLClient(envToken, host, rotating)
@@ -573,7 +574,15 @@ func (c *Client) GetPaginated(ctx context.Context, path string, onPage func(json
 // at the stop, so a caller can tell "exactly maxPages of results" from
 // "more results existed". maxPages <= 0 means unbounded.
 func (c *Client) getPaginated(ctx context.Context, path string, maxPages int, onPage func(json.RawMessage) error) (truncated bool, err error) {
+	c.ensurePool()
 	for pages := 1; path != ""; pages++ {
+		if pages > 1 {
+			// The next link is response-controlled. A client attaches its token
+			// to every request it sends, so an off-host link would leak it.
+			if err := c.requireAPIOrigin(path); err != nil {
+				return false, err
+			}
+		}
 		resp, err := c.doGet(ctx, path)
 		if err != nil {
 			return false, err
@@ -592,6 +601,29 @@ func (c *Client) getPaginated(ctx context.Context, path string, maxPages int, on
 		}
 	}
 	return false, nil
+}
+
+// requireAPIOrigin rejects an absolute pagination URL that is not on the
+// configured REST API origin. Relative references are resolved against it.
+func (c *Client) requireAPIOrigin(next string) error {
+	u, err := url.Parse(next)
+	if err != nil {
+		return fmt.Errorf("invalid pagination link: %w", err)
+	}
+	if !u.IsAbs() && u.Host == "" {
+		return nil
+	}
+	var base *url.URL
+	if c.rest != nil {
+		base, _ = url.Parse(c.rest.BaseURL())
+	}
+	if base == nil || base.Host == "" {
+		return fmt.Errorf("refusing pagination link %q: no API origin configured", u.Host)
+	}
+	if !strings.EqualFold(u.Scheme, base.Scheme) || !strings.EqualFold(u.Host, base.Host) {
+		return fmt.Errorf("refusing pagination link to %s://%s: not the API origin %s://%s", u.Scheme, u.Host, base.Scheme, base.Host)
+	}
+	return nil
 }
 
 func (c *Client) updateRateLimitFor(b *backend, resp *http.Response) {

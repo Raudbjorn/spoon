@@ -31,7 +31,12 @@ func main() {
 	// Zero-configuration first run: make sure a documented default config
 	// exists before anything consults it. Never fatal — a bad or unwritable
 	// config degrades to built-in defaults with a warning.
-	boot := config.Bootstrap(os.Stderr)
+	bootstrap := config.Bootstrap
+	if len(os.Args) >= 3 && os.Args[1] == "auth" && os.Args[2] == "storage" {
+		// Storage commands must see the pre-migration config; see BootstrapSnapshot.
+		bootstrap = config.BootstrapSnapshot
+	}
+	boot := bootstrap(os.Stderr)
 	cfg := boot.Config
 	if boot.Warning != nil {
 		fmt.Fprintf(os.Stderr, "warning: ignoring config: %v\n", boot.Warning)

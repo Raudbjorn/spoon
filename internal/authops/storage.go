@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"slices"
+	"strings"
 
 	"github.com/svnbjrn/spoon/internal/agentio"
 	"github.com/svnbjrn/spoon/internal/config"
@@ -29,7 +30,18 @@ func runStorage(prog string, args []string, stdout, stderr io.Writer, boot confi
 	if err != nil {
 		return bad(err.Error())
 	}
-	store, storeErr := config.SecretStore()
+	// The environment wins; otherwise honour the file's persisted choice.
+	if strings.TrimSpace(os.Getenv(secrets.EnvBackend)) == "" && boot.Config != nil &&
+		strings.EqualFold(boot.Config.Secrets.Store, secrets.BackendFile) {
+		selected = secrets.BackendFile
+	}
+	var store secrets.Store
+	var storeErr error
+	// Do not open (and possibly unlock-prompt) a keyring the user opted out of;
+	// migrating back to it is the one verb that must.
+	if selected != secrets.BackendFile || (args[0] == "migrate" && slices.Contains(args, secrets.BackendKeyring)) {
+		store, storeErr = config.SecretStore()
+	}
 	switch args[0] {
 	case "status":
 		return storageStatus(stdout, stderr, boot, selected, store, storeErr)
@@ -154,6 +166,7 @@ func storageMigrate(prog string, args []string, stdout, stderr io.Writer, boot c
 		} else {
 			err = config.SaveInline(boot.Layer.Path, &cfg)
 		}
+		emitInlineFallback(stderr, &cfg)
 		if err != nil {
 			return agentio.NewError(agentio.CodeInternal, "migration failed: "+err.Error(), agentio.RemediationInternal()).Emit(stderr)
 		}

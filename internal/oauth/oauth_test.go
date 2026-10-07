@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func freeAddr(t *testing.T) string {
@@ -209,5 +210,26 @@ func TestValidateAndLoopback(t *testing.T) {
 	ok.ListenAddr = "0.0.0.0:8790"
 	if _, err := ok.Login(context.Background(), time.Second, nil); err == nil || !strings.Contains(err.Error(), "not loopback") {
 		t.Errorf("non-loopback listen = %v, want refusal", err)
+	}
+}
+
+func TestSanitizeTruncatesOnRuneBoundary(t *testing.T) {
+	got := sanitize(strings.Repeat("é", 150)) // 300 bytes, 150 runes
+	if !utf8.ValidString(got) {
+		t.Fatalf("sanitize cut a rune: %q", got)
+	}
+	if long := sanitize(strings.Repeat("é", 500)); utf8.RuneCountInString(long) != 200 {
+		t.Errorf("runes = %d, want 200", utf8.RuneCountInString(long))
+	}
+}
+
+func TestLoginRejectsExpiringToken(t *testing.T) {
+	ts := newTokenServer(t, map[string]any{"access_token": "gho_x", "expires_in": 28800, "refresh_token": "ghr_x"}, 200)
+	c, addr := testConfig(t, ts)
+	authURL, res, _ := run(t, c, 10*time.Second)
+	u, _ := url.Parse(authURL)
+	get(t, "http://"+addr+"/auth?code=c&state="+url.QueryEscape(u.Query().Get("state")))
+	if err := <-res; err == nil || !strings.Contains(err.Error(), "expiring token") {
+		t.Fatalf("err = %v, want expiring-token refusal", err)
 	}
 }

@@ -58,9 +58,9 @@ func TestProductionWritesUseTypedOutput(t *testing.T) {
 // default. Structured records and agentio envelopes are data; the four
 // presentation routes identify the only human/error text currently emitted.
 var approvedOutputSites = map[string]StreamKind{
-	"main.go:102:call:writeError":    StreamError,
-	"main.go:124:call:Run":           StreamData,
-	"main.go:105:call:writeError":    StreamError,
+	"main.go:106:call:writeError":    StreamError,
+	"main.go:128:call:Run":           StreamData,
+	"main.go:109:call:writeError":    StreamError,
 	"main.go:58:call:Emit":           StreamData,
 	"main.go:62:call:Emit":           StreamData,
 	"main.go:65:call:Emit":           StreamData,

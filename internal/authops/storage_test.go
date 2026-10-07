@@ -104,3 +104,22 @@ func TestStorageStatusTestAndErrors(t *testing.T) {
 		t.Errorf("migrating to a disabled keyring: exit %d stderr %q", code, errOut)
 	}
 }
+
+func TestStorageHonorsPersistedFileSelection(t *testing.T) {
+	t.Setenv(secrets.EnvBackend, "")
+	boot := authBoot(t, "ghp_one")
+	boot.Config.Secrets.Store = secrets.BackendFile
+	mem := secrets.NewMemoryStore()
+	defer config.UseSecretStore(mem)()
+
+	code, out, errOut := runStorageCmd(t, boot, "status")
+	if code != 0 || out["selected"] != "file" || out["available"] != false {
+		t.Fatalf("status: exit %d out %v err %q", code, out, errOut)
+	}
+	if code, _, _ = runStorageCmd(t, boot, "test"); code == 0 {
+		t.Fatal("storage test probed a keyring the config opted out of")
+	}
+	if names, _ := mem.Names(); len(names) != 0 {
+		t.Errorf("keyring touched: %v", names)
+	}
+}

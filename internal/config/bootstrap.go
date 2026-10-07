@@ -33,12 +33,21 @@ var (
 // Bootstrap selects a layer exactly once and publishes defaults only when that
 // selected layer is missing. It never reloads after publication, preventing a
 // startup/settings race that could assign different config snapshots.
-func Bootstrap(stderr io.Writer) BootstrapResult {
+func Bootstrap(stderr io.Writer) BootstrapResult { return bootstrap(stderr, true) }
+
+// BootstrapSnapshot is Bootstrap without the automatic inline-token migration.
+// Commands that manage token storage themselves ("auth storage") need the
+// config exactly as it is on disk and must apply only what the user asked for.
+func BootstrapSnapshot(stderr io.Writer) BootstrapResult { return bootstrap(stderr, false) }
+
+func bootstrap(stderr io.Writer, migrate bool) BootstrapResult {
 	layer := LoadDefaultWithLayer()
 	if layer.State != LayerMissing {
-		if layer.State == LayerLoaded {
-			// Keyring-by-default: tokens written by an older spoon sit inline in
-			// the file; move them once. A no-op when none are inline.
+		// Keyring-by-default: tokens written by an older spoon sit inline in the
+		// file; move them once. A no-op when none are inline. The machine-wide
+		// config is skipped: its keyring references would resolve only for the
+		// account that wrote them, breaking every other reader.
+		if migrate && layer.State == LayerLoaded && !layer.System {
 			MigrateInlineSecrets(layer.Path, layer.Config, stderr)
 		}
 		return BootstrapResult{Config: layer.Config, Layer: layer, Warning: layer.Reason}
