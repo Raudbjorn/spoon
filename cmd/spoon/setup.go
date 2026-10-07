@@ -230,6 +230,9 @@ func writeSetupConfig(path string, existed bool, cfg *config.Config, provider fo
 		fmt.Fprintf(stderr, "warning: could not write config %s: %v\n", path, err)
 		return
 	}
+	if cause := cfg.InlineFallback(); cause != nil {
+		fmt.Fprintf(stderr, "warning: GitHub tokens stay in the 0600 config file: the OS keyring could not be used (%v)\n", cause)
+	}
 	if err := config.WriteReadme(path); err != nil {
 		fmt.Fprintf(stderr, "warning: could not refresh config README: %v\n", err)
 	}
