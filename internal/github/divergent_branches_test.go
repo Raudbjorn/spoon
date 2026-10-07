@@ -26,7 +26,8 @@ func graphQLStub(t *testing.T, phaseA, phaseB string) (*httptest.Server, func() 
 		_ = json.Unmarshal(body, &req)
 
 		mu.Lock()
-		docs = append(docs, req.Query)
+		// Values now travel in variables; record them with the generated query.
+		docs = append(docs, string(body))
 		mu.Unlock()
 
 		w.Header().Set("Content-Type", "application/json")
@@ -162,42 +163,6 @@ func TestFetchDivergentBranchCounts_RefusesUnresolvedBaseline(t *testing.T) {
 	if _, err := c.FetchDivergentBranchCounts(context.Background(), "", "", "main",
 		[]ForkTarget{{ID: "o/r", Owner: "o", Name: "r"}}); err == nil {
 		t.Fatal("expected an error when the upstream baseline is unset")
-	}
-}
-
-// Branch names and logins are interpolated into the query document, not bound
-// as variables, so they must be escaped.
-func TestGqlString_EscapesLiterals(t *testing.T) {
-	cases := map[string]string{
-		`main`:       `"main"`,
-		`fix"quote`:  `"fix\"quote"`,
-		`back\slash`: `"back\\slash"`,
-		"tab\there":  `"tab\there"`,
-		"new\nline":  `"new\nline"`,
-	}
-	for in, want := range cases {
-		if got := gqlString(in); got != want {
-			t.Errorf("gqlString(%q) = %s, want %s", in, got, want)
-		}
-	}
-}
-
-// strconv.Quote (Go string syntax) and JSON/GraphQL string syntax diverge for
-// bytes Go escapes as \v, \a, or \xNN — none of which JSON accepts. Unreachable
-// via a real git ref name or GitHub login today, but gqlString's own doc
-// promises "GraphQL string syntax is JSON's", so assert the output actually
-// is legal JSON rather than merely legal Go.
-func TestGqlString_ProducesValidJSON(t *testing.T) {
-	for _, in := range []string{"main", `fix"quote`, "tab\there", "bell\a", "vtab\v"} {
-		out := gqlString(in)
-		var decoded string
-		if err := json.Unmarshal([]byte(out), &decoded); err != nil {
-			t.Errorf("gqlString(%q) = %s, not valid JSON: %v", in, out, err)
-			continue
-		}
-		if decoded != in {
-			t.Errorf("gqlString(%q) round-trips to %q", in, decoded)
-		}
 	}
 }
 

@@ -16,7 +16,6 @@ license=('custom:unknown')
 depends=('glibc')
 makedepends=('go>=1.26' 'git')
 optdepends=(
-    'github-cli: GitHub authentication for spoon/spn'
     'glab: GitLab authentication for spoon'
     'onnxruntime: local semantic search via FastEmbed'
 )

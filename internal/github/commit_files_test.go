@@ -13,7 +13,7 @@ func TestCommitFilesPaginationPreservesPatchMetadata(t *testing.T) {
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		page := r.URL.Query().Get("page")
 		if page == "1" {
-			w.Header().Set("Link", fmt.Sprintf("<%s/repos/o/r/commits/abc?per_page=100&page=2>; rel=\"next\"", server.URL))
+			w.Header().Set("Link", "<https://api.github.com/repos/o/r/commits/abc?per_page=100&page=2>; rel=\"next\"")
 			fmt.Fprint(w, `{"files":[{"filename":"new.go","previous_filename":"old.go","status":"renamed","additions":2,"deletions":1,"patch":"@@ -1 +1 @@"}]}`)
 			return
 		}

@@ -153,6 +153,16 @@ already provides, and the code-scanning surface it would type is unusable on
 third-party repos (Finding 5). go-github v58 is also old (Jan 2024). Recommend
 deferring the dependency until a typed API is needed, and re-confirming.
 
+**Resolved 2026-10-06:** the owner chose to adopt go-github (v90) for the REST
+transport only, against the recommendation above. `internal/github` now builds
+one `*github.Client` per identity (`rest_version.go`) and drives it through the
+existing path-based `restGet`, so the token pool, limiter, retry and raw-JSON
+callers are unchanged and no typed service methods are used. GraphQL stays on
+`cli/go-gh` (go-github has no GraphQL, and the batched alias queries are built at
+runtime); `go-gh` also still supplies `gh` token discovery (`pkg/auth`) and the
+TUI's `pkg/browser`. The typed-API argument remains weak: this swap buys
+maintained REST plumbing and typed errors, not new capability.
+
 ## Not claimed
 
 - Live tests are one-day, small samples (70 events per hour, 6 hours; 30 forks

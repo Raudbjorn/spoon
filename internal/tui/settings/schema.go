@@ -82,6 +82,14 @@ var Registry = []Field{
 		c.GitHub.RequestsPerMinute = n
 		return nil
 	}},
+	{Key: "secrets.store", Label: "Token storage", Section: GitHubSection, Help: "keyring (default) keeps tokens in the OS keyring; file keeps them in this config file.", Editable: true, Default: "keyring", Environment: []string{"SPOON_SECRET_STORE"}, Get: func(c *config.Config) string { return c.Secrets.Store }, Set: func(c *config.Config, v string) error {
+		v = strings.ToLower(strings.TrimSpace(v))
+		if v != "" && v != "keyring" && v != "file" {
+			return fmt.Errorf("token storage must be keyring or file")
+		}
+		c.Secrets.Store = v
+		return nil
+	}},
 	boolField("github.proxy.enabled", "Proxy enabled", ProxySection, "Enable ProxyScrape transport routing.", NoConsequence, func(c *config.Config) bool { return c.GitHub.Proxy.Enabled }, func(c *config.Config, v bool) { c.GitHub.Proxy.Enabled = v }),
 	{Key: "github.proxy.apiKeyFile", Label: "Proxy API key file", Section: ProxySection, Help: "0600 credential file path.", Editable: true, Get: func(c *config.Config) string { return c.GitHub.Proxy.APIKeyFile }, Set: func(c *config.Config, v string) error { c.GitHub.Proxy.APIKeyFile = strings.TrimSpace(v); return nil }},
 	{Key: "github.proxy.staticFile", Label: "Proxy static file", Section: ProxySection, Help: "0600 credential file path.", Editable: true, Get: func(c *config.Config) string { return c.GitHub.Proxy.StaticFile }, Set: func(c *config.Config, v string) error { c.GitHub.Proxy.StaticFile = strings.TrimSpace(v); return nil }},

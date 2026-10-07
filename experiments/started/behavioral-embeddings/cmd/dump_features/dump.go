@@ -6,9 +6,10 @@ import (
 	"os"
 	"strings"
 
-	ghAPI "github.com/cli/go-gh/v2/pkg/api"
+	"github.com/svnbjrn/spoon/internal/config"
 	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/forge"
+	gh "github.com/svnbjrn/spoon/internal/github"
 )
 
 // ForkRecord is one fork-with-intent's payload in features.json. Stable JSON
@@ -76,7 +77,8 @@ func dumpFeatures(ctx context.Context, owner, repo string, topN int) ([]ForkReco
 	if err != nil {
 		return nil, fmt.Errorf("REST client init: %w", err)
 	}
-	prs, err := listPRs(client, owner, repo, topN)
+	defer client.Close()
+	prs, err := listPRs(ctx, client, owner, repo, topN)
 	if err != nil {
 		return nil, fmt.Errorf("list PRs: %w", err)
 	}
@@ -86,13 +88,19 @@ func dumpFeatures(ctx context.Context, owner, repo string, topN int) ([]ForkReco
 		if err := ctx.Err(); err != nil {
 			return out, err
 		}
-		files, ferr := getPRFiles(client, owner, repo, pr.Number)
+		files, ferr := getPRFiles(ctx, client, owner, repo, pr.Number)
 		if ferr != nil {
+			if ctx.Err() != nil {
+				return out, ctx.Err()
+			}
 			fmt.Fprintf(os.Stderr, "files PR#%d: %v\n", pr.Number, ferr)
 			continue
 		}
-		commits, cerr := getPRCommits(client, owner, repo, pr.Number)
+		commits, cerr := getPRCommits(ctx, client, owner, repo, pr.Number)
 		if cerr != nil {
+			if ctx.Err() != nil {
+				return out, ctx.Err()
+			}
 			fmt.Fprintf(os.Stderr, "commits PR#%d: %v\n", pr.Number, cerr)
 			continue
 		}
@@ -158,7 +166,7 @@ func prToT2Data(pr prInfo, files []prFile, commits []prCommit) forge.T2Data {
 
 // listPRs paginates the PR list endpoint and returns up to topN PRs sorted
 // by updated_at desc.
-func listPRs(client restClient, owner, repo string, topN int) ([]prInfo, error) {
+func listPRs(ctx context.Context, client restClient, owner, repo string, topN int) ([]prInfo, error) {
 	var out []prInfo
 	for page := 1; ; page++ {
 		path := fmt.Sprintf(
@@ -166,7 +174,7 @@ func listPRs(client restClient, owner, repo string, topN int) ([]prInfo, error) 
 			owner, repo, page,
 		)
 		var pagePRs []prInfo
-		if err := client.Get(path, &pagePRs); err != nil {
+		if err := client.Get(ctx, path, &pagePRs); err != nil {
 			return out, fmt.Errorf("page %d: %w", page, err)
 		}
 		if len(pagePRs) == 0 {
@@ -185,12 +193,12 @@ func listPRs(client restClient, owner, repo string, topN int) ([]prInfo, error) 
 	return out, nil
 }
 
-func getPRFiles(client restClient, owner, repo string, n int) ([]prFile, error) {
+func getPRFiles(ctx context.Context, client restClient, owner, repo string, n int) ([]prFile, error) {
 	var out []prFile
 	for page := 1; ; page++ {
 		path := fmt.Sprintf("repos/%s/%s/pulls/%d/files?per_page=100&page=%d", owner, repo, n, page)
 		var pageFiles []prFile
-		if err := client.Get(path, &pageFiles); err != nil {
+		if err := client.Get(ctx, path, &pageFiles); err != nil {
 			return out, fmt.Errorf("page %d: %w", page, err)
 		}
 		if len(pageFiles) == 0 {
@@ -204,12 +212,12 @@ func getPRFiles(client restClient, owner, repo string, n int) ([]prFile, error) 
 	return out, nil
 }
 
-func getPRCommits(client restClient, owner, repo string, n int) ([]prCommit, error) {
+func getPRCommits(ctx context.Context, client restClient, owner, repo string, n int) ([]prCommit, error) {
 	var out []prCommit
 	for page := 1; ; page++ {
 		path := fmt.Sprintf("repos/%s/%s/pulls/%d/commits?per_page=100&page=%d", owner, repo, n, page)
 		var pageCommits []prCommit
-		if err := client.Get(path, &pageCommits); err != nil {
+		if err := client.Get(ctx, path, &pageCommits); err != nil {
 			return out, fmt.Errorf("page %d: %w", page, err)
 		}
 		if len(pageCommits) == 0 {
@@ -223,18 +231,17 @@ func getPRCommits(client restClient, owner, repo string, n int) ([]prCommit, err
 	return out, nil
 }
 
-// restClient is the minimal interface dumpFeatures needs from the REST
-// client. The production type ghAPI.RESTClient satisfies it; tests inject
-// a fake to avoid hitting GitHub.
+// restClient keeps the production Spoon client replaceable by an offline fake.
 type restClient interface {
-	Get(path string, response any) error
+	Get(context.Context, string, any) error
+	Close()
 }
 
-// Static check: ghAPI.RESTClient satisfies restClient.
-var _ restClient = (*ghAPI.RESTClient)(nil)
+var _ restClient = (*gh.Client)(nil)
 
-// defaultClient is the per-process REST client constructor. Production uses
-// ghAPI.DefaultRESTClient; tests override with a fake.
 var defaultClient = func() (restClient, error) {
-	return ghAPI.DefaultRESTClient()
+	boot := config.Bootstrap(os.Stderr)
+	effective := config.ResolveEffectiveConfig(boot.Config, nil, config.EnvironmentSnapshot())
+	client, _, err := gh.CheckAuthWithEffective(effective)
+	return client, err
 }

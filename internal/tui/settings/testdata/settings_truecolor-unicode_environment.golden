@@ -12,10 +12,10 @@
 │ [38;2;211;211;211mSPOON_VOYAGE_API_KEY_FILE = unset[0m                                            │
 │ [38;2;211;211;211mSPOON_VOYAGE_AUTO_INDEX = unset[0m                                              │
 │ [38;2;211;211;211mSPOON_NO_VOYAGE = unset[0m                                                      │
+│ [38;2;211;211;211mSPOON_SECRET_STORE = unset[0m                                                   │
 │ [38;2;211;211;211mSPOON_VOYAGE_NO_CACHE = unset[0m                                                │
 │ [38;2;211;211;211mSPOON_VOYAGE_DIM = unset[0m                                                     │
 │ [38;2;211;211;211mSPOON_VOYAGE_EMBED_MODEL = unset[0m                                             │
-│ [38;2;211;211;211mSPOON_VOYAGE_RERANK_MODEL = unset[0m                                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 [2;38;2;154;154;154m[p] Probe provider credentials  [o] Check store  [f] Check FastEmbed  [v] Check[0m
 [38;2;211;211;211;48;2;25;25;25m[tab][0m section [38;2;211;211;211;48;2;25;25;25m[enter][0m edit [38;2;211;211;211;48;2;25;25;25m[esc][0m back

@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,6 +16,17 @@ import (
 func linearHistoryStub(t *testing.T, payload string) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Query     string                 `json:"query"`
+			Variables map[string]interface{} `json:"variables"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode GraphQL request: %v", err)
+		}
+		// githubv4 binds both the page cap and fork head instead of interpolating them.
+		if req.Variables["first"] != float64(linearHistoryCommitLimit) || req.Variables["head0"] == nil || !strings.Contains(req.Query, "commits(first: $first)") || !strings.Contains(req.Query, "headRef: $head0") {
+			t.Errorf("history query missing its variables: %+v", req)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(payload))
 	}))

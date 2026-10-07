@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/svnbjrn/spoon/internal/authops"
 	"github.com/svnbjrn/spoon/internal/config"
 	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/forge"
@@ -30,7 +31,12 @@ func main() {
 	// Zero-configuration first run: make sure a documented default config
 	// exists before anything consults it. Never fatal — a bad or unwritable
 	// config degrades to built-in defaults with a warning.
-	boot := config.Bootstrap(os.Stderr)
+	bootstrap := config.Bootstrap
+	if len(os.Args) >= 3 && os.Args[1] == "auth" && os.Args[2] == "storage" {
+		// Storage commands must see the pre-migration config; see BootstrapSnapshot.
+		bootstrap = config.BootstrapSnapshot
+	}
+	boot := bootstrap(os.Stderr)
 	cfg := boot.Config
 	if boot.Warning != nil {
 		fmt.Fprintf(os.Stderr, "warning: ignoring config: %v\n", boot.Warning)
@@ -40,6 +46,11 @@ func main() {
 	if len(os.Args) >= 2 && os.Args[1] == "threads" {
 		effective := config.ResolveEffectiveConfig(cfg, nil, config.EnvironmentSnapshot())
 		os.Exit(runThreadsWithEffective(os.Args[2:], effective))
+	}
+
+	// Subcommand dispatch: "spoon auth login ..." (GitHub OAuth web flow)
+	if len(os.Args) >= 2 && os.Args[1] == "auth" {
+		os.Exit(authops.Run("spoon", os.Args[2:], os.Stdout, os.Stderr, boot, config.EnvironmentSnapshot()))
 	}
 
 	// Subcommand dispatch: "spoon setup ..."
@@ -60,6 +71,7 @@ func main() {
 	maxTier := 3
 	clusterTop := 50
 	clusterEpsilon := 0.0 // 0.55 (lexical) unless set explicitly
+	clusterEpsilonSet := false
 	clusterMinSize := 3
 
 	// MDG centrality backend. Off by default; --full-mdg opts in. --no-mdg
@@ -151,6 +163,7 @@ func main() {
 				os.Exit(1)
 			}
 			clusterEpsilon = f
+			clusterEpsilonSet = true
 		case "--cluster-min-size":
 			if i+1 >= len(args) {
 				fmt.Fprintln(os.Stderr, "Error: --cluster-min-size requires a value")
@@ -207,7 +220,7 @@ func main() {
 	// The interactive TUI clusters with the built-in lexical embedder
 	// (zero-setup, portable, no native runtime). Semantic search and
 	// persistence — the fastembed paths — live in the `spn` agent CLI.
-	if clusterEpsilon == 0 {
+	if !clusterEpsilonSet {
 		clusterEpsilon = 0.55
 	}
 
@@ -233,7 +246,7 @@ func main() {
 	if err != nil && errors.Is(err, store.ErrSchemaNewerThanSupported) && store.SupportsDowngrade() {
 		if path, perr := store.DefaultPath(); perr == nil {
 			fmt.Fprintf(os.Stderr, "spoon store at %s is one schema step ahead of this binary; downgrading in place (newer columns preserved in repos_v4backup)...\n", path)
-		if raw, oerr := store.OpenForDowngrade(path); oerr == nil {
+			if raw, oerr := store.OpenForDowngrade(path); oerr == nil {
 				if derr := raw.Downgrade(context.Background()); derr == nil {
 					raw.Close()
 					db, err = store.OpenDefault()
@@ -403,9 +416,9 @@ Flags:
   --full-mdg               Build a real Module Dependency Graph for the upstream
                            using personalized PageRank centrality. Phase A
                            supports Go repositories; other languages silently
-                           fall back to the directory-centrality proxy. Requires
-                           'git' (and 'gh' for GitHub) on PATH. Adds 10-60 s and
-                           up to ~1 GB peak disk on first run; cached for 24 h
+                           fall back to the directory-centrality proxy. Downloads
+                           a source archive. Adds 10-60 s and up to ~1 GB peak disk
+                           on first run; cached for 24 h
                            under ~/.cache/spoon/mdg/. Default: off.
   --no-mdg                 Force the directory-centrality proxy even if an
                            earlier flag enabled --full-mdg.
@@ -442,6 +455,9 @@ Keybindings (TUI mode):
 
 Subcommands:
   spoon setup              Check credentials + the FastEmbed embedder
+  spoon auth login         Authorize spoon with GitHub via OAuth (see README).
+                           Requires SPOON_OAUTH_CLIENT_ID and
+                           SPOON_OAUTH_CLIENT_SECRET in the environment.
   spoon threads <pr-ref>   Operate on PR review threads (see 'spoon threads --help')
 
 Concepts:
@@ -449,8 +465,8 @@ Concepts:
                      It is auto-detected from the repo URL (e.g. a gitlab.com
                      link forces GitLab); override detection with --forge and
                      point at a self-hosted GitLab/GHES instance with
-                     --forge-host. Auth is per-provider: the gh CLI / a GitHub
-                     token, or the glab CLI / GITLAB_TOKEN.
+                     --forge-host. Auth is per-provider: spoon auth login / a
+                     GitHub token, or the glab CLI / GITLAB_TOKEN.
 
   Clustering         spoon turns each fork into a vector and groups similar
                      forks using an in-process deterministic lexical embedder
@@ -458,6 +474,6 @@ Concepts:
                      services. Tune with --cluster-epsilon / --cluster-min-size;
                      disable with --no-cluster.
 
-Tip: Run 'gh auth login' (GitHub) or set GITLAB_TOKEN (GitLab) for higher rate limits.
+Tip: Run 'spoon auth login' (GitHub) or set GITLAB_TOKEN (GitLab) for higher rate limits.
 `)
 }

@@ -53,7 +53,7 @@ committed `RESULTS.md` is the frozen narrative and is never overwritten.
 
 Requires:
 - Ollama running on `http://localhost:11434` with `nomic-embed-text` pulled.
-- `gh auth status` showing an authenticated user (for `dump_features`).
+- Spoon authentication via `spoon auth login` or `GH_TOKEN`/`GITHUB_TOKEN` (for `dump_features`).
 - Python 3.11+ and `uv` on PATH.
 - ~4 GB free RAM and ~1 GB free disk for the model cache.
 

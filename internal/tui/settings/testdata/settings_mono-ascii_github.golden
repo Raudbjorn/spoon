@@ -7,6 +7,7 @@ Layer: user  Path: /settings-golden/config.json
 | > GitHub tokens: ************ [FILE]                                         |
 | One token per line; values are always masked.                                |
 |   Requests per minute: 300 [FILE]                                            |
+|   Token storage: keyring [DEFAULT]                                           |
 +------------------------------------------------------------------------------+
 [p] Probe provider credentials  [o] Check store  [f] Check FastEmbed  [v] Check
 [tab] section [enter] edit [esc] back

@@ -176,7 +176,7 @@ func runSearchWithEffectiveDeps(args []string, stdout, stderr io.Writer, effecti
 	// enabled when it can actually be written (see embed.ResolveVoyageConfig).
 	db, err := store.OpenDefault()
 	if err != nil {
-		return agentio.NewError(agentio.CodeInternal, "store_unavailable: "+err.Error(), agentio.RemediationInternal()).Emit(stderr)
+		return agentio.NewError(agentio.CodeBadInput, "store_unavailable: "+err.Error(), "Check that the spoon store under $XDG_CONFIG_HOME (or ~/.config) is readable and writable, then retry.").Emit(stderr)
 	}
 	defer db.Close()
 
@@ -204,7 +204,7 @@ func runSearchWithEffectiveDeps(args []string, stdout, stderr io.Writer, effecti
 		if useVoyage {
 			return agentio.NewError(agentio.CodeBadInput, "voyage_unavailable: "+err.Error(), voyageRemediation(err)).Emit(stderr)
 		}
-		return agentio.NewError(agentio.CodeInternal, "embedder_unavailable: "+err.Error(), "Verify ONNX Runtime and the FastEmbed model cache.").Emit(stderr)
+		return agentio.NewError(agentio.CodeBadInput, "embedder_unavailable: "+err.Error(), "Verify ONNX Runtime and the FastEmbed model cache.").Emit(stderr)
 	}
 	rows, err := db.SearchRows(ctx, model.ModelID(), repoOwner, repoName)
 	if err != nil {
