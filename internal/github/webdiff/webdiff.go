@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -102,8 +103,8 @@ func (c *Client) wait(ctx context.Context) error {
 }
 
 // Fetch scrapes the HTML diff pages for base..head. The returned bool reports
-// truncation: true means a later page could not be parsed and the collected
-// patches are incomplete, so the caller must not persist them as whole diffs.
+// truncation: true means a later page could not be parsed or pagination stopped
+// advancing, so the caller must not persist the collected patches as whole diffs.
 func (c *Client) Fetch(ctx context.Context, owner, repo, base, head string) (map[string]string, bool, error) {
 	if c.cookie == "" {
 		return nil, false, fmt.Errorf("SPOON_GH_COOKIE is empty")
@@ -174,7 +175,11 @@ func (c *Client) Fetch(ctx context.Context, owner, repo, base, head string) (map
 			}
 			b.WriteString(patch)
 		}
-		if next < 0 || next <= start {
+		if next < 0 {
+			break
+		}
+		if next <= start {
+			truncated = true
 			break
 		}
 		start = next
@@ -194,7 +199,6 @@ func ParseHTML(r io.Reader) (map[string]string, int, error) {
 	acc := map[string]*strings.Builder{}
 	next := -1
 	nextAuthoritative := false // a rel="next" link outranks a text-"next" match
-	sawFile := false
 	var current string
 	// Traverse iteratively with an explicit stack rather than recursing: the
 	// DOM is externally supplied, and although html.Parse caps tree depth, an
@@ -207,7 +211,6 @@ func ParseHTML(r io.Reader) (map[string]string, int, error) {
 		if n.Type == html.ElementNode {
 			if path := filePath(n); path != "" {
 				current = path
-				sawFile = true
 			}
 			class := attr(n, "class")
 			if current != "" && n.Data == "td" && strings.Contains(class, "blob-code") {
@@ -233,20 +236,22 @@ func ParseHTML(r io.Reader) (map[string]string, int, error) {
 				}
 			}
 			if n.Data == "a" && !nextAuthoritative {
-				rel := attr(n, "rel") == "next"
+				rel := slices.Contains(strings.Fields(attr(n, "rel")), "next")
 				// Only a rel="next" link, or the FIRST <a> whose text is "next",
 				// drives pagination — otherwise a file or repo literally named
 				// "next" could hijack start_entry. rel="next" is authoritative and
 				// stops any later text-match from overriding it.
-				if rel || (next < 0 && strings.Contains(strings.ToLower(text(n)), "next")) {
-					if parsed, e := url.Parse(attr(n, "href")); e == nil {
-						if value, e := strconv.Atoi(parsed.Query().Get("start_entry")); e == nil {
-							next = value
-							if rel {
-								nextAuthoritative = true
-							}
-						}
+				if rel || (next < 0 && strings.EqualFold(strings.TrimSpace(text(n)), "next")) {
+					parsed, err := url.Parse(attr(n, "href"))
+					if err != nil {
+						return nil, -1, fmt.Errorf("invalid GitHub web diff next link: %w", err)
 					}
+					value, err := strconv.Atoi(parsed.Query().Get("start_entry"))
+					if err != nil || value < 0 {
+						return nil, -1, fmt.Errorf("invalid GitHub web diff pagination cursor")
+					}
+					next = value
+					nextAuthoritative = rel
 				}
 			}
 		}
@@ -257,19 +262,10 @@ func ParseHTML(r io.Reader) (map[string]string, int, error) {
 			stack = append(stack, child)
 		}
 	}
-	// An empty page is only accepted when the page explains itself: it must have
-	// listed files AND said why they have no textual hunks (a binary, an
-	// oversized file, an entry with no changes). Failing those would make Fetch
-	// report truncation and cost the fork every patch collected so far.
-	//
-	// A file header alone is deliberately NOT enough. Markup that keeps its
-	// headers but moves the hunks away from blob-code resolves a header and no
-	// cells, which is indistinguishable from the benign case by shape — and
-	// treating it as benign is what let a partial diff reach the store as a
-	// complete one (#83). If GitHub rewords its placeholders this degrades to the
-	// old loud failure rather than to a silent one.
-	if len(acc) == 0 && !(sawFile && explainsItself(root)) {
-		return nil, next, fmt.Errorf("GitHub web diff markup contained no parseable files")
+	// Check every listed file, even on a partly readable page: one parsed file
+	// must not vouch for a sibling whose continuation went unparsed (#83).
+	if !explainsItself(root, acc) {
+		return nil, next, fmt.Errorf("GitHub web diff markup contained incomplete or unparseable files")
 	}
 	out := make(map[string]string, len(acc))
 	for path, b := range acc {
@@ -290,15 +286,10 @@ var nontextualMarkers = []string{"binary file", "too large", "not shown", "renam
 // to be short must still be rejected rather than pass the page.
 const nontextualMaxLen = 80
 
-// explainsItself reports whether the page says, per file, why that file has no
-// textual hunks. Scoping matters: a page-wide phrase match would let one
-// binary entry vouch for a sibling whose hunks went unparsed, which is exactly
-// the silent truncation this guards against. Every file the page listed must
-// have its own explanation.
-//
-// It is a second walk over the DOM, taken only on the rare path where a page
-// yielded no cells, so the hot path pays nothing for it.
-func explainsItself(root *html.Node) bool {
+// explainsItself requires each listed file to have parsed lines or its own
+// explanation for having no textual hunks. A readable or binary sibling is
+// not evidence that an otherwise unparsed file is complete.
+func explainsItself(root *html.Node, patches map[string]*strings.Builder) bool {
 	listed := map[string]bool{}
 	explained := map[string]bool{}
 	current := ""
@@ -336,6 +327,9 @@ func explainsItself(root *html.Node) bool {
 		return false
 	}
 	for path := range listed {
+		if patch := patches[path]; patch != nil && patch.Len() > 0 {
+			continue
+		}
 		if !explained[path] {
 			return false
 		}
