@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -114,9 +115,7 @@ func TestParseHTMLPaginationLinkValidation(t *testing.T) {
 func newTestClient(t *testing.T, srv *httptest.Server) *Client {
 	t.Helper()
 	c := New("cookie", nil)
-	c.http = srv.Client()
-	c.http.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	c.http.Transport = &rewriteToServer{srv: srv, base: c.http.Transport}
+	c.http.Transport = &rewriteToServer{srv: srv, base: srv.Client().Transport}
 	return c
 }
 
@@ -253,5 +252,67 @@ func TestParseHTMLAcceptsMixedTextAndBinaryFiles(t *testing.T) {
 	patches, _, err := ParseHTML(strings.NewReader(fixture))
 	if err != nil || patches["a.go"] != "+x()\n" || len(patches) != 1 {
 		t.Fatalf("mixed page lost its textual patch: patches=%v, err=%v", patches, err)
+	}
+}
+
+func TestFetchAccumulatesFileAcrossPages(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("start_entry") == "0" {
+			fmt.Fprint(w, pageHTML("a.go", 1))
+			return
+		}
+		fmt.Fprint(w, `<div data-path="a.go"></div><table><tr><td class="blob-code blob-code-deletion">old()</td></tr></table>`)
+	}))
+	defer srv.Close()
+	patches, truncated, err := newTestClient(t, srv).Fetch(context.Background(), "o", "r", "b", "h")
+	if err != nil || truncated || patches["a.go"] != "+x()\n-old()\n" {
+		t.Fatalf("complete continuation lost: patches=%v, truncated=%v, err=%v", patches, truncated, err)
+	}
+}
+
+func TestFetchBoundsResponseBytes(t *testing.T) {
+	for _, tc := range []struct {
+		name, wantError         string
+		pageBytes, wantRequests int
+	}{
+		{"per page", "bytes", maxResponseBytes + 1, 1},
+		{"total", "total bytes", maxResponseBytes, maxTotalBytes/maxResponseBytes + 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var requests atomic.Int32
+			prefix := pageHTML("a.go", 1) + "<!--"
+			body := prefix + strings.Repeat("x", tc.pageBytes-len(prefix)-3) + "-->"
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				start, _ := strconv.Atoi(r.URL.Query().Get("start_entry"))
+				fmt.Fprint(w, strings.Replace(body, "start_entry=1", fmt.Sprintf("start_entry=%d", start+1), 1))
+			}))
+			defer srv.Close()
+			patches, _, err := newTestClient(t, srv).Fetch(context.Background(), "o", "r", "b", "h")
+			if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+				t.Fatalf("want byte-budget error, got %v", err)
+			}
+			if patches != nil || int(requests.Load()) != tc.wantRequests {
+				t.Fatalf("budget leaked patches or extra requests: patches=%v, requests=%d", patches, requests.Load())
+			}
+		})
+	}
+}
+
+func TestFetchDoesNotFollowRedirects(t *testing.T) {
+	for _, location := range []string{"http://github.com/next", "https://other.github.com/next", "https://example.invalid/next"} {
+		t.Run(location, func(t *testing.T) {
+			var requests atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				w.Header().Set("Location", location)
+				w.WriteHeader(http.StatusFound)
+			}))
+			defer srv.Close()
+			patches, _, err := newTestClient(t, srv).Fetch(context.Background(), "o", "r", "b", "h")
+			if err == nil || !strings.Contains(err.Error(), "HTTP 302") || patches != nil || requests.Load() != 1 {
+				t.Fatalf("redirect followed or accepted: requests=%d, patches=%v, err=%v", requests.Load(), patches, err)
+			}
+		})
 	}
 }
