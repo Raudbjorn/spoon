@@ -2,6 +2,11 @@
 
 Status: proposed. Date: 2026-10-01. Scope: defensive / authorized use only.
 
+Follow-up: [2026-10-11 research and implementation handoff](2026-10-11-github-recon-followup.md)
+verifies Gitleaks baseline/SARIF behavior, corrects the admin-only alert-access
+claim, probes archive providers, and inventories a separate implementation
+worktree. The live-test numbers below remain historical October 1 observations.
+
 ## Context
 
 Two deep-research passes (102 + 104 agents, adversarial 3-vote verification) and
