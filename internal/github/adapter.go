@@ -540,6 +540,8 @@ func applyWebDiffPatches(t2 *forge.T2Data, patches map[string]string, truncated 
 	case truncated:
 		t2.PatchSkipReason = "web diff truncated: pagination incomplete"
 	default:
+		var skipReasons strings.Builder
+		skipReasons.WriteString(t2.PatchSkipReason)
 		for i := range t2.Diffs {
 			diff := &t2.Diffs[i]
 			if diff.Patch != "" {
@@ -557,7 +559,10 @@ func applyWebDiffPatches(t2 *forge.T2Data, patches map[string]string, truncated 
 			// HTML can lose hunks without losing the whole file or page. REST
 			// statistics remain authoritative even when pagination succeeded.
 			if additions != diff.Additions || deletions != diff.Deletions {
-				t2.PatchSkipReason = fmt.Sprintf("web diff incomplete for %q: got +%d/-%d lines, want +%d/-%d", diff.Path, additions, deletions, diff.Additions, diff.Deletions)
+				if skipReasons.Len() > 0 {
+					skipReasons.WriteString("; ")
+				}
+				fmt.Fprintf(&skipReasons, "web diff incomplete for %q: got +%d/-%d lines, want +%d/-%d", diff.Path, additions, deletions, diff.Additions, diff.Deletions)
 				continue
 			}
 			if patch != "" {
@@ -565,6 +570,7 @@ func applyWebDiffPatches(t2 *forge.T2Data, patches map[string]string, truncated 
 				diff.PatchSource = "github_web"
 			}
 		}
+		t2.PatchSkipReason = skipReasons.String()
 	}
 }
 
