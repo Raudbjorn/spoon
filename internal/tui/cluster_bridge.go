@@ -168,6 +168,7 @@ func runTUIClusterPipeline(
 			inputs.TreeSource = &gh.TreeSourceForRepo{Client: client, Ref: parent.DefaultBranch}
 			inputs.CommitSource = &gh.CommitSourceForRepo{Client: client}
 			inputs.ReadmeFetcher = client
+			inputs.ArchiveLink = client.ArchiveLink
 		}
 	} else {
 		inputs.Provider = "other"

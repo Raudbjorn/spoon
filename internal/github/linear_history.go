@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 
+	"github.com/shurcooL/githubv4"
 	"github.com/svnbjrn/spoon/internal/forge"
 )
 
@@ -71,10 +73,10 @@ func (c *Client) FetchMergeCommitHistory(
 	}
 
 	type attempt struct {
-		forkID       string
-		owner        string
-		branch       string
-		branchKnown  bool
+		forkID      string
+		owner       string
+		branch      string
+		branchKnown bool
 	}
 	attempts := make([]attempt, 0, len(forks))
 	for _, f := range forks {
@@ -89,23 +91,30 @@ func (c *Client) FetchMergeCommitHistory(
 
 	for _, chunk := range slidingChunks(len(attempts), linearHistoryBatchSize) {
 		batch := attempts[chunk.lo:chunk.hi]
-		var q strings.Builder
-		q.WriteString("query {\n")
-		fmt.Fprintf(&q, "  repository(owner: %s, name: %s) {\n", gqlString(baseOwner), gqlString(baseRepo))
-		fmt.Fprintf(&q, "    ref(qualifiedName: %s) {\n", gqlString(qualified))
-		for i, a := range batch {
-			if !a.branchKnown {
-				fmt.Fprintf(&q, "      c%d: compare(headRef: %s) { commits(first: %d) { totalCount nodes { parents { totalCount } } } }\n",
-					i, gqlString(a.owner+":HEAD"), linearHistoryCommitLimit)
-				continue
-			}
-			fmt.Fprintf(&q, "      c%d: compare(headRef: %s) { commits(first: %d) { totalCount nodes { parents { totalCount } } } }\n",
-				i, gqlString(a.owner+":"+a.branch), linearHistoryCommitLimit)
+		type historyShape struct {
+			Commits struct {
+				TotalCount int
+				Nodes      []struct {
+					Parents struct{ TotalCount int }
+				}
+			} `graphql:"commits(first: $first)"`
 		}
-		q.WriteString("    }\n  }\n  rateLimit { limit remaining used resetAt cost }\n}")
+		fields := make([]reflect.StructField, 0, len(batch))
+		for i := range batch {
+			fields = append(fields, gqlField(fmt.Sprintf("C%d", i), fmt.Sprintf("c%d: compare(headRef: $head%d)", i, i), (*historyShape)(nil)))
+		}
+		query, vars := gqlRefQuery(baseOwner, baseRepo, qualified, fields)
+		vars["first"] = githubv4.Int(linearHistoryCommitLimit)
+		for i, a := range batch {
+			branch := a.branch
+			if !a.branchKnown {
+				branch = "HEAD"
+			}
+			vars[fmt.Sprintf("head%d", i)] = githubv4.String(a.owner + ":" + branch)
+		}
 
 		var resp compareBatch
-		if err := c.doGraphQLWithRetry(ctx, q.String(), nil, &resp); err != nil {
+		if err := c.doGraphQLWithRetry(ctx, query, vars, &resp); err != nil {
 			if !isPartialLookupError(err) {
 				return nil, fmt.Errorf("compare fork histories: %w", err)
 			}

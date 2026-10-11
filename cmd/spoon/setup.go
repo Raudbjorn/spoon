@@ -230,6 +230,9 @@ func writeSetupConfig(path string, existed bool, cfg *config.Config, provider fo
 		fmt.Fprintf(stderr, "warning: could not write config %s: %v\n", path, err)
 		return
 	}
+	if cause := cfg.InlineFallback(); cause != nil {
+		fmt.Fprintf(stderr, "warning: GitHub tokens stay in the 0600 config file: the OS keyring could not be used (%v)\n", cause)
+	}
 	if err := config.WriteReadme(path); err != nil {
 		fmt.Fprintf(stderr, "warning: could not refresh config README: %v\n", err)
 	}
@@ -272,14 +275,12 @@ func providerStatusLines(provider forge.Provider, auth forge.AuthInfo, err error
 // authSource renders " via <source>" for an authenticated tier, or "".
 func authSource(provider forge.Provider, tier forge.AuthTier) string {
 	switch {
-	case provider == forge.ProviderGitHub && tier == forge.AuthCLI:
-		return " via the gh CLI"
 	case provider == forge.ProviderGitLab && tier == forge.AuthCLI:
 		return " via the glab CLI"
 	case provider == forge.ProviderGitLab && tier == forge.AuthToken:
 		return " via GITLAB_TOKEN"
 	case tier == forge.AuthToken:
-		return " via an environment token"
+		return " via a saved or environment token"
 	default:
 		return ""
 	}
@@ -295,7 +296,7 @@ func providerFixLines(provider forge.Provider) []string {
 	}
 	return []string{
 		"Fix — authenticate for higher rate limits (60 → 5000 req/hour):",
-		"  • gh auth login            (install: https://cli.github.com)",
+		"  • spoon auth login (requires SPOON_OAUTH_CLIENT_ID and SPOON_OAUTH_CLIENT_SECRET)",
 		"  • or export GH_TOKEN=...  /  GITHUB_TOKEN=...",
 	}
 }

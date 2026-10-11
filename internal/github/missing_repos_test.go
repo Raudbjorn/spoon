@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,10 +16,18 @@ import (
 // NOT_FOUND error item, which must be tolerated rather than failing the chunk.
 func TestMissingRepos_NullRepositoryOnly(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		if !strings.Contains(string(body), `r1: repository(owner: \"gone\", name: \"repo\")`) {
-			t.Errorf("query did not alias the second fork as r1: %s", body)
+		var req struct {
+			Query     string            `json:"query"`
+			Variables map[string]string `json:"variables"`
 		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode GraphQL request: %v", err)
+		}
+		// githubv4 keeps repository input in variables instead of query literals.
+		if !strings.Contains(req.Query, "r1: repository(owner: $owner1, name: $name1)") || req.Variables["owner1"] != "gone" || req.Variables["name1"] != "repo" {
+			t.Errorf("query did not bind the second fork as r1: %+v", req)
+		}
+
 		_, _ = io.WriteString(w, `{"data":{"r0":{"id":"R_1"},"r1":null},`+
 			`"errors":[{"type":"NOT_FOUND","path":["r1"],"message":"Could not resolve to a Repository"}]}`)
 	}))

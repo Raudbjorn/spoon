@@ -32,16 +32,21 @@ var repoCheckAuthWithEffective = func(effective config.EffectiveConfig) (*gh.Cli
 }
 
 // repoMDGCentralityFn is the test-stubbable MDG centrality entry. Production
-// flow: clone upstream to tempdir → mdg.BuildCentrality → return as
+// flow: download upstream sources to tempdir → mdg.BuildCentrality → return as
 // repo.Centrality interface.
-var repoMDGCentralityFn = func(ctx context.Context, provider, owner, repoName string) (repo.Centrality, error) {
+var repoMDGCentralityFn = func(ctx context.Context, provider, owner, repoName string, effective config.EffectiveConfig) (repo.Centrality, error) {
 	tmp, err := os.MkdirTemp("", "spn-mdg-")
 	if err != nil {
 		return nil, fmt.Errorf("mkdtemp: %w", err)
 	}
 	defer os.RemoveAll(tmp)
-	if err := mdg.ShallowClone(ctx, provider, owner, repoName, tmp); err != nil {
-		return nil, fmt.Errorf("shallow clone: %w", err)
+	client, _, err := repoCheckAuthWithEffective(effective)
+	if err != nil {
+		return nil, fmt.Errorf("GitHub auth: %w", err)
+	}
+	defer client.Close()
+	if err := mdg.FetchSource(ctx, provider, owner, repoName, "", tmp, client.ArchiveLink); err != nil {
+		return nil, fmt.Errorf("source download: %w", err)
 	}
 	c, err := mdg.BuildCentrality(ctx, tmp, provider, owner, repoName, "", mdg.BuildOptions{})
 	if err != nil {
@@ -120,7 +125,7 @@ func doRepoCentrality(args []string, stdout, stderr io.Writer, effective config.
 	ctx := context.Background()
 
 	if fullMDG {
-		c, err := repoMDGCentralityFn(ctx, "github", owner, repoName)
+		c, err := repoMDGCentralityFn(ctx, "github", owner, repoName, effective)
 		if err != nil {
 			return agentio.NewError(agentio.CodeUpstream, "mdg centrality: "+err.Error(), agentio.RemediationUpstream()).Emit(stderr)
 		}

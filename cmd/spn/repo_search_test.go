@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	ghAPI "github.com/cli/go-gh/v2/pkg/api"
+	gogithub "github.com/google/go-github/v90/github"
 	gh "github.com/svnbjrn/spoon/internal/github"
 )
 
@@ -408,7 +408,7 @@ func TestSpnRepoSearch_WrappedRateLimitStillRateLimited(t *testing.T) {
 
 func TestSpnRepoSearch_QueryRejectedIsBadInput(t *testing.T) {
 	stubRepoSearch(t, func(string, gh.RepoSearchOptions) (*gh.RepoSearchResult, error) {
-		return nil, fmt.Errorf("repo search: %w", &ghAPI.HTTPError{StatusCode: http.StatusUnprocessableEntity, Message: "Validation Failed"})
+		return nil, fmt.Errorf("repo search: %w", &gogithub.ErrorResponse{Response: &http.Response{StatusCode: http.StatusUnprocessableEntity}, Message: "Validation Failed"})
 	})
 	exit, stdout, stderr := runRepoSearch(t, "user:nobody")
 	if exit != 2 {
@@ -434,8 +434,8 @@ func TestSpnRepoSearch_OtherErrorsAreNotBadInput(t *testing.T) {
 		err      error
 		wantCode string
 	}{
-		{"server error", &ghAPI.HTTPError{StatusCode: http.StatusInternalServerError, Message: "boom"}, "upstream_error"},
-		{"bad gateway", &ghAPI.HTTPError{StatusCode: http.StatusBadGateway}, "upstream_error"},
+		{"server error", &gogithub.ErrorResponse{Response: &http.Response{StatusCode: http.StatusInternalServerError}, Message: "boom"}, "upstream_error"},
+		{"bad gateway", &gogithub.ErrorResponse{Response: &http.Response{StatusCode: http.StatusBadGateway}}, "upstream_error"},
 		{"plain error", errors.New("connection reset"), "upstream_error"},
 		{"all tokens rejected", &gh.AllBackendsRejectedError{Rejected: 1}, "auth_required"},
 	} {

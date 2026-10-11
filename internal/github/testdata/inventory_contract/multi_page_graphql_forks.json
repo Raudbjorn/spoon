@@ -563,10 +563,10 @@
               }
             ]
           },
-          "forkCount": 88,
-          "rateLimit": {
-            "cost": 1
-          }
+          "forkCount": 88
+        },
+        "rateLimit": {
+          "cost": 1
         }
       }
     },
@@ -1001,10 +1001,10 @@
               }
             ]
           },
-          "forkCount": 88,
-          "rateLimit": {
-            "cost": 1
-          }
+          "forkCount": 88
+        },
+        "rateLimit": {
+          "cost": 1
         }
       }
     }

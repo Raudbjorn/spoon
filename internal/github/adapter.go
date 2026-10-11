@@ -45,7 +45,7 @@ func (p *GHProvider) Auth(_ context.Context) (forge.AuthInfo, error) {
 	conc := 2
 	rl := 60
 	if p.status.Authenticated {
-		tier = forge.AuthCLI
+		tier = forge.AuthToken
 		conc = 10
 		rl = 5000
 	}

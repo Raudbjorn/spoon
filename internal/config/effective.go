@@ -1,6 +1,7 @@
 package config
 
 import (
+	"github.com/svnbjrn/spoon/internal/secrets"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -21,6 +22,7 @@ var settings = []Setting{
 	{"forge.provider", "", nil, func(c *Config) string { return c.Forge.Provider }},
 	{"forge.host", "", nil, func(c *Config) string { return c.Forge.Host }},
 	{"github.tokens", "", nil, func(c *Config) string { return strings.Join(c.GitHub.Tokens, "\n") }},
+	{"secrets.store", "keyring", []string{secrets.EnvBackend}, func(c *Config) string { return c.Secrets.Store }},
 	{"github.requestsPerMinute", "300", []string{"SPOON_GITHUB_RPM"}, func(c *Config) string { return strconv.FormatFloat(c.GitHub.RequestsPerMinute, 'f', -1, 64) }},
 	{"github.proxy.enabled", "false", nil, func(c *Config) string { return strconv.FormatBool(c.GitHub.Proxy.Enabled) }},
 	{"github.proxy.apiKeyFile", "", nil, func(c *Config) string { return c.GitHub.Proxy.APIKeyFile }},
@@ -88,6 +90,8 @@ type EffectiveConfig struct {
 	Appearance EffectiveAppearance
 	Backend    ResolvedString
 	Version    ResolvedString
+	// SecretStore is where GitHub tokens are persisted ("keyring" or "file").
+	SecretStore ResolvedString
 }
 
 type EffectiveForge struct{ Provider, Host ResolvedString }
@@ -157,7 +161,7 @@ func ResolveEffectiveConfig(file *Config, flags map[string]string, env map[strin
 func effectiveFromValues(values map[string]ResolvedString) EffectiveConfig {
 	value := func(key string) ResolvedString { return values[key] }
 	return EffectiveConfig{
-		Version: value("version"), Backend: value("embedder.backend"),
+		Version: value("version"), Backend: value("embedder.backend"), SecretStore: value("secrets.store"),
 		Forge: EffectiveForge{Provider: value("forge.provider"), Host: value("forge.host")},
 		GitHub: EffectiveGitHub{Tokens: value("github.tokens"), RequestsPerMinute: value("github.requestsPerMinute"), Proxy: EffectiveProxy{
 			Enabled: value("github.proxy.enabled"), APIKeyFile: value("github.proxy.apiKeyFile"), StaticFile: value("github.proxy.staticFile"), WhitelistPublicIP: value("github.proxy.whitelistPublicIp"), CacheTTL: value("github.proxy.cacheTtl"),
@@ -180,6 +184,8 @@ func (e EffectiveConfig) Value(key string) ResolvedString {
 		return e.Forge.Host
 	case "github.tokens":
 		return e.GitHub.Tokens
+	case "secrets.store":
+		return e.SecretStore
 	case "github.requestsPerMinute":
 		return e.GitHub.RequestsPerMinute
 	case "github.proxy.enabled":

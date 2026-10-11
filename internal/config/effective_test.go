@@ -92,7 +92,8 @@ func TestEffectiveConfigEveryEditableLeafRetainsRuntimeSource(t *testing.T) {
 		Embedder: EmbedderConfig{Backend: "fastembed", Model: "file-model", CacheDir: "/file/cache", MaxLength: 128, BatchSize: 4, Voyage: VoyageConfig{
 			Disabled: true, APIKeyFile: "file-voyage-key", EmbedModel: "file-embed", RerankModel: "file-rerank", OutputDimension: 256, BaseURL: "https://file.example",
 		}},
-		UI: UIConfig{Theme: "light", Color: "ansi8", Glyphs: "ascii"},
+		UI:      UIConfig{Theme: "light", Color: "ansi8", Glyphs: "ascii"},
+		Secrets: SecretsConfig{Store: "file"},
 	}
 	editable := []string{
 		"forge.provider", "forge.host", "github.tokens", "github.requestsPerMinute", "github.proxy.enabled",
@@ -101,7 +102,7 @@ func TestEffectiveConfigEveryEditableLeafRetainsRuntimeSource(t *testing.T) {
 		"embedder.autoIndex", "embedder.voyage.autoIndex",
 		"embedder.voyage.disabled", "embedder.voyage.apiKeyFile", "embedder.voyage.embedModel",
 		"embedder.voyage.rerankModel", "embedder.voyage.outputDimension", "embedder.voyage.baseUrl",
-		"ui.theme", "ui.color", "ui.glyphs",
+		"ui.theme", "ui.color", "ui.glyphs", "secrets.store",
 	}
 	for _, key := range editable {
 		RecordFieldValue(file, key, "present")

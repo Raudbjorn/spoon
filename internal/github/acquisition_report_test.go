@@ -10,8 +10,6 @@ import (
 	"net/url"
 	"strings"
 	"testing"
-
-	ghAPI "github.com/cli/go-gh/v2/pkg/api"
 )
 
 // newRESTOnlyTestClient builds a *Client with only a REST client and no GraphQL
@@ -23,11 +21,7 @@ func newRESTOnlyTestClient(t *testing.T, srv *httptest.Server) *Client {
 		t.Fatalf("parse server URL: %v", err)
 	}
 	tr := &rewriteTransport{target: u, base: http.DefaultTransport}
-	rest, err := ghAPI.NewRESTClient(ghAPI.ClientOptions{
-		AuthToken: "x",
-		Host:      "github.com",
-		Transport: tr,
-	})
+	rest, err := newRESTClient("x", tr)
 	if err != nil {
 		t.Fatalf("NewRESTClient: %v", err)
 	}
@@ -381,12 +375,27 @@ func TestAuthScopeIDSafeWithTokens(t *testing.T) {
 // forks tie at 0 stars, so cursor pages overlap and skip); CREATED_AT returned
 // all 19,981 exactly once (live, 2026-09-26).
 func TestForksGraphQLQuery_PagesByCreationTime(t *testing.T) {
-	if !strings.Contains(forksGraphQLQuery, "orderBy: {field: CREATED_AT, direction: ASC}") {
-		t.Fatalf("forks query must page by CREATED_AT ASC; got:\n%s", forksGraphQLQuery)
+	// githubv4 generates the document from tags; inspect the actual request.
+	var query string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct{ Query string }
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Error(err)
+		}
+		query = req.Query
+		_, _ = io.WriteString(w, `{"data":{"repository":{"forks":{"nodes":[]}}}}`)
+	}))
+	defer srv.Close()
+	if _, _, _, err := newTestClientGQL(t, srv).FetchForksGraphQL(context.Background(), "o", "r", nil); err != nil {
+		t.Fatal(err)
 	}
-	if strings.Contains(forksGraphQLQuery, "field: STARGAZERS") {
+	if !strings.Contains(query, "orderBy: {field: CREATED_AT, direction: ASC}") {
+		t.Fatalf("forks query must page by CREATED_AT ASC; got:\n%s", query)
+	}
+	if strings.Contains(query, "field: STARGAZERS") {
 		t.Fatal("forks query pages by STARGAZERS, a heavily tied key")
 	}
+
 }
 
 // REST fallback: pages requested oldest-first, repeats across pages dropped
@@ -403,7 +412,7 @@ func TestFetchForksAuto_RESTDedupAndOrder(t *testing.T) {
 			})
 			return
 		}
-		w.Header().Set("Link", `<`+"http://"+r.Host+r.URL.Path+`?sort=oldest&per_page=100&page=2>; rel="next"`)
+		w.Header().Set("Link", `<`+"https://api.github.com"+r.URL.Path+`?sort=oldest&per_page=100&page=2>; rel="next"`)
 		_ = json.NewEncoder(w).Encode([]ForkInfo{
 			{ID: 1, FullName: "a/r"},
 			{ID: 2, FullName: "b/r", Stars: 7},
@@ -499,7 +508,7 @@ func TestFetchForksAuto_DuplicateOnlyPagesStillCounted(t *testing.T) {
 				_ = json.NewEncoder(w).Encode([]ForkInfo{{ID: 1, FullName: "a/r"}}) // repeats only
 				return
 			}
-			w.Header().Set("Link", `<`+"http://"+r.Host+r.URL.Path+`?sort=oldest&per_page=100&page=2>; rel="next"`)
+			w.Header().Set("Link", `<`+"https://api.github.com"+r.URL.Path+`?sort=oldest&per_page=100&page=2>; rel="next"`)
 			_ = json.NewEncoder(w).Encode([]ForkInfo{{ID: 1, FullName: "a/r"}})
 		}))
 		defer srv.Close()

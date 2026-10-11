@@ -32,7 +32,7 @@ cd experiments/started/behavioral-embeddings
 ./run.sh   # writes RESULTS_RUN.md; this committed RESULTS.md is left untouched
 ```
 
-Requires Ollama running with `nomic-embed-text` pulled, `gh auth status` showing an authenticated user, and `uv` on PATH.
+Requires Ollama running with `nomic-embed-text` pulled, Spoon authentication via `spoon auth login` or `GH_TOKEN`/`GITHUB_TOKEN`, and `uv` on PATH.
 
 ## What was measured
 

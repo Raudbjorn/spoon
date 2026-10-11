@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
+	"github.com/shurcooL/githubv4"
 	"github.com/svnbjrn/spoon/internal/forge"
 )
 
@@ -96,16 +98,24 @@ func (c *Client) FetchPathLastTouch(ctx context.Context, owner, repo, branch str
 	// Phase A -- last-touch commit per path.
 	for _, chunk := range slidingChunks(len(paths), pathHistoryBatchSize) {
 		batch := paths[chunk.lo:chunk.hi]
-		var q strings.Builder
-		fmt.Fprintf(&q, "query {\n  repository(owner: %s, name: %s) {\n    ref(qualifiedName: %s) {\n      target {\n        ... on Commit {\n",
-			gqlString(owner), gqlString(repo), gqlString(qualified))
-		for i, p := range batch {
-			fmt.Fprintf(&q, "          p%d: history(first: 1, path: %s) { nodes { oid committedDate } }\n", i, gqlString(p))
+		type historyShape struct {
+			Nodes []struct {
+				OID           githubv4.GitObjectID
+				CommittedDate githubv4.DateTime
+			}
 		}
-		q.WriteString("        }\n      }\n    }\n  }\n  rateLimit { limit remaining used resetAt cost }\n}")
+		fields := make([]reflect.StructField, 0, len(batch))
+		for i := range batch {
+			fields = append(fields, gqlField(fmt.Sprintf("P%d", i), fmt.Sprintf("p%d: history(first: 1, path: $path%d)", i, i), (*historyShape)(nil)))
+		}
+		target := gqlObject(gqlField("Commit", "... on Commit", gqlObject(fields...)))
+		query, vars := gqlRefQuery(owner, repo, qualified, []reflect.StructField{gqlField("Target", "target", target)})
+		for i, path := range batch {
+			vars[fmt.Sprintf("path%d", i)] = githubv4.String(path)
+		}
 
 		var resp pathHistoryBatch
-		if err := c.doGraphQLWithRetry(ctx, q.String(), nil, &resp); err != nil {
+		if err := c.doGraphQLWithRetry(ctx, query, vars, &resp); err != nil {
 			if !isPartialLookupError(err) {
 				return nil, fmt.Errorf("path last touch: %w", err)
 			}
@@ -158,20 +168,19 @@ func (c *Client) FetchPathLastTouch(ctx context.Context, owner, repo, branch str
 	commitsSince := make(map[string]int, len(shas))
 	for _, chunk := range slidingChunks(len(shas), pathCompareBatchSize) {
 		batch := shas[chunk.lo:chunk.hi]
-		var q strings.Builder
-		fmt.Fprintf(&q, "query {\n  repository(owner: %s, name: %s) {\n    ref(qualifiedName: %s) {\n",
-			gqlString(owner), gqlString(repo), gqlString(qualified))
-		for i, sha := range batch {
+		fields := make([]reflect.StructField, 0, len(batch))
+		for i := range batch {
 			// The upstream ref is the base and sha (an ancestor of it) is
-			// headRef, so behindBy is how far the base has moved past sha --
-			// i.e. commits landed since the path's last touch. Verified live
-			// (task brief): compare(headRef: "fa44839f...") -> behindBy 5.
-			fmt.Fprintf(&q, "      s%d: compare(headRef: %s) { behindBy }\n", i, gqlString(sha))
+			// headRef, so behindBy counts commits since the path's last touch.
+			fields = append(fields, gqlField(fmt.Sprintf("S%d", i), fmt.Sprintf("s%d: compare(headRef: $sha%d)", i, i), (*struct{ BehindBy int })(nil)))
 		}
-		q.WriteString("    }\n  }\n  rateLimit { limit remaining used resetAt cost }\n}")
+		query, vars := gqlRefQuery(owner, repo, qualified, fields)
+		for i, sha := range batch {
+			vars[fmt.Sprintf("sha%d", i)] = githubv4.String(sha)
+		}
 
 		var resp pathCompareBatch
-		if err := c.doGraphQLWithRetry(ctx, q.String(), nil, &resp); err != nil {
+		if err := c.doGraphQLWithRetry(ctx, query, vars, &resp); err != nil {
 			if !isPartialLookupError(err) {
 				return nil, fmt.Errorf("path last touch compare: %w", err)
 			}

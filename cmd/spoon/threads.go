@@ -407,12 +407,12 @@ func runThreadsWithEffective(args []string, effective config.EffectiveConfig) in
 		return 1
 	}
 	if !client.IsAuthenticated() {
-		fmt.Fprintln(os.Stderr, "❌ Error: spoon threads requires authentication (run `gh auth login`).")
+		fmt.Fprintln(os.Stderr, "❌ Error: spoon threads requires authentication (run `spoon auth login`).")
 		return 1
 	}
 	if !status.HasScope("repo") {
 		fmt.Fprintln(os.Stderr, "❌ Error: spoon threads requires the 'repo' OAuth scope.")
-		fmt.Fprintln(os.Stderr, "Refresh your token with:  gh auth refresh -s repo")
+		fmt.Fprintln(os.Stderr, "Authorize with:  spoon auth login --scope repo")
 		return 2
 	}
 

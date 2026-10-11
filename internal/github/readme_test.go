@@ -10,8 +10,6 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
-
-	ghAPI "github.com/cli/go-gh/v2/pkg/api"
 )
 
 // rewriteTransport rewrites the scheme/host of outgoing requests to point at
@@ -38,11 +36,7 @@ func newTestClient(t *testing.T, srv *httptest.Server) *Client {
 	if err != nil {
 		t.Fatalf("parse server URL: %v", err)
 	}
-	rest, err := ghAPI.NewRESTClient(ghAPI.ClientOptions{
-		AuthToken: "x",
-		Host:      "github.com",
-		Transport: &rewriteTransport{target: u, base: http.DefaultTransport},
-	})
+	rest, err := newRESTClient("x", &rewriteTransport{target: u, base: http.DefaultTransport})
 	if err != nil {
 		t.Fatalf("NewRESTClient: %v", err)
 	}

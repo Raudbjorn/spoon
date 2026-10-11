@@ -1239,6 +1239,7 @@ func clusterEnv(ctx context.Context, provider forge.Forge, parent *forge.ParentD
 			inputs.TreeSource = &gh.TreeSourceForRepo{Client: client, Ref: defaultBranch}
 			inputs.CommitSource = &gh.CommitSourceForRepo{Client: client}
 			inputs.ReadmeFetcher = client
+			inputs.ArchiveLink = client.ArchiveLink
 		}
 	}
 

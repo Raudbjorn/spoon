@@ -1,8 +1,11 @@
 package github
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -193,5 +196,114 @@ func TestReviewThreadJSONRoundTrip(t *testing.T) {
 	}
 	if !out.IsOutdated {
 		t.Errorf("round-trip lost IsOutdated")
+	}
+}
+
+func TestFetchPRGraphQLPagination(t *testing.T) {
+	fixture, err := os.ReadFile("testdata/threads_status_basic.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Query     string
+			Variables map[string]interface{}
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Error(err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		calls++
+		// The typed client generates compact GraphQL; check schema selections,
+		// not whitespace or the declaration order of variables.
+		query := strings.ReplaceAll(req.Query, " ", "")
+		for _, want := range []string{"$owner:String!", "$name:String!", "$number:Int!", "$after:String", "repository(owner:$owner,name:$name)", "pullRequest(number:$number)", "commits(last:1)", "reviewThreads(first:100,after:$after)", "comments(first:100)", "__typename"} {
+			if !strings.Contains(query, want) {
+				t.Errorf("query missing %q: %s", want, req.Query)
+			}
+		}
+		if req.Variables["owner"] != "octo" || req.Variables["name"] != "repo" || req.Variables["number"] != float64(7) {
+			t.Errorf("variables: %#v", req.Variables)
+		}
+		response := string(fixture)
+		if calls == 1 {
+			if req.Variables["after"] != nil {
+				t.Errorf("first cursor: %#v", req.Variables["after"])
+			}
+			response = strings.Replace(response, `"hasNextPage": false, "endCursor": null`, `"hasNextPage": true, "endCursor": "page2"`, 1)
+		} else {
+			if req.Variables["after"] != "page2" {
+				t.Errorf("next cursor: %#v", req.Variables["after"])
+			}
+			response = strings.Replace(response, `"PRRT_1"`, `"PRRT_2"`, 1)
+			response = strings.Replace(response, `"isResolved": false`, `"isResolved": true`, 1)
+		}
+		fmt.Fprint(w, response)
+	}))
+	defer srv.Close()
+	status, threads, err := newTestClientGQL(t, srv).FetchPR(context.Background(), "octo", "repo", 7, ThreadStateUnresolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || len(threads) != 1 || threads[0].ID != "PRRT_1" || threads[0].ReviewerType != "User" || status.UnresolvedThreads != 1 || status.OutdatedThreads != 2 || status.ChecksState != "FAILURE" {
+		t.Fatalf("calls=%d status=%+v threads=%+v", calls, status, threads)
+	}
+}
+
+func TestThreadGraphQLMutations(t *testing.T) {
+	for _, operation := range []string{"addPullRequestReviewThreadReply", "resolveReviewThread", "unresolveReviewThread"} {
+		t.Run(operation, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var req struct {
+					Query     string
+					Variables struct {
+						Input map[string]interface{}
+					}
+				}
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					t.Error(err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				// graphql tags retain spaces; validate the operation independently of formatting.
+				if !strings.HasPrefix(req.Query, "mutation(") || !strings.Contains(strings.ReplaceAll(req.Query, " ", ""), operation+"(input:$input)") {
+					t.Errorf("mutation: %s", req.Query)
+				}
+				idKey := "threadId"
+				payload := `{"thread":{"id":"PRRT_1","isResolved":true}}`
+				if operation == "addPullRequestReviewThreadReply" {
+					idKey = "pullRequestReviewThreadId"
+					if req.Variables.Input["body"] != "fixed" {
+						t.Errorf("reply body: %#v", req.Variables.Input)
+					}
+					payload = `{"comment":{"id":"PRRC_1","body":"fixed","createdAt":"2026-05-10T09:00:00Z","updatedAt":"2026-05-10T09:00:00Z","author":{"__typename":"User","login":"alice","url":"https://github.com/alice"}}}`
+				}
+				// githubv4 sends a typed input object instead of separate scalar variables.
+				if req.Variables.Input[idKey] != "PRRT_1" {
+					t.Errorf("mutation input: %#v", req.Variables.Input)
+				}
+				fmt.Fprintf(w, `{"data":{%q:%s}}`, operation, payload)
+			}))
+			defer srv.Close()
+			client := newTestClientGQL(t, srv)
+			var err error
+			switch operation {
+			case "addPullRequestReviewThreadReply":
+				var comment ThreadComment
+				comment, err = client.ReplyToThread(context.Background(), "PRRT_1", "fixed")
+				if err == nil && (comment.ID != "PRRC_1" || comment.Body != "fixed" || comment.Author != "alice" || comment.AuthorType != "User" || comment.AuthorURL != "https://github.com/alice" || comment.CreatedAt != "2026-05-10T09:00:00Z") {
+					t.Errorf("reply: %+v", comment)
+				}
+			case "resolveReviewThread":
+				err = client.ResolveThread(context.Background(), "PRRT_1")
+			case "unresolveReviewThread":
+				err = client.UnresolveThread(context.Background(), "PRRT_1")
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }

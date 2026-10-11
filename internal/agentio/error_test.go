@@ -90,9 +90,10 @@ func TestError_Emit_upstreamError_retryable(t *testing.T) {
 }
 
 func TestRemediation_authRequired(t *testing.T) {
+	// Remediation must use the native login command after removing gh credential discovery.
 	r := RemediationAuthRequired()
-	if !strings.Contains(r, "gh auth login") {
-		t.Errorf("RemediationAuthRequired should mention gh auth login: %q", r)
+	if !strings.Contains(r, "spoon auth login") {
+		t.Errorf("RemediationAuthRequired should mention spoon auth login: %q", r)
 	}
 }
 
@@ -104,8 +105,9 @@ func TestRemediation_policyBodyRequired(t *testing.T) {
 }
 
 func TestRemediation_authScope(t *testing.T) {
+	// Native OAuth reauthorization accepts --scope; it has no auth refresh verb.
 	r := RemediationAuthScope("repo")
-	if !strings.Contains(r, "gh auth refresh -s repo") {
+	if !strings.Contains(r, "spoon auth login --scope repo") {
 		t.Errorf("scope placeholder not substituted: %q", r)
 	}
 }

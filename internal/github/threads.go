@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"sync"
+
+	"github.com/shurcooL/githubv4"
 )
 
 // Thread state filters for FetchPR.
@@ -77,16 +79,16 @@ type listThreadsData struct {
 						} `json:"statusCheckRollup"`
 					} `json:"commit"`
 				} `json:"nodes"`
-			} `json:"commits"`
+			} `json:"commits" graphql:"commits(last: 1)"`
 			ReviewThreads struct {
 				PageInfo struct {
 					HasNextPage bool    `json:"hasNextPage"`
 					EndCursor   *string `json:"endCursor"`
 				} `json:"pageInfo"`
 				Nodes []rawThread `json:"nodes"`
-			} `json:"reviewThreads"`
-		} `json:"pullRequest"`
-	} `json:"repository"`
+			} `json:"reviewThreads" graphql:"reviewThreads(first: 100, after: $after)"`
+		} `json:"pullRequest" graphql:"pullRequest(number: $number)"`
+	} `json:"repository" graphql:"repository(owner: $owner, name: $name)"`
 	RateLimit gqlRateLimit `json:"rateLimit"`
 }
 
@@ -102,7 +104,7 @@ type rawThread struct {
 	DiffSide   string `json:"diffSide"`
 	Comments   struct {
 		Nodes []rawComment `json:"nodes"`
-	} `json:"comments"`
+	} `json:"comments" graphql:"comments(first: 100)"`
 }
 
 type rawComment struct {
@@ -111,7 +113,7 @@ type rawComment struct {
 	CreatedAt string `json:"createdAt"`
 	UpdatedAt string `json:"updatedAt"`
 	Author    struct {
-		Typename string `json:"__typename"`
+		Typename string `json:"__typename" graphql:"__typename"`
 		Login    string `json:"login"`
 		URL      string `json:"url"`
 	} `json:"author"`
@@ -199,38 +201,16 @@ func (c *Client) ReplyToThread(ctx context.Context, threadID, body string) (Thre
 	if !c.HasGraphQL() {
 		return ThreadComment{}, fmt.Errorf("GraphQL client not available (auth required)")
 	}
-	const mutation = `
-mutation($threadId: ID!, $body: String!) {
-  addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: $threadId, body: $body }) {
-    comment {
-      id
-      body
-      createdAt
-      updatedAt
-      author { __typename login url }
-    }
-  }
-}`
-	// go-gh's DoWithContext unmarshals the GraphQL "data" field directly into
-	// the target — no outer wrapper needed (mirrors FetchForksGraphQL /
-	// FetchPR pattern).
 	var resp struct {
 		AddPullRequestReviewThreadReply struct {
-			Comment struct {
-				ID        string `json:"id"`
-				Body      string `json:"body"`
-				CreatedAt string `json:"createdAt"`
-				UpdatedAt string `json:"updatedAt"`
-				Author    struct {
-					Typename string `json:"__typename"`
-					Login    string `json:"login"`
-					URL      string `json:"url"`
-				} `json:"author"`
-			} `json:"comment"`
-		} `json:"addPullRequestReviewThreadReply"`
+			Comment rawComment `json:"comment"`
+		} `json:"addPullRequestReviewThreadReply" graphql:"addPullRequestReviewThreadReply(input: $input)"`
 	}
-	vars := map[string]interface{}{"threadId": threadID, "body": body}
-	if err := c.doGraphQL(ctx, mutation, vars, &resp); err != nil {
+	mutation := gqlMutation{Query: &resp, Input: githubv4.AddPullRequestReviewThreadReplyInput{
+		PullRequestReviewThreadID: githubv4.ID(threadID),
+		Body:                      githubv4.String(body),
+	}}
+	if err := c.doGraphQL(ctx, mutation, nil, &resp); err != nil {
 		return ThreadComment{}, fmt.Errorf("reply to thread %s: %w", threadID, err)
 	}
 	c2 := resp.AddPullRequestReviewThreadReply.Comment
@@ -259,21 +239,25 @@ func (c *Client) flipResolve(ctx context.Context, threadID string, resolved bool
 	if !c.HasGraphQL() {
 		return fmt.Errorf("GraphQL client not available (auth required)")
 	}
-	mutation := `
-mutation($threadId: ID!) {
-  resolveReviewThread(input: { threadId: $threadId }) { thread { id isResolved } }
-}`
+	type payload struct {
+		Thread struct {
+			ID         string
+			IsResolved bool
+		}
+	}
+	resp := struct {
+		ResolveReviewThread payload `graphql:"resolveReviewThread(input: $input)"`
+	}{}
+	mutation := gqlMutation{Query: &resp, Input: githubv4.ResolveReviewThreadInput{ThreadID: githubv4.ID(threadID)}}
 	verb := "resolve"
 	if !resolved {
-		mutation = `
-mutation($threadId: ID!) {
-  unresolveReviewThread(input: { threadId: $threadId }) { thread { id isResolved } }
-}`
+		resp := struct {
+			UnresolveReviewThread payload `graphql:"unresolveReviewThread(input: $input)"`
+		}{}
+		mutation = gqlMutation{Query: &resp, Input: githubv4.UnresolveReviewThreadInput{ThreadID: githubv4.ID(threadID)}}
 		verb = "unresolve"
 	}
-	resp := struct{}{}
-	vars := map[string]interface{}{"threadId": threadID}
-	if err := c.doGraphQL(ctx, mutation, vars, &resp); err != nil {
+	if err := c.doGraphQL(ctx, mutation, nil, mutation.Query); err != nil {
 		return fmt.Errorf("%s thread %s: %w", verb, threadID, err)
 	}
 	return nil
@@ -367,62 +351,19 @@ func (c *Client) FetchPR(ctx context.Context, owner, repo string, number int, re
 	if !c.HasGraphQL() {
 		return PullRequestStatus{}, nil, fmt.Errorf("GraphQL client not available (auth required)")
 	}
-	const query = `
-query($owner: String!, $name: String!, $number: Int!, $after: String) {
-  repository(owner: $owner, name: $name) {
-    pullRequest(number: $number) {
-      title
-      isDraft
-      merged
-      mergeable
-      mergeStateStatus
-      reviewDecision
-      headRefOid
-      commits(last: 1) {
-        nodes {
-          commit {
-            statusCheckRollup { state }
-          }
-        }
-      }
-      reviewThreads(first: 100, after: $after) {
-        pageInfo { hasNextPage endCursor }
-        nodes {
-          id
-          isResolved
-          isOutdated
-          path
-          line
-          startLine
-          diffSide
-          comments(first: 100) {
-            nodes {
-              id
-              body
-              createdAt
-              updatedAt
-              author { __typename login url }
-            }
-          }
-        }
-      }
-    }
-  }
-  rateLimit { limit remaining used resetAt cost }
-}`
 	var status PullRequestStatus
 	var all []ReviewThread
-	var cursor *string
+	var cursor *githubv4.String
 	firstPage := true
 	for {
 		vars := map[string]interface{}{
-			"owner":  owner,
-			"name":   repo,
-			"number": number,
+			"owner":  githubv4.String(owner),
+			"name":   githubv4.String(repo),
+			"number": githubv4.Int(number),
 			"after":  cursor,
 		}
 		var resp listThreadsData
-		if err := c.doGraphQLWithRetry(ctx, query, vars, &resp); err != nil {
+		if err := c.doGraphQLWithRetry(ctx, &resp, vars, &resp); err != nil {
 			return PullRequestStatus{}, nil, fmt.Errorf("fetch PR: %w", err)
 		}
 		pageStatus, pageThreads := parseFetchPRResponse(resp)
@@ -440,7 +381,7 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
 		if !page.HasNextPage || page.EndCursor == nil {
 			break
 		}
-		cursor = page.EndCursor
+		cursor = githubv4.NewString(githubv4.String(*page.EndCursor))
 	}
 	// Apply client-side state filter (the server does not expose a thread-state filter).
 	// Note: status.UnresolvedThreads was set by parseFetchPRResponse on the unfiltered set;

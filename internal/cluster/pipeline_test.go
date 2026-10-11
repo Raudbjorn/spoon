@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -835,5 +837,25 @@ func TestPipeline_CancelledContextDoesNotFallBack(t *testing.T) {
 	var buf bytes.Buffer
 	if _, err := RunPipeline(ctx, opts, inputs, &buf); err == nil && strings.Contains(buf.String(), "falling back to lexical") {
 		t.Errorf("cancelled run re-embedded lexically instead of bailing\nlog: %s", buf.String())
+	}
+}
+
+// The archive must match the SHA used to key the resulting MDG cache.
+func TestLoadOrComputeMDGRequestsPinnedArchive(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	want := errors.New("stop after resolving snapshot")
+	called := false
+	_, ok, err := loadOrComputeMDG(context.Background(), PipelineOptions{CentralityHeadSHA: "deadbeef"}, PipelineInputs{
+		Provider: "github", UpstreamOwner: "owner", UpstreamRepo: "repo",
+		ArchiveLink: func(ctx context.Context, owner, repo, ref string) (*url.URL, error) {
+			called = true
+			if owner != "owner" || repo != "repo" || ref != "deadbeef" {
+				t.Fatalf("unexpected snapshot: %s/%s@%s", owner, repo, ref)
+			}
+			return nil, want
+		},
+	}, io.Discard)
+	if !called || ok || !errors.Is(err, want) {
+		t.Fatalf("called=%v ok=%v err=%v", called, ok, err)
 	}
 }

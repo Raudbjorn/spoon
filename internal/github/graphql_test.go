@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	ghAPI "github.com/cli/go-gh/v2/pkg/api"
+	gogithub "github.com/google/go-github/v90/github"
 )
 
 func TestIsTransientServerError(t *testing.T) {
@@ -24,13 +24,13 @@ func TestIsTransientServerError(t *testing.T) {
 		want bool
 	}{
 		{"nil", nil, false},
-		{"typed 502", &ghAPI.HTTPError{StatusCode: 502}, true},
-		{"typed 503", &ghAPI.HTTPError{StatusCode: 503}, true},
-		{"typed 504", &ghAPI.HTTPError{StatusCode: 504}, true},
-		{"typed 500 not retried", &ghAPI.HTTPError{StatusCode: 500}, false},
-		{"typed 404 not retried", &ghAPI.HTTPError{StatusCode: 404}, false},
-		{"typed 403 not retried", &ghAPI.HTTPError{StatusCode: 403}, false},
-		{"wrapped 502", fmt.Errorf("GraphQL query: %w", &ghAPI.HTTPError{StatusCode: 502}), true},
+		{"typed 502", &gogithub.ErrorResponse{Response: &http.Response{StatusCode: 502}}, true},
+		{"typed 503", &gogithub.ErrorResponse{Response: &http.Response{StatusCode: 503}}, true},
+		{"typed 504", &gogithub.ErrorResponse{Response: &http.Response{StatusCode: 504}}, true},
+		{"typed 500 not retried", &gogithub.ErrorResponse{Response: &http.Response{StatusCode: 500}}, false},
+		{"typed 404 not retried", &gogithub.ErrorResponse{Response: &http.Response{StatusCode: 404}}, false},
+		{"typed 403 not retried", &gogithub.ErrorResponse{Response: &http.Response{StatusCode: 403}}, false},
+		{"wrapped 502", fmt.Errorf("GraphQL query: %w", &gogithub.ErrorResponse{Response: &http.Response{StatusCode: 502}}), true},
 		{"string 502", errors.New("HTTP 502: 502 Bad Gateway"), true},
 		{"string 504", errors.New("HTTP 504: Gateway Timeout"), true},
 		{"plain error", errors.New("connection refused"), false},
@@ -54,22 +54,11 @@ func newTestClientGQL(t *testing.T, srv *httptest.Server) *Client {
 		t.Fatalf("parse server URL: %v", err)
 	}
 	tr := &rewriteTransport{target: u, base: http.DefaultTransport}
-	rest, err := ghAPI.NewRESTClient(ghAPI.ClientOptions{
-		AuthToken: "x",
-		Host:      "github.com",
-		Transport: tr,
-	})
+	rest, err := newRESTClient("x", tr)
 	if err != nil {
 		t.Fatalf("NewRESTClient: %v", err)
 	}
-	gql, err := ghAPI.NewGraphQLClient(ghAPI.ClientOptions{
-		AuthToken: "x",
-		Host:      "github.com",
-		Transport: tr,
-	})
-	if err != nil {
-		t.Fatalf("NewGraphQLClient: %v", err)
-	}
+	gql := newGraphQLClient("x", defaultHost, tr)
 	return &Client{rest: rest, gql: gql, authenticated: true, authScopeID: computeAuthScopeID("github", "github.com", []string{"test-token"})}
 }
 
@@ -882,7 +871,6 @@ func TestFetchForksBounded_ContinuesQueuedBranchesAfterMaxDepth(t *testing.T) {
 		t.Errorf("CapReason = %q, want max_depth", report.CapReason)
 	}
 }
-
 
 func TestFetchForksBounded_BoundedContextCancelsMidCall(t *testing.T) {
 	// Regression for the P2 review: the elapsed limit was checked only

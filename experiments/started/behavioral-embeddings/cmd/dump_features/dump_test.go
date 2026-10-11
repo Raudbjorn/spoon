@@ -2,8 +2,14 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -13,9 +19,15 @@ import (
 type fakeREST struct {
 	routes map[string]string
 	calls  []string
+	closed bool
 }
 
-func (f *fakeREST) Get(path string, response any) error {
+func (f *fakeREST) Close() { f.closed = true }
+
+func (f *fakeREST) Get(ctx context.Context, path string, response any) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	f.calls = append(f.calls, path)
 	body, ok := f.routes[path]
 	if !ok {
@@ -51,7 +63,7 @@ func TestListPRs_TopNCap(t *testing.T) {
 		{Number: 3, Title: "third", State: "open"},
 	}
 	fr := staticRoutes("o", "r", prs, nil, nil)
-	got, err := listPRs(fr, "o", "r", 2)
+	got, err := listPRs(context.Background(), fr, "o", "r", 2)
 	if err != nil {
 		t.Fatalf("listPRs: %v", err)
 	}
@@ -143,6 +155,9 @@ func TestDumpFeatures_BuildsRecordsAndDropsEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dumpFeatures: %v", err)
 	}
+	if !fr.closed {
+		t.Fatal("REST client was not closed")
+	}
 	if len(got) != 1 {
 		t.Fatalf("want 1 record (the empty PR should be dropped), got %d: %+v", len(got), got)
 	}
@@ -206,5 +221,58 @@ func TestSplitRepo(t *testing.T) {
 		if o != c.wantO || r != c.wantR {
 			t.Errorf("splitRepo(%q) = (%q, %q), want (%q, %q)", c.in, o, r, c.wantO, c.wantR)
 		}
+	}
+}
+
+func TestListPRsPaginationAndCancellation(t *testing.T) {
+	first := make([]prInfo, 100)
+	for i := range first {
+		first[i].Number = i + 1
+	}
+	fr := staticRoutes("o", "r", first, nil, nil)
+	fr.routes["repos/o/r/pulls?state=all&sort=updated&direction=desc&per_page=100&page=2"] = `[{"number":101}]`
+	got, err := listPRs(context.Background(), fr, "o", "r", 0)
+	if err != nil || len(got) != 101 || len(fr.calls) != 2 {
+		t.Fatalf("PRs=%d calls=%d err=%v", len(got), len(fr.calls), err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, fetch := range []func() error{
+		func() error { _, err := listPRs(ctx, fr, "o", "r", 0); return err },
+		func() error { _, err := getPRFiles(ctx, fr, "o", "r", 1); return err },
+		func() error { _, err := getPRCommits(ctx, fr, "o", "r", 1); return err },
+	} {
+		if err := fetch(); !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancellation lost: %v", err)
+		}
+	}
+}
+
+func TestDefaultClientUsesSpoonAuthWithoutCLI(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("SPOON_NO_CONFIG", "1")
+	t.Setenv("GH_HOST", "github.com")
+	t.Setenv("GH_TOKEN", "experiment-token")
+	previous := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = previous })
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Header.Get("Authorization") != "Bearer experiment-token" {
+			t.Error("missing Spoon environment credential")
+		}
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	defer srv.Close()
+	dialer := &tls.Dialer{Config: srv.Client().Transport.(*http.Transport).TLSClientConfig}
+	http.DefaultTransport = &http.Transport{DialTLSContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return dialer.DialContext(ctx, network, srv.Listener.Addr().String())
+	}}
+	client, err := defaultClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	var result map[string]any
+	if err := client.Get(context.Background(), "repos/o/r", &result); err != nil {
+		t.Fatal(err)
 	}
 }

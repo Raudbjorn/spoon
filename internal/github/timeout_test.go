@@ -30,7 +30,7 @@ func TestProxyTransportsHaveResponseHeaderTimeout(t *testing.T) {
 	}
 }
 
-// go-gh builds &http.Client{Transport: ..., Timeout: opts.Timeout}, so a zero
+// Both API clients set http.Client.Timeout; a zero
 // value means no deadline at all.
 func TestRequestTimeoutsAreSet(t *testing.T) {
 	if requestTimeout <= 0 {

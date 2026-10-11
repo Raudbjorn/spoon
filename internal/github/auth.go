@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os/exec"
+	"os"
 	"strings"
 	"time"
 
@@ -25,21 +25,14 @@ func CheckAuthWithOptions(opts ClientOptions) (*Client, AuthStatus, error) {
 	if err != nil {
 		return nil, AuthStatus{}, err
 	}
-	// Host must be set here: it is the only source AuthInfo.Host reads from, and
-	// callers such as forge.CompareURL interpolate it directly into URLs and
-	// the store's repo keys. go-gh's DefaultHost resolves GH_HOST and the gh
-	// CLI's configured host, so a GHES user's rows are keyed under their host
-	// rather than github.com. (The REST/GraphQL clients still hardcode
-	// github.com — full GHES API support is a separate piece of work — but the
-	// identity written into keys and URLs should not.)
-	host, _ := ghauth.DefaultHost()
+	host, _ := githubEnvironmentAuth()
 	status := AuthStatus{
 		Authenticated: client.IsAuthenticated(),
 		Host:          host,
 		TokenSource:   "none",
 	}
 	if client.authenticated {
-		status.TokenSource = "gh"
+		status.TokenSource = "env"
 		if len(opts.Tokens) > 0 {
 			status.TokenSource = "config"
 		}
@@ -148,7 +141,7 @@ func (c *Client) probeLogin(ctx context.Context, b *backend) (string, error) {
 	if err := c.waitRequest(ctx, b.REST.Limiter); err != nil {
 		return "", err
 	}
-	resp, err := b.Rest.RequestWithContext(ctx, http.MethodGet, "user", nil)
+	resp, err := restGet(ctx, b.Rest, "user", "")
 	if err != nil {
 		return "", err
 	}
@@ -170,7 +163,7 @@ func (c *Client) probeRateLimit(ctx context.Context, b *backend, status *AuthSta
 	if err := c.waitRequest(ctx, b.REST.Limiter); err != nil {
 		return
 	}
-	resp, err := b.Rest.RequestWithContext(ctx, http.MethodGet, "rate_limit", nil)
+	resp, err := restGet(ctx, b.Rest, "rate_limit", "")
 	if err != nil {
 		return
 	}
@@ -203,7 +196,22 @@ func (c *Client) probeDefaultBackend(ctx context.Context, status *AuthStatus) {
 	c.probeRateLimit(ctx, c.backends[0], status)
 }
 
-func IsGHInstalled() bool {
-	_, err := exec.LookPath("gh")
-	return err == nil
+// githubEnvironmentAuth reads only environment credentials. OAuth tokens saved
+// by spoon auth login are passed through ClientOptions by command startup; gh's
+// config and keyring are deliberately not consulted.
+func githubEnvironmentAuth() (host, token string) {
+	host = strings.TrimSpace(os.Getenv("GH_HOST"))
+	if host == "" {
+		host = defaultHost
+	}
+	keys := []string{"GH_TOKEN", "GITHUB_TOKEN"}
+	if ghauth.IsEnterprise(host) {
+		keys = []string{"GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"}
+	}
+	for _, key := range keys {
+		if token = strings.TrimSpace(os.Getenv(key)); token != "" {
+			return host, token
+		}
+	}
+	return host, ""
 }

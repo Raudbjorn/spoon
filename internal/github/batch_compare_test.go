@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	ghAPI "github.com/cli/go-gh/v2/pkg/api"
+	gogithub "github.com/google/go-github/v90/github"
 	"github.com/svnbjrn/spoon/internal/forge"
 )
 
@@ -30,16 +30,16 @@ func TestIsBatchServerFailure(t *testing.T) {
 		want bool
 	}{
 		{"nil", nil, false},
-		{"typed 502", &ghAPI.HTTPError{StatusCode: 502}, true},
-		{"typed 503", &ghAPI.HTTPError{StatusCode: 503}, true},
-		{"typed 504", &ghAPI.HTTPError{StatusCode: 504}, true},
-		{"typed 500 is not this class", &ghAPI.HTTPError{StatusCode: 500}, false},
-		{"typed 404 is not this class", &ghAPI.HTTPError{StatusCode: 404}, false},
+		{"typed 502", &gogithub.ErrorResponse{Response: &http.Response{StatusCode: 502}}, true},
+		{"typed 503", &gogithub.ErrorResponse{Response: &http.Response{StatusCode: 503}}, true},
+		{"typed 504", &gogithub.ErrorResponse{Response: &http.Response{StatusCode: 504}}, true},
+		{"typed 500 is not this class", &gogithub.ErrorResponse{Response: &http.Response{StatusCode: 500}}, false},
+		{"typed 404 is not this class", &gogithub.ErrorResponse{Response: &http.Response{StatusCode: 404}}, false},
 		{"context canceled", context.Canceled, false},
 		{"context deadline exceeded", context.DeadlineExceeded, false},
 		{"wrapped context canceled", fmt.Errorf("request: %w", context.Canceled), false},
-		{"NOT_FOUND graphql error is not this class", &ghAPI.GraphQLError{Errors: []ghAPI.GraphQLErrorItem{{Type: "NOT_FOUND"}}}, false},
-		{"RATE_LIMITED graphql error is not this class", &ghAPI.GraphQLError{Errors: []ghAPI.GraphQLErrorItem{{Type: "RATE_LIMITED"}}}, false},
+		{"NOT_FOUND graphql error is not this class", &gqlResponseError{Errors: []gqlErrorItem{{Type: "NOT_FOUND"}}}, false},
+		{"RATE_LIMITED graphql error is not this class", &gqlResponseError{Errors: []gqlErrorItem{{Type: "RATE_LIMITED"}}}, false},
 		{"unclassified transport/decode error", errors.New("unexpected end of JSON input"), true},
 	}
 	for _, tt := range tests {
@@ -69,7 +69,8 @@ func batchStub(t *testing.T, phaseA, phaseB string) (*httptest.Server, func() []
 		_ = json.Unmarshal(body, &req)
 
 		mu.Lock()
-		docs = append(docs, req.Query)
+		// Include bound variables when asserting which branches were queried.
+		docs = append(docs, string(body))
 		mu.Unlock()
 
 		w.Header().Set("Content-Type", "application/json")
@@ -587,7 +588,8 @@ func TestFetchBatchDivergence_PartialDropWithinTargetForcesUnresolved(t *testing
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var req struct {
-			Query string `json:"query"`
+			Query     string            `json:"query"`
+			Variables map[string]string `json:"variables"`
 		}
 		_ = json.Unmarshal(body, &req)
 		w.Header().Set("Content-Type", "application/json")
@@ -595,9 +597,12 @@ func TestFetchBatchDivergence_PartialDropWithinTargetForcesUnresolved(t *testing
 		// documents asking only about side branches succeed. This forces
 		// the default branch's chunk (and only that chunk) to fail all the
 		// way down to the floor.
-		if strings.Contains(req.Query, `"o:main"`) {
-			w.WriteHeader(http.StatusBadGateway)
-			return
+		// Branch values are now bound variables, not query literals.
+		for _, value := range req.Variables {
+			if value == "o:main" {
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
 		}
 		_, _ = w.Write([]byte(phaseAOKBody(aliasCount(req.Query))))
 	}))

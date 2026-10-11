@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"sort"
 	"time"
@@ -48,13 +49,13 @@ type PipelineOptions struct {
 
 	// CentralityBackend chooses the ChangeImpact computation. "" or
 	// "directory" → the cheap directory-centrality proxy. "mdg" → the full
-	// Module Dependency Graph (requires a local clone; falls back silently to
+	// Module Dependency Graph (requires local sources; falls back silently to
 	// the directory proxy when unavailable).
 	CentralityBackend string
 
 	// CentralityRepoPath, when non-empty and CentralityBackend == "mdg", is
 	// the on-disk path to a clone of the upstream. When empty, the pipeline
-	// performs a shallow clone to a tempdir.
+	// downloads a source snapshot to a tempdir.
 	CentralityRepoPath string
 
 	// CentralityHeadSHA, when non-empty, is the upstream default-branch SHA;
@@ -123,6 +124,9 @@ type PipelineInputs struct {
 	TreeSource    repo.TreeSource
 	CommitSource  repo.CommitSource
 	ReadmeFetcher ReadmeFetcher
+
+	// ArchiveLink resolves a GitHub snapshot using the active provider credentials.
+	ArchiveLink func(context.Context, string, string, string) (*url.URL, error)
 }
 
 // SkipReason is returned by RunPipeline when clustering was skipped for a
@@ -635,10 +639,10 @@ func loadOrComputeMDG(
 			return nil, false, fmt.Errorf("mdg tempdir: %w", err)
 		}
 		cleanup = func() { _ = os.RemoveAll(tmp) }
-		if err := mdg.ShallowClone(ctx, provider, inputs.UpstreamOwner, inputs.UpstreamRepo, tmp); err != nil {
-			fmt.Fprintf(logger, "[cluster] mdg shallow clone failed: %v\n", err)
+		if err := mdg.FetchSource(ctx, provider, inputs.UpstreamOwner, inputs.UpstreamRepo, opts.CentralityHeadSHA, tmp, inputs.ArchiveLink); err != nil {
+			fmt.Fprintf(logger, "[cluster] mdg source download failed: %v\n", err)
 			cleanup()
-			return nil, false, fmt.Errorf("mdg shallow clone: %w", err)
+			return nil, false, fmt.Errorf("mdg source download: %w", err)
 		}
 		repoPath = tmp
 	}

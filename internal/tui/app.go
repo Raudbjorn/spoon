@@ -450,7 +450,7 @@ func (m Model) Init() tea.Cmd {
 		m.authMsg = fmt.Sprintf("Authenticated (%s, %d req/%s)",
 			m.auth.Provider.String(), m.auth.RateLimit, m.auth.RateUnit)
 	} else {
-		m.authMsg = "Not authenticated. Run `gh auth login` for 5,000 req/hr (currently 60/hr)."
+		m.authMsg = "Not authenticated. Run `spoon auth login` for 5,000 req/hr (currently 60/hr)."
 	}
 	pump := waitForClusterMsg(m.clusterMsgs, m.lifecycleCtx)
 	if m.initRepo != "" {

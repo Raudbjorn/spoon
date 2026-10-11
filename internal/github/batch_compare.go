@@ -6,11 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
 
-	ghAPI "github.com/cli/go-gh/v2/pkg/api"
+	"github.com/shurcooL/githubv4"
 	"github.com/svnbjrn/spoon/internal/forge"
 )
 
@@ -78,7 +79,7 @@ const (
 // it (a partial NOT_FOUND) or failing the whole sweep (a genuine
 // GraphQL-level error such as RATE_LIMITED, which halving cannot fix): an
 // untyped HTTP 5xx, a gateway/transport error, or a response body that
-// failed to decode at all. go-gh surfaces that last case -- observed as
+// failed to decode at all. The GraphQL client surfaces that last case -- observed as
 // GitHub's "malformed/empty response" failure mode for an oversized
 // document -- as a plain, unwrapped decode error, which is exactly what
 // isGatewayOrTransportError's statusCode()==0 branch also catches; that is
@@ -106,7 +107,7 @@ func isBatchServerFailure(err error) bool {
 	return isTransientServerError(err) || isGatewayOrTransportError(err)
 }
 
-// classifyAliasScopedErrors inspects a *ghAPI.GraphQLError's items and, if
+// classifyAliasScopedErrors inspects a *gqlResponseError's items and, if
 // every one is either NOT_FOUND (already handled by isPartialLookupError
 // before this is ever reached) or scoped to one of the current document's
 // own aliases -- its Path's last element is "cN" for some N in
@@ -128,7 +129,7 @@ func isBatchServerFailure(err error) bool {
 // hard failure (the pre-fix behavior) aborted the whole batch over five
 // aliases out of thousands, falling back to REST for the entire network.
 func classifyAliasScopedErrors(err error, batchSize int) (retry map[int]bool, ok bool) {
-	var gqlErr *ghAPI.GraphQLError
+	var gqlErr *gqlResponseError
 	if !errors.As(err, &gqlErr) || len(gqlErr.Errors) == 0 {
 		return nil, false
 	}
@@ -458,15 +459,14 @@ func (c *Client) runAheadBehindChunk(
 		return nil
 	}
 
-	var q strings.Builder
-	q.WriteString("query {\n")
-	fmt.Fprintf(&q, "  repository(owner: %s, name: %s) {\n", gqlString(baseOwner), gqlString(baseRepo))
-	fmt.Fprintf(&q, "    ref(qualifiedName: %s) {\n", gqlString(qualified))
-	for i, a := range batch {
-		fmt.Fprintf(&q, "      c%d: compare(headRef: %s) { aheadBy behindBy }\n",
-			i, gqlString(a.owner+":"+a.branch))
+	fields := make([]reflect.StructField, 0, len(batch))
+	for i := range batch {
+		fields = append(fields, gqlField(fmt.Sprintf("C%d", i), fmt.Sprintf("c%d: compare(headRef: $head%d)", i, i), (*struct{ AheadBy, BehindBy int })(nil)))
 	}
-	q.WriteString("    }\n  }\n  rateLimit { limit remaining used resetAt cost }\n}")
+	query, vars := gqlRefQuery(baseOwner, baseRepo, qualified, fields)
+	for i, a := range batch {
+		vars[fmt.Sprintf("head%d", i)] = githubv4.String(a.owner + ":" + a.branch)
+	}
 
 	// Above the halving floor, a server-side failure here is retried by
 	// splitting the batch in two below (halving IS the retry), so paying
@@ -477,9 +477,9 @@ func (c *Client) runAheadBehindChunk(
 	var resp compareBatch
 	var err error
 	if len(batch) > batchMinChunk {
-		err = c.doGraphQL(ctx, q.String(), nil, &resp)
+		err = c.doGraphQL(ctx, query, vars, &resp)
 	} else {
-		err = c.doGraphQLWithRetry(ctx, q.String(), nil, &resp)
+		err = c.doGraphQLWithRetry(ctx, query, vars, &resp)
 	}
 	stats.Queries++
 	stats.Cost += resp.RL.Cost
@@ -510,7 +510,7 @@ func (c *Client) runAheadBehindChunk(
 			return fmt.Errorf("batch divergence: compare branches: %w", err)
 		}
 		retryIdx = idx
-		// Fall through: go-gh has already decoded data for every alias
+		// Fall through: The GraphQL transport has already decoded data for every alias
 		// that didn't error, so decode those below exactly as on a clean
 		// response, then re-queue retryIdx's aliases as a follow-up chunk.
 	}
@@ -608,15 +608,15 @@ func (c *Client) runTipsChunk(
 		return
 	}
 
-	var q strings.Builder
-	q.WriteString("query {\n")
-	fmt.Fprintf(&q, "  repository(owner: %s, name: %s) {\n", gqlString(baseOwner), gqlString(baseRepo))
-	fmt.Fprintf(&q, "    ref(qualifiedName: %s) {\n", gqlString(qualified))
-	for i, a := range batch {
-		fmt.Fprintf(&q, "      c%d: compare(headRef: %s) { commits(last: 1) { nodes { oid committedDate associatedPullRequests(first: %d) { totalCount nodes { number merged baseRepository { nameWithOwner } } } } } }\n",
-			i, gqlString(a.owner+":"+a.branch), batchTipPRPageSize)
+	fields := make([]reflect.StructField, 0, len(batch))
+	for i := range batch {
+		fields = append(fields, gqlField(fmt.Sprintf("C%d", i), fmt.Sprintf("c%d: compare(headRef: $head%d)", i, i), (*gqlTipCompare)(nil)))
 	}
-	q.WriteString("    }\n  }\n  rateLimit { limit remaining used resetAt cost }\n}")
+	query, vars := gqlRefQuery(baseOwner, baseRepo, qualified, fields)
+	vars["prPageSize"] = githubv4.Int(batchTipPRPageSize)
+	for i, a := range batch {
+		vars[fmt.Sprintf("head%d", i)] = githubv4.String(a.owner + ":" + a.branch)
+	}
 
 	// Same halving-is-the-retry reasoning as runAheadBehindChunk: above the
 	// floor a server-side failure below splits and retries via halving,
@@ -625,9 +625,9 @@ func (c *Client) runTipsChunk(
 	var resp compareBatch
 	var err error
 	if len(batch) > batchMinChunk {
-		err = c.doGraphQL(ctx, q.String(), nil, &resp)
+		err = c.doGraphQL(ctx, query, vars, &resp)
 	} else {
-		err = c.doGraphQLWithRetry(ctx, q.String(), nil, &resp)
+		err = c.doGraphQLWithRetry(ctx, query, vars, &resp)
 	}
 	stats.Queries++
 	stats.Cost += resp.RL.Cost
@@ -685,24 +685,7 @@ func (c *Client) runTipsChunk(
 		if !ok || string(raw) == "null" {
 			continue
 		}
-		var cmp struct {
-			Commits struct {
-				Nodes []struct {
-					OID                    string `json:"oid"`
-					CommittedDate          string `json:"committedDate"`
-					AssociatedPullRequests struct {
-						TotalCount int `json:"totalCount"`
-						Nodes      []struct {
-							Number         int  `json:"number"`
-							Merged         bool `json:"merged"`
-							BaseRepository struct {
-								NameWithOwner string `json:"nameWithOwner"`
-							} `json:"baseRepository"`
-						} `json:"nodes"`
-					} `json:"associatedPullRequests"`
-				} `json:"nodes"`
-			} `json:"commits"`
-		}
+		var cmp gqlTipCompare
 		if err := json.Unmarshal(raw, &cmp); err != nil {
 			continue
 		}
@@ -757,4 +740,23 @@ func branchDivergenceFor(a *batchAttempt, tip tipResult) forge.BranchDivergence 
 		bd.UpstreamedPR = tip.upstreamedPR
 	}
 	return bd
+}
+
+type gqlTipCompare struct {
+	Commits struct {
+		Nodes []struct {
+			OID                    string `json:"oid"`
+			CommittedDate          string `json:"committedDate"`
+			AssociatedPullRequests struct {
+				TotalCount int `json:"totalCount"`
+				Nodes      []struct {
+					Number         int  `json:"number"`
+					Merged         bool `json:"merged"`
+					BaseRepository struct {
+						NameWithOwner string `json:"nameWithOwner"`
+					} `json:"baseRepository"`
+				} `json:"nodes"`
+			} `json:"associatedPullRequests" graphql:"associatedPullRequests(first: $prPageSize)"`
+		} `json:"nodes"`
+	} `json:"commits" graphql:"commits(last: 1)"`
 }
