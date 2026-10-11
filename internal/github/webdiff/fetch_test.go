@@ -83,6 +83,32 @@ func TestParseHTMLNextLinkPrefersRel(t *testing.T) {
 	}
 }
 
+func TestParseHTMLPaginationLinkValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name, link string
+		wantNext   int
+		wantErr    bool
+	}{
+		{"decoy", `<a href="?start_entry=99">next release</a>`, -1, false},
+		{"next label", `<a href="?start_entry=25"> Next </a>`, 25, false},
+		{"rel tokens", `<a rel="nofollow next" href="?start_entry=25">More</a>`, 25, false},
+		{"missing cursor", `<a rel="next" href="?page=2">Next</a>`, -1, true},
+		{"invalid cursor", `<a rel="next" href="?start_entry=broken">Next</a>`, -1, true},
+		{"negative cursor", `<a rel="next" href="?start_entry=-1">Next</a>`, -1, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := `<div data-path="a.go"></div><table><tr><td class="blob-code blob-code-addition">x()</td></tr></table>` + tc.link
+			_, next, err := ParseHTML(strings.NewReader(fixture))
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err=%v, wantErr=%v", err, tc.wantErr)
+			}
+			if !tc.wantErr && next != tc.wantNext {
+				t.Fatalf("next=%d, want %d", next, tc.wantNext)
+			}
+		})
+	}
+}
+
 // newTestClient points a webdiff Client at srv and rewrites the github.com host
 // to the test server, bypassing the real endpoint while keeping the code path.
 func newTestClient(t *testing.T, srv *httptest.Server) *Client {
@@ -170,5 +196,62 @@ func TestFetchTruncatesOnUnexplainedEmptyPage(t *testing.T) {
 	}
 	if !truncated {
 		t.Fatal("truncated=false; markup that kept its headers but lost its hunks must not pass as a valid empty page")
+	}
+}
+
+// A readable sibling must not hide the lost continuation of a.go on page 2;
+// otherwise its page-1 fragment is returned as a complete patch (#83).
+func TestFetchTruncatesOnPartlyParsedPage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("start_entry") == "0" {
+			fmt.Fprint(w, pageHTML("a.go", 1))
+			return
+		}
+		fmt.Fprint(w, `<div data-path="b.go"></div>
+<table><tr><td class="blob-code blob-code-addition">readable()</td></tr></table>
+<div data-path="a.go"></div>
+<table><tr><td class="diff-hunk-cell">lost()</td></tr></table>`)
+	}))
+	defer srv.Close()
+
+	patches, truncated, err := newTestClient(t, srv).Fetch(context.Background(), "o", "r", "b", "h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !truncated {
+		t.Fatalf("partial patch reported complete: %q", patches["a.go"])
+	}
+}
+
+func TestFetchTruncatesOnBrokenPagination(t *testing.T) {
+	for _, cursor := range []string{"1", "0", "broken"} {
+		t.Run(cursor, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				page := pageHTML("a.go", 1)
+				if r.URL.Query().Get("start_entry") != "0" {
+					page = strings.Replace(page, "start_entry=1", "start_entry="+cursor, 1)
+				}
+				fmt.Fprint(w, page)
+			}))
+			defer srv.Close()
+
+			patches, truncated, err := newTestClient(t, srv).Fetch(context.Background(), "o", "r", "b", "h")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !truncated {
+				t.Fatalf("a next link that cannot advance reported complete: %q", patches["a.go"])
+			}
+		})
+	}
+}
+
+func TestParseHTMLAcceptsMixedTextAndBinaryFiles(t *testing.T) {
+	fixture := `<div data-path="a.go"></div>
+<table><tr><td class="blob-code blob-code-addition">x()</td></tr></table>
+<div data-path="logo.png"></div><span>Binary file not shown</span>`
+	patches, _, err := ParseHTML(strings.NewReader(fixture))
+	if err != nil || patches["a.go"] != "+x()\n" || len(patches) != 1 {
+		t.Fatalf("mixed page lost its textual patch: patches=%v, err=%v", patches, err)
 	}
 }
