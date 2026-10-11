@@ -37,7 +37,7 @@ func (d commandDeps) withDefaults() commandDeps {
 }
 
 // usageRemediation lists the valid nouns for the two top-level failure paths.
-const usageRemediation = "Run 'spn --help' for usage. Nouns: threads, pr, forks, search, repo."
+const usageRemediation = "Run 'spn --help' for usage. Nouns: threads, pr, forks, search, repo, recon."
 
 func main() { os.Exit(dispatch(os.Args[1:], os.Stdout, os.Stderr)) }
 
@@ -70,6 +70,8 @@ func dispatchWithDeps(args []string, stdout, stderr io.Writer, deps commandDeps)
 	case "-v", "--version":
 		_ = writeHuman(stdout, presentation, roleAccent, fmt.Sprintf("spn %s\n", version))
 		return 0
+	case "recon":
+		return dispatchRecon(args[1:], stdout, stderr, presentation, deps)
 	case "threads", "pr", "forks", "search", "repo":
 		return dispatchConfigured(args, stdout, stderr, presentation, deps)
 	default:
@@ -119,6 +121,8 @@ func dispatchConfigured(args []string, stdout, stderr io.Writer, presentation pr
 		return runSearchWithEffectiveDeps(args[1:], stdout, stderr, effective, env, deps)
 	case "repo":
 		return runRepoWithEffective(args[1:], stdout, stderr, effective)
+	case "recon":
+		return runReconConfigured(args[1:], stdout, stderr)
 	}
 	panic("configured dispatch called with unrecognized noun")
 }
@@ -287,7 +291,9 @@ Nouns and verbs:
         stderr warning. A hit is a candidate, not fork-network coverage: chain
         it into 'spn forks list <owner/repo>'. Search has its own, smaller rate
         window than the core API.
-
+  recon scan --authorized --rules PATH [--input PATH|-] [--sarif PATH]
+        Scans detailed fork NDJSON locally. Findings are redacted NDJSON on
+        stdout; one recon_summary follows on stderr after optional local SARIF.
 Output:
   Success: bare JSON on stdout (single value for reads; NDJSON for forks list).
   Failure: structured JSON envelope on stderr with code, message, remediation,
