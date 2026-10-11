@@ -89,14 +89,17 @@ the network's other repositories. The *deleted-fork* case was not tested
 
 With a token holding `repo` (accepted by the endpoint) the code-scanning
 alerts endpoint returned 403 on `github/codeql` and `cli/cli`, and secret
-scanning returned 404. Secret-scanning, push-protection and delegated-bypass
-APIs are role-gated (repo or org admin). None can enumerate third-party forks.
+scanning returned 404. Correction, 2026-10-11: these APIs require authorized
+security access, but not always repo/org administrator status; GitHub also
+supports delegated permissions and security roles. Public fork visibility does
+not grant alert access. See the follow-up for the documented permission sets.
 
 ### 6. Detection design worth borrowing
 
 - gitleaks: generated per-provider rules; regex + keyword prefilter + entropy +
-  allowlists. Parse its TOML rather than inventing rule syntax. (Baseline and
-  SARIF behavior of v8 were not verified.)
+  allowlists. Updated 2026-10-11: retain Spoon's existing strict JSON v1 rules for
+  the first release. TOML import would need explicit compatibility rules, not
+  just syntax parsing. Baseline and SARIF findings are now in the follow-up.
 - shhgit: signatures carry a `part` (path / filename / extension / contents);
   extension, path and string denylists; entropy on lines of 7 to 99 chars.
   Its entropy implementation is slow (use a byte-frequency map) and its dedup
@@ -145,9 +148,11 @@ Pipeline, cheapest tier first (matches the existing tiered API pipeline):
    been rewritten away.
 5. Output: NDJSON via `agentio`; optional SARIF.
 
-`internal/secretscan`: signature struct `{Name, Part, Match|Regex, Keywords,
-Entropy, Allowlist}`, loadable from gitleaks-style TOML; map-based Shannon
-entropy; denylists for extensions, paths and strings; bounded LRU for dedup.
+Updated 2026-10-11: use the existing bounded `internal/secretscan` implementation
+in the separate feature worktree, including its strict JSON v1 rule format,
+metadata-only findings and bounded LRU. The earlier Gitleaks-style TOML proposal
+is superseded; import compatibility requires a separately specified subset.
+See the follow-up for the exact source state and validation limits.
 
 ## Open decision: go-github
 
