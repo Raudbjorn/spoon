@@ -20,9 +20,10 @@ document already records 420 sampled events, 49 retrievable rewrite candidates,
 30 live-fork cross-network reads, and the correction to scan discarded commits.
 Those remain **historical reported observations**, not tests rerun here.
 
-Local evidence is archived at
-`/home/svnbjrn/.docs/spoon/recon-followup-2026-10-11/`, with pinned upstream source,
+Maintainer-local evidence is archived at
+`~/.docs/spoon/recon-followup-2026-10-11/`, with pinned upstream source,
 repository metadata, HTTP/SQL results, synthetic checks and `FILES.sha256`.
+This local archive is not part of the repository or required for checkout.
 No discovered credentials or scanned third-party commit contents are in the archive.
 
 ## Findings that change the implementation plan
@@ -140,15 +141,22 @@ not prove that every data dump or project component is dead, but provide no
 verified 2026 source for this feature.
 [GHTorrent website repository](https://github.com/ghtorrent/ghtorrent.org/tree/51890965af72da85bdd0954a50ef1a71603fb4e7).
 
-### 6. Alert APIs require authorized access, not necessarily administrator status
+### 6. Alert API permissions must be checked per endpoint
 
 The October 1 403/404 observations remain valid as reported, but the explanation
-that only repo/org admins can read alerts was too restrictive. GitHub documents
-code-scanning access for users with write access and additional security/custom
-roles. Fine-grained tokens have separate read permissions for code-scanning and
-secret-scanning alerts.
+that only repo/org admins can read all alerts was too broad. GitHub documents
+code-scanning visibility for users with write access and additional security/custom
+roles. Its repository API lists the fine-grained token permission
+`Code scanning alerts: read`.
 [Security overview permissions](https://docs.github.com/en/code-security/reference/permissions/security-overview),
-[code-scanning API](https://docs.github.com/en/rest/code-scanning/code-scanning#list-code-scanning-alerts-for-a-repository),
+[code-scanning API](https://docs.github.com/en/rest/code-scanning/code-scanning#list-code-scanning-alerts-for-a-repository).
+
+For the repository-level secret-scanning list/get endpoints, the REST documentation
+explicitly requires the authenticated user to administer the repository or its
+owning organization. The listed fine-grained token permission,
+`Secret scanning alerts: read`, must not be treated as a substitute for that
+user authority. These are endpoint-specific documented requirements, not newly
+tested access grants.
 [secret-scanning API](https://docs.github.com/en/rest/secret-scanning/secret-scanning#list-secret-scanning-alerts-for-a-repository).
 
 The product conclusion stands: public repository visibility does not grant
@@ -182,22 +190,47 @@ support. No attack capabilities were tested or adopted.
 
 ## Existing Spoon implementation: reuse it, with explicit limits
 
-Inspected `/home/svnbjrn/dev/spoon-owner-sampling-recon`, branch
+Inspected `~/dev/spoon-owner-sampling-recon`, branch
 `feature/github-recon`, HEAD `3dd58e16682011c9a7a0f85adc4fe709e46034fd`.
 The archive records hashes of inspected files, including the uncommitted files.
 
-| Surface | Observed state | Consequence |
+Review follow-up, 2026-10-11: the complete draft is now preserved at
+[commit `3c3aa20c8785d14408174c15d3491b05cb9a86d7`](https://github.com/Raudbjorn/spoon/commit/3c3aa20c8785d14408174c15d3491b05cb9a86d7)
+on `research/recon-draft-snapshot-20261011`. This snapshot retains the inspected
+base and copies the 11 modified/untracked files byte for byte, including tests
+and fixtures. The original worktree remains unchanged. The snapshot is a draft
+implementation base, not a merged feature or part of this documentation PR's diff.
+
+| Surface | State at initial inspection | Consequence |
 | --- | --- | --- |
 | Dependency-noise filtering | Commit `c9d58a2` exists | Do not implement it again; its ranking quality was not evaluated here |
 | `internal/secretscan` | Committed bounded scanner, strict JSON rules, metadata-only findings, bounded LRU | Use as the implementation base |
 | Patch parser | Requires real unified hunks; 64 KiB patch cap | Headerless web scrapes cannot supply trustworthy finding coordinates |
-| `internal/recon` | Untracked NDJSON ingestion, summary and SARIF files | Existing draft, not merged/shipped behavior |
-| `cmd/spn/recon.go` | Untracked local `scan` command; `rewrites` explicitly unavailable | Do not claim dangling-commit enumeration exists |
+| [`internal/recon`](https://github.com/Raudbjorn/spoon/tree/3c3aa20c8785d14408174c15d3491b05cb9a86d7/internal/recon) | Then-untracked NDJSON ingestion, summary and SARIF files; now in the snapshot | Existing draft, not merged/shipped behavior |
+| [`cmd/spn/recon.go`](https://github.com/Raudbjorn/spoon/blob/3c3aa20c8785d14408174c15d3491b05cb9a86d7/cmd/spn/recon.go) | Then-untracked local `scan` command; now in the snapshot; `rewrites` explicitly unavailable | Do not claim dangling-commit enumeration exists |
 | Rules | Operator-supplied format and synthetic fixture corpus | Detection precision/recall remains unmeasured |
 
-`go test ./internal/secretscan ./internal/recon` passed in that worktree.
-The CLI, full application build, full suite, race detector, native embeddings and
-live integrations were not exercised as part of this research continuation.
+To work from the published snapshot in a separate checkout:
+
+```sh
+git fetch origin research/recon-draft-snapshot-20261011
+git worktree add --detach ../spoon-recon-draft 3c3aa20c8785d14408174c15d3491b05cb9a86d7
+```
+
+The initial research pass tested only `internal/secretscan` and `internal/recon`.
+During snapshot publication, these checks passed in its isolated worktree:
+
+```sh
+go test -count=1 ./internal/secretscan ./internal/recon
+go test -count=1 ./cmd/spn -run 'TestRecon|TestProductionWritesUseTypedOutput'
+go build ./cmd/...
+```
+
+The focused CLI dispatch tests cover synthetic NDJSON, redacted findings/SARIF,
+incomplete summaries, routing, and output failures. No test assertions or draft
+source were changed during preservation. Executing the built CLI as a subprocess,
+the full suite, race detector, native embeddings and live integrations were not
+exercised in this review follow-up.
 
 The original shhgit export was independently recounted: 455 rows, 455 unique
 names, 62 with `ahead > 0`, expected count 472 and zero repeats reported. The
@@ -242,11 +275,13 @@ for the whole pipeline, and if every candidate survives it saves no compare call
 - Deleted-fork retrieval, garbage-collection policy, retention guarantees,
   GraphQL batches above 20, or secondary-rate-limit behavior were not retested.
 - No third-party commit contents were scanned, no credentials validated, no
-  security alerts retrieved, and no SARIF uploaded or external messages posted.
+  security alerts retrieved, and no SARIF uploaded.
 - The archive failures are environment-specific observations. BigQuery freshness
   and billing behavior, GH Archive freshness, and ClickHouse ingestion completeness
   remain unverified.
 - Source audit and synthetic checks do not measure detection quality. Passing
-  the two package suites does not validate the draft command or a deployed feature.
-- New state is an isolated research worktree and local evidence archive. No
-  application dependency, production configuration, or existing cache was changed.
+  the focused suites and compiling both binaries do not establish production
+  readiness, full CLI integration, or GitHub SARIF compatibility.
+- New state includes isolated research/snapshot worktrees, local evidence, and
+  the published draft snapshot branch. This PR changes documentation only; it
+  adds no application dependency, production configuration, or cache changes.

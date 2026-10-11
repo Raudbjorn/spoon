@@ -3,7 +3,7 @@
 Status: proposed. Date: 2026-10-01. Scope: defensive / authorized use only.
 
 Follow-up: [2026-10-11 research and implementation handoff](2026-10-11-github-recon-followup.md)
-verifies Gitleaks baseline/SARIF behavior, corrects the admin-only alert-access
+verifies Gitleaks baseline/SARIF behavior, clarifies endpoint-specific alert-access
 claim, probes archive providers, and inventories a separate implementation
 worktree. The live-test numbers below remain historical October 1 observations.
 
@@ -89,10 +89,13 @@ the network's other repositories. The *deleted-fork* case was not tested
 
 With a token holding `repo` (accepted by the endpoint) the code-scanning
 alerts endpoint returned 403 on `github/codeql` and `cli/cli`, and secret
-scanning returned 404. Correction, 2026-10-11: these APIs require authorized
-security access, but not always repo/org administrator status; GitHub also
-supports delegated permissions and security roles. Public fork visibility does
-not grant alert access. See the follow-up for the documented permission sets.
+scanning returned 404. Correction, 2026-10-11: permissions differ by endpoint.
+GitHub documents code-scanning visibility for writers and delegated security
+roles, while the repository-level secret-scanning list/get REST documentation
+requires an authenticated user with repository or owning-organization admin
+authority. Fine-grained token read permissions are a separate requirement.
+Public fork visibility does not grant alert access. See the follow-up for the
+documented permission sets; no new access grants were tested.
 
 ### 6. Detection design worth borrowing
 
