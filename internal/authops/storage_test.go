@@ -123,3 +123,28 @@ func TestStorageHonorsPersistedFileSelection(t *testing.T) {
 		t.Errorf("keyring touched: %v", names)
 	}
 }
+
+func TestStorageMigrateRejectsFileOverride(t *testing.T) {
+	t.Setenv(secrets.EnvBackend, " FILE ")
+	boot := authBoot(t, "synthetic-token")
+	before, err := os.ReadFile(boot.Layer.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mem := secrets.NewMemoryStore()
+	defer config.UseSecretStore(mem)()
+	for _, args := range [][]string{{"migrate", "--to", "keyring"}, {"migrate", "--to", "keyring", "--dry-run"}} {
+		code, out, errOut := runStorageCmd(t, boot, args...)
+		// The conflict is bad input, not a backend failure or a feasible dry run.
+		if code != 2 || out != nil || !strings.Contains(errOut, "bad_input") || !strings.Contains(errOut, "Unset SPOON_SECRET_STORE") {
+			t.Errorf("conflicting override: exit %d out %v stderr %q", code, out, errOut)
+		}
+	}
+	after, err := os.ReadFile(boot.Layer.Path)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatal("conflicting migration changed the config")
+	}
+	if names, _ := mem.Names(); len(names) != 0 {
+		t.Fatalf("conflicting migration created entries: %v", names)
+	}
+}

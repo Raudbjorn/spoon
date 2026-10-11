@@ -27,7 +27,7 @@ const (
 )
 
 // FetchSource downloads a GitHub source archive or shallow-clones GitLab.
-// GitHub's archiveLink is supplied by the caller's authenticated Spoon client.
+// GitHub's archiveLink must validate the download origin against its API host.
 // dest must be an empty directory; callers own cleanup, including on failure.
 func FetchSource(ctx context.Context, provider, owner, repo, ref, dest string,
 	archiveLink func(context.Context, string, string, string) (*url.URL, error),
@@ -57,7 +57,7 @@ func FetchSource(ctx context.Context, provider, owner, repo, ref, dest string,
 }
 
 func validArchiveURL(u *url.URL) bool {
-	return u != nil && u.Scheme == "https" && u.Host == "codeload.github.com" && u.User == nil
+	return u != nil && u.Scheme == "https" && u.Host != "" && u.User == nil
 }
 
 func downloadSource(ctx context.Context, link *url.URL, dest string, transport http.RoundTripper) error {
@@ -68,7 +68,7 @@ func downloadSource(ctx context.Context, link *url.URL, dest string, transport h
 	// to the signed download URL, including on redirects.
 	client := &http.Client{Transport: transport, Timeout: sourceTimeout,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= maxArchiveRedirects || !validArchiveURL(req.URL) {
+			if len(via) >= maxArchiveRedirects || !validArchiveURL(req.URL) || !strings.EqualFold(req.URL.Host, link.Host) {
 				return fmt.Errorf("invalid archive redirect")
 			}
 			return nil

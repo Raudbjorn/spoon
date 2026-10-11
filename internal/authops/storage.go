@@ -35,11 +35,13 @@ func runStorage(prog string, args []string, stdout, stderr io.Writer, boot confi
 		strings.EqualFold(boot.Config.Secrets.Store, secrets.BackendFile) {
 		selected = secrets.BackendFile
 	}
+	if args[0] == "migrate" {
+		return storageMigrate(prog, args[1:], stdout, stderr, boot)
+	}
 	var store secrets.Store
 	var storeErr error
-	// Do not open (and possibly unlock-prompt) a keyring the user opted out of;
-	// migrating back to it is the one verb that must.
-	if selected != secrets.BackendFile || (args[0] == "migrate" && slices.Contains(args, secrets.BackendKeyring)) {
+	// Do not open (and possibly unlock-prompt) a keyring the user opted out of.
+	if selected != secrets.BackendFile {
 		store, storeErr = config.SecretStore()
 	}
 	switch args[0] {
@@ -47,8 +49,6 @@ func runStorage(prog string, args []string, stdout, stderr io.Writer, boot confi
 		return storageStatus(stdout, stderr, boot, selected, store, storeErr)
 	case "test":
 		return storageTest(stdout, stderr, selected, store, storeErr)
-	case "migrate":
-		return storageMigrate(prog, args[1:], stdout, stderr, boot, store, storeErr)
 	default:
 		return bad("unknown storage verb: " + args[0])
 	}
@@ -126,7 +126,7 @@ func requireKeyring(selected string, store secrets.Store, storeErr error) error 
 	return nil
 }
 
-func storageMigrate(prog string, args []string, stdout, stderr io.Writer, boot config.BootstrapResult, store secrets.Store, storeErr error) int {
+func storageMigrate(prog string, args []string, stdout, stderr io.Writer, boot config.BootstrapResult) int {
 	usage := storageUsage(prog)
 	bad := func(msg string) int { return agentio.NewError(agentio.CodeBadInput, msg, usage).Emit(stderr) }
 	to, dryRun := "", false
@@ -147,6 +147,10 @@ func storageMigrate(prog string, args []string, stdout, stderr io.Writer, boot c
 	if !slices.Contains([]string{secrets.BackendKeyring, secrets.BackendFile}, to) {
 		return bad("--to must be keyring or file")
 	}
+	if to == secrets.BackendKeyring && strings.EqualFold(strings.TrimSpace(os.Getenv(secrets.EnvBackend)), secrets.BackendFile) {
+		return agentio.NewError(agentio.CodeBadInput, "SPOON_SECRET_STORE=file conflicts with --to keyring",
+			"Unset SPOON_SECRET_STORE or set it to keyring, then retry the migration.").Emit(stderr)
+	}
 	if boot.Layer.State != config.LayerLoaded || boot.Config == nil || boot.Layer.Path == "" {
 		return agentio.NewError(agentio.CodeBadInput, "no writable spoon config to migrate",
 			"Unset SPOON_NO_CONFIG and fix any config error, then retry.").Emit(stderr)
@@ -154,6 +158,7 @@ func storageMigrate(prog string, args []string, stdout, stderr io.Writer, boot c
 	cfg := *boot.Config
 	before := config.TokenStorage(&cfg)
 	if to == secrets.BackendKeyring {
+		store, storeErr := config.SecretStore()
 		if err := requireKeyring(secrets.BackendKeyring, store, storeErr); err != nil {
 			return agentio.NewError(agentio.CodeBadInput, err.Error(), keyringRemediation).Emit(stderr)
 		}

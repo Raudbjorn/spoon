@@ -65,8 +65,12 @@ against `/user` before it is stored and is never printed. Tokens (from `auth log
 Secret Service/KWallet, Windows Credential Manager); the config file then holds
 only `keyring:<entry>` references. `SPOON_SECRET_STORE=file` keeps them inline in
 the 0600 config instead, as does a machine with no usable keyring (spoon warns).
-Tokens already inline are moved on the next run. `spn auth storage
-status|test|migrate` inspects and moves them. `--scope` defaults to
+Tokens already inline are moved on the next run, preserving other JSON fields.
+`spn auth storage status|test|migrate` inspects and moves them. Unset
+`SPOON_SECRET_STORE=file` before `auth storage migrate --to keyring`, including
+with `--dry-run`. Keyring calls time out after 20 seconds; a blocked backend
+remains serialized until it finishes, and rollback of a timed-out write is
+attempted before another call can enter (a failed rollback warns). `--scope` defaults to
 `public_repo`. Use `spoon auth login --scope repo` for the review-thread commands
 and private repositories. Spoon does not read credentials saved by `gh`.
 

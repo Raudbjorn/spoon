@@ -3,6 +3,8 @@ package secrets
 import (
 	"errors"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -75,6 +77,80 @@ func TestKeyringStoreTimesOut(t *testing.T) {
 	}
 }
 
+type delayedSetKeyring struct {
+	keyring.Keyring
+	release chan struct{}
+	first   atomic.Bool
+	active  atomic.Int32
+	overlap atomic.Bool
+}
+
+func (k *delayedSetKeyring) enter() func() {
+	if k.active.Add(1) != 1 {
+		k.overlap.Store(true)
+	}
+	return func() { k.active.Add(-1) }
+}
+
+func (k *delayedSetKeyring) Set(item keyring.Item) error {
+	defer k.enter()()
+	if k.first.CompareAndSwap(false, true) {
+		<-k.release
+	}
+	return k.Keyring.Set(item)
+}
+
+func (k *delayedSetKeyring) Get(name string) (keyring.Item, error) {
+	defer k.enter()()
+	return k.Keyring.Get(name)
+}
+
+func (k *delayedSetKeyring) Remove(name string) error {
+	defer k.enter()()
+	return k.Keyring.Remove(name)
+}
+
+func (k *delayedSetKeyring) Keys() ([]string, error) {
+	defer k.enter()()
+	return k.Keyring.Keys()
+}
+
+func TestKeyringTimeoutSerializesAndUndoesLateWrite(t *testing.T) {
+	for _, existing := range []bool{false, true} {
+		t.Run(map[bool]string{false: "new entry", true: "existing entry"}[existing], func(t *testing.T) {
+			st, arr := arrayStore(t)
+			if existing {
+				if err := arr.Set(keyring.Item{Key: st.key("token"), Data: []byte("previous")}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			backend := &delayedSetKeyring{Keyring: arr, release: make(chan struct{})}
+			var release sync.Once
+			t.Cleanup(func() { release.Do(func() { close(backend.release) }) })
+			st.kr, st.timeout = backend, 25*time.Millisecond
+			if err := st.Set("token", "synthetic-new-value"); !errors.Is(err, ErrTimeout) {
+				t.Fatalf("blocked Set = %v, want timeout", err)
+			}
+			// Every successor must time out without entering the still-busy backend.
+			_, _, getErr := st.Get("token")
+			_, listErr := st.Names()
+			for op, err := range map[string]error{"get": getErr, "list": listErr, "remove": st.Remove("token"), "set": st.Set("token", "successor")} {
+				if !errors.Is(err, ErrTimeout) {
+					t.Errorf("queued %s = %v, want timeout", op, err)
+				}
+			}
+			release.Do(func() { close(backend.release) })
+			value, found, err := st.Get("token")
+			if err != nil || found != existing || (existing && value != "previous") {
+				t.Errorf("late write was not undone: found=%v err=%v", found, err)
+			}
+			if backend.overlap.Load() {
+				t.Error("keyring operations overlapped after timeout")
+			}
+		})
+	}
+}
+
 func TestKeyringOpenFailureIsUnavailable(t *testing.T) {
 	prev := openKeyring
 	openKeyring = func(keyring.Config) (keyring.Keyring, error) { return nil, keyring.ErrNoAvailImpl }
@@ -133,7 +209,10 @@ func TestUnsupportedPlatformBackendsAreNonNilEmpty(t *testing.T) {
 	// admit pass or the password-less file backend.
 	var got []keyring.BackendType
 	prev := openKeyring
-	openKeyring = func(c keyring.Config) (keyring.Keyring, error) { got = c.AllowedBackends; return nil, keyring.ErrNoAvailImpl }
+	openKeyring = func(c keyring.Config) (keyring.Keyring, error) {
+		got = c.AllowedBackends
+		return nil, keyring.ErrNoAvailImpl
+	}
 	defer func() { openKeyring = prev }()
 	_, _ = NewKeyringStore(KeyringConfig{AllowedBackends: []keyring.BackendType{}})
 	if got == nil {

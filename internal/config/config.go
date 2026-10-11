@@ -215,9 +215,10 @@ var (
 	osRemove           = os.Remove
 )
 
-func Save(path string, c *Config) error { return save(path, c, false) }
+func Save(path string, c *Config) error { return save(path, c, false, nil) }
 
-func save(path string, c *Config, forceInline bool) error {
+// original is used only for automatic migration, which owns github.tokens alone.
+func save(path string, c *Config, forceInline bool, original map[string]json.RawMessage) error {
 	if err := c.Validate(); err != nil {
 		return err
 	}
@@ -226,9 +227,15 @@ func save(path string, c *Config, forceInline bool) error {
 	if err := validateCredentials(c); err != nil {
 		return err
 	}
-	// Always stamp the current schema. Version is an output marker, never a
-	// validation input, so rewriting a v1 file is a safe lossless migration.
-	c.Version = CurrentVersion
+	// Explicit saves stamp the current schema; automatic token migration preserves it.
+	if original == nil {
+		c.Version = CurrentVersion
+	} else {
+		var githubFields map[string]json.RawMessage
+		if err := json.Unmarshal(original["github"], &githubFields); err != nil || githubFields == nil {
+			return fmt.Errorf("config github section changed before token migration")
+		}
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
 	}
@@ -244,7 +251,16 @@ func save(path string, c *Config, forceInline bool) error {
 	}()
 	toWrite := *c
 	toWrite.GitHub.Tokens = persistTokens
-	data, err := json.MarshalIndent(toWrite, "", "  ")
+	var document any = toWrite
+	if original != nil {
+		tokens, err := json.Marshal(persistTokens)
+		if err != nil {
+			return err
+		}
+		setRawPath(original, []string{"github", "tokens"}, tokens)
+		document = original
+	}
+	data, err := json.MarshalIndent(document, "", "  ")
 	if err != nil {
 		return err
 	}

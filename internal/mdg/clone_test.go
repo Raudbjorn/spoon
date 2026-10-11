@@ -8,7 +8,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -79,6 +78,33 @@ func TestFetchSourceGitHubWithoutCLI(t *testing.T) {
 	}
 }
 
+func TestFetchSourceEnterpriseArchive(t *testing.T) {
+	archive := sourceTar(t, &tar.Header{Name: "root/main.go", Typeflag: tar.TypeReg, Size: 3})
+	previous := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = previous })
+	for _, host := range []string{"ghe.example.test", "codeload.ghe.example.test"} {
+		t.Run(host, func(t *testing.T) {
+			http.DefaultTransport = archiveTransport(func(r *http.Request) (*http.Response, error) {
+				if r.URL.Host != host || r.Header.Get("Authorization") != "" {
+					t.Fatal("download changed origin or forwarded the API token")
+				}
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(archive)), Header: make(http.Header)}, nil
+			})
+			dest := t.TempDir()
+			err := FetchSource(context.Background(), "github", "o", "r", "sha", dest,
+				func(context.Context, string, string, string) (*url.URL, error) {
+					return url.Parse("https://" + host + "/codeload/o/r?token=synthetic")
+				})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if data, err := os.ReadFile(filepath.Join(dest, "main.go")); err != nil || string(data) != "xxx" {
+				t.Fatalf("archive not extracted: %v", err)
+			}
+		})
+	}
+}
+
 func TestExtractSourceRejectsUnsafeArchives(t *testing.T) {
 	for name, headers := range map[string][]*tar.Header{
 		"traversal":      {{Name: "root/../../escape", Typeflag: tar.TypeReg}},
@@ -134,7 +160,8 @@ func TestDownloadSourceErrors(t *testing.T) {
 	if !errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "secret") {
 		t.Fatalf("cancellation: %v", err)
 	}
-	for _, raw := range []string{"http://codeload.github.com/o/r", "https://evil.test/o/r", "https://user:pass@codeload.github.com/o/r"} {
+	// The authenticated resolver validates the host; downloads still require HTTPS without userinfo.
+	for _, raw := range []string{"http://codeload.github.com/o/r", "https:///o/r", "https://user:pass@codeload.github.com/o/r"} {
 		u, _ := url.Parse(raw)
 		if err := downloadSource(context.Background(), u, t.TempDir(), nil); err == nil {
 			t.Fatalf("accepted %s", raw)
@@ -142,16 +169,32 @@ func TestDownloadSourceErrors(t *testing.T) {
 	}
 }
 
-func TestDownloadSourceRejectsRedirect(t *testing.T) {
-	called := false
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true }))
-	defer srv.Close()
-	link, _ := url.Parse("https://codeload.github.com/o/r")
-	err := downloadSource(context.Background(), link, t.TempDir(), archiveTransport(func(r *http.Request) (*http.Response, error) {
-		return &http.Response{StatusCode: http.StatusFound, Header: http.Header{"Location": {srv.URL}}, Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
-	}))
-	if err == nil || called {
-		t.Fatalf("unsafe redirect: err=%v called=%v", err, called)
+func TestDownloadSourcePinsRedirectOrigin(t *testing.T) {
+	archive := sourceTar(t, &tar.Header{Name: "root/a", Typeflag: tar.TypeReg})
+	for _, host := range []string{"codeload.github.com", "ghe.example.test", "codeload.ghe.example.test"} {
+		for _, target := range []string{"https://" + host + "/archive", "http://" + host + "/archive", "https://evil.test/archive"} {
+			t.Run(host+"/"+target, func(t *testing.T) {
+				link, _ := url.Parse("https://" + host + "/o/r?token=synthetic")
+				requests := 0
+				err := downloadSource(context.Background(), link, t.TempDir(), archiveTransport(func(r *http.Request) (*http.Response, error) {
+					requests++
+					if r.Header.Get("Authorization") != "" {
+						t.Error("download forwarded API credentials")
+					}
+					if requests == 1 {
+						return &http.Response{StatusCode: http.StatusFound, Header: http.Header{"Location": {target}}, Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
+					}
+					return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(archive)), Header: make(http.Header)}, nil
+				}))
+				if target == "https://"+host+"/archive" {
+					if err != nil || requests != 2 {
+						t.Fatalf("same-origin redirect: err=%v requests=%d", err, requests)
+					}
+				} else if err == nil || requests != 1 || strings.Contains(err.Error(), "synthetic") {
+					t.Fatalf("unsafe redirect: err=%v requests=%d", err, requests)
+				}
+			})
+		}
 	}
 }
 

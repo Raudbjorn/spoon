@@ -2,9 +2,11 @@ package config
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -224,6 +226,45 @@ func TestMigrateInlineSecrets(t *testing.T) {
 	}
 	if got, err := Load(path); err != nil || got.GitHub.Tokens[0] != tokA {
 		t.Fatalf("Load after migration = %v %v", got, err)
+	}
+}
+
+func TestMigrateInlineSecretsPreservesOtherJSON(t *testing.T) {
+	t.Setenv(secrets.EnvBackend, "")
+	defer UseSecretStore(secrets.NewMemoryStore())()
+	path := filepath.Join(t.TempDir(), "config.json")
+	original := `{"version":99,"extension":{"large":9007199254740993,"empty":{},"values":[false,null]},"github":{"tokens":["synthetic-token"],"requestsPerMinute":0,"future.setting":{"enabled":false}},"embedder":{"future":[]}}`
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	if moved := MigrateInlineSecrets(path, cfg, &stderr); moved != 1 {
+		t.Fatalf("moved = %d, stderr %q", moved, stderr.String())
+	}
+	decode := func(data string) map[string]any {
+		t.Helper()
+		var value map[string]any
+		decoder := json.NewDecoder(strings.NewReader(data))
+		decoder.UseNumber()
+		if err := decoder.Decode(&value); err != nil {
+			t.Fatal(err)
+		}
+		delete(value["github"].(map[string]any), "tokens")
+		return value
+	}
+	// Startup migration owns only github.tokens, including for newer schemas.
+	if !reflect.DeepEqual(decode(original), decode(readFile(t, path))) {
+		t.Error("migration changed fields other than github.tokens")
+	}
+	if strings.Contains(readFile(t, path), "synthetic-token") {
+		t.Error("token was not replaced with a keyring reference")
+	}
+	if loaded, err := Load(path); err != nil || loaded.GitHub.Tokens[0] != "synthetic-token" {
+		t.Fatalf("migrated token did not resolve: %v", err)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	gogithub "github.com/google/go-github/v90/github"
@@ -57,8 +58,33 @@ func (c *Client) ArchiveLink(ctx context.Context, owner, repo, ref string) (*url
 			}
 			return err
 		}
+		if !validArchiveLink(link, b.Rest.BaseURL()) {
+			return fmt.Errorf("github: invalid archive download origin")
+		}
 		c.pool.reportSuccess(b)
 		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
 	return link, err
+}
+
+func validArchiveLink(link *url.URL, apiBase string) bool {
+	if link == nil || link.Scheme != "https" || link.User != nil {
+		return false
+	}
+	api, err := url.Parse(apiBase)
+	if err != nil || api.Host == "" {
+		return false
+	}
+	host := strings.ToLower(api.Host)
+	if host == "api.github.com" {
+		return strings.EqualFold(link.Host, "codeload.github.com")
+	}
+	// Enterprise Cloud uses api.<tenant>.ghe.com; Server uses HOST/api/v3/.
+	if api.Path == "/" && strings.HasSuffix(host, ".ghe.com") {
+		host = strings.TrimPrefix(host, "api.")
+	}
+	return strings.EqualFold(link.Host, host) || strings.EqualFold(link.Host, "codeload."+host)
 }

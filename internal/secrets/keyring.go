@@ -3,9 +3,9 @@ package secrets
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"runtime"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/99designs/keyring"
@@ -29,7 +29,7 @@ type KeyringStore struct {
 	kr      keyring.Keyring
 	service string
 	timeout time.Duration
-	mu      sync.Mutex // serialises calls; several backends are not goroutine-safe
+	gate    chan struct{} // held until the backend and any late-write rollback finish
 }
 
 // openKeyring is a seam so tests can substitute an in-memory keyring.
@@ -60,7 +60,7 @@ func NewKeyringStore(cfg KeyringConfig) (*KeyringStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
-	return &KeyringStore{kr: kr, service: cfg.ServiceName, timeout: cfg.Timeout}, nil
+	return &KeyringStore{kr: kr, service: cfg.ServiceName, timeout: cfg.Timeout, gate: make(chan struct{}, 1)}, nil
 }
 
 // openBounded runs openKeyring under the operation timeout: backend
@@ -72,8 +72,9 @@ func openBounded(cfg keyring.Config, timeout time.Duration) (keyring.Keyring, er
 		err error
 	}
 	done := make(chan result, 1)
+	open := openKeyring
 	go func() {
-		kr, err := openKeyring(cfg)
+		kr, err := open(cfg)
 		done <- result{kr, err}
 	}()
 	select {
@@ -106,7 +107,7 @@ func (s *KeyringStore) key(name string) string { return s.service + "." + name }
 
 func (s *KeyringStore) Get(name string) (string, bool, error) {
 	var item keyring.Item
-	err := s.do("get", func() (err error) { item, err = s.kr.Get(s.key(name)); return })
+	err := s.do("get", func() (err error) { item, err = s.kr.Get(s.key(name)); return }, nil)
 	if errors.Is(err, keyring.ErrKeyNotFound) {
 		return "", false, nil
 	}
@@ -117,7 +118,15 @@ func (s *KeyringStore) Get(name string) (string, bool, error) {
 }
 
 func (s *KeyringStore) Set(name, value string) error {
+	var previous keyring.Item
+	var existed, started bool
 	return s.do("set", func() error {
+		var err error
+		previous, err = s.kr.Get(s.key(name))
+		if err != nil && !errors.Is(err, keyring.ErrKeyNotFound) {
+			return err
+		}
+		existed, started = err == nil, true
 		return s.kr.Set(keyring.Item{
 			Key:         s.key(name),
 			Data:        []byte(value),
@@ -128,11 +137,23 @@ func (s *KeyringStore) Set(name, value string) error {
 			KeychainNotTrustApplication: false,
 			KeychainNotSynchronizable:   true,
 		})
+	}, func() error {
+		if !started {
+			return nil
+		}
+		if existed {
+			return s.kr.Set(previous)
+		}
+		err := s.kr.Remove(s.key(name))
+		if errors.Is(err, keyring.ErrKeyNotFound) {
+			return nil
+		}
+		return err
 	})
 }
 
 func (s *KeyringStore) Remove(name string) error {
-	err := s.do("remove", func() error { return s.kr.Remove(s.key(name)) })
+	err := s.do("remove", func() error { return s.kr.Remove(s.key(name)) }, nil)
 	if errors.Is(err, keyring.ErrKeyNotFound) {
 		return nil
 	}
@@ -141,7 +162,7 @@ func (s *KeyringStore) Remove(name string) error {
 
 func (s *KeyringStore) Names() ([]string, error) {
 	var keys []string
-	if err := s.do("list", func() (err error) { keys, err = s.kr.Keys(); return }); err != nil {
+	if err := s.do("list", func() (err error) { keys, err = s.kr.Keys(); return }, nil); err != nil {
 		return nil, err
 	}
 	prefix := s.service + "."
@@ -156,18 +177,36 @@ func (s *KeyringStore) Names() ([]string, error) {
 
 func (s *KeyringStore) Name() string { return "keyring:" + s.service }
 
-// do runs op with the store lock held and a deadline, and classifies failures.
-func (s *KeyringStore) do(op string, fn func() error) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	done := make(chan error, 1)
-	go func() { done <- fn() }()
+// do bounds queueing and execution while serializing uncancellable backend calls.
+func (s *KeyringStore) do(op string, fn, undo func() error) error {
+	timer := time.NewTimer(s.timeout)
+	defer timer.Stop()
+	select {
+	case s.gate <- struct{}{}:
+	case <-timer.C:
+		return fmt.Errorf("%s: %w", op, ErrTimeout)
+	}
+	// The unbuffered handoff ensures an abandoned write always runs its rollback.
+	done := make(chan error)
+	abandoned := make(chan struct{})
+	go func() {
+		defer func() { <-s.gate }()
+		err := fn()
+		select {
+		case done <- err:
+		case <-abandoned:
+			if undo != nil {
+				if err := undo(); err != nil {
+					slog.Warn("late keyring write rollback failed; credential state may have changed", "store", s.Name())
+				}
+			}
+		}
+	}()
 	select {
 	case err := <-done:
 		return classify(op, err)
-	case <-time.After(s.timeout):
-		// The goroutine may still finish and its result is dropped; a late Set
-		// can therefore still land after this call reported a timeout.
+	case <-timer.C:
+		close(abandoned)
 		return fmt.Errorf("%s: %w", op, ErrTimeout)
 	}
 }

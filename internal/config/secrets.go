@@ -3,6 +3,7 @@ package config
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -253,7 +254,8 @@ func (c *Config) allInKeyring() bool {
 // MigrateInlineSecrets moves inline GitHub tokens of the loaded config at path
 // into the keyring. It is a no-op without inline tokens or without a usable
 // keyring, and never leaves a token unrecorded: Save stores and verifies the
-// keyring entries before the file is rewritten. Returns the number moved.
+// keyring entries before the file is rewritten. Only github.tokens changes;
+// unknown fields and schema versions survive automatic migration. Returns the number moved.
 func MigrateInlineSecrets(path string, c *Config, stderr io.Writer) int {
 	if c == nil || len(c.GitHub.Tokens) == 0 || c.allInKeyring() || c.wantsInline() {
 		return 0
@@ -265,7 +267,18 @@ func MigrateInlineSecrets(path string, c *Config, stderr io.Writer) int {
 		return 0
 	}
 	before := len(c.secretRefs)
-	if err := Save(path, c); err != nil {
+	data, err := os.ReadFile(path)
+	var original map[string]json.RawMessage
+	if err == nil {
+		err = json.Unmarshal(data, &original)
+	}
+	if err == nil && original == nil {
+		err = fmt.Errorf("config is not a JSON object")
+	}
+	if err == nil {
+		err = save(path, c, false, original)
+	}
+	if err != nil {
 		fmt.Fprintf(stderr, "warning: could not move GitHub tokens into the OS keyring: %v\n", err)
 		return 0
 	}
@@ -284,7 +297,7 @@ func MigrateInlineSecrets(path string, c *Config, stderr io.Writer) int {
 // default, for users leaving the keyring.
 func SaveInline(path string, c *Config) error {
 	c.Secrets.Store = secrets.BackendFile
-	return save(path, c, true)
+	return save(path, c, true, nil)
 }
 
 // UseKeyringStorage clears the sticky "file" choice so the next Save (or
