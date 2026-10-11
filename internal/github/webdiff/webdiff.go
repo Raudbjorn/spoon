@@ -237,21 +237,20 @@ func ParseHTML(r io.Reader) (map[string]string, int, error) {
 			}
 			if n.Data == "a" && !nextAuthoritative {
 				rel := slices.Contains(strings.Fields(attr(n, "rel")), "next")
-				// Only a rel="next" link, or the FIRST <a> whose text is "next",
-				// drives pagination — otherwise a file or repo literally named
-				// "next" could hijack start_entry. rel="next" is authoritative and
-				// stops any later text-match from overriding it.
+				// Text-only "Next" links need a valid cursor to distinguish them
+				// from unrelated navigation; rel="next" remains authoritative.
 				if rel || (next < 0 && strings.EqualFold(strings.TrimSpace(text(n)), "next")) {
 					parsed, err := url.Parse(attr(n, "href"))
-					if err != nil {
+					if err == nil {
+						if value, err := strconv.Atoi(parsed.Query().Get("start_entry")); err == nil && value >= 0 {
+							next = value
+							nextAuthoritative = rel
+						} else if rel {
+							return nil, -1, fmt.Errorf("invalid GitHub web diff pagination cursor")
+						}
+					} else if rel {
 						return nil, -1, fmt.Errorf("invalid GitHub web diff next link: %w", err)
 					}
-					value, err := strconv.Atoi(parsed.Query().Get("start_entry"))
-					if err != nil || value < 0 {
-						return nil, -1, fmt.Errorf("invalid GitHub web diff pagination cursor")
-					}
-					next = value
-					nextAuthoritative = rel
 				}
 			}
 		}

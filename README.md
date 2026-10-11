@@ -240,8 +240,9 @@ adapter fails. Each scrape is limited to 512 pages, 16 MiB per page, and 128 MiB
 total. Failed or stalled pagination discards the web patches; individual patches
 must also match REST addition/deletion counts before they are accepted. A capped
 or unknown commit list cannot supply a verified head SHA for this fallback.
-Skipped patches retain a diagnostic in `patch_skipped_reason` in detailed CLI
-output. These checks do not repair patches already cached by older versions.
+Rejected files retain all count-mismatch diagnostics in `patch_skipped_reason`
+in detailed CLI output. These checks do not repair patches already cached by
+older versions.
 
 With `--touching` and only literal paths, `spn` also turns on an anonymous,
 best-effort lookup against GitHub's undocumented tree-commit-info page to

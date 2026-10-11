@@ -156,3 +156,28 @@ func TestApplyWebDiffPatchesKeepsCompleteSibling(t *testing.T) {
 		t.Fatalf("missing partial-file diagnostic: %q", t2.PatchSkipReason)
 	}
 }
+
+// Every rejected file needs a diagnostic, even when a later file also fails.
+func TestApplyWebDiffPatchesReportsAllRejectedFiles(t *testing.T) {
+	t2 := forge.T2Data{Diffs: []forge.FileDiff{
+		{Path: "first.go", Additions: 2},
+		{Path: "second.go", Deletions: 2},
+	}}
+	applyWebDiffPatches(&t2, map[string]string{
+		"first.go":  "+only one\n",
+		"second.go": "-only one\n",
+	}, false, nil)
+	for _, diff := range t2.Diffs {
+		if diff.Patch != "" || diff.PatchSource != "" {
+			t.Fatalf("rejected patch accepted: %+v", diff)
+		}
+	}
+	for _, diagnostic := range []string{
+		`web diff incomplete for "first.go": got +1/-0 lines, want +2/-0`,
+		`web diff incomplete for "second.go": got +0/-1 lines, want +0/-2`,
+	} {
+		if !strings.Contains(t2.PatchSkipReason, diagnostic) {
+			t.Errorf("missing diagnostic %q in %q", diagnostic, t2.PatchSkipReason)
+		}
+	}
+}

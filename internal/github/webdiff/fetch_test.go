@@ -91,11 +91,22 @@ func TestParseHTMLPaginationLinkValidation(t *testing.T) {
 		wantErr    bool
 	}{
 		{"decoy", `<a href="?start_entry=99">next release</a>`, -1, false},
+		// Text alone does not establish pagination; invalid decoys must not
+		// abort parsing or hide a later valid pagination link.
+		{"text missing cursor", `<a href="/features">Next</a>`, -1, false},
+		{"text invalid cursor", `<a href="?start_entry=broken">Next</a>`, -1, false},
+		{"text negative cursor", `<a href="?start_entry=-1">Next</a>`, -1, false},
+		{"text invalid URL", `<a href="%zz">Next</a>`, -1, false},
+		{"decoy before text fallback", `<a href="/features">Next</a><a href="?start_entry=25">Next</a>`, 25, false},
+		{"decoy before rel", `<a href="%zz">Next</a><a rel="next" href="?start_entry=25">More</a>`, 25, false},
+		{"text fallback before rel", `<a href="?start_entry=99">Next</a><a rel="next" href="?start_entry=25">More</a>`, 25, false},
 		{"next label", `<a href="?start_entry=25"> Next </a>`, 25, false},
 		{"rel tokens", `<a rel="nofollow next" href="?start_entry=25">More</a>`, 25, false},
+		{"invalid URL", `<a rel="next" href="%zz">Next</a>`, -1, true},
 		{"missing cursor", `<a rel="next" href="?page=2">Next</a>`, -1, true},
 		{"invalid cursor", `<a rel="next" href="?start_entry=broken">Next</a>`, -1, true},
 		{"negative cursor", `<a rel="next" href="?start_entry=-1">Next</a>`, -1, true},
+		{"invalid rel after text fallback", `<a href="?start_entry=25">Next</a><a rel="next" href="?page=2">More</a>`, -1, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fixture := `<div data-path="a.go"></div><table><tr><td class="blob-code blob-code-addition">x()</td></tr></table>` + tc.link
