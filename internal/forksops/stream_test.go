@@ -1875,3 +1875,55 @@ func TestStream_compareResolvedError_fallsBackToCompareOnce(t *testing.T) {
 		t.Errorf("a CompareResolved failure followed by a successful Compare should not be a fork error, got %+v", r.Err)
 	}
 }
+
+func TestStream_cachedForkRefreshesBehindCountFromBatch(t *testing.T) {
+	now := time.Now()
+	cachedT2 := forge.T2Data{
+		Performed:   true,
+		AheadCount:  0,
+		BehindCount: 2, // older behind count in cache
+		HeadSHA:     "main-tip",
+	}
+	ff := &batchFakeForge{
+		fakeForge: &fakeForge{
+			parent: forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
+			forks: []forge.T1Data{
+				{ID: "o/cached", Owner: "o", Name: "cached", DefaultBranch: "main", PushedAt: now},
+			},
+		},
+		batch: map[string]forge.ForkDivergence{
+			"o/cached": {
+				Resolved: true,
+				Default:  forge.BranchDivergence{Name: "main", TipSHA: "main-tip", AheadBy: 0, BehindBy: 15},
+			},
+		},
+	}
+	opts := Options{
+		Tier: 2,
+		CachedT2: func(f forge.T1Data) *forge.T2Data {
+			if f.ID == "o/cached" {
+				copyT2 := cachedT2
+				return &copyT2
+			}
+			return nil
+		},
+	}
+	ch, err := Stream(context.Background(), ff, "o", "r", opts)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	r := <-ch
+	if r.Err != nil {
+		t.Fatalf("unexpected error: %+v", r.Err)
+	}
+	if r.T2 == nil {
+		t.Fatal("expected T2 on result")
+	}
+	if !r.T2FromCache {
+		t.Error("expected T2FromCache to be true")
+	}
+	if r.T2.BehindCount != 15 {
+		t.Errorf("expected refreshed BehindCount = 15, got %d", r.T2.BehindCount)
+	}
+}
+

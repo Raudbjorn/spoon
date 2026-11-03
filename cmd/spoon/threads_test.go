@@ -531,3 +531,65 @@ func TestThreadsTUIContextCacheReusesPickerContextForTUI(t *testing.T) {
 		t.Fatalf("picker and TUI contexts differ: %#v / %#v", pickerContext, tuiContext)
 	}
 }
+
+func TestParseThreadsFlags_ScanOptions(t *testing.T) {
+	cases := []struct {
+		name          string
+		args          []string
+		wantErr       bool
+		wantScanDepth int
+		wantScanOnly  bool
+	}{
+		{
+			name:          "interactive with defaults",
+			args:          []string{"-i"},
+			wantScanDepth: 0,
+			wantScanOnly:  false,
+		},
+		{
+			name:          "scan-depth valid",
+			args:          []string{"-i", "--scan-depth", "2"},
+			wantScanDepth: 2,
+			wantScanOnly:  false,
+		},
+		{
+			name:          "scan-depth caps at 3",
+			args:          []string{"-i", "--scan-depth", "5"},
+			wantScanDepth: 3,
+			wantScanOnly:  false,
+		},
+		{
+			name:    "scan-depth non-positive error",
+			args:    []string{"-i", "--scan-depth", "0"},
+			wantErr: true,
+		},
+		{
+			name:    "scan-depth missing arg error",
+			args:    []string{"-i", "--scan-depth"},
+			wantErr: true,
+		},
+		{
+			name:          "scan-only flag",
+			args:          []string{"-i", "--scan-only"},
+			wantScanDepth: 0,
+			wantScanOnly:  true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f, err := parseThreadsFlags(tc.args)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err=%v wantErr=%v", err, tc.wantErr)
+			}
+			if tc.wantErr {
+				return
+			}
+			if f.scanDepth != tc.wantScanDepth {
+				t.Errorf("scanDepth=%d want %d", f.scanDepth, tc.wantScanDepth)
+			}
+			if f.scanOnly != tc.wantScanOnly {
+				t.Errorf("scanOnly=%v want %v", f.scanOnly, tc.wantScanOnly)
+			}
+		})
+	}
+}
