@@ -161,15 +161,21 @@ func logCompareResolvedFallback(logger io.Writer, forkID string, err error) {
 // every resolved fork, not just the unresolved ones already folded into
 // perRequestCost(tier).
 func batchEstimate(pending []forge.T1Data, divergence map[string]forge.ForkDivergence, tier int) (divergent, resolved, restEstimate int) {
+	return batchEstimateWithCached(pending, divergence, nil, tier)
+}
+
+func batchEstimateWithCached(pending []forge.T1Data, divergence map[string]forge.ForkDivergence, cachedIDs map[string]bool, tier int) (divergent, resolved, restEstimate int) {
 	unresolved := 0
 	for _, f := range pending {
 		d, ok := divergence[f.ID]
 		if !ok || !d.Resolved {
-			unresolved++
+			if cachedIDs == nil || !cachedIDs[f.ID] {
+				unresolved++
+			}
 			continue
 		}
 		resolved++
-		if forge.SelectDivergentBranch(d).NeedsREST {
+		if (cachedIDs == nil || !cachedIDs[f.ID]) && forge.SelectDivergentBranch(d).NeedsREST {
 			divergent++
 		}
 	}

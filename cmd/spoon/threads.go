@@ -81,6 +81,10 @@ type threadsFlags struct {
 	// PR ref present, the flag is ignored (with a warning) so existing
 	// scripts keep working.
 	interactive bool
+	// scanDepth configures workspace scan depth (default 1, max 3).
+	scanDepth int
+	// scanOnly forces workspace scan flow even when only one repo exists.
+	scanOnly bool
 }
 
 // parseThreadsFlags parses the args after "spoon threads".
@@ -234,6 +238,21 @@ func parseThreadsFlags(args []string) (threadsFlags, error) {
 			f.verbose = true
 		case a == "--interactive" || a == "-i":
 			f.interactive = true
+		case a == "--scan-depth":
+			if i+1 >= len(args) {
+				return f, fmt.Errorf("--scan-depth requires a value")
+			}
+			i++
+			v, err := strconv.Atoi(args[i])
+			if err != nil || v < 1 {
+				return f, fmt.Errorf("--scan-depth must be a positive integer")
+			}
+			if v > 3 {
+				v = 3
+			}
+			f.scanDepth = v
+		case a == "--scan-only":
+			f.scanOnly = true
 		case a == "-h" || a == "--help":
 			return f, errThreadsHelp
 		default:
@@ -420,23 +439,46 @@ func runThreadsWithEffective(args []string, effective config.EffectiveConfig) in
 
 	tuiContexts := newThreadsTUIContextCache(effective)
 
-	// Interactive picker: no PR ref given, --interactive was set, repo
-	// context detected. Fetch open PRs, run the picker, and treat the
-	// chosen PR as if the user had typed it on the command line.
+	// Interactive picker: no PR ref given, --interactive was set. If multiple
+	// sibling checkouts exist (or --scan-only is set), discover PRs across
+	// the workspace; otherwise list open PRs in the current repo.
 	if flags.interactive && flags.prRef == "" {
-		if fallbackOwner == "" || fallbackRepo == "" {
-			fmt.Fprintln(os.Stderr, "❌ Error: --interactive needs a git checkout (couldn't detect origin owner/repo)")
-			return 2
+		cwd, _ := os.Getwd()
+		depth := flags.scanDepth
+		if depth <= 0 {
+			depth = 1
 		}
-		prs, perr := client.ListOpenPRs(ctx, fallbackOwner, fallbackRepo, 30)
-		if perr != nil {
-			fmt.Fprintln(os.Stderr, "❌ Error: listing open PRs:", perr)
-			return 1
+		repos, _ := threadsops.ScanWorkspace(cwd, threadsops.ScanOptions{Depth: depth})
+
+		var prs []gh.PullRequest
+		if len(repos) > 1 || flags.scanOnly {
+			discoveries := threadsops.DiscoverPRsInWorkspace(ctx, client, repos, threadsops.DiscoverOptions{Parallelism: 8})
+			for _, d := range discoveries {
+				if d.PR != nil {
+					prs = append(prs, *d.PR)
+				}
+			}
+			if len(prs) == 0 {
+				fmt.Println("No open PRs in this workspace")
+				return 0
+			}
+		} else {
+			if fallbackOwner == "" || fallbackRepo == "" {
+				fmt.Fprintln(os.Stderr, "❌ Error: --interactive needs a git checkout (couldn't detect origin owner/repo)")
+				return 2
+			}
+			var perr error
+			prs, perr = client.ListOpenPRs(ctx, fallbackOwner, fallbackRepo, 30)
+			if perr != nil {
+				fmt.Fprintln(os.Stderr, "❌ Error: listing open PRs:", perr)
+				return 1
+			}
+			if len(prs) == 0 {
+				fmt.Println("No open PRs in this repo")
+				return 0
+			}
 		}
-		if len(prs) == 0 {
-			fmt.Println("No open PRs in this repo")
-			return 0
-		}
+
 		tuiContext, contextErr := tuiContexts.Context()
 		if contextErr != nil {
 			fmt.Fprintln(os.Stderr, "Error:", contextErr)
@@ -454,7 +496,12 @@ func runThreadsWithEffective(args []string, effective config.EffectiveConfig) in
 		}
 		// Synthesize the PR ref so the existing parse/dispatch path takes
 		// over unchanged.
-		flags.prRef = fmt.Sprintf("%s/%s#%d", fallbackOwner, fallbackRepo, pm.Selected().Number)
+		sel := pm.Selected()
+		if sel.URL != "" {
+			flags.prRef = sel.URL
+		} else {
+			flags.prRef = fmt.Sprintf("%s/%s#%d", fallbackOwner, fallbackRepo, sel.Number)
+		}
 	}
 
 	owner, repo, number, err := parsePRRef(flags.prRef, fallbackOwner, fallbackRepo)
@@ -744,8 +791,10 @@ PR reference forms:
 Flags:
   (no mode flag)        Open the TUI for the selected filter (default: unresolved)
   -i, --interactive     If no PR ref is given, present a picker over the open
-                        PRs in the current repo (origin). With a PR ref the
-                        flag is ignored (with a warning).
+                        PRs in the current repo or sibling workspace checkouts.
+                        With a PR ref the flag is ignored (with a warning).
+  --scan-depth N        Workspace directory search depth for --interactive (default 1, max 3)
+  --scan-only           Force workspace multi-repo scan flow for --interactive
   --json                Print threads as JSON (filtered by --filter)
   --filter MODE         Which threads to surface. One of:
                           all                  every thread (resolved + unresolved)

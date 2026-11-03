@@ -86,3 +86,49 @@ func (c *Client) ListOpenPRs(ctx context.Context, owner, repo string, limit int)
 	}
 	return out, nil
 }
+
+// FindOpenPRForHead returns the open PR in (owner, repo) whose head ref equals
+// the given headBranch. Returns (nil, nil) if no such PR exists. If headOwner
+// is empty, defaults to owner (the same-repo PR case); set headOwner to a fork
+// account to look up cross-repo PRs.
+//
+// Calls GET /repos/{owner}/{repo}/pulls?head={headOwner}:{headBranch}&state=open.
+func (c *Client) FindOpenPRForHead(ctx context.Context, owner, repo, headOwner, headBranch string) (*PullRequest, error) {
+	if headOwner == "" {
+		headOwner = owner
+	}
+	headParam := fmt.Sprintf("%s:%s", headOwner, headBranch)
+	path := fmt.Sprintf("repos/%s/%s/pulls?state=open&head=%s&per_page=1", owner, repo, headParam)
+
+	resp, err := c.GetRaw(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading pulls response: %w", err)
+	}
+
+	var raw []pullRequestAPI
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("parsing pulls response: %w", err)
+	}
+
+	if len(raw) == 0 {
+		return nil, nil
+	}
+
+	p := raw[0]
+	return &PullRequest{
+		Number:     p.Number,
+		Title:      p.Title,
+		Author:     p.User.Login,
+		HeadBranch: p.Head.Ref,
+		State:      p.State,
+		URL:        p.URL,
+		CreatedAt:  p.CreatedAt,
+		UpdatedAt:  p.UpdatedAt,
+	}, nil
+}

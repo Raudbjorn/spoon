@@ -624,6 +624,7 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 		// fork carries a single pre-chosen branch into the worker instead of
 		// REST's own per-fork branch scan.
 		var pending []forge.T1Data
+		cachedIDs := make(map[string]bool)
 		var divergence map[string]forge.ForkDivergence
 		var batchStats forge.BatchStats
 		batchRan := false
@@ -637,7 +638,7 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 					continue
 				}
 				if opts.CachedT2 != nil && opts.CachedT2(s.fork) != nil {
-					continue
+					cachedIDs[s.fork.ID] = true
 				}
 				pending = append(pending, s.fork)
 			}
@@ -670,7 +671,7 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 		// this estimate, governs when enrichment actually stops.
 		if tier >= 2 && len(all) > 0 {
 			if batchRan {
-				divergent, resolved, restEstimate := batchEstimate(pending, divergence, tier)
+				divergent, resolved, restEstimate := batchEstimateWithCached(pending, divergence, cachedIDs, tier)
 				fmt.Fprintf(logger, "[triage] %d forks; ~%d REST requests (%d divergent of %d resolved by one GraphQL batch); rate headroom %.0f%%\n",
 					len(all), restEstimate, divergent, resolved, provider.Headroom()*100)
 			} else {
@@ -866,9 +867,16 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 					// branch (sel) for the REST step below; the reserve gate
 					// still applies to it like any other REST-bound fork.
 					var sel *forge.BranchSelection
-					if enrich && tier >= 2 && r.T2 == nil && divergence != nil {
+					if enrich && tier >= 2 && divergence != nil {
 						if res, ok := resolveFromBatch(divergence, s.fork.ID); ok {
-							if res.T2 != nil {
+							if r.T2 != nil {
+								// Refresh BehindCount in-place if fork was cached and upstream advanced
+								if res.T2 != nil && r.T2.AheadCount == 0 {
+									r.T2.BehindCount = res.T2.BehindCount
+								} else if res.Selection != nil && (r.T2.HeadSHA == res.Selection.TipSHA || r.T2.AheadCount == res.Selection.Ahead) {
+									r.T2.BehindCount = res.Selection.Behind
+								}
+							} else if res.T2 != nil {
 								r.T2 = res.T2
 								compareBatch.Add(1)
 							} else {
