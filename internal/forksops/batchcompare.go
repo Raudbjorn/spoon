@@ -148,7 +148,9 @@ func logCompareResolvedFallback(logger io.Writer, forkID string, err error) {
 // CompareResolved call each), versus resolved to nothing ahead (no REST
 // call at all, already fully known) or were not resolved by the batch at
 // all (fall back to a full per-fork Compare, same cost as before the
-// batch existed).
+// batch existed). Cached forks that pass through the batch to refresh
+// BehindCount do not incur REST compare calls, so they are excluded from
+// the divergent and unresolved counts in the REST estimate.
 //
 // restEstimate adds those together: one request per divergent fork, plus
 // the old per-fork tier estimate for every fork the batch could not
@@ -160,16 +162,23 @@ func logCompareResolvedFallback(logger io.Writer, forkID string, err error) {
 // contributors-only share -- perRequestCost(3)-perRequestCost(2) -- to
 // every resolved fork, not just the unresolved ones already folded into
 // perRequestCost(tier).
-func batchEstimate(pending []forge.T1Data, divergence map[string]forge.ForkDivergence, tier int) (divergent, resolved, restEstimate int) {
+func batchEstimate(pending []forge.T1Data, divergence map[string]forge.ForkDivergence, tier int, isCached ...func(forge.T1Data) bool) (divergent, resolved, restEstimate int) {
+	var cachedFn func(forge.T1Data) bool
+	if len(isCached) > 0 && isCached[0] != nil {
+		cachedFn = isCached[0]
+	}
 	unresolved := 0
 	for _, f := range pending {
+		cached := cachedFn != nil && cachedFn(f)
 		d, ok := divergence[f.ID]
 		if !ok || !d.Resolved {
-			unresolved++
+			if !cached {
+				unresolved++
+			}
 			continue
 		}
 		resolved++
-		if forge.SelectDivergentBranch(d).NeedsREST {
+		if !cached && forge.SelectDivergentBranch(d).NeedsREST {
 			divergent++
 		}
 	}
@@ -179,6 +188,39 @@ func batchEstimate(pending []forge.T1Data, divergence map[string]forge.ForkDiver
 	}
 	restEstimate = divergent + resolved*contributorsShare + unresolved*perRequestCost(tier)
 	return divergent, resolved, restEstimate
+}
+
+// refreshCachedBehind updates a cached T2's BehindCount in-place from the
+// batch divergence result when the batch resolved the fork.
+func refreshCachedBehind(t2 *forge.T2Data, d forge.ForkDivergence) bool {
+	if t2 == nil || !d.Resolved {
+		return false
+	}
+	behind := d.Default.BehindBy
+	found := true
+	if t2.IsBranchWork && t2.ActiveBranch != "" && t2.ActiveBranch != d.Default.Name {
+		found = false
+		for _, side := range d.Sides {
+			if side.Name == t2.ActiveBranch {
+				behind = side.BehindBy
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		return false
+	}
+	if t2.BehindCount != behind {
+		t2.BehindCount = behind
+		return true
+	}
+	return false
+}
+
+// RefreshCachedBehind is refreshCachedBehind for callers outside this package.
+func RefreshCachedBehind(t2 *forge.T2Data, d forge.ForkDivergence) bool {
+	return refreshCachedBehind(t2, d)
 }
 
 // BatchResolution is the exported form of batchResolution, for callers

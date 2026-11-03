@@ -531,3 +531,63 @@ func TestThreadsTUIContextCacheReusesPickerContextForTUI(t *testing.T) {
 		t.Fatalf("picker and TUI contexts differ: %#v / %#v", pickerContext, tuiContext)
 	}
 }
+
+func TestParseThreadsFlags_ScanDepth(t *testing.T) {
+	cases := []struct {
+		name      string
+		args      []string
+		wantDepth int
+		wantErr   bool
+	}{
+		{"scan depth flag space", []string{"--interactive", "--scan-depth", "2"}, 2, false},
+		{"scan depth flag equals", []string{"--interactive", "--scan-depth=3"}, 3, false},
+		{"scan depth capped at 3", []string{"--interactive", "--scan-depth", "5"}, 3, false},
+		{"scan depth zero error", []string{"--interactive", "--scan-depth", "0"}, 0, true},
+		{"scan depth negative error", []string{"--interactive", "--scan-depth", "-1"}, 0, true},
+		{"scan depth invalid error", []string{"--interactive", "--scan-depth", "foo"}, 0, true},
+		{"scan depth missing arg error", []string{"--interactive", "--scan-depth"}, 0, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f, err := parseThreadsFlags(tc.args)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if f.scanDepth != tc.wantDepth {
+				t.Errorf("scanDepth = %d, want %d", f.scanDepth, tc.wantDepth)
+			}
+		})
+	}
+}
+
+func TestParseThreadsFlags_ScanOnly(t *testing.T) {
+	f, err := parseThreadsFlags([]string{"--scan-only"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !f.scanOnly {
+		t.Errorf("scanOnly should be true")
+	}
+	if f.prRef != "" {
+		t.Errorf("prRef should be empty, got %q", f.prRef)
+	}
+
+	// With PR ref
+	f2, err := parseThreadsFlags([]string{"owner/repo#42", "--scan-only"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !f2.scanOnly {
+		t.Errorf("scanOnly should be true")
+	}
+	if f2.prRef != "owner/repo#42" {
+		t.Errorf("prRef = %q, want owner/repo#42", f2.prRef)
+	}
+}
+

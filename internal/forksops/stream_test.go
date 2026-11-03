@@ -1063,7 +1063,8 @@ func TestStream_priorsLaneSplit_matchedBeforeUnmatched(t *testing.T) {
 	now := time.Now()
 	newForge := func() *fakeForge {
 		return &fakeForge{
-			parent: forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
+			concurrency: 1,
+			parent:      forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
 			forks: []forge.T1Data{
 				{ID: "o/docs", Owner: "o", Name: "docs", Stars: 500, SubForkCount: 20, PushedAt: now, DefaultBranch: "main"},
 				{ID: "o/auth", Owner: "o", Name: "auth", Stars: 1, PushedAt: now, DefaultBranch: "main"},

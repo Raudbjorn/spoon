@@ -110,8 +110,18 @@ func (m PickerModel) View() string {
 	var b strings.Builder
 	b.WriteString(ui.TableHeader(ctx, fmt.Sprintf("Open PRs (%d) %s select one:", len(m.prs), ctx.Glyph(theme.EmDash)), width))
 	b.WriteString("\n\n")
+	multi := m.spansMultipleRepos()
 	for i, pr := range m.prs {
-		row := fmt.Sprintf("PR #%d: %s (@%s, updated %s)", pr.Number, pr.Title, pr.Author, humanizeDuration(m.now.Sub(pr.UpdatedAt)))
+		var row string
+		if multi && pr.RepoName != "" {
+			loc := fmt.Sprintf("%s/%s", pr.RepoOwner, pr.RepoName)
+			if pr.RepoDir != "" {
+				loc += fmt.Sprintf(" in %s", pr.RepoDir)
+			}
+			row = fmt.Sprintf("PR #%d: %s [%s] (@%s, updated %s)", pr.Number, pr.Title, loc, pr.Author, humanizeDuration(m.now.Sub(pr.UpdatedAt)))
+		} else {
+			row = fmt.Sprintf("PR #%d: %s (@%s, updated %s)", pr.Number, pr.Title, pr.Author, humanizeDuration(m.now.Sub(pr.UpdatedAt)))
+		}
 		selected := i == m.cursor
 		if selected {
 			row = ctx.Glyph(theme.Selected) + " " + row
@@ -125,6 +135,20 @@ func (m PickerModel) View() string {
 	b.WriteString(ui.KeyLegend(ctx, width, keymap.ThreadPick))
 	b.WriteString("\n")
 	return b.String()
+}
+
+func (m PickerModel) spansMultipleRepos() bool {
+	if len(m.prs) <= 1 {
+		return false
+	}
+	firstOwner := m.prs[0].RepoOwner
+	firstRepo := m.prs[0].RepoName
+	for _, pr := range m.prs[1:] {
+		if pr.RepoOwner != firstOwner || pr.RepoName != firstRepo {
+			return true
+		}
+	}
+	return false
 }
 
 // Selected returns a pointer to the chosen PR, or nil if the user cancelled
