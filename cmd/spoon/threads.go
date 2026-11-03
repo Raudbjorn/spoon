@@ -81,6 +81,10 @@ type threadsFlags struct {
 	// PR ref present, the flag is ignored (with a warning) so existing
 	// scripts keep working.
 	interactive bool
+	// scanDepth overrides the default workspace scan depth (1, max 3).
+	scanDepth int
+	// scanOnly forces workspace discovery even when only one repo exists.
+	scanOnly bool
 }
 
 // parseThreadsFlags parses the args after "spoon threads".
@@ -234,6 +238,27 @@ func parseThreadsFlags(args []string) (threadsFlags, error) {
 			f.verbose = true
 		case a == "--interactive" || a == "-i":
 			f.interactive = true
+		case a == "--scan-depth", strings.HasPrefix(a, "--scan-depth="):
+			var val string
+			if a == "--scan-depth" {
+				if i+1 >= len(args) {
+					return f, fmt.Errorf("--scan-depth requires a value")
+				}
+				i++
+				val = args[i]
+			} else {
+				val = strings.TrimPrefix(a, "--scan-depth=")
+			}
+			n, err := strconv.Atoi(val)
+			if err != nil || n < 1 {
+				return f, fmt.Errorf("--scan-depth must be a positive integer (1-3)")
+			}
+			if n > 3 {
+				n = 3
+			}
+			f.scanDepth = n
+		case a == "--scan-only":
+			f.scanOnly = true
 		case a == "-h" || a == "--help":
 			return f, errThreadsHelp
 		default:
@@ -247,7 +272,7 @@ func parseThreadsFlags(args []string) (threadsFlags, error) {
 		}
 	}
 
-	if f.prRef == "" && !f.interactive {
+	if f.prRef == "" && !f.interactive && !f.scanOnly {
 		return f, fmt.Errorf("missing PR reference (e.g. owner/repo#42) — pass --interactive/-i to pick one")
 	}
 
@@ -396,9 +421,10 @@ func runThreadsWithEffective(args []string, effective config.EffectiveConfig) in
 	// --interactive with a PR ref already supplied is a user error in
 	// spirit, but rather than refuse, warn and fall through to the
 	// existing PR-ref code path.
-	if flags.interactive && flags.prRef != "" {
+	if (flags.interactive || flags.scanOnly) && flags.prRef != "" {
 		fmt.Fprintln(os.Stderr, "⚠️  Warning: --interactive ignored: PR ref already supplied")
 		flags.interactive = false
+		flags.scanOnly = false
 	}
 
 	client, status, err := gh.CheckAuthWithEffective(effective)
@@ -420,41 +446,101 @@ func runThreadsWithEffective(args []string, effective config.EffectiveConfig) in
 
 	tuiContexts := newThreadsTUIContextCache(effective)
 
-	// Interactive picker: no PR ref given, --interactive was set, repo
-	// context detected. Fetch open PRs, run the picker, and treat the
-	// chosen PR as if the user had typed it on the command line.
-	if flags.interactive && flags.prRef == "" {
-		if fallbackOwner == "" || fallbackRepo == "" {
-			fmt.Fprintln(os.Stderr, "❌ Error: --interactive needs a git checkout (couldn't detect origin owner/repo)")
-			return 2
+	// Interactive picker: no PR ref given, --interactive or --scan-only was set.
+	// When multiple sibling checkouts exist (or --scan-only is set), run the
+	// workspace multi-repo discovery flow. Otherwise, run single-repo mode (G7).
+	if (flags.interactive || flags.scanOnly) && flags.prRef == "" {
+		depth := flags.scanDepth
+		if depth <= 0 {
+			depth = 1
 		}
-		prs, perr := client.ListOpenPRs(ctx, fallbackOwner, fallbackRepo, 30)
-		if perr != nil {
-			fmt.Fprintln(os.Stderr, "❌ Error: listing open PRs:", perr)
-			return 1
+		cwd, _ := os.Getwd()
+		discoveredRepos, _ := threadsops.ScanWorkspace(cwd, threadsops.ScanOptions{Depth: depth})
+
+		if flags.scanOnly || len(discoveredRepos) > 1 {
+			discoveries, derr := threadsops.DiscoverPRsInWorkspace(ctx, client, cwd, threadsops.DiscoverOptions{
+				ScanOptions: threadsops.ScanOptions{Depth: depth},
+				Repos:       discoveredRepos,
+			})
+			if derr != nil {
+				fmt.Fprintln(os.Stderr, "❌ Error scanning workspace:", derr)
+				return 1
+			}
+			var prs []gh.PullRequest
+			for _, d := range discoveries {
+				if d.PR != nil {
+					prs = append(prs, *d.PR)
+				}
+			}
+			if len(prs) == 0 {
+				if len(discoveredRepos) == 0 {
+					fmt.Println("No git repositories found in workspace")
+				} else {
+					dirs := make([]string, 0, len(discoveredRepos))
+					for _, r := range discoveredRepos {
+						dirs = append(dirs, r.RelDir)
+					}
+					fmt.Printf("No open PRs found for current branches in %s. Use --interactive in a single repo to list all open PRs, or pass a PR ref directly.\n", strings.Join(dirs, ", "))
+				}
+				return 0
+			}
+
+			tuiContext, contextErr := tuiContexts.Context()
+			if contextErr != nil {
+				fmt.Fprintln(os.Stderr, "Error:", contextErr)
+				return 1
+			}
+			picker := threadstui.NewPicker(prs).WithTheme(tuiContext)
+			final, runErr := tea.NewProgram(picker, tea.WithAltScreen()).Run()
+			if runErr != nil {
+				fmt.Fprintln(os.Stderr, "❌ Error:", runErr)
+				return 1
+			}
+			pm := final.(threadstui.PickerModel)
+			if pm.Cancelled() || pm.Selected() == nil {
+				return 0
+			}
+			sel := pm.Selected()
+			selOwner := sel.RepoOwner
+			selRepo := sel.RepoName
+			if selOwner == "" {
+				selOwner = fallbackOwner
+			}
+			if selRepo == "" {
+				selRepo = fallbackRepo
+			}
+			flags.prRef = fmt.Sprintf("%s/%s#%d", selOwner, selRepo, sel.Number)
+		} else {
+			if fallbackOwner == "" || fallbackRepo == "" {
+				fmt.Fprintln(os.Stderr, "❌ Error: --interactive needs a git checkout (couldn't detect origin owner/repo)")
+				return 2
+			}
+			prs, perr := client.ListOpenPRs(ctx, fallbackOwner, fallbackRepo, 30)
+			if perr != nil {
+				fmt.Fprintln(os.Stderr, "❌ Error: listing open PRs:", perr)
+				return 1
+			}
+			if len(prs) == 0 {
+				fmt.Println("No open PRs in this repo")
+				return 0
+			}
+			tuiContext, contextErr := tuiContexts.Context()
+			if contextErr != nil {
+				fmt.Fprintln(os.Stderr, "Error:", contextErr)
+				return 1
+			}
+			picker := threadstui.NewPicker(prs).WithTheme(tuiContext)
+			final, runErr := tea.NewProgram(picker, tea.WithAltScreen()).Run()
+			if runErr != nil {
+				fmt.Fprintln(os.Stderr, "❌ Error:", runErr)
+				return 1
+			}
+			pm := final.(threadstui.PickerModel)
+			if pm.Cancelled() || pm.Selected() == nil {
+				return 0
+			}
+			flags.prRef = fmt.Sprintf("%s/%s#%d", fallbackOwner, fallbackRepo, pm.Selected().Number)
 		}
-		if len(prs) == 0 {
-			fmt.Println("No open PRs in this repo")
-			return 0
-		}
-		tuiContext, contextErr := tuiContexts.Context()
-		if contextErr != nil {
-			fmt.Fprintln(os.Stderr, "Error:", contextErr)
-			return 1
-		}
-		picker := threadstui.NewPicker(prs).WithTheme(tuiContext)
-		final, runErr := tea.NewProgram(picker, tea.WithAltScreen()).Run()
-		if runErr != nil {
-			fmt.Fprintln(os.Stderr, "❌ Error:", runErr)
-			return 1
-		}
-		pm := final.(threadstui.PickerModel)
-		if pm.Cancelled() || pm.Selected() == nil {
-			return 0
-		}
-		// Synthesize the PR ref so the existing parse/dispatch path takes
-		// over unchanged.
-		flags.prRef = fmt.Sprintf("%s/%s#%d", fallbackOwner, fallbackRepo, pm.Selected().Number)
 	}
 
 	owner, repo, number, err := parsePRRef(flags.prRef, fallbackOwner, fallbackRepo)
@@ -744,8 +830,10 @@ PR reference forms:
 Flags:
   (no mode flag)        Open the TUI for the selected filter (default: unresolved)
   -i, --interactive     If no PR ref is given, present a picker over the open
-                        PRs in the current repo (origin). With a PR ref the
-                        flag is ignored (with a warning).
+                        PRs in the current repo (origin). With sibling checkouts,
+                        automatically runs workspace PR discovery across repos.
+  --scan-depth <N>      Maximum scan depth for workspace repo discovery (1-3, default 1).
+  --scan-only           Force workspace multi-repo discovery mode even with a single repo.
   --json                Print threads as JSON (filtered by --filter)
   --filter MODE         Which threads to surface. One of:
                           all                  every thread (resolved + unresolved)

@@ -21,6 +21,11 @@ type PullRequest struct {
 	URL        string    `json:"url"`        // html_url
 	CreatedAt  time.Time `json:"createdAt"`
 	UpdatedAt  time.Time `json:"updatedAt"`
+
+	// RepoOwner, RepoName, and RepoDir are populated for multi-repo workspace discovery.
+	RepoOwner string `json:"repoOwner,omitempty"`
+	RepoName  string `json:"repoName,omitempty"`
+	RepoDir   string `json:"repoDir,omitempty"`
 }
 
 // pullRequestAPI is the on-the-wire shape from GET /repos/{owner}/{repo}/pulls.

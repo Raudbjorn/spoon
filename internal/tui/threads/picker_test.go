@@ -180,3 +180,33 @@ func TestPicker_EnterOnEmptyList(t *testing.T) {
 		t.Errorf("Enter on empty list should return tea.Quit cmd")
 	}
 }
+
+func TestPicker_MultiRepoRendering(t *testing.T) {
+	now := time.Now()
+	prs := []gh.PullRequest{
+		{Number: 42, Title: "Fix login", Author: "alice", RepoOwner: "acme", RepoName: "frontend", RepoDir: "./frontend", UpdatedAt: now.Add(-3 * time.Hour)},
+		{Number: 88, Title: "Add timeout", Author: "bob", RepoOwner: "acme", RepoName: "backend", RepoDir: "./backend", UpdatedAt: now.Add(-6 * time.Hour)},
+	}
+	m := NewPicker(prs)
+	view := m.View()
+	if !strings.Contains(view, "[acme/frontend in ./frontend]") {
+		t.Errorf("expected [acme/frontend in ./frontend] in multi-repo view, got:\n%s", view)
+	}
+	if !strings.Contains(view, "[acme/backend in ./backend]") {
+		t.Errorf("expected [acme/backend in ./backend] in multi-repo view, got:\n%s", view)
+	}
+}
+
+func TestPicker_SingleRepoRenderingSuppressesSuffix(t *testing.T) {
+	now := time.Now()
+	prs := []gh.PullRequest{
+		{Number: 42, Title: "Fix login", Author: "alice", RepoOwner: "acme", RepoName: "frontend", RepoDir: "./frontend", UpdatedAt: now.Add(-3 * time.Hour)},
+		{Number: 43, Title: "Fix logout", Author: "alice", RepoOwner: "acme", RepoName: "frontend", RepoDir: "./frontend", UpdatedAt: now.Add(-1 * time.Hour)},
+	}
+	m := NewPicker(prs)
+	view := m.View()
+	if strings.Contains(view, "[acme/frontend") {
+		t.Errorf("suffix should be suppressed when all PRs belong to the same repo, got:\n%s", view)
+	}
+}
+
