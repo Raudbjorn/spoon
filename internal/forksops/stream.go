@@ -629,14 +629,10 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 		batchRan := false
 		// Type-assert before building `pending`: on a provider that can't
 		// batch at all (gitea, gitlab, or a plain REST-only GitHub client),
-		// this skips the loop entirely rather than calling opts.CachedT2
-		// once per eligible fork only to discard the result unused.
+		// this skips the loop entirely.
 		if bp, hasBatch := provider.(forge.BatchCompareProvider); tier >= 2 && !opts.NoBatchCompare && hasBatch {
 			for i, s := range all {
 				if !eligible(s.fork.ID, i) {
-					continue
-				}
-				if opts.CachedT2 != nil && opts.CachedT2(s.fork) != nil {
 					continue
 				}
 				pending = append(pending, s.fork)
@@ -670,7 +666,13 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 		// this estimate, governs when enrichment actually stops.
 		if tier >= 2 && len(all) > 0 {
 			if batchRan {
-				divergent, resolved, restEstimate := batchEstimate(pending, divergence, tier)
+				var cachedFn func(forge.T1Data) bool
+				if opts.CachedT2 != nil {
+					cachedFn = func(f forge.T1Data) bool {
+						return opts.CachedT2(f) != nil
+					}
+				}
+				divergent, resolved, restEstimate := batchEstimate(pending, divergence, tier, cachedFn)
 				fmt.Fprintf(logger, "[triage] %d forks; ~%d REST requests (%d divergent of %d resolved by one GraphQL batch); rate headroom %.0f%%\n",
 					len(all), restEstimate, divergent, resolved, provider.Headroom()*100)
 			} else {
@@ -850,12 +852,20 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 					}
 					// A stored compare costs no API budget, so it is consulted
 					// before the rate-reserve gate: even a drained window can
-					// serve cached divergence.
+					// serve cached divergence. Cached forks that passed through
+					// the GraphQL batch refresh BehindCount in-place when
+					// upstream advances, without incurring redundant T2 re-fetch
+					// overhead.
 					if enrich && tier >= 2 && opts.CachedT2 != nil {
 						if t2 := opts.CachedT2(s.fork); t2 != nil {
 							r.T2 = t2
 							r.T2FromCache = true
 							compareCached.Add(1)
+							if divergence != nil {
+								if d, ok := divergence[s.fork.ID]; ok && d.Resolved {
+									refreshCachedBehind(r.T2, d)
+								}
+							}
 						}
 					}
 					// Batch-resolved divergence costs no per-fork API budget
