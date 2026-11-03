@@ -149,3 +149,37 @@ func TestListOpenPRs_Forbidden(t *testing.T) {
 		t.Errorf("want nil PRs on 403, got %v", got)
 	}
 }
+
+func TestFindOpenPRForHead(t *testing.T) {
+	prs := []pullRequestAPI{
+		{Number: 42, Title: "Fix bug", State: "open", URL: "https://github.com/upstream/repo/pull/42"},
+	}
+	prs[0].User.Login = "forkowner"
+	prs[0].Head.Ref = "fix-feature"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("head") == "forkowner:fix-feature" {
+			_ = json.NewEncoder(w).Encode(prs)
+			return
+		}
+		_ = json.NewEncoder(w).Encode([]pullRequestAPI{})
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	pr, err := c.FindOpenPRForHead(context.Background(), "upstream", "repo", "forkowner", "fix-feature")
+	if err != nil {
+		t.Fatalf("FindOpenPRForHead: %v", err)
+	}
+	if pr == nil || pr.Number != 42 || pr.Title != "Fix bug" {
+		t.Fatalf("unexpected PR: %+v", pr)
+	}
+
+	none, err := c.FindOpenPRForHead(context.Background(), "upstream", "repo", "forkowner", "missing-feature")
+	if err != nil {
+		t.Fatalf("FindOpenPRForHead missing: %v", err)
+	}
+	if none != nil {
+		t.Fatalf("expected nil PR, got %+v", none)
+	}
+}
