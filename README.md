@@ -272,8 +272,9 @@ not a supported GitHub API. REST metadata remains authoritative if the HTML
 adapter fails. Each scrape is limited to two minutes (including request pacing),
 512 pages, 16 MiB per page, and 128 MiB total. Failed, stalled, or timed-out
 pagination and incomplete HTML hunks discard the web patches. Hunk ranges must
-account for every old/new line, including context rows. Individual patches must
-also match REST addition/deletion counts; count mismatches reject only those
+account for every old/new line, including context rows, and the unchanged gaps
+between hunks must match on both sides. Individual patches must also match
+REST addition/deletion counts; count mismatches reject only those
 files and leave complete siblings usable. A capped or unknown commit list cannot
 supply a verified head SHA for this fallback. Rejection diagnostics appear in
 `patch_skipped_reason` in detailed CLI output.

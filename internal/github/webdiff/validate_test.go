@@ -60,6 +60,8 @@ func TestValidatePatchChecksUnchangedGaps(t *testing.T) {
 		{"consecutive deletions", "@@ -1 +0,0 @@\n-first\n@@ -2 +0,0 @@\n-second\n", true},
 		{"wrong insertion offset", "@@ -0,0 +1 @@\n+new\n@@ -3 +3 @@\n keep\n", false},
 		{"wrong deletion offset", "@@ -1 +0,0 @@\n-old\n@@ -3 +3 @@\n keep\n", false},
+		{"wrong gap before insertion", "@@ -1 +1 @@\n-old\n+new\n@@ -2,0 +4 @@\n+extra\n", false},
+		{"wrong gap before deletion", "@@ -1 +1 @@\n-old\n+new\n@@ -4 +2,0 @@\n-extra\n", false},
 		{"overlapping insertion", "@@ -1 +1 @@\n-old\n+new\n@@ -0,0 +2 @@\n+added\n", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

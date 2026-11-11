@@ -168,6 +168,30 @@ func TestApplyWebDiffPatchesKeepsCompleteSibling(t *testing.T) {
 	}
 }
 
+// TestApplyWebDiffPatchesChecksHunkCoordinates rejects bad offsets even when REST totals match.
+func TestApplyWebDiffPatchesChecksHunkCoordinates(t *testing.T) {
+	for _, tc := range []struct {
+		name, patch string
+		complete    bool
+	}{
+		{"consistent", "@@ -1 +1 @@\n-old\n+new\n@@ -10 +10 @@\n-x\n+y\n", true},
+		{"inconsistent", "@@ -1 +1 @@\n-old\n+new\n@@ -10 +9 @@\n-x\n+y\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// REST totals match in both cases; only the hunk coordinates differ.
+			t2 := forge.T2Data{Diffs: []forge.FileDiff{{Path: "a.go", Additions: 2, Deletions: 2}}}
+			applyWebDiffPatches(&t2, map[string]string{"a.go": tc.patch}, false, nil)
+			if tc.complete {
+				if t2.Diffs[0].Patch != tc.patch || t2.Diffs[0].PatchSource != "github_web_v2" || t2.PatchSkipReason != "" {
+					t.Fatalf("consistent patch rejected: %+v", t2)
+				}
+			} else if t2.Diffs[0].Patch != "" || t2.Diffs[0].PatchSource != "" || !strings.Contains(t2.PatchSkipReason, "inconsistent unchanged gaps") {
+				t.Fatalf("inconsistent patch accepted or undiagnosed: %+v", t2)
+			}
+		})
+	}
+}
+
 // TestApplyWebDiffPatchesRequiresCompleteContext rejects markup drift even when REST change counts match.
 func TestApplyWebDiffPatchesRequiresCompleteContext(t *testing.T) {
 	fixture := `<div data-path="context.go"></div><table>
