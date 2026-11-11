@@ -179,10 +179,20 @@ deferring the dependency until a typed API is needed, and re-confirming.
   (isaacs/github issue 997, unverified here).
 - Secondary rate limits, GraphQL batches above 20, and sustained-load behavior
   were not tested.
-- GH Archive availability was observed for single files only; ClickHouse and
-  BigQuery availability were not verified. GHTorrent status unverified.
-- gitleaks v8 baseline and SARIF behavior, repo-supervisor, and GitHub custom
-  patterns are unverified.
+- GH Archive availability was observed for single files only. Updated 2026-10-11:
+  the ClickHouse query endpoint was reached (HTTP 200) and its public table was
+  inspected, but coverage, freshness and ingestion completeness remain unverified,
+  as do BigQuery availability and billing. An October 10 archive request returned
+  HTTP 403 from this environment, which is not evidence about the archive itself.
+  GHTorrent has no verified 2026 source (documentation and repository metadata
+  only; its website returned 403 here).
+- Updated 2026-10-11: gitleaks v8 baseline and SARIF behavior were audited from
+  source pinned at `b58d3f102cf3a2c84cb7f923d05c25c9b1aed84b`, with a synthetic
+  check of the extracted baseline predicate. Gitleaks was not executed end to end.
+  `radekk/repo-supervisor` was read at a pinned commit and not run (the
+  `auth0/repo-supervisor` path returned 404). GitHub custom patterns were reviewed
+  from documentation only; no pattern or dry run was exercised. See the follow-up
+  for the exact evidence and its limits.
 - Detection quality (precision/recall) of any proposed signature set is
   untested. Several research claims came from vendor-authored sources.
 - No commit contents were read or scanned during these tests; only status
