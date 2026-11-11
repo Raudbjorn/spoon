@@ -256,12 +256,12 @@ func providerStatusLines(provider forge.Provider, auth forge.AuthInfo, err error
 		return false, lines
 	}
 	if auth.Configured {
-		lines = append(lines, "Credentials configured but unverified (local no-network check)")
+		lines = append(lines, "Credentials configured but unverified"+authSource(provider, auth)+" (local no-network check)")
 		lines = append(lines, fmt.Sprintf("Public fallback rate limit: ~%d req/%s", auth.RateLimit, auth.RateUnit))
 		return true, lines
 	}
 	if auth.Authenticated() {
-		via := authSource(provider, auth.Tier)
+		via := authSource(provider, auth)
 		who := ""
 		if auth.Username != "" {
 			who = " as " + auth.Username
@@ -276,13 +276,16 @@ func providerStatusLines(provider forge.Provider, auth forge.AuthInfo, err error
 }
 
 // authSource renders " via <source>" for an authenticated tier, or "".
-func authSource(provider forge.Provider, tier forge.AuthTier) string {
+func authSource(provider forge.Provider, auth forge.AuthInfo) string {
+	if source := auth.CredentialSource(); source != "" {
+		return " via " + source
+	}
 	switch {
-	case provider == forge.ProviderGitLab && tier == forge.AuthCLI:
+	case provider == forge.ProviderGitLab && auth.Tier == forge.AuthCLI:
 		return " via the glab CLI"
-	case provider == forge.ProviderGitLab && tier == forge.AuthToken:
+	case provider == forge.ProviderGitLab && auth.Tier == forge.AuthToken:
 		return " via GITLAB_TOKEN"
-	case tier == forge.AuthToken:
+	case auth.Tier == forge.AuthToken:
 		return " via a saved or environment token"
 	default:
 		return ""
@@ -301,6 +304,7 @@ func providerFixLines(provider forge.Provider) []string {
 		"Fix — authenticate for higher rate limits (60 → 5000 req/hour):",
 		"  • spoon auth login (requires SPOON_OAUTH_CLIENT_ID and SPOON_OAUTH_CLIENT_SECRET)",
 		"  • or export GH_TOKEN=...  /  GITHUB_TOKEN=...",
+		"  • or gh auth login (used when no Spoon or environment token is present)",
 	}
 }
 

@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -25,17 +27,11 @@ func CheckAuthWithOptions(opts ClientOptions) (*Client, AuthStatus, error) {
 	if err != nil {
 		return nil, AuthStatus{}, err
 	}
-	host, _ := githubEnvironmentAuth()
+	host, _, _ := githubEnvironmentAuth()
 	status := AuthStatus{
 		Authenticated: client.IsAuthenticated(),
 		Host:          host,
-		TokenSource:   "none",
-	}
-	if client.authenticated {
-		status.TokenSource = "env"
-		if len(opts.Tokens) > 0 {
-			status.TokenSource = "config"
-		}
+		TokenSource:   client.tokenSource,
 	}
 	if len(opts.Tokens) > 0 {
 		if err := client.probeExplicitBackends(context.Background(), &status); err != nil {
@@ -196,10 +192,9 @@ func (c *Client) probeDefaultBackend(ctx context.Context, status *AuthStatus) {
 	c.probeRateLimit(ctx, c.backends[0], status)
 }
 
-// githubEnvironmentAuth reads only environment credentials. OAuth tokens saved
-// by spoon auth login are passed through ClientOptions by command startup; gh's
-// config and keyring are deliberately not consulted.
-func githubEnvironmentAuth() (host, token string) {
+// githubEnvironmentAuth does not consult gh: the caller must first give saved
+// Spoon tokens and environment credentials priority over gh's active login.
+func githubEnvironmentAuth() (host, token, source string) {
 	host = strings.TrimSpace(os.Getenv("GH_HOST"))
 	if host == "" {
 		host = defaultHost
@@ -210,8 +205,36 @@ func githubEnvironmentAuth() (host, token string) {
 	}
 	for _, key := range keys {
 		if token = strings.TrimSpace(os.Getenv(key)); token != "" {
-			return host, token
+			return host, token, key
 		}
 	}
-	return host, ""
+	return host, "", "none"
+}
+
+const ghAuthLookupTimeout = 5 * time.Second
+
+// githubCLIToken lets gh read its active account from either config or keyring.
+// Bound the subprocess so a locked keyring cannot hold startup indefinitely.
+func githubCLIToken(ctx context.Context, host string) string {
+	ctx, cancel := context.WithTimeout(ctx, ghAuthLookupTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "gh", "auth", "token", "--hostname", host)
+	// This fallback must read the saved login, even when an environment token
+	// was present but blank after trimming.
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		switch strings.ToUpper(key) {
+		case "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN":
+			continue
+		}
+		cmd.Env = append(cmd.Env, entry)
+	}
+	cmd.WaitDelay = time.Second
+	cmd.Stderr = io.Discard
+	out, err := cmd.Output()
+	if err != nil {
+		slog.Debug("github: gh credential lookup unavailable", "host", host, "error", err)
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }

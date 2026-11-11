@@ -231,3 +231,26 @@ func trimViewportGolden(view string) string {
 	}
 	return strings.Join(lines, "\n")
 }
+
+func TestStatusBarShowsCredentialSource(t *testing.T) {
+	for _, tc := range []struct{ source, label string }{
+		{"config", "Spoon config/keyring"},
+		{"GH_TOKEN", "GH_TOKEN"},
+		{"GITHUB_TOKEN", "GITHUB_TOKEN"},
+		{"GH_ENTERPRISE_TOKEN", "GH_ENTERPRISE_TOKEN"},
+		{"GITHUB_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"},
+		{"gh", "gh auth login"},
+	} {
+		t.Run(tc.source, func(t *testing.T) {
+			m := Model{width: 80, auth: forge.AuthInfo{Tier: forge.AuthToken, TokenSource: tc.source},
+				parent: &forge.ParentData{FullName: strings.Repeat("long-repository-name", 10)}, filter: strings.Repeat("filter", 20)}
+			status := m.renderStatusBar()
+			if !strings.Contains(status, "Auth: "+tc.label) || strings.Contains(status, "Unauthenticated") {
+				t.Fatalf("missing or contradictory auth source: %q", status)
+			}
+			if strings.Contains(status, "\n") || lipgloss.Width(status) > 80 {
+				t.Fatalf("auth status broke narrow viewport: %q", status)
+			}
+		})
+	}
+}

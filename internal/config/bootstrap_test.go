@@ -151,7 +151,7 @@ func TestLoad_legacyOpenVINOBackendNormalizes(t *testing.T) {
 	}
 }
 
-func TestDetectHostUsesNativeGitHubAuthGuidance(t *testing.T) {
+func TestDetectHostExplainsGitHubAuthSources(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	t.Setenv("GH_TOKEN", "")
 	t.Setenv("GITHUB_TOKEN", "")
@@ -159,8 +159,9 @@ func TestDetectHostUsesNativeGitHubAuthGuidance(t *testing.T) {
 	if !strings.Contains(guidance, "spoon auth login") || !strings.Contains(guidance, "SPOON_OAUTH_CLIENT_ID") || !strings.Contains(guidance, "SPOON_OAUTH_CLIENT_SECRET") {
 		t.Errorf("missing native OAuth guidance: %s", guidance)
 	}
-	if strings.Contains(guidance, "gh CLI") || strings.Contains(guidance, "gh auth") || strings.Contains(guidance, "cli.github.com") {
-		t.Errorf("first run still requires gh: %s", guidance)
+	// gh is now an optional fallback after saved and environment tokens.
+	if !strings.Contains(guidance, "gh auth login") || !strings.Contains(guidance, "final fallback") {
+		t.Errorf("missing gh fallback guidance: %s", guidance)
 	}
 }
 

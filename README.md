@@ -42,10 +42,14 @@ Windows). `CGO_ENABLED=1` is the Go default; do not unset it.
 
 ## Auth
 
-- **GitHub**: `spoon auth login` (native OAuth; requires the app credentials
-  and callback setup below), or set `GH_TOKEN` / `GITHUB_TOKEN`. For the
+- **GitHub**: credentials are selected in this order: Spoon's saved
+  `github.tokens` (including keyring-backed tokens), then `GH_TOKEN`, then
+  `GITHUB_TOKEN`, then the active login saved by `gh auth login` for the host.
+  The TUI status bar shows the selected source. `spoon auth login` uses native
+  OAuth and requires the app credentials and callback setup below. For the
   round-robin dispatcher, add one or more PATs under `github.tokens` — see the
-  token-storage and rate-limit notes below.
+  token-storage and rate-limit notes below. A rejected token does not cause
+  Spoon to switch to a lower-priority account; fallback is for absent tokens.
 - **GitLab**: `glab auth login`, or set `GITLAB_TOKEN`
 
 Unauthenticated requests work but hit much lower rate limits.
@@ -255,8 +259,9 @@ to at most 100 commits per run by default; override with
 `--commit-file-budget N`.
 
 GitHub GraphQL queries and mutations use [`githubv4`](https://github.com/shurcooL/githubv4).
-Credentials come from tokens saved by `spoon auth login`, configured tokens, or
-`GH_TOKEN`/`GITHUB_TOKEN`.
+Credentials prefer Spoon's saved/configured tokens, then `GH_TOKEN` or
+`GITHUB_TOKEN`, then the active `gh auth login` account. The `gh` lookup has a
+five-second timeout and reads credentials without saving them into Spoon.
 
 GitHub traffic is capped at 300 requests/minute by default. Set `--rpm`,
 `SPOON_GITHUB_RPM`, or `github.requestsPerMinute` (maximum 900). Configured
