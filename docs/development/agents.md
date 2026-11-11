@@ -5,9 +5,10 @@ by Spoon's failure boundaries, rather than by generic language specialties.
 Use one owner for a small task; add another specialist when a contract crosses
 layers, and an independent verifier for substantial changes.
 
-These are native Codex definitions, with `name`, `description`, and
-`developer_instructions`. They inherit the parent's model, permissions, tools and
-resource limits. No global configuration or model override is needed. See the
+These native Codex definitions contain only `name`, `description`, and
+`developer_instructions`. They introduce no model, permission, tool or resource
+overrides; existing Codex agent defaults and explicit spawn settings still apply.
+No global configuration change is needed. See the
 [Codex custom-agent format](https://learn.chatgpt.com/docs/agent-configuration/subagents#custom-agents).
 Start a new Codex session in this checkout after installing or changing the
 roster; do not assume an already-running session reloads agent definitions.
@@ -272,7 +273,7 @@ file-level search integrations likewise do not override current backend source.
 Keep delegation descriptions narrow, update entrypoints when code moves, and add
 only durable lessons backed by a reproducer/source or a review discussion.
 Refresh the baseline before carrying an open-PR lesson into a shipped guarantee.
-Keep model/effort/permission settings inherited unless a user asks otherwise.
+Keep existing effective model/effort/permission settings unless a user asks otherwise.
 
 Validate each TOML file with Python's `tomllib`, check name/filename agreement,
 source/test references and native Codex discovery. Exercise representative tasks
