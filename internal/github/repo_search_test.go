@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	ghAPI "github.com/cli/go-gh/v2/pkg/api"
+	gogithub "github.com/google/go-github/v90/github"
 )
 
 // searchPathQuery parses the query string of a built search path so tests
@@ -392,11 +392,11 @@ func TestIsQueryRejected(t *testing.T) {
 	if IsQueryRejected(nil) {
 		t.Error("nil is not a rejected query")
 	}
-	wrapped := fmt.Errorf("repo search: %w", &ghAPI.HTTPError{StatusCode: http.StatusUnprocessableEntity})
+	wrapped := fmt.Errorf("repo search: %w", &gogithub.ErrorResponse{Response: &http.Response{StatusCode: http.StatusUnprocessableEntity}})
 	if !IsQueryRejected(wrapped) {
 		t.Error("a wrapped 422 HTTPError must read as a rejected query")
 	}
-	if IsQueryRejected(&ghAPI.HTTPError{StatusCode: http.StatusNotFound}) {
+	if IsQueryRejected(&gogithub.ErrorResponse{Response: &http.Response{StatusCode: http.StatusNotFound}}) {
 		t.Error("a 404 is not a rejected query")
 	}
 	if IsQueryRejected(errors.New("HTTP 422 in prose only")) {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -280,13 +281,7 @@ func isRecentPush(pushedAt string) bool {
 	return time.Since(t) < 365*24*time.Hour
 }
 
-// isNotFoundErr reports whether err is an HTTP 404. The go-gh
-// client wraps the status code in the error message, so a substring
-// check is sufficient for the rate-limit / not-found fan-out
-// without importing ghAPI here.
+// isNotFoundErr reports whether err is an HTTP 404, by typed status.
 func isNotFoundErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	return strings.Contains(err.Error(), "HTTP 404")
+	return statusCode(err) == http.StatusNotFound
 }

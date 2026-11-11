@@ -5,8 +5,6 @@ import (
 	"net/http"
 	"strconv"
 	"time"
-
-	ghAPI "github.com/cli/go-gh/v2/pkg/api"
 )
 
 // RateLimitError is returned by *Client when the GitHub API responds with a
@@ -64,25 +62,24 @@ func (e *RateLimitError) RetryAfterSeconds() int {
 }
 
 // detectRateLimitFromHTTPError returns a *RateLimitError if the error is a
-// *ghAPI.HTTPError signalling a rate-limit condition; nil otherwise.
+// go-github *ErrorResponse (REST or GraphQL transport) signalling a rate-limit condition; nil otherwise.
 //
 // Detection rules:
 //   - HTTP 429 (Too Many Requests): parse Retry-After header
 //   - HTTP 403 with X-RateLimit-Remaining: 0: parse X-RateLimit-Reset header
 //
-// GraphQL errors do not expose response headers via ghAPI.GraphQLError, so
-// rate-limit detection applies to REST endpoints only.
+// GraphQL-level errors (gqlResponseError) carry no response headers, so for
+// GraphQL only a non-2xx HTTP failure can be classified.
 func detectRateLimitFromHTTPError(err error) *RateLimitError {
 	if err == nil {
 		return nil
 	}
-	var httpErr *ghAPI.HTTPError
-	if !asHTTPError(err, &httpErr) {
+	status, h, ok := httpFailure(err)
+	if !ok {
 		return nil
 	}
-	h := httpErr.Headers
 
-	if httpErr.StatusCode == http.StatusTooManyRequests {
+	if status == http.StatusTooManyRequests {
 		ra := h.Get("Retry-After")
 		reset := time.Now().Add(60 * time.Second)
 		if secs, err := strconv.Atoi(ra); err == nil {
@@ -93,7 +90,7 @@ func detectRateLimitFromHTTPError(err error) *RateLimitError {
 		return &RateLimitError{ResetAt: reset, Remaining: remainingFromHeaders(h), cause: err}
 	}
 
-	if httpErr.StatusCode == http.StatusForbidden && h.Get("X-RateLimit-Remaining") == "0" {
+	if status == http.StatusForbidden && h.Get("X-RateLimit-Remaining") == "0" {
 		// Default to now so ResetAt is never the zero value (which would surface
 		// as a year-0001 timestamp and retry_after_seconds=0 downstream).
 		rl := &RateLimitError{ResetAt: time.Now(), Remaining: remainingFromHeaders(h), cause: err}

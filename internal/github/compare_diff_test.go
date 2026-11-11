@@ -11,13 +11,12 @@ import (
 	"strings"
 	"testing"
 
-	ghAPI "github.com/cli/go-gh/v2/pkg/api"
 	"github.com/svnbjrn/spoon/internal/forge"
 	"github.com/svnbjrn/spoon/internal/unidiff"
 )
 
 // newDiffTestClient builds a *Client whose ordinary REST requests (Rest) and
-// diff-Accept requests (RestDiff) both land on srv, distinguished only by
+// diff-Accept requests both land on srv, distinguished only by
 // the Accept header each carries — mirroring how GitHub's compare endpoint
 // serves JSON or a unified diff off the exact same URL depending on Accept.
 func newDiffTestClient(t *testing.T, srv *httptest.Server) *Client {
@@ -27,15 +26,11 @@ func newDiffTestClient(t *testing.T, srv *httptest.Server) *Client {
 		t.Fatalf("parse server URL: %v", err)
 	}
 	tr := &rewriteTransport{target: u, base: http.DefaultTransport}
-	rest, err := newVersionedRESTClient(ghAPI.ClientOptions{AuthToken: "x", Host: "github.com", Transport: tr})
+	rest, err := newRESTClient("x", tr)
 	if err != nil {
-		t.Fatalf("newVersionedRESTClient: %v", err)
+		t.Fatalf("newRESTClient: %v", err)
 	}
-	restDiff, err := newVersionedRESTClient(diffClientOptions(ghAPI.ClientOptions{AuthToken: "x", Host: "github.com", Transport: tr}))
-	if err != nil {
-		t.Fatalf("newVersionedRESTClient (diff): %v", err)
-	}
-	return &Client{rest: rest, restDiff: restDiff, authenticated: true}
+	return &Client{rest: rest, authenticated: true}
 }
 
 const sampleSingleFileDiff = "diff --git a/a.go b/a.go\n" +

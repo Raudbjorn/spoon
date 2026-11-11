@@ -264,15 +264,16 @@ type multiPageGraphQLData struct {
 			Nodes []multiPageForkNode `json:"nodes"`
 		} `json:"forks"`
 		ForkCount int `json:"forkCount"`
-		RateLimit struct {
-			Cost int `json:"cost"`
-		} `json:"rateLimit"`
 	} `json:"repository"`
+	// Match GitHub's schema: rateLimit belongs to Query, not Repository.
+	RateLimit struct {
+		Cost int `json:"cost"`
+	} `json:"rateLimit"`
 }
 
 type multiPageFixture struct {
 	Pages []struct {
-		Page int                 `json:"page"`
+		Page int                  `json:"page"`
 		Data multiPageGraphQLData `json:"data"`
 	} `json:"pages"`
 }
@@ -285,10 +286,10 @@ type multiPageFixture struct {
 // No production types are imported; this is a pure fixture-shape contract.
 type inventoryReport struct {
 	RawRows       int
-	UniqueRows   int
+	UniqueRows    int
 	DuplicateRows int
-	AuthMode     string
-	APIVersion   string
+	AuthMode      string
+	APIVersion    string
 	// CaptureAt records when the acquisition ran. In the production path this
 	// is set by FetchForksAuto; here it is fixture-pinned so the test can
 	// assert !IsZero() without depending on later-step types.

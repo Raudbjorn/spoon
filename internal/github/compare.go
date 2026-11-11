@@ -2,11 +2,12 @@ package github
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 
-	ghAPI "github.com/cli/go-gh/v2/pkg/api"
+	gogithub "github.com/google/go-github/v90/github"
 )
 
 // FetchCompare fetches the comparison between a parent branch and a fork branch.
@@ -35,9 +36,8 @@ func isNotFound(err error) bool {
 	if err == nil {
 		return false
 	}
-	var httpErr *ghAPI.HTTPError
-	if ok := asHTTPError(err, &httpErr); ok {
-		return httpErr.StatusCode == http.StatusNotFound
+	if status, _, ok := httpFailure(err); ok {
+		return status == http.StatusNotFound
 	}
 	return strings.Contains(err.Error(), "404")
 }
@@ -51,9 +51,8 @@ func isForbidden(err error) bool {
 	if err == nil {
 		return false
 	}
-	var httpErr *ghAPI.HTTPError
-	if ok := asHTTPError(err, &httpErr); ok {
-		return httpErr.StatusCode == http.StatusForbidden
+	if status, _, ok := httpFailure(err); ok {
+		return status == http.StatusForbidden
 	}
 	return strings.Contains(err.Error(), "403")
 }
@@ -68,9 +67,8 @@ func isNotAcceptable(err error) bool {
 	if err == nil {
 		return false
 	}
-	var httpErr *ghAPI.HTTPError
-	if ok := asHTTPError(err, &httpErr); ok {
-		return httpErr.StatusCode == http.StatusNotAcceptable
+	if status, _, ok := httpFailure(err); ok {
+		return status == http.StatusNotAcceptable
 	}
 	return strings.Contains(err.Error(), "406")
 }
@@ -84,29 +82,30 @@ func isUnprocessableEntity(err error) bool {
 	if err == nil {
 		return false
 	}
-	var httpErr *ghAPI.HTTPError
-	if ok := asHTTPError(err, &httpErr); ok {
-		return httpErr.StatusCode == http.StatusUnprocessableEntity
+	if status, _, ok := httpFailure(err); ok {
+		return status == http.StatusUnprocessableEntity
 	}
 	return strings.Contains(err.Error(), "422")
 }
 
-// asHTTPError attempts to extract an HTTPError from the error chain.
-func asHTTPError(err error, target **ghAPI.HTTPError) bool {
-	type httpErrorer interface {
-		StatusCode() int
+// httpFailure extracts the HTTP status and response headers from err,
+// from go-github for REST or the githubv4 transport. ok is
+// false when err carries no HTTP response at all, e.g. a transport failure.
+func httpFailure(err error) (status int, header http.Header, ok bool) {
+	var resp *http.Response
+	var errResp *gogithub.ErrorResponse
+	var rateErr *gogithub.RateLimitError
+	var abuseErr *gogithub.AbuseRateLimitError
+	switch {
+	case errors.As(err, &errResp):
+		resp = errResp.Response
+	case errors.As(err, &rateErr):
+		resp = rateErr.Response
+	case errors.As(err, &abuseErr):
+		resp = abuseErr.Response
 	}
-	// go-gh returns *api.HTTPError; use errors.As pattern
-	for err != nil {
-		if he, ok := err.(*ghAPI.HTTPError); ok {
-			*target = he
-			return true
-		}
-		if uw, ok := err.(interface{ Unwrap() error }); ok {
-			err = uw.Unwrap()
-		} else {
-			break
-		}
+	if resp == nil {
+		return 0, nil, false
 	}
-	return false
+	return resp.StatusCode, resp.Header, true
 }
