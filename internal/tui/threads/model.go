@@ -532,11 +532,7 @@ func (m Model) applySuggestionCmd(sug threadsops.Suggestion) tea.Cmd {
 		}
 		t := threadsops.ReviewThreadWithPolicy{ReviewThread: m.threads[m.cursor]}
 		_, opErr := threadsops.ApplySuggestion(context.Background(), t, sug, threadsops.ApplyOptions{
-			RepoRoot:  m.RepoRoot,
-			Fetcher:   m.client,
-			Owner:     m.owner,
-			Repo:      m.repo,
-			PRHeadRef: m.prStatus.HeadSHA,
+			RepoRoot: m.RepoRoot,
 		})
 		if opErr != nil {
 			return mutationDoneMsg{what: "apply-suggestion", err: fmt.Errorf("%s", opErr.Message)}

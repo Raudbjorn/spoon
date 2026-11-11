@@ -334,19 +334,27 @@ func TestApplySuggestionUsesSelectedCheckout(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, dir := range []string{workspace, selected} {
-		if err := os.WriteFile(filepath.Join(dir, "same.txt"), []byte("original\n"), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, "same.txt"), []byte("first\nmiddle\nlast\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
 	t.Chdir(workspace)
 	model := New(nil, "acme", "project", 42, false)
 	model.RepoRoot = selected
-	model.threads = []gh.ReviewThread{{ID: "thread", Path: "same.txt", Line: 1}}
-	msg := model.applySuggestionCmd(threadsops_pkg.Suggestion{CommentID: "comment", Body: "changed"})().(mutationDoneMsg)
-	if msg.err != nil {
-		t.Fatal(msg.err)
+	model.prStatus.HeadSHA = "remote-head"
+	model.threads = []gh.ReviewThread{
+		{ID: "first-thread", Path: "same.txt", Line: 1},
+		{ID: "last-thread", Path: "same.txt", Line: 3},
 	}
-	for dir, want := range map[string]string{workspace: "original\n", selected: "changed\n"} {
+	// A loaded PR head must not prevent a second local edit after the first.
+	for i, body := range []string{"changed first", "changed last"} {
+		model.cursor = i
+		msg := model.applySuggestionCmd(threadsops_pkg.Suggestion{CommentID: "comment", Body: body})().(mutationDoneMsg)
+		if msg.err != nil {
+			t.Fatalf("suggestion %d: %v", i, msg.err)
+		}
+	}
+	for dir, want := range map[string]string{workspace: "first\nmiddle\nlast\n", selected: "changed first\nmiddle\nchanged last\n"} {
 		got, err := os.ReadFile(filepath.Join(dir, "same.txt"))
 		if err != nil || string(got) != want {
 			t.Errorf("%s = %q want %q: %v", dir, got, want, err)
