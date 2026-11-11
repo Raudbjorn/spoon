@@ -114,7 +114,7 @@ func detectHost() []string {
 	report(glabErr == nil, "glab CLI found (GitLab auth via glab auth login)",
 		"glab CLI not found — export GITLAB_TOKEN for authenticated GitLab access")
 	report(os.Getenv("GH_TOKEN") != "" || os.Getenv("GITHUB_TOKEN") != "", "GitHub token present in environment",
-		"no GH_TOKEN/GITHUB_TOKEN in environment — use `spoon auth login` (requires SPOON_OAUTH_CLIENT_ID and SPOON_OAUTH_CLIENT_SECRET) or export GH_TOKEN")
+		"no GH_TOKEN/GITHUB_TOKEN in environment — use `spoon auth login` (requires SPOON_OAUTH_CLIENT_ID and SPOON_OAUTH_CLIENT_SECRET) or export GH_TOKEN; an existing `gh auth login` is the final fallback")
 	report(os.Getenv("GITLAB_TOKEN") != "", "GitLab token present in environment",
 		"no GITLAB_TOKEN in environment")
 	lines = append(lines, "run `spoon setup` anytime to re-check credentials and the embedder")

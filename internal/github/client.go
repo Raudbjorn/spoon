@@ -26,6 +26,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 
 	gogithub "github.com/google/go-github/v90/github"
@@ -159,6 +160,7 @@ type Client struct {
 	rest                *gogithub.Client
 	gql                 *githubv4.Client
 	authenticated       bool
+	tokenSource         string
 	authScopeID         string // computed once; non-reversible scope fingerprint
 	duplicateIdentities int
 
@@ -227,6 +229,16 @@ func rateForREST(rl RateLimit) float64 {
 func NewClient() (*Client, error) { return NewClientWithOptions(ClientOptions{}) }
 
 func NewClientWithOptions(opts ClientOptions) (*Client, error) {
+	lookup := githubCLIToken
+	// Unit tests must not read the developer's gh keyring. Credential tests
+	// inject a lookup into the same constructor instead.
+	if testing.Testing() {
+		lookup = nil
+	}
+	return newClientWithOptions(opts, lookup)
+}
+
+func newClientWithOptions(opts ClientOptions, lookup func(context.Context, string) string) (*Client, error) {
 	rpm := opts.RequestsPerMinute
 	if rpm == 0 {
 		rpm = defaultRPM
@@ -240,21 +252,32 @@ func NewClientWithOptions(opts ClientOptions) (*Client, error) {
 	// Compute the AuthScopeID once per Client lifetime. It is deterministic
 	// for (provider, host, sorted trimmed credential token set); anonymous
 	// clients get a stable scope ID for an empty token set.
-	host, envToken := githubEnvironmentAuth()
+	host, token, source := githubEnvironmentAuth()
 	tokens := append([]string(nil), opts.Tokens...)
-	if len(tokens) == 0 && envToken != "" {
-		tokens = []string{envToken}
+	if len(tokens) > 0 {
+		source = "config"
+	} else {
+		if token == "" && lookup != nil {
+			token = lookup(context.Background(), host)
+			if token != "" {
+				source = "gh"
+			}
+		}
+		if token != "" {
+			tokens = []string{token}
+		}
 	}
+	c.tokenSource = source
 	c.authScopeID = computeAuthScopeID("github", host, tokens)
 
 	if len(opts.Tokens) == 0 {
 		// Spoon OAuth tokens arrive through opts.Tokens. With no saved token,
-		// use the environment or an anonymous REST-only backend.
-		if envToken != "" {
-			rest, err := newRESTClientForHost(host, envToken, rotating)
+		// use the environment, gh login, or an anonymous REST-only backend.
+		if token != "" {
+			rest, err := newRESTClientForHost(host, token, rotating)
 			if err == nil {
 				b := &backend{Rest: rest, REST: newBudget(), GraphQLBudget: newBudget()}
-				b.GraphQL = newGraphQLClient(envToken, host, rotating)
+				b.GraphQL = newGraphQLClient(token, host, rotating)
 				c.authenticated = true
 				c.installBackends([]*backend{b})
 				c.initRateControls()
@@ -267,6 +290,7 @@ func NewClientWithOptions(opts ClientOptions) (*Client, error) {
 			return nil, fmt.Errorf("creating unauthenticated client: %w", err)
 		}
 		c.authenticated = false
+		c.tokenSource = "none"
 		c.installBackends([]*backend{{Rest: rest, REST: newBudget(), GraphQLBudget: newBudget()}})
 		c.initRateControls()
 		return c, nil

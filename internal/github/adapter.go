@@ -47,12 +47,16 @@ func (p *GHProvider) Auth(_ context.Context) (forge.AuthInfo, error) {
 	rl := 60
 	if p.status.Authenticated {
 		tier = forge.AuthToken
+		if p.status.TokenSource == "gh" {
+			tier = forge.AuthCLI
+		}
 		conc = 10
 		rl = 5000
 	}
 	return forge.AuthInfo{
 		Provider:    forge.ProviderGitHub,
 		Tier:        tier,
+		TokenSource: p.status.TokenSource,
 		Host:        p.status.Host,
 		Username:    "",
 		Concurrency: conc,

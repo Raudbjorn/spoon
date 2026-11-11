@@ -35,7 +35,9 @@ layer for users who have no personal config.
 - ` + "`forge.host`" + ` — self-hosted GitLab/GHES hostname. Empty = the public host.
 - ` + "`github.tokens`" + ` — GitHub tokens saved by spoon auth login, or
   configured for parallel rate budgets. Tokens use the OS keyring by default;
-  the config stores keyring references. GH_TOKEN/GITHUB_TOKEN also work.
+  the config stores keyring references. These tokens take priority over
+  GH_TOKEN, then GITHUB_TOKEN, then the active login saved by gh auth login.
+  The TUI shows the selected source; fallback is only for absent credentials.
   Inline tokens require chmod 600 config.json. Native login requires
   SPOON_OAUTH_CLIENT_ID and SPOON_OAUTH_CLIENT_SECRET in the environment
   and the OAuth app callback setup described in the project README.
