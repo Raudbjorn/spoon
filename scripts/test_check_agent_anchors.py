@@ -1,9 +1,11 @@
 """Tracked temporary repositories exercise the Python checker and Go helper."""
 
 import json
+import os
 from pathlib import Path
 import runpy
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -203,6 +205,35 @@ func BenchmarkWrong(t *testing.T) {}
         source.symlink_to("missing_test.go")
         self.track()
         self.assertIn("internal/example/source_test.go: symlink", self.errors())
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "named pipes are unavailable on this platform")
+    def test_non_regular_role_and_go_sibling_reads_do_not_block(self):
+        checker = Path(__file__).with_name("check-agent-anchors.py")
+        child = (
+            "import runpy, sys; from pathlib import Path; "
+            "check = runpy.run_path(sys.argv[1])['check_agents']; "
+            "errors = check(Path(sys.argv[2])); "
+            "print('\\n'.join(errors)); sys.exit(bool(errors))"
+        )
+        for path in (".codex/agents/alpha.toml", "internal/example/source.go"):
+            with self.subTest(path=path):
+                target = self.root / path
+                original = target.read_bytes()
+                target.unlink()
+                os.mkfifo(target)
+                try:
+                    # A tracked regular file replaced by a FIFO must fail before open;
+                    # an outer timeout bounds the regression even against the old code.
+                    result = subprocess.run(
+                        [sys.executable, "-c", child, str(checker), str(self.root)],
+                        capture_output=True, text=True, timeout=2,
+                    )
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn(f"{path}: cannot read: not a regular file", result.stdout)
+                    self.assertNotIn("Traceback", result.stderr)
+                finally:
+                    target.unlink()
+                    target.write_bytes(original)
 
 
 if __name__ == "__main__":

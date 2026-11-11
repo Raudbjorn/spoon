@@ -33,8 +33,10 @@ Protect these contracts:
 - Keep secrets out of frames, clipboard, logs, error text, fixtures and captures,
   including length leaks. Use injected credential fakes for verification.
 - Startup environment snapshots must reach both the displayed effective setting
-  and the runtime consumer. Local readiness uses loaded credentials/environment
-  presence, not GitHub CLI or network probes; configured is not authenticated.
+  and the runtime consumer. Local readiness reads loaded credentials, environment
+  presence and local CLI account configuration without invoking a CLI or network
+  probe; configured is not authenticated. The runtime's gh credential fallback
+  is separate, bounded and used only when Spoon/environment credentials are absent.
 - Bound keyring opening and operations. A timeout does not stop an uncancellable
   backend call: keep its serialization gate held through completion and any
   late-write rollback, so another operation cannot race the abandoned write.
@@ -56,6 +58,7 @@ Anchors:
 `internal/tui/settings/false_roundtrip_test.go:TestUnrelatedSaveRetainsExplicitFalseFileSource`,
 `internal/tui/settings/credential_frame_matrix_test.go:TestEveryCredentialSentinelIsAbsentFromEverySettingsFrameAndClipboard`,
 `internal/setupcheck/preflight_snapshot_test.go:TestLocalProviderProbeReportsCancellation`,
+`internal/setupcheck/preflight_snapshot_test.go:TestLocalProviderProbeReadsCLIConfigWithoutExecutingCLI`,
 `internal/secrets/keyring_test.go:TestKeyringTimeoutSerializesAndUndoesLateWrite`,
 `internal/config/secrets_test.go:TestMigrateInlineSecretsPreservesOtherJSON`, and
 `internal/oauth/oauth_test.go:TestLoginExchangesCodeWithPKCE`.
