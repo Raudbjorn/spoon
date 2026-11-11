@@ -440,6 +440,7 @@ func TestDiscoverPRsInWorkspace_NonFatalError(t *testing.T) {
 func TestScanWorkspace_IncludedRemotesAndWorktree(t *testing.T) {
 	root := t.TempDir()
 	mainDir := filepath.Join(root, "main")
+	linkedDir := filepath.Join(root, ".worktrees", "topic")
 	createFakeCheckout(t, mainDir, "main", "", "")
 	gitDir := filepath.Join(mainDir, ".git")
 	for name, contents := range map[string]string{
@@ -461,13 +462,23 @@ func TestScanWorkspace_IncludedRemotesAndWorktree(t *testing.T) {
 	}
 	for _, args := range [][]string{
 		{"-C", mainDir, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "initial"},
-		{"-C", mainDir, "worktree", "add", "-b", "topic", filepath.Join(root, "linked")},
+		{"-C", mainDir, "worktree", "add", "-b", "topic", linkedDir},
+		{"-C", mainDir, "config", "extensions.worktreeConfig", "true"},
+		{"-C", linkedDir, "config", "--worktree", "--add", "remote.origin.url", ""},
+		{"-C", linkedDir, "config", "--worktree", "--add", "remote.origin.url", "https://github.com/bob/project.git"},
 	} {
 		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
 			t.Fatalf("git: %v: %s", err, out)
 		}
 	}
-	repos, err := ScanWorkspace(root, ScanOptions{})
+	// .worktrees is traversable within the depth limit, unless explicitly ignored.
+	for _, opts := range []ScanOptions{{Depth: 1}, {Depth: 2, IgnoreDirs: []string{".worktrees"}}} {
+		repos, err := ScanWorkspace(root, opts)
+		if err != nil || len(repos) != 1 || repos[0].Dir != mainDir {
+			t.Fatalf("limited scan %+v: %+v, %v", opts, repos, err)
+		}
+	}
+	repos, err := ScanWorkspace(root, ScanOptions{Depth: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -475,7 +486,11 @@ func TestScanWorkspace_IncludedRemotesAndWorktree(t *testing.T) {
 		t.Fatalf("repos = %+v", repos)
 	}
 	for _, repo := range repos {
-		if repo.OriginOwner != "alice" || repo.OriginHost != "github.com" {
+		wantOrigin := "alice"
+		if repo.CurrentBranch == "topic" {
+			wantOrigin = "bob" // The worktree clears and replaces the shared URL list.
+		}
+		if repo.OriginOwner != wantOrigin || repo.OriginHost != "github.com" {
 			t.Errorf("included origin: %+v", repo)
 		}
 		if repo.CurrentBranch == "topic" && (repo.UpstreamOwner != "acme" || repo.UpstreamHost != "github.com") {
@@ -577,6 +592,29 @@ func TestScanWorkspace_ReportsInvalidConfig(t *testing.T) {
 	}
 	if _, err := ScanWorkspace(root, ScanOptions{}); err == nil {
 		t.Fatal("invalid Git config was reported as an empty scan")
+	}
+}
+
+func TestScanWorkspace_NestedCheckoutsRespectDepth(t *testing.T) {
+	root := t.TempDir()
+	paths := []string{"outer", "outer/nested", "outer/nested/deep", "outer/nested/deep/beyond"}
+	for _, path := range paths {
+		createFakeCheckout(t, filepath.Join(root, path), "feature", "https://github.com/alice/project.git", "")
+	}
+	for _, depth := range []int{1, 2, 3, 4} {
+		repos, err := ScanWorkspace(root, ScanOptions{Depth: depth})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := min(depth, 3)
+		if len(repos) != want {
+			t.Fatalf("depth %d found %d checkouts, want %d: %+v", depth, len(repos), want, repos)
+		}
+		for i, repo := range repos {
+			if repo.Dir != filepath.Join(root, paths[i]) {
+				t.Errorf("depth %d checkout %d = %q, want %q", depth, i, repo.Dir, paths[i])
+			}
+		}
 	}
 }
 

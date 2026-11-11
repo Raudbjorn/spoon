@@ -251,7 +251,6 @@ var defaultIgnoreDirs = map[string]bool{
 	"node_modules":   true,
 	"vendor":         true,
 	".do-not-commit": true,
-	".worktrees":     true,
 	"build":          true,
 	"dist":           true,
 }
@@ -305,7 +304,7 @@ func ScanWorkspace(root string, opts ScanOptions) ([]WorkspaceRepo, error) {
 				continue
 			}
 			name := e.Name()
-			if ignore[name] || strings.HasPrefix(name, ".") {
+			if ignore[name] || (strings.HasPrefix(name, ".") && name != ".worktrees") {
 				continue
 			}
 
@@ -322,8 +321,6 @@ func ScanWorkspace(root string, opts ScanOptions) ([]WorkspaceRepo, error) {
 				}
 				repos = append(repos, r)
 				seenDirs[subPath] = true
-				// Don't recurse into discovered git repo
-				continue
 			}
 
 			if curDepth < depth {
