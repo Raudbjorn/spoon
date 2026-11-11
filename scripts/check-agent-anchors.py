@@ -12,14 +12,18 @@ TEST_NAME = re.compile(r"\bTest[A-Za-z0-9_]+\b")
 GO_NON_CODE = re.compile(
     r'//[^\n]*|/\*[\s\S]*?\*/|`[^`]*`|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\''
 )
-PATH_ROOTS = ("internal", "cmd", "docs", "packaging", ".codex")
+PATH_ROOTS = ("internal", "cmd", "docs", "packaging", ".codex", "vendor", "experiments", "scripts")
+ROOT_FILES = {"go.mod", "go.sum"}
 
 
 def go_test_names(root: Path) -> set[str]:
     # shortcut: lexical declarations ignore signatures/build tags; use go/parser if those become requirements.
     names = set()
     for directory, children, files in os.walk(root):
-        children[:] = [name for name in children if name not in {"vendor", ".git"}]
+        children[:] = [
+            name for name in children
+            if name not in {"vendor", "testdata"} and not name.startswith((".", "_"))
+        ]
         for filename in files:
             if not filename.endswith("_test.go"):
                 continue
@@ -42,7 +46,7 @@ def path_anchors(text: str) -> set[str]:
         for token in code.split():
             token = token.rstrip(",;")
             path = token.removeprefix("./").removesuffix("/...")
-            if path.endswith((".go", ".md", ".toml")) or any(
+            if path in ROOT_FILES or path.endswith((".go", ".md", ".toml")) or any(
                 path == prefix or path.startswith(prefix + "/") for prefix in PATH_ROOTS
             ):
                 paths.add(path)
@@ -79,7 +83,11 @@ def check_agents(root: Path) -> list[str]:
             target = root / anchor
             if Path(anchor).is_absolute() or not target.resolve().is_relative_to(root):
                 errors.append(f"{label}: path must stay repository-relative: {anchor}")
-            elif not (target.is_file() if target.suffix in {".go", ".md", ".toml"} else target.exists()):
+            elif not (
+                target.is_file()
+                if target.suffix in {".go", ".md", ".toml"} or anchor in ROOT_FILES
+                else target.exists()
+            ):
                 errors.append(f"{label}: missing path: {anchor}")
         for name in sorted(set(TEST_NAME.findall(text)) - tests):
             errors.append(f"{label}: missing top-level test: {name}")

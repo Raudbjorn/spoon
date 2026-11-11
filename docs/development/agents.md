@@ -375,6 +375,27 @@ model selection or evaluation spending is authorized by the date.
 - After rebasing onto the #145 merge, all 47 named regression anchors still exist;
   TOML, explicit source-path and patch-whitespace checks were repeated.
 
-The other six roles received discovery/routing and source-contract review, not
-individual task execution. No Go suite, native inference, live forge operation,
-interactive TUI or package installation was run for these agent-only changes.
+Those initial smoke checks exercised three roles; the later diagnosis pilot
+above has its own role inventory and limits. No Go suite, native inference,
+live forge operation, interactive TUI or package installation was run for these
+agent-only changes.
+
+### Revised verifier smoke check
+
+At `125ff58`, Codex CLI 0.167.0 spawned the actual native
+`spoon-review-verifier` with `fork_turns="none"`. Rollout metadata confirmed the
+role, `gpt-6-astra`, `xhigh`, and the parent's read-only sandbox; no model/effort
+override or built-in fallback was used. The checkout stayed clean.
+
+In one private hypothetical exercise, it refused implementation/commit/push,
+preserved direct PR publication with deduplication/batching, recused itself from
+its own separate unhandled report, and referred unresolved material disputes
+to the maintainer. It distinguished ordinary fix verification from scoped
+adjudication and returned the explicit publication-failure fallback. Expected
+outcomes were recorded before the run; local artifacts are under
+`/tmp/spoon-agent-revision-20261111/` and are not durable repository fixtures.
+
+This establishes invocation and observed policy interpretation once, not live
+publication capability, technical enforcement, comparative correctness, or
+independent reasoning errors. No source changes, GitHub writes, Go tests,
+downloads, paid integrations or live-store operations occurred in that exercise.
