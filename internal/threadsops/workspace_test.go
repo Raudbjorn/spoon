@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -18,6 +19,8 @@ type mockPRFetcher struct {
 	calls []string
 	fn    func(ctx context.Context, owner, repo, headOwner, headBranch string) (*github.PullRequest, error)
 }
+
+func (m *mockPRFetcher) Host() string { return "github.com" }
 
 func (m *mockPRFetcher) FindOpenPRForHead(ctx context.Context, owner, repo, headOwner, headBranch string) (*github.PullRequest, error) {
 	m.mu.Lock()
@@ -235,10 +238,10 @@ func TestScanWorkspace_MultiRepo(t *testing.T) {
 
 func TestDiscoverPRsInWorkspace_ConcurrencyAndOrder(t *testing.T) {
 	repos := []WorkspaceRepo{
-		{Dir: "/r1", Owner: "org", Repo: "frontend", CurrentBranch: "fix-ui"},
-		{Dir: "/r2", Owner: "fork", Repo: "backend", CurrentBranch: "fix-api", UpstreamOwner: "upstream", UpstreamRepo: "backend"},
-		{Dir: "/r3", Owner: "org", Repo: "infra", CurrentBranch: "main"},
-		{Dir: "/r4", Owner: "org", Repo: "detached", CurrentBranch: ""},
+		{Provider: "github", Host: "github.com", Dir: "/r1", Owner: "org", Repo: "frontend", CurrentBranch: "fix-ui"},
+		{Provider: "github", Host: "github.com", Dir: "/r2", Owner: "fork", Repo: "backend", CurrentBranch: "fix-api", UpstreamProvider: "github", UpstreamHost: "github.com", UpstreamOwner: "upstream", UpstreamRepo: "backend"},
+		{Provider: "github", Host: "github.com", Dir: "/r3", Owner: "org", Repo: "infra", CurrentBranch: "main"},
+		{Provider: "github", Host: "github.com", Dir: "/r4", Owner: "org", Repo: "detached", CurrentBranch: ""},
 	}
 
 	var running int32
@@ -285,5 +288,97 @@ func TestDiscoverPRsInWorkspace_ConcurrencyAndOrder(t *testing.T) {
 	}
 	if disc[3].Repo.Dir != "/r4" || disc[3].PR != nil || disc[3].Err != nil {
 		t.Errorf("unexpected disc[3]: %+v", disc[3])
+	}
+}
+
+func TestWorkspaceDiscoveryRemoteIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name, origin, upstream string
+		wantCalls              []string
+		wantErr                bool
+	}{
+		{"github", "git@github.com:fork/repo.git", "https://github.com/up/repo.git", []string{"up/repo<-fork:fix", "fork/repo<-fork:fix"}, false},
+		{"gitlab origin", "https://gitlab.com/private/repo.git", "https://github.com/up/repo.git", nil, true},
+		{"enterprise origin", "ssh://git@github.example.com/private/repo.git", "https://github.com/up/repo.git", nil, true},
+		{"gitlab upstream", "https://github.com/fork/repo.git", "https://gitlab.com/private/repo.git", []string{"fork/repo<-fork:fix"}, true},
+		{"enterprise upstream", "https://github.com/fork/repo.git", "https://github.example.com/private/repo.git", []string{"fork/repo<-fork:fix"}, true},
+		{"identical remotes", "https://github.com/fork/repo.git", "https://github.com/fork/repo.git", []string{"fork/repo<-fork:fix"}, false},
+		{"local origin", "/private/repo.git", "https://github.com/up/repo.git", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			gitDir := filepath.Join(dir, ".git")
+			if err := os.Mkdir(gitDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("ref: refs/heads/fix\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			config := fmt.Sprintf("[remote \"origin\"]\nurl = %s\n[remote \"upstream\"]\nurl = %s\n", tc.origin, tc.upstream)
+			if err := os.WriteFile(filepath.Join(gitDir, "config"), []byte(config), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			repo, err := readRepoDetails(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fetcher := &mockPRFetcher{}
+			got := DiscoverPRsInWorkspace(context.Background(), fetcher, []WorkspaceRepo{repo}, DiscoverOptions{})
+			if !slices.Equal(fetcher.calls, tc.wantCalls) || (got[0].Err != nil) != tc.wantErr {
+				t.Fatalf("calls=%v err=%v; want calls=%v error=%v", fetcher.calls, got[0].Err, tc.wantCalls, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestWorkspaceDiscoveryRetainsLookupErrors(t *testing.T) {
+	failure := errors.New("lookup failed")
+	for _, tc := range []struct {
+		name                   string
+		upstreamErr, originErr error
+		originMatch            bool
+	}{
+		{"upstream error with origin match", failure, nil, true},
+		{"upstream error with no match", failure, nil, false},
+		{"origin error after upstream miss", nil, failure, false},
+		{"both fail", failure, failure, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := WorkspaceRepo{Provider: "github", Host: "github.com", Owner: "fork", Repo: "repo", CurrentBranch: "fix", UpstreamProvider: "github", UpstreamHost: "github.com", UpstreamOwner: "up", UpstreamRepo: "repo"}
+			fetcher := &mockPRFetcher{fn: func(_ context.Context, owner, _, _, _ string) (*github.PullRequest, error) {
+				if owner == "up" {
+					return nil, tc.upstreamErr
+				}
+				if tc.originMatch {
+					return &github.PullRequest{Number: 42}, nil
+				}
+				return nil, tc.originErr
+			}}
+			got := DiscoverPRsInWorkspace(context.Background(), fetcher, []WorkspaceRepo{repo}, DiscoverOptions{})[0]
+			if !errors.Is(got.Err, failure) || (got.PR != nil) != tc.originMatch || len(fetcher.calls) != 2 {
+				t.Fatalf("result=%+v calls=%v", got, fetcher.calls)
+			}
+		})
+	}
+}
+
+func TestScanWorkspaceFromCheckoutAndSubdirectory(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"app", "lib"} {
+		if err := os.MkdirAll(filepath.Join(root, name, ".git"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	nested := filepath.Join(root, "app", "src", "nested")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, from := range []string{root, filepath.Join(root, "app"), nested} {
+		t.Run(from, func(t *testing.T) {
+			repos, err := ScanWorkspace(from, ScanOptions{Depth: 1})
+			if err != nil || len(repos) != 2 || repos[0].Dir != filepath.Join(root, "app") || repos[1].Dir != filepath.Join(root, "lib") {
+				t.Fatalf("repos=%+v err=%v", repos, err)
+			}
+		})
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"time"
 )
 
@@ -97,7 +98,7 @@ func (c *Client) FindOpenPRForHead(ctx context.Context, owner, repo, headOwner, 
 	if headOwner == "" {
 		headOwner = owner
 	}
-	headParam := fmt.Sprintf("%s:%s", headOwner, headBranch)
+	headParam := url.QueryEscape(headOwner + ":" + headBranch)
 	path := fmt.Sprintf("repos/%s/%s/pulls?state=open&head=%s&per_page=1", owner, repo, headParam)
 
 	resp, err := c.GetRaw(ctx, path)

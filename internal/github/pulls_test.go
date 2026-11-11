@@ -183,3 +183,22 @@ func TestFindOpenPRForHead(t *testing.T) {
 		t.Fatalf("expected nil PR, got %+v", none)
 	}
 }
+
+func TestFindOpenPRForHeadPreservesBranchName(t *testing.T) {
+	for _, branch := range []string{"feature/a+b", "fix/a&state=closed", "fix/#123", "fix/100%", "fix/ráð"} {
+		t.Run(branch, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				q := r.URL.Query()
+				if q.Get("head") != "upstream:"+branch || q.Get("state") != "open" || len(q) != 3 || r.URL.Fragment != "" {
+					t.Errorf("branch filter corrupted: %s", r.URL)
+				}
+				_ = json.NewEncoder(w).Encode([]pullRequestAPI{{Number: 42}})
+			}))
+			defer srv.Close()
+			pr, err := newTestClient(t, srv).FindOpenPRForHead(context.Background(), "upstream", "repo", "", branch)
+			if err != nil || pr == nil || pr.Number != 42 {
+				t.Fatalf("lookup: pr=%+v err=%v", pr, err)
+			}
+		})
+	}
+}

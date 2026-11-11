@@ -106,7 +106,7 @@ var _ forge.BranchDivergenceProvider = (*GHProvider)(nil)
 // Returns forge.ErrBatchCompareUnavailable when the client has no working
 // GraphQL backend, so callers fall back to the REST path silently rather
 // than treating it as a hard failure.
-func (p *GHProvider) BatchCompare(ctx context.Context, forks []forge.T1Data) (map[string]forge.ForkDivergence, forge.BatchStats, error) {
+func (p *GHProvider) BatchCompare(ctx context.Context, forks []forge.T1Data, minHeadroom float64) (map[string]forge.ForkDivergence, forge.BatchStats, error) {
 	if !p.client.HasGraphQL() {
 		return nil, forge.BatchStats{}, forge.ErrBatchCompareUnavailable
 	}
@@ -139,7 +139,7 @@ func (p *GHProvider) BatchCompare(ctx context.Context, forks []forge.T1Data) (ma
 			Sides:              sides,
 		})
 	}
-	return p.client.FetchBatchDivergence(ctx, sourceOwner, sourceRepo, sourceDefaultBranch, targets)
+	return p.client.FetchBatchDivergence(ctx, sourceOwner, sourceRepo, sourceDefaultBranch, targets, minHeadroom)
 }
 
 var _ forge.BatchCompareProvider = (*GHProvider)(nil)

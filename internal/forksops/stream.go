@@ -159,7 +159,8 @@ type Options struct {
 
 	// CachedT2, when non-nil, returns a stored compare for a fork (nil = miss).
 	// The caller keys validity on the fork's current pushed_at, so a hit is
-	// authoritative: it skips the Compare API call and the rate-reserve gate.
+	// reused unless the live batch identifies a different comparison. Cache hits
+	// skip the Compare API call and the rate-reserve gate.
 	// Left nil on --refresh.
 	CachedT2 func(forge.T1Data) *forge.T2Data
 
@@ -624,7 +625,7 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 		// fork carries a single pre-chosen branch into the worker instead of
 		// REST's own per-fork branch scan.
 		var pending []forge.T1Data
-		cachedIDs := make(map[string]bool)
+		cachedComparisons := make(map[string]*forge.T2Data)
 		var divergence map[string]forge.ForkDivergence
 		var batchStats forge.BatchStats
 		batchRan := false
@@ -632,20 +633,24 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 		// batch at all (gitea, gitlab, or a plain REST-only GitHub client),
 		// this skips the loop entirely rather than calling opts.CachedT2
 		// once per eligible fork only to discard the result unused.
-		if bp, hasBatch := provider.(forge.BatchCompareProvider); tier >= 2 && !opts.NoBatchCompare && hasBatch {
+		reserve := ReserveHeadroom
+		if opts.ReserveDisabled {
+			reserve = 0
+		}
+		if bp, hasBatch := provider.(forge.BatchCompareProvider); tier >= 2 && !opts.NoBatchCompare && hasBatch && provider.Headroom() >= reserve {
 			for i, s := range all {
 				if !eligible(s.fork.ID, i) {
 					continue
 				}
-				if opts.CachedT2 != nil && opts.CachedT2(s.fork) != nil {
-					cachedIDs[s.fork.ID] = true
+				if opts.CachedT2 != nil {
+					cachedComparisons[s.fork.ID] = opts.CachedT2(s.fork)
 				}
 				pending = append(pending, s.fork)
 			}
 			if len(pending) > 0 {
 				fmt.Fprintf(logger, "[triage] resolving divergence for %d forks via GraphQL batch…\n", len(pending))
 				var berr error
-				divergence, batchStats, berr = bp.BatchCompare(ctx, pending)
+				divergence, batchStats, berr = bp.BatchCompare(ctx, pending, reserve)
 				switch {
 				case berr == nil:
 					batchRan = true
@@ -671,7 +676,7 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 		// this estimate, governs when enrichment actually stops.
 		if tier >= 2 && len(all) > 0 {
 			if batchRan {
-				divergent, resolved, restEstimate := batchEstimateWithCached(pending, divergence, cachedIDs, tier)
+				divergent, resolved, restEstimate := batchEstimateWithCached(pending, divergence, cachedComparisons, tier)
 				fmt.Fprintf(logger, "[triage] %d forks; ~%d REST requests (%d divergent of %d resolved by one GraphQL batch); rate headroom %.0f%%\n",
 					len(all), restEstimate, divergent, resolved, provider.Headroom()*100)
 			} else {
@@ -854,7 +859,8 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 					// serve cached divergence.
 					if enrich && tier >= 2 && opts.CachedT2 != nil {
 						if t2 := opts.CachedT2(s.fork); t2 != nil {
-							r.T2 = t2
+							copyT2 := *t2
+							r.T2 = &copyT2
 							r.T2FromCache = true
 							compareCached.Add(1)
 						}
@@ -869,18 +875,20 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 					var sel *forge.BranchSelection
 					if enrich && tier >= 2 && divergence != nil {
 						if res, ok := resolveFromBatch(divergence, s.fork.ID); ok {
-							if r.T2 != nil {
-								// Refresh BehindCount in-place if fork was cached and upstream advanced
-								if res.T2 != nil && r.T2.AheadCount == 0 {
-									r.T2.BehindCount = res.T2.BehindCount
-								} else if res.Selection != nil && (r.T2.HeadSHA == res.Selection.TipSHA || r.T2.AheadCount == res.Selection.Ahead) {
-									r.T2.BehindCount = res.Selection.Behind
+							if r.T2 != nil && cachedComparisonMatches(r.T2, res.Selection) {
+								r.T2.BehindCount = res.Selection.Behind
+							} else {
+								if r.T2FromCache {
+									compareCached.Add(-1)
 								}
-							} else if res.T2 != nil {
+								r.T2 = nil
+								r.T2FromCache = false
+								sel = res.Selection
+							}
+							if res.T2 != nil {
+								// A zero-ahead result replaces all previous branch evidence.
 								r.T2 = res.T2
 								compareBatch.Add(1)
-							} else {
-								sel = res.Selection
 							}
 						}
 					}

@@ -72,6 +72,13 @@ type batchResolution struct {
 	Selection *forge.BranchSelection
 }
 
+func cachedComparisonMatches(t2 *forge.T2Data, sel *forge.BranchSelection) bool {
+	return sel != nil && t2.Performed && t2.HeadSHA != "" &&
+		t2.HeadSHA == sel.TipSHA && t2.AheadCount == sel.Ahead &&
+		t2.IsBranchWork == sel.IsSide && (!sel.IsSide || t2.ActiveBranch == sel.Branch) &&
+		t2.Upstreamed == sel.Upstreamed && t2.UpstreamedPR == sel.UpstreamedPR
+}
+
 // resolveFromBatch looks up a fork's batch-resolved forge.ForkDivergence
 // and applies the branch-choice policy. ok is false when the fork was
 // absent from the batch result, or the batch could not resolve it
@@ -164,18 +171,19 @@ func batchEstimate(pending []forge.T1Data, divergence map[string]forge.ForkDiver
 	return batchEstimateWithCached(pending, divergence, nil, tier)
 }
 
-func batchEstimateWithCached(pending []forge.T1Data, divergence map[string]forge.ForkDivergence, cachedIDs map[string]bool, tier int) (divergent, resolved, restEstimate int) {
+func batchEstimateWithCached(pending []forge.T1Data, divergence map[string]forge.ForkDivergence, cachedComparisons map[string]*forge.T2Data, tier int) (divergent, resolved, restEstimate int) {
 	unresolved := 0
 	for _, f := range pending {
 		d, ok := divergence[f.ID]
 		if !ok || !d.Resolved {
-			if cachedIDs == nil || !cachedIDs[f.ID] {
+			if cachedComparisons[f.ID] == nil {
 				unresolved++
 			}
 			continue
 		}
 		resolved++
-		if (cachedIDs == nil || !cachedIDs[f.ID]) && forge.SelectDivergentBranch(d).NeedsREST {
+		sel := forge.SelectDivergentBranch(d)
+		if cached := cachedComparisons[f.ID]; sel.NeedsREST && (cached == nil || !cachedComparisonMatches(cached, &sel)) {
 			divergent++
 		}
 	}

@@ -72,6 +72,9 @@ type apiResource uint8
 // AuthStatus.Host reports, which callers interpolate into user-facing URLs.
 const defaultHost = "github.com"
 
+// Host reports the repository host served by this client.
+func (c *Client) Host() string { return defaultHost }
+
 // computeAuthScopeID returns the first 16 lowercase hex chars of SHA-256 over
 // provider, normalized host, and the sorted trimmed credential token set joined
 // by NUL bytes. Anonymous clients receive the same treatment for an empty token

@@ -443,26 +443,42 @@ func runThreadsWithEffective(args []string, effective config.EffectiveConfig) in
 	// sibling checkouts exist (or --scan-only is set), discover PRs across
 	// the workspace; otherwise list open PRs in the current repo.
 	if flags.interactive && flags.prRef == "" {
-		cwd, _ := os.Getwd()
+		cwd, err := os.Getwd()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Error: locating workspace:", err)
+			return 1
+		}
 		depth := flags.scanDepth
 		if depth <= 0 {
 			depth = 1
 		}
-		repos, _ := threadsops.ScanWorkspace(cwd, threadsops.ScanOptions{Depth: depth})
+		repos, err := threadsops.ScanWorkspace(cwd, threadsops.ScanOptions{Depth: depth})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Error: scanning workspace:", err)
+			return 1
+		}
 
 		var prs []gh.PullRequest
 		if len(repos) > 1 || flags.scanOnly {
 			discoveries := threadsops.DiscoverPRsInWorkspace(ctx, client, repos, threadsops.DiscoverOptions{Parallelism: 8})
-			for _, d := range discoveries {
-				if d.PR != nil {
-					prs = append(prs, *d.PR)
-				}
+			prs, err = workspacePRs(discoveries, os.Stderr)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "Error:", err)
+				return 1
 			}
 			if len(prs) == 0 {
 				fmt.Println("No open PRs in this workspace")
 				return 0
 			}
 		} else {
+			if len(repos) == 1 {
+				r := repos[0]
+				if r.Provider != "github" || !strings.EqualFold(r.Host, client.Host()) {
+					fmt.Fprintln(os.Stderr, "Error: checkout origin is not served by GitHub host", client.Host())
+					return 1
+				}
+				fallbackOwner, fallbackRepo = r.Owner, r.Repo
+			}
 			if fallbackOwner == "" || fallbackRepo == "" {
 				fmt.Fprintln(os.Stderr, "❌ Error: --interactive needs a git checkout (couldn't detect origin owner/repo)")
 				return 2
@@ -774,6 +790,28 @@ func runThreadsWithEffective(args []string, effective config.EffectiveConfig) in
 		fmt.Fprintln(os.Stderr, "❌ Error: unknown mode")
 		return 2
 	}
+}
+
+// workspacePRs keeps usable matches while making incomplete discovery visible.
+func workspacePRs(discoveries []threadsops.WorkspaceDiscovery, stderr io.Writer) ([]gh.PullRequest, error) {
+	var prs []gh.PullRequest
+	failures := 0
+	for _, d := range discoveries {
+		if d.Err != nil {
+			failures++
+			fmt.Fprintf(stderr, "Warning: PR discovery for %s: %v\n", d.Repo.Dir, d.Err)
+		}
+		if d.PR != nil {
+			prs = append(prs, *d.PR)
+		}
+	}
+	if failures > 0 {
+		if len(prs) == 0 {
+			return nil, fmt.Errorf("workspace PR discovery incomplete: %d lookup(s) failed", failures)
+		}
+		fmt.Fprintf(stderr, "Warning: workspace PR discovery incomplete (%d failed); showing available matches\n", failures)
+	}
+	return prs, nil
 }
 
 func printThreadsHelp() {

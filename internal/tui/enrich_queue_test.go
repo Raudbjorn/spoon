@@ -252,7 +252,7 @@ type batchFake struct {
 	chunks [][]string
 }
 
-func (f *batchFake) BatchCompare(_ context.Context, forks []forge.T1Data) (map[string]forge.ForkDivergence, forge.BatchStats, error) {
+func (f *batchFake) BatchCompare(_ context.Context, forks []forge.T1Data, minHeadroom float64) (map[string]forge.ForkDivergence, forge.BatchStats, error) {
 	ids := make([]string, len(forks))
 	div := make(map[string]forge.ForkDivergence, len(forks))
 	for i, fk := range forks {
