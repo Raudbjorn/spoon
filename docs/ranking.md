@@ -102,6 +102,12 @@ All variants are scored over the same top-200 rows, so `rankingNDCG` and
 
 ## What the numbers do not say
 
+- Heat, P-score, expected rank, shortlist probability, rank intervals, novelty,
+  structural impact and semantic relevance answer different questions. Novelty
+  measures difference within its evidence/model; structural impact depends on
+  the available graph or fallback; semantic relevance depends on the query and
+  embedding space. None alone establishes useful code, commit quality,
+  automation, a fork farm or a security verdict.
 - Everything is conditional on the 200-fork pool and on σ being a tier
   constant (or an EB posterior); neither is a measured error bar.
 - Wide-σ forks are pulled to mid-rank by `expectedRank` (Lin §9.3;

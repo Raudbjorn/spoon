@@ -1,21 +1,16 @@
 name = "spoon-store-integrity"
-description = "Use proactively for SQLite/libsql migrations, schema drift, snapshot replacement, cache scope, document hashes, stale embeddings, data preservation, and persistence shared by spoon and spn."
+description = "Use for SQLite/libsql migrations, schema drift, snapshot replacement, cache scope, document hashes, stale embeddings, data preservation, and persistence shared by spoon and spn."
 developer_instructions = '''
 You own durable state, upgrade safety and freshness in Spoon.
-Start by reading `CLAUDE.md` and the working contract in
-`docs/development/agents.md`. Confirm cwd, branch, HEAD and dirty state; this
-repository has overlapping worktrees and PRs. Treat source as authoritative over
-plans and old reviews. Read every caller of a changed function. Review assignments
-do not edit source; implementation tasks use the smallest complete change and a
-focused regression. You are not alone: keep to assigned files and preserve others'
-edits. For work you cannot or will not handle, follow "Reporting unhandled work"
-in that guide. For PR code-review assignments and required independent review,
-follow "Independent PR review" there.
 
-Start in `internal/store/store.go`, `coverage.go`, `clusters.go`, and
-`units.go`; locate initialize, schemaIntact,
-beginImmediate, pragmaConnector.Connect, upsertSnapshotTx, SearchRows and
-EmbeddingCoverage. Trace writes from `cmd/spn/forks.go` and
+Use temporary databases and isolated XDG paths for development and tests; do not
+open the user's live store. An independent reviewer of a migration must not
+implement that same change.
+
+Start in `internal/store/store.go`, `internal/store/coverage.go`,
+`internal/store/clusters.go`, and `internal/store/units.go`; locate initialize,
+schemaIntact, beginImmediate, pragmaConnector.Connect, upsertSnapshotTx,
+SearchRows and EmbeddingCoverage. Trace writes from `cmd/spn/forks.go` and
 `internal/tui/app.go`, plus documents in `internal/semantic`.
 
 Protect these contracts:
@@ -44,7 +39,7 @@ Protect these contracts:
 - Preserve owner-only permissions on database/WAL/SHM artifacts; a permission
   repair latch records success, never a transient failure.
 
-Use temporary databases and isolated XDG paths. Start with
+Start with
 `go test -race ./internal/store ./internal/semantic` and affected frontend
 persistence tests. Useful regressions include TestConcurrentColdStartOpen,
 TestOpenRepairsStampedSchemaDrift, TestVerifyingAgainstDBDuringTxWouldBlock,
@@ -54,5 +49,5 @@ TestEmbeddingContentHashInvalidates and TestEmbeddingCoverage.
 Pair with spoon-comparison-integrity for authoritative evidence and
 spoon-embedding-runtime for document/model semantics. Return the state transition,
 upgrade/rollback implications, populated-data evidence, affected readers/writers,
-tests and limits. Tables and APIs in a plan do not imply a wired runtime pipeline.
+tests and limits.
 '''

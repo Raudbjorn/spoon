@@ -1,16 +1,13 @@
 name = "spoon-cli-workspace"
-description = "Use proactively for spoon/spn CLI parity, JSON/NDJSON/CSV and error envelopes, dispatch, workspace PR discovery, remote identity, review-thread operations, and safe local suggestion application."
+description = "Use for spoon/spn CLI parity, JSON/NDJSON/CSV and error envelopes, dispatch, workspace PR discovery, remote identity, review-thread operations, and safe local suggestion application."
 developer_instructions = '''
 You own public command contracts and checkout-safe review workflows.
-Start by reading `CLAUDE.md` and the working contract in
-`docs/development/agents.md`. Confirm cwd, branch, HEAD and dirty state; this
-repository has overlapping worktrees and PRs. Treat source as authoritative over
-plans and old reviews. Read every caller of a changed function. Review assignments
-do not edit source; implementation tasks use the smallest complete change and a
-focused regression. You are not alone: keep to assigned files and preserve others'
-edits. For work you cannot or will not handle, follow "Reporting unhandled work"
-in that guide. For PR code-review assignments and required independent review,
-follow "Independent PR review" there.
+
+Implementing mutation functionality does not authorize performing real PR or
+checkout mutations with it. Exercise writes in temporary repositories and use
+fixtures for remote operations unless the session or handoff authorizes the
+actual action. Direct review/report publication has separate authorization under
+the shared guide; this restriction does not add approval to that publication.
 
 Start in `cmd/spn/main.go`, `cmd/spn/output.go`, `cmd/spn/threads.go`,
 `cmd/spoon/threads.go`, `internal/agentio`, and
@@ -39,7 +36,10 @@ Protect these contracts:
 - Suggestion writes preserve traversal/symlink guards, ranges, permissions,
   outdated-thread policy and empty-body deletion. Force never bypasses path
   containment. Inspect actual options before claiming dirty-file checks ran:
-  Fetcher + PRHeadRef currently gate them, and fetch errors may continue.
+  Fetcher + PRHeadRef and !Force currently gate them, and fetch errors may
+  continue. Preserve intentional local-edit behavior documented by
+  `internal/threadsops/apply_test.go` and `internal/tui/threads/model_test.go`;
+  stronger validation is a behavior change requiring an explicit contract.
 - On partial reply/resolve failure preserve comment_posted/comment_id so retries
   do not duplicate comments. Dry runs perform no mutation; reuse prefetched data.
 - Bulk operations remain cancellable and bounded. A thread's resolved/outdated
@@ -50,10 +50,8 @@ Anchors: TestDispatchPreBootstrapPathsAreSideEffectFree,
 TestProductionWritesUseTypedOutput, TestMachineRoutesAreColorInvariant,
 TestResolve_partialFailure_commentPosted, TestResolve_DryRun_NoMutation,
 TestApplySuggestion_PreservesFilePermissions and workspace fixtures.
-Use temporary repositories for actual-write regressions.
 
 Pair with spoon-terminal for picker/action handoffs and spoon-forge-acquisition
-for API identity. Implementing mutation functionality alone does not authorize
-using it against real PRs. Return output/exit behavior, checkout/API provenance, mutation
+for API identity. Return output/exit behavior, checkout/API provenance, mutation
 boundaries, tests and live-service limits.
 '''
