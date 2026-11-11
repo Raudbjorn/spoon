@@ -12,6 +12,8 @@ import (
 )
 
 func TestRefreshCachedT2(t *testing.T) {
+	// These branch-scoped count refreshes cannot select a replacement comparison.
+	// Full-batch selection changes are covered by TestStreamCachedComparisonCoherence.
 	base := forge.T2Data{Performed: true, ComparedBranch: "main", HeadSHA: "cached-head", AheadCount: 3, BehindCount: 2,
 		Diffs: []forge.FileDiff{{Path: "keep.go", Patch: "keep patch"}}}
 	for _, tc := range []struct {
@@ -22,13 +24,13 @@ func TestRefreshCachedT2(t *testing.T) {
 		changed, invalid bool
 	}{
 		{"default", base, forge.ForkDivergence{Resolved: true, CountsOnly: true, Default: forge.BranchDivergence{Name: "main", TipSHA: "cached-head", AheadBy: 3, BehindBy: 5}}, 5, true, false},
-		{"changed default", base, forge.ForkDivergence{Resolved: true, Default: forge.BranchDivergence{Name: "develop", TipSHA: "other-head", AheadBy: 3, BehindBy: 9}}, 2, false, false},
-		{"old default now side", base, forge.ForkDivergence{Resolved: true, Default: forge.BranchDivergence{Name: "develop"}, Sides: []forge.BranchDivergence{{Name: "main", TipSHA: "cached-head", AheadBy: 3, BehindBy: 5}}}, 5, true, false},
+		{"changed default", base, forge.ForkDivergence{Resolved: true, CountsOnly: true, Default: forge.BranchDivergence{Name: "develop", TipSHA: "other-head", AheadBy: 3, BehindBy: 9}}, 2, false, false},
+		{"old default now side", base, forge.ForkDivergence{Resolved: true, CountsOnly: true, Default: forge.BranchDivergence{Name: "develop"}, Sides: []forge.BranchDivergence{{Name: "main", TipSHA: "cached-head", AheadBy: 3, BehindBy: 5}}}, 5, true, false},
 		{"upstream absorbed work", base, forge.ForkDivergence{Resolved: true, CountsOnly: true, Default: forge.BranchDivergence{Name: "main", TipSHA: "cached-head", AheadBy: 0, BehindBy: 5}}, 0, false, true},
 		{"head moved", base, forge.ForkDivergence{Resolved: true, CountsOnly: true, Default: forge.BranchDivergence{Name: "main", TipSHA: "new-head", AheadBy: 3, BehindBy: 5}}, 0, false, true},
-		{"missing head", base, forge.ForkDivergence{Resolved: true, Default: forge.BranchDivergence{Name: "main", AheadBy: 3, BehindBy: 5}}, 2, false, false},
+		{"missing head", base, forge.ForkDivergence{Resolved: true, CountsOnly: true, Default: forge.BranchDivergence{Name: "main", AheadBy: 3, BehindBy: 5}}, 2, false, false},
 		{"unresolved", base, forge.ForkDivergence{}, 2, false, false},
-		{"unknown default identity", forge.T2Data{AheadCount: 3, BehindCount: 2, HeadSHA: "cached-head"}, forge.ForkDivergence{Resolved: true, Default: forge.BranchDivergence{Name: "main", TipSHA: "cached-head", AheadBy: 3, BehindBy: 9}}, 2, false, false},
+		{"unknown default identity", forge.T2Data{AheadCount: 3, BehindCount: 2, HeadSHA: "cached-head"}, forge.ForkDivergence{Resolved: true, CountsOnly: true, Default: forge.BranchDivergence{Name: "main", TipSHA: "cached-head", AheadBy: 3, BehindBy: 9}}, 2, false, false},
 		{"legacy active branch", forge.T2Data{IsBranchWork: true, ActiveBranch: "feature", HeadSHA: "cached-head", AheadCount: 3, BehindCount: 2}, forge.ForkDivergence{Resolved: true, CountsOnly: true, Default: forge.BranchDivergence{Name: "feature", TipSHA: "cached-head", AheadBy: 3, BehindBy: 5}}, 5, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -71,8 +73,8 @@ func TestRefreshCachedT2_ReconcilesAheadCountZero(t *testing.T) {
 		Diffs: []forge.FileDiff{{Path: "old.go", Patch: "old patch"}},
 	}
 	d := forge.ForkDivergence{
-		Resolved: true,
-		Default:  forge.BranchDivergence{Name: "main", TipSHA: "oldsha123", AheadBy: 0, BehindBy: 5},
+		Resolved: true, CountsOnly: true,
+		Default: forge.BranchDivergence{Name: "main", TipSHA: "oldsha123", AheadBy: 0, BehindBy: 5},
 	}
 
 	got, changed := RefreshCachedT2(t2, d)
@@ -91,9 +93,9 @@ func TestRefreshCachedT2_DefaultBranchTipMismatch_NotFoundInSides(t *testing.T) 
 		AheadCount: 3, BehindCount: 2, HeadSHA: "oldsha123",
 	}
 	d := forge.ForkDivergence{
-		Resolved: true,
-		Default:  forge.BranchDivergence{Name: "main", TipSHA: "newsha456", BehindBy: 10},
-		Sides:    []forge.BranchDivergence{{Name: "other", TipSHA: "othersha789", BehindBy: 4}},
+		Resolved: true, CountsOnly: true,
+		Default: forge.BranchDivergence{Name: "main", TipSHA: "newsha456", BehindBy: 10},
+		Sides:   []forge.BranchDivergence{{Name: "other", TipSHA: "othersha789", BehindBy: 4}},
 	}
 
 	got, changed := RefreshCachedT2(t2, d)
@@ -109,9 +111,9 @@ func TestRefreshCachedT2_DefaultBranchTipMismatch_FoundInSides(t *testing.T) {
 		AheadCount: 3, BehindCount: 2, HeadSHA: "oldsha123",
 	}
 	d := forge.ForkDivergence{
-		Resolved: true,
-		Default:  forge.BranchDivergence{Name: "main", TipSHA: "newsha456", BehindBy: 10},
-		Sides:    []forge.BranchDivergence{{Name: "old-default", TipSHA: "oldsha123", AheadBy: 3, BehindBy: 7}},
+		Resolved: true, CountsOnly: true,
+		Default: forge.BranchDivergence{Name: "main", TipSHA: "newsha456", BehindBy: 10},
+		Sides:   []forge.BranchDivergence{{Name: "old-default", TipSHA: "oldsha123", AheadBy: 3, BehindBy: 7}},
 	}
 
 	got, changed := RefreshCachedT2(t2, d)

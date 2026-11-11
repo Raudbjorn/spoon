@@ -478,6 +478,7 @@ func runThreadsWithEffective(args []string, effective config.EffectiveConfig) in
 			}
 			prs, err := workspacePRs(discoveries, os.Stderr)
 			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %q\n", err.Error())
 				return 1
 			}
 			if len(prs) == 0 {
@@ -512,9 +513,16 @@ func runThreadsWithEffective(args []string, effective config.EffectiveConfig) in
 			sel.RepoOwner, sel.RepoName = selOwner, selRepo
 			flags.selectWorkspacePR(*sel)
 		} else {
-			if len(discoveredRepos) == 1 && discoveredRepos[0].OriginHost != "github.com" {
-				fmt.Fprintf(os.Stderr, "Error: unsupported origin host %q (PR discovery requires github.com)\n", discoveredRepos[0].OriginHost)
-				return 1
+			if len(discoveredRepos) == 1 {
+				r := discoveredRepos[0]
+				if r.Provider != "github" || !strings.EqualFold(r.OriginHost, client.Host()) {
+					fmt.Fprintf(os.Stderr, "Error: checkout origin host %q is not served by GitHub host %q\n", r.OriginHost, client.Host())
+					return 1
+				}
+				fallbackOwner, fallbackRepo = r.OriginOwner, r.OriginRepo
+				if flags.repoRoot == "" {
+					flags.repoRoot = r.Dir
+				}
 			}
 			if fallbackOwner == "" || fallbackRepo == "" {
 				fmt.Fprintln(os.Stderr, "❌ Error: --interactive needs a git checkout (couldn't detect origin owner/repo)")
@@ -830,17 +838,26 @@ func (f *threadsFlags) selectWorkspacePR(pr gh.PullRequest) {
 func workspacePRs(discoveries []threadsops.WorkspaceDiscovery, logger io.Writer) ([]gh.PullRequest, error) {
 	var prs []gh.PullRequest
 	var lookupErr error
+	failures := 0
 	for _, d := range discoveries {
 		if d.Err != nil {
-			fmt.Fprintf(logger, "Warning: checking PR for %q: %q\n", d.Repo.RelDir, d.Err.Error())
+			failures++
+			dir := d.Repo.RelDir
+			if dir == "" {
+				dir = d.Repo.Dir
+			}
+			fmt.Fprintf(logger, "Warning: checking PR for %q: %q\n", dir, d.Err.Error())
 			lookupErr = errors.Join(lookupErr, d.Err)
 		}
 		if d.PR != nil {
 			prs = append(prs, *d.PR)
 		}
 	}
-	if len(prs) == 0 {
-		return nil, lookupErr
+	if failures > 0 {
+		if len(prs) == 0 {
+			return nil, fmt.Errorf("workspace PR discovery incomplete: %d lookup(s) failed: %w", failures, lookupErr)
+		}
+		fmt.Fprintf(logger, "Warning: workspace PR discovery incomplete (%d failed); showing available matches\n", failures)
 	}
 	return prs, nil
 }

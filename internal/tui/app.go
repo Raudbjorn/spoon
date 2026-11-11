@@ -1489,6 +1489,8 @@ func (m *Model) persistCompare(i int, cached *forge.T2Data) {
 			snap.T2Refresh = f.T2
 		} else {
 			snap.T2Invalidate = cached
+			// Superseded compare evidence must also leave the search document.
+			attachDocument(&snap, f)
 		}
 	} else {
 		attachDocument(&snap, f)

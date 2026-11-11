@@ -160,8 +160,11 @@ func batchDivergenceCmd(ctx context.Context, bp forge.BatchCompareProvider, orde
 				cached[e.fork.ID] = e.cached
 			}
 		}
-		div, stats, err := bp.BatchCompare(ctx, forks, cached)
+		div, stats, err := bp.BatchCompare(ctx, forks, cached, forksops.ReserveHeadroom)
 		msg := batchDivergenceMsg{ctx: ctx, order: order, divergence: div, stats: stats, err: err}
+		if errors.Is(err, forge.ErrRateReserve) {
+			return msg
+		}
 		// Forks the batch could not resolve are the only candidates for a
 		// vanished repository; checking just those keeps the lookup cheap.
 		// A lookup failure leaves missing nil: every fork then gets its
@@ -287,6 +290,7 @@ func (m *Model) handleBatchDivergence(msg batchDivergenceMsg) (tea.Model, tea.Cm
 		m.batchErr = msg.err.Error()
 	}
 
+	coverageDirty := false
 	rest := make([]enrichEntry, 0, len(msg.order))
 	for _, e := range msg.order {
 		if e.cached != nil && !msg.missing[e.fork.ID] {
@@ -304,6 +308,7 @@ func (m *Model) handleBatchDivergence(msg batchDivergenceMsg) (tea.Model, tea.Cm
 					m.forks[i].Enriched = false
 					m.recomputeT2Score(i)
 					m.persistCompare(i, e.cached)
+					coverageDirty = true
 					break
 				}
 			}
@@ -330,6 +335,9 @@ func (m *Model) handleBatchDivergence(msg batchDivergenceMsg) (tea.Model, tea.Cm
 		}
 	}
 	cmds := m.dispatchQueued(rest)
+	if coverageDirty {
+		cmds = append(cmds, m.loadEmbedCoverage())
+	}
 	if next := m.nextBatchChunk(); next != nil {
 		cmds = append(cmds, next)
 	} else {

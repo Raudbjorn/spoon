@@ -74,6 +74,8 @@ type BatchStats struct {
 // than surfacing it as a hard failure.
 var ErrBatchCompareUnavailable = errors.New("forge: batch compare unavailable")
 
+var ErrRateReserve = errors.New("forge: rate-limit reserve reached")
+
 // BatchCompareProvider is an optional provider capability that resolves
 // divergence for many forks against their shared upstream baseline in one
 // GraphQL batch, replacing a per-fork REST branch scan. Implementations
@@ -84,10 +86,12 @@ var ErrBatchCompareUnavailable = errors.New("forge: batch compare unavailable")
 // A fork ID absent from the returned map was not resolved by the batch and
 // must be handled by the REST path individually, same as a present entry
 // with Resolved == false.
-// Cached entries query only their recorded branch and return CountsOnly results.
-// Callers must reconcile those against the cache before selecting a live branch.
+// Implementations may query only a cached entry's recorded branch, marking its
+// result CountsOnly. Callers must reconcile those against the cache before
+// selecting a live branch; a full result can choose a replacement comparison.
 type BatchCompareProvider interface {
-	BatchCompare(ctx context.Context, forks []T1Data, cached map[string]*T2Data) (map[string]ForkDivergence, BatchStats, error)
+	// minHeadroom is checked before each batch request; zero disables the reserve.
+	BatchCompare(ctx context.Context, forks []T1Data, cached map[string]*T2Data, minHeadroom float64) (map[string]ForkDivergence, BatchStats, error)
 }
 
 // MissingReposProvider is an optional provider capability that reports which

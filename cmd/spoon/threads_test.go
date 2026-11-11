@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
+	"errors"
 	"strings"
 	"testing"
 
+	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/threadsops"
 	"github.com/svnbjrn/spoon/internal/tui/theme"
 )
@@ -591,3 +594,93 @@ func TestParseThreadsFlags_ScanOnly(t *testing.T) {
 	}
 }
 
+func TestWorkspacePRsReportsIncompleteDiscovery(t *testing.T) {
+	failed := threadsops.WorkspaceDiscovery{Repo: threadsops.WorkspaceRepo{Dir: "/workspace/failed"}, Err: errors.New("403 forbidden")}
+	matched := threadsops.WorkspaceDiscovery{PR: &gh.PullRequest{Number: 42}}
+	for _, tc := range []struct {
+		name                 string
+		results              []threadsops.WorkspaceDiscovery
+		wantCount            int
+		wantErr, wantWarning bool
+	}{
+		{"no matches", []threadsops.WorkspaceDiscovery{{}}, 0, false, false},
+		{"all failed", []threadsops.WorkspaceDiscovery{failed}, 0, true, true},
+		{"failure and no match", []threadsops.WorkspaceDiscovery{failed, {}}, 0, true, true},
+		{"partial success", []threadsops.WorkspaceDiscovery{failed, matched}, 1, false, true},
+		{"success", []threadsops.WorkspaceDiscovery{matched}, 1, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stderr bytes.Buffer
+			prs, err := workspacePRs(tc.results, &stderr)
+			if len(prs) != tc.wantCount || (err != nil) != tc.wantErr || (stderr.Len() > 0) != tc.wantWarning {
+				t.Fatalf("prs=%v err=%v stderr=%q", prs, err, stderr.String())
+			}
+			// The directory and error are quoted so untrusted controls cannot reach the terminal.
+			if tc.wantWarning && !strings.Contains(stderr.String(), `"/workspace/failed": "403 forbidden"`) {
+				t.Fatalf("missing repository error: %q", stderr.String())
+			}
+		})
+	}
+}
+
+func TestParseThreadsFlags_ScanOptions(t *testing.T) {
+	cases := []struct {
+		name          string
+		args          []string
+		wantErr       bool
+		wantScanDepth int
+		wantScanOnly  bool
+	}{
+		{
+			name:          "interactive with defaults",
+			args:          []string{"-i"},
+			wantScanDepth: 0,
+			wantScanOnly:  false,
+		},
+		{
+			name:          "scan-depth valid",
+			args:          []string{"-i", "--scan-depth", "2"},
+			wantScanDepth: 2,
+			wantScanOnly:  false,
+		},
+		{
+			name:          "scan-depth caps at 3",
+			args:          []string{"-i", "--scan-depth", "5"},
+			wantScanDepth: 3,
+			wantScanOnly:  false,
+		},
+		{
+			name:    "scan-depth non-positive error",
+			args:    []string{"-i", "--scan-depth", "0"},
+			wantErr: true,
+		},
+		{
+			name:    "scan-depth missing arg error",
+			args:    []string{"-i", "--scan-depth"},
+			wantErr: true,
+		},
+		{
+			name:          "scan-only flag",
+			args:          []string{"-i", "--scan-only"},
+			wantScanDepth: 0,
+			wantScanOnly:  true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f, err := parseThreadsFlags(tc.args)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err=%v wantErr=%v", err, tc.wantErr)
+			}
+			if tc.wantErr {
+				return
+			}
+			if f.scanDepth != tc.wantScanDepth {
+				t.Errorf("scanDepth=%d want %d", f.scanDepth, tc.wantScanDepth)
+			}
+			if f.scanOnly != tc.wantScanOnly {
+				t.Errorf("scanOnly=%v want %v", f.scanOnly, tc.wantScanOnly)
+			}
+		})
+	}
+}

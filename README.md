@@ -236,7 +236,13 @@ mode `0600`.
 `--web-diff` is an explicitly unstable HTML fallback for missing REST patch
 text. It reads a cookie only from `SPOON_GH_COOKIE`, never persists it, and is
 not a supported GitHub API. REST metadata remains authoritative if the HTML
-adapter fails.
+adapter fails. Each scrape is limited to 512 pages, 16 MiB per page, and 128 MiB
+total. Failed or stalled pagination discards the web patches; individual patches
+must also match REST addition/deletion counts before they are accepted. A capped
+or unknown commit list cannot supply a verified head SHA for this fallback.
+Rejected files retain all count-mismatch diagnostics in `patch_skipped_reason`
+in detailed CLI output. These checks do not repair patches already cached by
+older versions.
 
 With `--touching` and only literal paths, `spn` also turns on an anonymous,
 best-effort lookup against GitHub's undocumented tree-commit-info page to

@@ -106,7 +106,7 @@ var _ forge.BranchDivergenceProvider = (*GHProvider)(nil)
 // Returns forge.ErrBatchCompareUnavailable when the client has no working
 // GraphQL backend, so callers fall back to the REST path silently rather
 // than treating it as a hard failure.
-func (p *GHProvider) BatchCompare(ctx context.Context, forks []forge.T1Data, cached map[string]*forge.T2Data) (map[string]forge.ForkDivergence, forge.BatchStats, error) {
+func (p *GHProvider) BatchCompare(ctx context.Context, forks []forge.T1Data, cached map[string]*forge.T2Data, minHeadroom float64) (map[string]forge.ForkDivergence, forge.BatchStats, error) {
 	if !p.client.HasGraphQL() {
 		return nil, forge.BatchStats{}, forge.ErrBatchCompareUnavailable
 	}
@@ -153,7 +153,7 @@ func (p *GHProvider) BatchCompare(ctx context.Context, forks []forge.T1Data, cac
 			Sides:              sides,
 		})
 	}
-	return p.client.FetchBatchDivergence(ctx, sourceOwner, sourceRepo, sourceDefaultBranch, targets)
+	return p.client.FetchBatchDivergence(ctx, sourceOwner, sourceRepo, sourceDefaultBranch, targets, minHeadroom)
 }
 
 var _ forge.BatchCompareProvider = (*GHProvider)(nil)
@@ -514,16 +514,10 @@ func (p *GHProvider) finishT2(ctx context.Context, sourceOwner, sourceRepo strin
 			}
 		}
 		if missing {
-			base := scan.Compare.MergeBaseCommit.SHA
-			if base == "" {
-				base = scan.Compare.BaseCommit.SHA
-			}
-			head := ""
-			if n := len(scan.Compare.Commits); n > 0 {
-				head = scan.Compare.Commits[n-1].SHA
-			}
+			// compareToT2 withholds HeadSHA when the REST commit list is capped.
+			base, head := t2.BaseSHA, t2.HeadSHA
 			if base == "" || head == "" {
-				t2.PatchSkipReason = "web diff unavailable: compare response omitted base/head SHA"
+				t2.PatchSkipReason = "web diff unavailable: compare response omitted verified base/head SHA"
 			} else {
 				patches, truncated, webErr := p.client.webDiff.Fetch(ctx, sourceOwner, sourceRepo, base, head)
 				applyWebDiffPatches(&t2, patches, truncated, webErr)
@@ -561,12 +555,37 @@ func applyWebDiffPatches(t2 *forge.T2Data, patches map[string]string, truncated 
 	case truncated:
 		t2.PatchSkipReason = "web diff truncated: pagination incomplete"
 	default:
+		var skipReasons strings.Builder
+		skipReasons.WriteString(t2.PatchSkipReason)
 		for i := range t2.Diffs {
-			if t2.Diffs[i].Patch == "" && patches[t2.Diffs[i].Path] != "" {
-				t2.Diffs[i].Patch = patches[t2.Diffs[i].Path]
-				t2.Diffs[i].PatchSource = "github_web"
+			diff := &t2.Diffs[i]
+			if diff.Patch != "" {
+				continue
+			}
+			patch := patches[diff.Path]
+			var additions, deletions int
+			for line := range strings.SplitSeq(patch, "\n") {
+				if strings.HasPrefix(line, "+") {
+					additions++
+				} else if strings.HasPrefix(line, "-") {
+					deletions++
+				}
+			}
+			// HTML can lose hunks without losing the whole file or page. REST
+			// statistics remain authoritative even when pagination succeeded.
+			if additions != diff.Additions || deletions != diff.Deletions {
+				if skipReasons.Len() > 0 {
+					skipReasons.WriteString("; ")
+				}
+				fmt.Fprintf(&skipReasons, "web diff incomplete for %q: got +%d/-%d lines, want +%d/-%d", diff.Path, additions, deletions, diff.Additions, diff.Deletions)
+				continue
+			}
+			if patch != "" {
+				diff.Patch = patch
+				diff.PatchSource = "github_web"
 			}
 		}
+		t2.PatchSkipReason = skipReasons.String()
 	}
 }
 

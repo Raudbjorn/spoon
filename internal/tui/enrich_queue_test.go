@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -12,6 +13,51 @@ import (
 	"github.com/svnbjrn/spoon/internal/forge"
 	"github.com/svnbjrn/spoon/internal/store"
 )
+
+type missingProbeFake struct {
+	err    error
+	probed []forge.T1Data
+}
+
+func (f *missingProbeFake) BatchCompare(context.Context, []forge.T1Data, map[string]*forge.T2Data, float64) (map[string]forge.ForkDivergence, forge.BatchStats, error) {
+	return map[string]forge.ForkDivergence{"resolved": {Resolved: true}}, forge.BatchStats{Queries: 1}, f.err
+}
+
+func (f *missingProbeFake) MissingRepos(_ context.Context, forks []forge.T1Data) (map[string]bool, error) {
+	f.probed = append(f.probed, forks...)
+	return map[string]bool{"unresolved": true}, nil
+}
+
+func TestBatchDivergenceCmd_ReserveStopsMissingRepoProbes(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		err       error
+		wantProbe bool
+	}{
+		{"reserve", forge.ErrRateReserve, false},
+		{"wrapped reserve", fmt.Errorf("phase A: %w", forge.ErrRateReserve), false},
+		{"partial result", nil, true},
+		{"other failure", errors.New("lookup failed"), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &missingProbeFake{err: tc.err}
+			msg := batchDivergenceCmd(context.Background(), fake, []enrichEntry{
+				{fork: forge.T1Data{ID: "resolved"}},
+				{fork: forge.T1Data{ID: "unresolved"}},
+			})().(batchDivergenceMsg)
+			if !errors.Is(msg.err, tc.err) || msg.stats.Queries != 1 || !msg.divergence["resolved"].Resolved {
+				t.Fatalf("batch evidence lost: %+v", msg)
+			}
+			if tc.wantProbe {
+				if len(fake.probed) != 1 || fake.probed[0].ID != "unresolved" || !msg.missing["unresolved"] {
+					t.Fatalf("probed=%v missing=%v; want only the unresolved fork", fake.probed, msg.missing)
+				}
+			} else if len(fake.probed) != 0 || len(msg.missing) != 0 {
+				t.Fatalf("reserve must stop probes: probed=%v missing=%v", fake.probed, msg.missing)
+			}
+		})
+	}
+}
 
 // orderFakeForge records the order Compare is called in.
 type orderFakeForge struct {
@@ -188,15 +234,19 @@ func TestQueuedCompares_CancelledPassReportsEveryFork(t *testing.T) {
 }
 
 // runBatch executes cmd and, recursively, every command in a tea.BatchMsg.
-func runBatch(cmd tea.Cmd) {
+func runBatch(cmd tea.Cmd) []tea.Msg {
 	if cmd == nil {
-		return
+		return nil
 	}
-	if batch, ok := cmd().(tea.BatchMsg); ok {
+	msg := cmd()
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		var messages []tea.Msg
 		for _, c := range batch {
-			runBatch(c)
+			messages = append(messages, runBatch(c)...)
 		}
+		return messages
 	}
+	return []tea.Msg{msg}
 }
 
 // A fork whose repository no longer exists is settled without a compare and
@@ -254,7 +304,7 @@ type batchFake struct {
 	chunks [][]string
 }
 
-func (f *batchFake) BatchCompare(_ context.Context, forks []forge.T1Data, _ map[string]*forge.T2Data) (map[string]forge.ForkDivergence, forge.BatchStats, error) {
+func (f *batchFake) BatchCompare(_ context.Context, forks []forge.T1Data, _ map[string]*forge.T2Data, _ float64) (map[string]forge.ForkDivergence, forge.BatchStats, error) {
 	ids := make([]string, len(forks))
 	div := make(map[string]forge.ForkDivergence, len(forks))
 	for i, fk := range forks {
@@ -456,7 +506,7 @@ type cachedBatchFake struct {
 	divergence map[string]forge.ForkDivergence
 }
 
-func (f *cachedBatchFake) BatchCompare(_ context.Context, _ []forge.T1Data, cached map[string]*forge.T2Data) (map[string]forge.ForkDivergence, forge.BatchStats, error) {
+func (f *cachedBatchFake) BatchCompare(_ context.Context, _ []forge.T1Data, cached map[string]*forge.T2Data, _ float64) (map[string]forge.ForkDivergence, forge.BatchStats, error) {
 	f.cached = cached
 	return f.divergence, forge.BatchStats{Queries: 1}, nil
 }
@@ -494,7 +544,16 @@ func TestCachedBatchInvalidationCannotReuseOldCompare(t *testing.T) {
 			if cmd == nil {
 				t.Fatal("invalid cache did not dispatch replacement")
 			}
-			msg := cmd().(tier2ResultMsg)
+			// Invalidation now refreshes coverage alongside the replacement compare.
+			var msg tier2ResultMsg
+			for _, result := range runBatch(cmd) {
+				if compare, ok := result.(tier2ResultMsg); ok {
+					msg = compare
+				}
+			}
+			if msg.forkID != fk.ID {
+				t.Fatal("invalid cache did not produce a replacement result")
+			}
 			if msg.fromCache {
 				t.Fatal("invalidated comparison was read from cache again")
 			}

@@ -159,7 +159,8 @@ type Options struct {
 
 	// CachedT2, when non-nil, returns a stored compare for a fork (nil = miss).
 	// The caller keys validity on the fork's current pushed_at, so a hit is
-	// authoritative: it skips the Compare API call and the rate-reserve gate.
+	// reused unless the live batch identifies a different comparison. Cache hits
+	// skip the Compare API call and the rate-reserve gate.
 	// Left nil on --refresh.
 	CachedT2 func(forge.T1Data) *forge.T2Data
 
@@ -648,7 +649,11 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 		// Type-assert before building `pending`: on a provider that can't
 		// batch at all (gitea, gitlab, or a plain REST-only GitHub client),
 		// this skips the loop entirely.
-		if bp, hasBatch := provider.(forge.BatchCompareProvider); tier >= 2 && !opts.NoBatchCompare && hasBatch && (opts.ReserveDisabled || provider.Headroom() >= ReserveHeadroom) {
+		reserve := ReserveHeadroom
+		if opts.ReserveDisabled {
+			reserve = 0
+		}
+		if bp, hasBatch := provider.(forge.BatchCompareProvider); tier >= 2 && !opts.NoBatchCompare && hasBatch && provider.Headroom() >= reserve {
 			for i, s := range all {
 				if !eligible(s.fork.ID, i) {
 					continue
@@ -658,7 +663,7 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 			if len(pending) > 0 {
 				fmt.Fprintf(logger, "[triage] resolving divergence for %d forks via GraphQL batch…\n", len(pending))
 				var berr error
-				divergence, batchStats, berr = bp.BatchCompare(ctx, pending, cachedT2)
+				divergence, batchStats, berr = bp.BatchCompare(ctx, pending, cachedT2, reserve)
 				switch {
 				case berr == nil:
 					batchRan = true
@@ -683,8 +688,10 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 			if refreshed == nil {
 				invalidatedT2[id] = t2
 				delete(cachedT2, id)
-				// A cached-branch refresh cannot select the fork's next active branch.
-				delete(divergence, id)
+				if divergence[id].CountsOnly {
+					// A cached-branch refresh cannot select the fork's next active branch.
+					delete(divergence, id)
+				}
 			} else {
 				cachedT2[id] = refreshed
 				refreshedT2[id] = changed
@@ -903,6 +910,7 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 					if enrich && tier >= 2 && r.T2 == nil && divergence != nil {
 						if res, ok := resolveFromBatch(divergence, s.fork.ID); ok {
 							if res.T2 != nil {
+								// Full-batch zero-ahead data replaces invalidated evidence wholesale.
 								r.T2 = res.T2
 								compareBatch.Add(1)
 							} else {

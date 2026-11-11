@@ -1,11 +1,48 @@
 package github
 
 import (
+	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/svnbjrn/spoon/internal/forge"
 )
+
+// A capped commit list ends before the fork tip. Its last commit cannot be
+// used to fetch a supposedly complete diff, even if the HTML is readable.
+func TestFinishT2WebDiffSkipsUnverifiedHead(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		total int
+	}{
+		{"capped", 2},
+		{"unknown total", 0},
+		{"complete", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &Client{}
+			c.EnableWebDiff("cookie")
+			p := &GHProvider{client: c}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel() // A fetch must fail locally rather than contact GitHub.
+			scan := BranchScan{Compare: CompareResult{
+				BaseCommit:   Commit{SHA: "base"},
+				Commits:      []Commit{{SHA: "head"}},
+				TotalCommits: tc.total,
+				Files:        []FileChange{{Filename: "a.go", Additions: 1}},
+			}}
+			t2 := p.finishT2(ctx, "o", "r", scan, forge.T1Data{})
+			if tc.total == 1 {
+				if t2.PatchSkipReason != context.Canceled.Error() {
+					t.Fatalf("verified head did not reach the fetcher: %q", t2.PatchSkipReason)
+				}
+			} else if !strings.Contains(t2.PatchSkipReason, "base/head SHA") {
+				t.Fatalf("unverified head reached the fetcher: %q", t2.PatchSkipReason)
+			}
+		})
+	}
+}
 
 // A truncated or failed scrape must never reach the store as a whole diff:
 // a file whose hunks spanned the failed page would be persisted as a leading
@@ -40,7 +77,7 @@ func TestApplyWebDiffPatchesDiscardsUntrustedScrape(t *testing.T) {
 
 func TestApplyWebDiffPatchesFillsOnlyEmptyPatches(t *testing.T) {
 	t2 := forge.T2Data{Diffs: []forge.FileDiff{
-		{Path: "a.go", Patch: ""},
+		{Path: "a.go", Additions: 1, Patch: ""}, // REST statistics must match the complete web patch.
 		{Path: "b.go", Patch: "-already from compare\n"},
 		{Path: "c.go", Patch: ""},
 	}}
@@ -60,5 +97,87 @@ func TestApplyWebDiffPatchesFillsOnlyEmptyPatches(t *testing.T) {
 	}
 	if t2.PatchSkipReason != "" {
 		t.Errorf("skipReason = %q, want none on a clean scrape", t2.PatchSkipReason)
+	}
+}
+
+// Successful pagination alone cannot prove that all hunks survived HTML
+// parsing. Compare against the REST counts before a fragment reaches storage.
+func TestApplyWebDiffPatchesChecksRESTCounts(t *testing.T) {
+	for _, tc := range []struct {
+		name, patch string
+		complete    bool
+	}{
+		{"absent", "", false},
+		{"missing additions", "+first\n-old\n", false},
+		{"missing deletions", "+first\n+second\n", false},
+		{"duplicate lines", "+first\n+second\n+duplicate\n-old\n", false},
+		{"complete", "+first\n context\n-old\n+second\n", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t2 := forge.T2Data{Diffs: []forge.FileDiff{{Path: "a.go", Additions: 2, Deletions: 1}}}
+			applyWebDiffPatches(&t2, map[string]string{"a.go": tc.patch}, false, nil)
+			if tc.complete {
+				if t2.Diffs[0].Patch != tc.patch || t2.Diffs[0].PatchSource != "github_web" || t2.PatchSkipReason != "" {
+					t.Fatalf("complete patch rejected: %+v, skip reason %q", t2.Diffs[0], t2.PatchSkipReason)
+				}
+				return
+			}
+			if t2.Diffs[0].Patch != "" || t2.Diffs[0].PatchSource != "" {
+				t.Fatalf("incomplete patch accepted: %+v", t2.Diffs[0])
+			}
+			if t2.PatchSkipReason == "" {
+				t.Fatal("missing skip reason for incomplete patch")
+			}
+		})
+	}
+}
+
+func TestApplyWebDiffPatchesKeepsCompleteSibling(t *testing.T) {
+	t2 := compareToT2(CompareResult{Files: []FileChange{
+		{Filename: "partial.go", Additions: 2},
+		{Filename: "complete.go", Additions: 1, Deletions: 1},
+		{Filename: "rest.go", Additions: 1, Patch: "+rest\n"},
+	}})
+	applyWebDiffPatches(&t2, map[string]string{
+		"partial.go":  "+first\n",
+		"complete.go": "-old\n+new\n",
+		"rest.go":     "+overwrite\n",
+	}, false, nil)
+	if t2.Diffs[0].Patch != "" || t2.Diffs[0].PatchSource == "github_web" {
+		t.Fatalf("partial patch accepted: %+v", t2.Diffs[0])
+	}
+	if t2.Diffs[1].Patch != "-old\n+new\n" || t2.Diffs[1].PatchSource != "github_web" {
+		t.Fatalf("complete sibling lost: %+v", t2.Diffs[1])
+	}
+	if t2.Diffs[2].Patch != "+rest\n" || t2.Diffs[2].PatchSource != "compare_rest" {
+		t.Fatalf("REST patch changed: %+v", t2.Diffs[2])
+	}
+	if !strings.Contains(t2.PatchSkipReason, `"partial.go"`) {
+		t.Fatalf("missing partial-file diagnostic: %q", t2.PatchSkipReason)
+	}
+}
+
+// Every rejected file needs a diagnostic, even when a later file also fails.
+func TestApplyWebDiffPatchesReportsAllRejectedFiles(t *testing.T) {
+	t2 := forge.T2Data{Diffs: []forge.FileDiff{
+		{Path: "first.go", Additions: 2},
+		{Path: "second.go", Deletions: 2},
+	}}
+	applyWebDiffPatches(&t2, map[string]string{
+		"first.go":  "+only one\n",
+		"second.go": "-only one\n",
+	}, false, nil)
+	for _, diff := range t2.Diffs {
+		if diff.Patch != "" || diff.PatchSource != "" {
+			t.Fatalf("rejected patch accepted: %+v", diff)
+		}
+	}
+	for _, diagnostic := range []string{
+		`web diff incomplete for "first.go": got +1/-0 lines, want +2/-0`,
+		`web diff incomplete for "second.go": got +0/-1 lines, want +0/-2`,
+	} {
+		if !strings.Contains(t2.PatchSkipReason, diagnostic) {
+			t.Errorf("missing diagnostic %q in %q", diagnostic, t2.PatchSkipReason)
+		}
 	}
 }

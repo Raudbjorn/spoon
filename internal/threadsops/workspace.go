@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,20 +20,21 @@ import (
 
 // WorkspaceRepo describes a sibling git checkout found in a workspace scan.
 type WorkspaceRepo struct {
-	Dir           string // absolute path to repository directory
-	RelDir        string // relative path from the scan root (e.g. "./frontend")
-	OriginURL     string // raw value of remote.origin.url
-	UpstreamURL   string // raw value of remote.upstream.url (if present)
-	Owner         string // target repo owner (upstream if present, else origin)
-	Repo          string // target repo name (upstream if present, else origin)
-	OriginOwner   string // owner parsed from OriginURL
-	OriginRepo    string // repo parsed from OriginURL
-	OriginHost    string // service host parsed from OriginURL
-	UpstreamOwner string // owner parsed from UpstreamURL
-	UpstreamRepo  string // repo parsed from UpstreamURL
-	UpstreamHost  string // service host parsed from UpstreamURL
-	Provider      string // "github" / "gitlab" / etc.
-	CurrentBranch string // current branch from HEAD (empty on detached HEAD)
+	Dir              string // absolute path to repository directory
+	RelDir           string // relative path from the scan root (e.g. "./frontend")
+	OriginURL        string // effective fetch URL for origin, including Git URL rewrites
+	UpstreamURL      string // effective fetch URL for upstream (if present)
+	Owner            string // target repo owner (upstream if present, else origin)
+	Repo             string // target repo name (upstream if present, else origin)
+	OriginOwner      string // owner parsed from OriginURL
+	OriginRepo       string // repo parsed from OriginURL
+	OriginHost       string // service host parsed from OriginURL
+	UpstreamOwner    string // owner parsed from UpstreamURL
+	UpstreamRepo     string // repo parsed from UpstreamURL
+	UpstreamHost     string // service host parsed from UpstreamURL
+	Provider         string // origin provider: "github" / "gitlab" / etc.
+	UpstreamProvider string // provider parsed from UpstreamURL
+	CurrentBranch    string // current branch from HEAD (empty on detached HEAD)
 }
 
 // ScanOptions configures ScanWorkspace.
@@ -44,6 +46,7 @@ type ScanOptions struct {
 // PRFetcher is the interface for resolving an open PR for a head branch.
 // Satisfied by *github.Client.
 type PRFetcher interface {
+	Host() string
 	FindOpenPRForHead(ctx context.Context, owner, repo, headOwner, headBranch string) (*gh.PullRequest, error)
 }
 
@@ -119,23 +122,46 @@ func ResolveGitDir(dir string) (gitDir, commonDir string, err error) {
 // normalizeGitURL converts scp-like SSH URLs (git@github.com:owner/repo.git)
 // and ssh:// URLs into an HTTPS form compatible with forge.ParseRepoURL.
 func normalizeGitURL(raw string) string {
-	raw = strings.TrimSpace(raw)
-	if strings.HasPrefix(raw, "ssh://") {
-		raw = strings.TrimPrefix(raw, "ssh://")
-		if strings.HasPrefix(raw, "git@") {
-			raw = strings.TrimPrefix(raw, "git@")
-		}
-		return "https://" + raw
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
 	}
-	if strings.HasPrefix(raw, "git@") {
-		after := strings.TrimPrefix(raw, "git@")
-		if idx := strings.Index(after, ":"); idx != -1 {
-			host := after[:idx]
-			path := after[idx+1:]
+
+	// git@host:owner/repo.git -> https://host/owner/repo.git
+	if strings.HasPrefix(s, "git@") {
+		colonIdx := strings.Index(s, ":")
+		if colonIdx > 0 {
+			host := strings.TrimPrefix(s[:colonIdx], "git@")
+			path := strings.TrimPrefix(s[colonIdx+1:], "/")
 			return "https://" + host + "/" + path
 		}
 	}
-	return raw
+
+	// ssh://git@host/owner/repo.git -> https://host/owner/repo.git
+	if strings.HasPrefix(s, "ssh://") {
+		trimmed := strings.TrimPrefix(s, "ssh://")
+		if atIdx := strings.Index(trimmed, "@"); atIdx >= 0 {
+			trimmed = trimmed[atIdx+1:]
+		}
+		return "https://" + trimmed
+	}
+
+	// git://host/owner/repo.git -> https://host/owner/repo.git
+	if strings.HasPrefix(s, "git://") {
+		return "https://" + strings.TrimPrefix(s, "git://")
+	}
+
+	return s
+}
+
+// parseRemoteIdentity rejects local paths instead of treating them as hosted repositories.
+func parseRemoteIdentity(raw string) (forge.Provider, string, string, string, error) {
+	normalized := normalizeGitURL(raw)
+	u, err := url.Parse(normalized)
+	if err != nil || u.Hostname() == "" || (u.Scheme != "https" && u.Scheme != "http") {
+		return 0, "", "", "", fmt.Errorf("remote has no supported host")
+	}
+	return forge.ParseRepoURL(normalized, "", 0)
 }
 
 // NormalizeGitURL is normalizeGitURL exported for testing.
@@ -149,13 +175,6 @@ func parseBranch(headContent string) string {
 	trimmed := strings.TrimSpace(headContent)
 	if strings.HasPrefix(trimmed, "ref: refs/heads/") {
 		return strings.TrimPrefix(trimmed, "ref: refs/heads/")
-	}
-	if strings.HasPrefix(trimmed, "ref: ") {
-		ref := strings.TrimPrefix(trimmed, "ref: ")
-		parts := strings.Split(ref, "/")
-		if len(parts) > 0 {
-			return parts[len(parts)-1]
-		}
 	}
 	return ""
 }
@@ -217,8 +236,7 @@ func parseWorkspaceRepo(repoDir, root string) (WorkspaceRepo, error) {
 	}
 
 	if repo.OriginURL != "" {
-		norm := normalizeGitURL(repo.OriginURL)
-		provider, host, o, r, err := forge.ParseRepoURL(norm, "", 0)
+		provider, host, o, r, err := parseRemoteIdentity(repo.OriginURL)
 		if err == nil {
 			repo.OriginHost = host
 			repo.OriginOwner = o
@@ -230,16 +248,15 @@ func parseWorkspaceRepo(repoDir, root string) (WorkspaceRepo, error) {
 	}
 
 	if repo.UpstreamURL != "" {
-		norm := normalizeGitURL(repo.UpstreamURL)
-		provider, host, o, r, err := forge.ParseRepoURL(norm, "", 0)
+		provider, host, o, r, err := parseRemoteIdentity(repo.UpstreamURL)
 		if err == nil {
+			repo.UpstreamProvider = provider.String()
 			repo.UpstreamHost = host
 			repo.UpstreamOwner = o
 			repo.UpstreamRepo = r
-			// Upstream takes precedence for target repository
+			// Upstream takes precedence for target repository; Provider describes origin.
 			repo.Owner = o
 			repo.Repo = r
-			repo.Provider = provider.String()
 		}
 	}
 
@@ -251,16 +268,35 @@ var defaultIgnoreDirs = map[string]bool{
 	"node_modules":   true,
 	"vendor":         true,
 	".do-not-commit": true,
+	".cache":         true,
+	".gemini":        true,
+	".superpowers":   true,
 	"build":          true,
 	"dist":           true,
 }
 
 // ScanWorkspace returns one entry per .git directory or worktree pointer found
 // in root or immediate subdirectories up to opts.Depth (default 1, capped at 3).
+// From inside a checkout, it scans the checkout's parent to include siblings.
 func ScanWorkspace(root string, opts ScanOptions) ([]WorkspaceRepo, error) {
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
 		return nil, fmt.Errorf("resolving workspace root: %w", err)
+	}
+
+	if fi, err := os.Stat(absRoot); err != nil {
+		return nil, err
+	} else if !fi.IsDir() {
+		return nil, fmt.Errorf("workspace root is not a directory: %q", absRoot)
+	}
+	for dir := absRoot; ; dir = filepath.Dir(dir) {
+		if _, _, err := resolveGitDir(dir); err == nil {
+			absRoot = filepath.Dir(dir)
+			break
+		}
+		if filepath.Dir(dir) == dir {
+			break
+		}
 	}
 
 	depth := opts.Depth
@@ -395,12 +431,16 @@ func DiscoverPRsForRepos(ctx context.Context, fetcher PRFetcher, repos []Workspa
 
 func discoverPRForRepo(ctx context.Context, fetcher PRFetcher, repo WorkspaceRepo) WorkspaceDiscovery {
 	d := WorkspaceDiscovery{Repo: repo}
-	if repo.CurrentBranch == "" {
+	if repo.CurrentBranch == "" || fetcher == nil {
 		return d
 	}
-	// A head owner from another service must never be sent to public GitHub.
-	if (repo.OriginURL != "" || repo.OriginOwner != "") && repo.OriginHost != "github.com" {
-		d.Err = fmt.Errorf("unsupported origin host %q (workspace PR discovery requires github.com)", repo.OriginHost)
+	// Both the head and target identities must belong to the client's service.
+	host := fetcher.Host()
+	if repo.Provider != "github" || !strings.EqualFold(repo.OriginHost, host) {
+		d.Err = fmt.Errorf("origin host %q is not served by GitHub host %q", repo.OriginHost, host)
+		return d
+	}
+	if repo.OriginOwner == "" || repo.OriginRepo == "" {
 		return d
 	}
 	lookup := func(owner, name, headOwner string) {
@@ -416,15 +456,14 @@ func discoverPRForRepo(ctx context.Context, fetcher PRFetcher, repo WorkspaceRep
 			d.PR = &copyPR
 		}
 	}
-	upstreamSupported := repo.UpstreamHost == "github.com" && repo.UpstreamOwner != "" && repo.UpstreamRepo != ""
+	upstreamSupported := repo.UpstreamProvider == "github" && strings.EqualFold(repo.UpstreamHost, host) && repo.UpstreamOwner != "" && repo.UpstreamRepo != ""
 	if upstreamSupported {
 		lookup(repo.UpstreamOwner, repo.UpstreamRepo, repo.OriginOwner)
 	} else if repo.UpstreamURL != "" || repo.UpstreamOwner != "" {
-		d.Err = fmt.Errorf("unsupported upstream host %q (workspace PR discovery requires github.com)", repo.UpstreamHost)
+		d.Err = fmt.Errorf("upstream host %q is not served by GitHub host %q", repo.UpstreamHost, host)
 	}
-	if d.PR == nil && repo.OriginHost == "github.com" && repo.OriginOwner != "" && repo.OriginRepo != "" &&
-		(!upstreamSupported || repo.OriginOwner != repo.UpstreamOwner || repo.OriginRepo != repo.UpstreamRepo) {
-		lookup(repo.OriginOwner, repo.OriginRepo, "")
+	if d.PR == nil && (!upstreamSupported || !strings.EqualFold(repo.OriginOwner+"/"+repo.OriginRepo, repo.UpstreamOwner+"/"+repo.UpstreamRepo)) {
+		lookup(repo.OriginOwner, repo.OriginRepo, repo.OriginOwner)
 	}
 	return d
 }

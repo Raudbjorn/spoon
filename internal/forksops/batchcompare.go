@@ -72,6 +72,13 @@ type batchResolution struct {
 	Selection *forge.BranchSelection
 }
 
+func cachedComparisonMatches(t2 *forge.T2Data, sel *forge.BranchSelection) bool {
+	return sel != nil && (t2.ComparedBranch == "" || t2.ComparedBranch == sel.Branch) && t2.Performed && t2.HeadSHA != "" &&
+		t2.HeadSHA == sel.TipSHA && t2.AheadCount == sel.Ahead &&
+		t2.IsBranchWork == sel.IsSide && (!sel.IsSide || t2.ActiveBranch == sel.Branch) &&
+		t2.Upstreamed == sel.Upstreamed && t2.UpstreamedPR == sel.UpstreamedPR
+}
+
 // resolveFromBatch looks up a fork's batch-resolved forge.ForkDivergence
 // and applies the branch-choice policy. ok is false when the fork was
 // absent from the batch result, or the batch could not resolve it
@@ -191,12 +198,23 @@ func batchEstimate(pending []forge.T1Data, divergence map[string]forge.ForkDiver
 }
 
 // RefreshCachedT2 returns a private copy and whether its behind count changed.
-// A changed head or ahead count invalidates the old commits/diffs (nil result).
+// A different full-batch selection, head, or ahead count invalidates the old
+// commits/diffs (nil result). CountsOnly results can refresh just their named branch.
 func RefreshCachedT2(t2 *forge.T2Data, d forge.ForkDivergence) (*forge.T2Data, bool) {
 	if t2 == nil {
 		return nil, false
 	}
 	copy := *t2
+	if d.Resolved && !d.CountsOnly {
+		// A full batch can choose different work or prove every branch is zero-ahead.
+		// Only reuse the cache when it describes that exact selected comparison.
+		sel := forge.SelectDivergentBranch(d)
+		if !sel.NeedsREST || !cachedComparisonMatches(t2, &sel) {
+			return nil, false
+		}
+		copy.BehindCount = sel.Behind
+		return &copy, copy.BehindCount != t2.BehindCount
+	}
 	branch := t2.ComparedBranch
 	if branch == "" && t2.IsBranchWork {
 		branch = t2.ActiveBranch

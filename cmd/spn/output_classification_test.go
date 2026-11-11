@@ -57,6 +57,7 @@ func TestProductionWritesUseTypedOutput(t *testing.T) {
 // handoff, or direct write an explicit review event rather than an inherited
 // default. Structured records and agentio envelopes are data; the four
 // presentation routes identify the only human/error text currently emitted.
+// Persisting before failed-result skips moves the CSV warning site without changing its stream kind.
 var approvedOutputSites = map[string]StreamKind{
 	"main.go:101:call:writeError":    StreamError,
 	"main.go:104:call:writeError":    StreamError,
@@ -325,7 +326,7 @@ var approvedOutputSites = map[string]StreamKind{
 	"forks.go:1285:call:WriteNDJSON":   StreamData,
 	"forks.go:1293:call:WriteNDJSON":   StreamData,
 	"forks.go:1656:call:Emit":          StreamData,
-	"forks.go:1674:call:WriteNDJSON":   StreamData,
+	"forks.go:1675:call:WriteNDJSON":   StreamData,
 	"forks.go:1685:call:Emit":          StreamData,
 	"forks.go:1689:call:Emit":          StreamData,
 	"forks.go:1768:call:WriteNDJSON":   StreamData,

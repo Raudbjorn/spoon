@@ -693,6 +693,7 @@ var migrations = []struct {
 	{version: 3, stmts: schemaV3},
 	{version: 4, stmts: schemaV4},
 	{version: 5, stmts: schemaV5},
+	{version: 6, stmts: schemaV6},
 }
 
 // createdTable and addedColumn match the exact shapes every step in the
@@ -1840,6 +1841,21 @@ var schemaV5 = []string{
 	`ALTER TABLE forks ADD COLUMN merge_commit_truncated INTEGER NOT NULL DEFAULT 0`,
 	`CREATE TABLE IF NOT EXISTS merge_commit_history (fork_key TEXT NOT NULL REFERENCES forks(fork_key) ON DELETE CASCADE, idx INTEGER NOT NULL, parents INTEGER NOT NULL, PRIMARY KEY(fork_key, idx))`,
 	`CREATE INDEX IF NOT EXISTS merge_commit_history_fork_idx ON merge_commit_history(fork_key)`,
+}
+
+// schemaV6 adds SQLite persistence for Continual Category Discovery (cluster_runs,
+// clusters, cluster_members), Cross-Repo Lineage (global_lineage, lineage_occurrences),
+// and Touched Units attribution (touched_units), consolidating flat-file caches
+// into spoon.db.
+var schemaV6 = []string{
+	`CREATE TABLE IF NOT EXISTS cluster_runs (repo_key TEXT PRIMARY KEY, embedder_fp TEXT NOT NULL, computed_at TEXT NOT NULL, last_reassigned_at TEXT NOT NULL, next_cluster_seq INTEGER NOT NULL DEFAULT 0)`,
+	`CREATE TABLE IF NOT EXISTS clusters (repo_key TEXT NOT NULL, cluster_id TEXT NOT NULL, centroid BLOB NOT NULL, anchor_centroid BLOB NOT NULL, member_count INTEGER NOT NULL, label TEXT NOT NULL, summary TEXT, lineage_id TEXT, stable_since TEXT NOT NULL, PRIMARY KEY (repo_key, cluster_id))`,
+	`CREATE TABLE IF NOT EXISTS cluster_members (repo_key TEXT NOT NULL, fork_key TEXT NOT NULL, head_sha TEXT NOT NULL, cluster_id TEXT, embedding BLOB NOT NULL, PRIMARY KEY (repo_key, fork_key))`,
+	`CREATE INDEX IF NOT EXISTS cluster_members_cluster_idx ON cluster_members(repo_key, cluster_id)`,
+	`CREATE TABLE IF NOT EXISTS global_lineage (lineage_id TEXT PRIMARY KEY, embedder_fp TEXT NOT NULL, centroid BLOB NOT NULL, label TEXT NOT NULL, origin_repo TEXT NOT NULL, origin_cluster_id TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL)`,
+	`CREATE TABLE IF NOT EXISTS lineage_occurrences (lineage_id TEXT NOT NULL, repo_key TEXT NOT NULL, cluster_id TEXT NOT NULL, member_count INTEGER NOT NULL, first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, PRIMARY KEY (lineage_id, repo_key, cluster_id))`,
+	`CREATE INDEX IF NOT EXISTS lineage_occurrences_repo_idx ON lineage_occurrences(repo_key)`,
+	`CREATE TABLE IF NOT EXISTS touched_units (fork_key TEXT NOT NULL, path TEXT NOT NULL, base_sha TEXT NOT NULL, head_sha TEXT NOT NULL, tier INTEGER NOT NULL, units_json TEXT NOT NULL, skipped_reason TEXT, PRIMARY KEY (fork_key, path, base_sha, head_sha, tier))`,
 }
 
 // downgradeStep rolls a store that is one schema step ahead of

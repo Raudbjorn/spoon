@@ -273,6 +273,7 @@ func (c *Client) FetchBatchDivergence(
 	ctx context.Context,
 	baseOwner, baseRepo, baseBranch string,
 	targets []BatchTarget,
+	minHeadroom float64,
 ) (map[string]forge.ForkDivergence, forge.BatchStats, error) {
 	// baseBranch must be a real branch name -- see divergent_branches.go's
 	// FetchDivergentBranchCounts for why the REST "HEAD" shorthand convention
@@ -317,7 +318,7 @@ func (c *Client) FetchBatchDivergence(
 		}
 	}
 
-	if err := c.fetchBatchAheadBehind(ctx, baseOwner, baseRepo, qualified, attempts, &stats); err != nil {
+	if err := c.fetchBatchAheadBehind(ctx, baseOwner, baseRepo, qualified, attempts, &stats, minHeadroom); err != nil {
 		return nil, stats, err
 	}
 
@@ -371,7 +372,7 @@ func (c *Client) FetchBatchDivergence(
 			ahead = append(ahead, a)
 		}
 	}
-	tips := c.fetchBatchTips(ctx, baseOwner, baseRepo, qualified, ahead, &stats)
+	tips := c.fetchBatchTips(ctx, baseOwner, baseRepo, qualified, ahead, &stats, minHeadroom)
 
 	for ti, t := range targets {
 		if unresolvedTarget[ti] {
@@ -425,9 +426,10 @@ func (c *Client) fetchBatchAheadBehind(
 	baseOwner, baseRepo, qualified string,
 	attempts []*batchAttempt,
 	stats *forge.BatchStats,
+	minHeadroom float64,
 ) error {
 	for _, chunk := range slidingChunks(len(attempts), batchCompareSize) {
-		if err := c.runAheadBehindChunk(ctx, baseOwner, baseRepo, qualified, attempts[chunk.lo:chunk.hi], stats); err != nil {
+		if err := c.runAheadBehindChunk(ctx, baseOwner, baseRepo, qualified, attempts[chunk.lo:chunk.hi], stats, minHeadroom); err != nil {
 			return err
 		}
 	}
@@ -459,9 +461,13 @@ func (c *Client) runAheadBehindChunk(
 	baseOwner, baseRepo, qualified string,
 	batch []*batchAttempt,
 	stats *forge.BatchStats,
+	minHeadroom float64,
 ) error {
 	if len(batch) == 0 {
 		return nil
+	}
+	if c.Headroom() < minHeadroom {
+		return forge.ErrRateReserve
 	}
 
 	var q strings.Builder
@@ -503,10 +509,10 @@ func (c *Client) runAheadBehindChunk(
 		if isBatchServerFailure(err) {
 			if len(batch) > batchMinChunk {
 				mid := len(batch) / 2
-				if err := c.runAheadBehindChunk(ctx, baseOwner, baseRepo, qualified, batch[:mid], stats); err != nil {
+				if err := c.runAheadBehindChunk(ctx, baseOwner, baseRepo, qualified, batch[:mid], stats, minHeadroom); err != nil {
 					return err
 				}
-				return c.runAheadBehindChunk(ctx, baseOwner, baseRepo, qualified, batch[mid:], stats)
+				return c.runAheadBehindChunk(ctx, baseOwner, baseRepo, qualified, batch[mid:], stats, minHeadroom)
 			}
 			slog.Debug("batch divergence: phase A chunk failed at floor size, branches left unresolved",
 				"size", len(batch), "err", err)
@@ -572,7 +578,7 @@ func (c *Client) runAheadBehindChunk(
 	}
 
 	if len(retryBatch) > 0 {
-		return c.runAheadBehindChunk(ctx, baseOwner, baseRepo, qualified, retryBatch, stats)
+		return c.runAheadBehindChunk(ctx, baseOwner, baseRepo, qualified, retryBatch, stats, minHeadroom)
 	}
 	return nil
 }
@@ -591,11 +597,12 @@ func (c *Client) fetchBatchTips(
 	baseOwner, baseRepo, qualified string,
 	ahead []*batchAttempt,
 	stats *forge.BatchStats,
+	minHeadroom float64,
 ) map[*batchAttempt]tipResult {
 	upstream := baseOwner + "/" + baseRepo
 	tips := make(map[*batchAttempt]tipResult, len(ahead))
 	for _, chunk := range slidingChunks(len(ahead), batchTipSize) {
-		c.runTipsChunk(ctx, baseOwner, baseRepo, qualified, upstream, ahead[chunk.lo:chunk.hi], stats, tips)
+		c.runTipsChunk(ctx, baseOwner, baseRepo, qualified, upstream, ahead[chunk.lo:chunk.hi], stats, tips, minHeadroom)
 	}
 	return tips
 }
@@ -619,8 +626,9 @@ func (c *Client) runTipsChunk(
 	batch []*batchAttempt,
 	stats *forge.BatchStats,
 	tips map[*batchAttempt]tipResult,
+	minHeadroom float64,
 ) {
-	if len(batch) == 0 {
+	if len(batch) == 0 || c.Headroom() < minHeadroom {
 		return
 	}
 
@@ -656,8 +664,8 @@ func (c *Client) runTipsChunk(
 	if err != nil && !isPartialLookupError(err) {
 		if isBatchServerFailure(err) && len(batch) > batchMinChunk {
 			mid := len(batch) / 2
-			c.runTipsChunk(ctx, baseOwner, baseRepo, qualified, upstream, batch[:mid], stats, tips)
-			c.runTipsChunk(ctx, baseOwner, baseRepo, qualified, upstream, batch[mid:], stats, tips)
+			c.runTipsChunk(ctx, baseOwner, baseRepo, qualified, upstream, batch[:mid], stats, tips, minHeadroom)
+			c.runTipsChunk(ctx, baseOwner, baseRepo, qualified, upstream, batch[mid:], stats, tips, minHeadroom)
 			return
 		}
 		if idx, ok := classifyAliasScopedErrors(err, len(batch)); ok {
@@ -750,7 +758,7 @@ func (c *Client) runTipsChunk(
 	}
 
 	if len(retryBatch) > 0 {
-		c.runTipsChunk(ctx, baseOwner, baseRepo, qualified, upstream, retryBatch, stats, tips)
+		c.runTipsChunk(ctx, baseOwner, baseRepo, qualified, upstream, retryBatch, stats, tips, minHeadroom)
 	}
 }
 

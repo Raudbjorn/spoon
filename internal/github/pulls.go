@@ -105,7 +105,7 @@ func (c *Client) FindOpenPRForHead(ctx context.Context, owner, repo, headOwner, 
 		headOwner = owner
 	}
 	head := fmt.Sprintf("%s:%s", headOwner, headBranch)
-	path := fmt.Sprintf("repos/%s/%s/pulls?head=%s&state=open", owner, repo, url.QueryEscape(head))
+	path := fmt.Sprintf("repos/%s/%s/pulls?state=open&head=%s&per_page=1", owner, repo, url.QueryEscape(head))
 
 	resp, err := c.GetRaw(ctx, path)
 	if err != nil {

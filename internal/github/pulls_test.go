@@ -323,3 +323,56 @@ func TestFindOpenPRForHead_EscapesBranchQuery(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestFindOpenPRForHead(t *testing.T) {
+	prs := []pullRequestAPI{
+		{Number: 42, Title: "Fix bug", State: "open", URL: "https://github.com/upstream/repo/pull/42"},
+	}
+	prs[0].User.Login = "forkowner"
+	prs[0].Head.Ref = "fix-feature"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("head") == "forkowner:fix-feature" {
+			_ = json.NewEncoder(w).Encode(prs)
+			return
+		}
+		_ = json.NewEncoder(w).Encode([]pullRequestAPI{})
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	pr, err := c.FindOpenPRForHead(context.Background(), "upstream", "repo", "forkowner", "fix-feature")
+	if err != nil {
+		t.Fatalf("FindOpenPRForHead: %v", err)
+	}
+	if pr == nil || pr.Number != 42 || pr.Title != "Fix bug" {
+		t.Fatalf("unexpected PR: %+v", pr)
+	}
+
+	none, err := c.FindOpenPRForHead(context.Background(), "upstream", "repo", "forkowner", "missing-feature")
+	if err != nil {
+		t.Fatalf("FindOpenPRForHead missing: %v", err)
+	}
+	if none != nil {
+		t.Fatalf("expected nil PR, got %+v", none)
+	}
+}
+
+func TestFindOpenPRForHeadPreservesBranchName(t *testing.T) {
+	for _, branch := range []string{"feature/a+b", "fix/a&state=closed", "fix/#123", "fix/100%", "fix/ráð"} {
+		t.Run(branch, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				q := r.URL.Query()
+				if q.Get("head") != "upstream:"+branch || q.Get("state") != "open" || len(q) != 3 || r.URL.Fragment != "" {
+					t.Errorf("branch filter corrupted: %s", r.URL)
+				}
+				_ = json.NewEncoder(w).Encode([]pullRequestAPI{{Number: 42}})
+			}))
+			defer srv.Close()
+			pr, err := newTestClient(t, srv).FindOpenPRForHead(context.Background(), "upstream", "repo", "", branch)
+			if err != nil || pr == nil || pr.Number != 42 {
+				t.Fatalf("lookup: pr=%+v err=%v", pr, err)
+			}
+		})
+	}
+}
