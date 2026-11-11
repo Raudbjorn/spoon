@@ -18,7 +18,7 @@ import (
 )
 
 func TestProviderStatusLines(t *testing.T) {
-	// GitHub reports saved and environment credentials as AuthToken; login no longer depends on gh.
+	// Setup must report the selected source, including the gh fallback.
 	tests := []struct {
 		name       string
 		provider   forge.Provider
@@ -27,6 +27,9 @@ func TestProviderStatusLines(t *testing.T) {
 		wantOK     bool
 		wantSubstr string
 	}{
+		{"github saved", forge.ProviderGitHub, forge.AuthInfo{Tier: forge.AuthToken, TokenSource: "config"}, nil, true, "Spoon config/keyring"},
+		{"github environment", forge.ProviderGitHub, forge.AuthInfo{Tier: forge.AuthToken, TokenSource: "GH_TOKEN"}, nil, true, "GH_TOKEN"},
+		{"github CLI", forge.ProviderGitHub, forge.AuthInfo{Tier: forge.AuthCLI, TokenSource: "gh"}, nil, true, "gh auth login"},
 		{"github authed", forge.ProviderGitHub, forge.AuthInfo{Tier: forge.AuthToken, RateLimit: 5000, RateUnit: "hour"}, nil, true, "saved or environment token"},
 		{"github configured unverified", forge.ProviderGitHub, forge.AuthInfo{Configured: true, RateLimit: 60, RateUnit: "hour"}, nil, true, "configured but unverified"},
 		{"github unauthed", forge.ProviderGitHub, forge.AuthInfo{Tier: forge.AuthNone, RateLimit: 60, RateUnit: "hour"}, nil, false, "spoon auth login"},

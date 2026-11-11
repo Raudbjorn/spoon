@@ -542,6 +542,8 @@ func (m Model) renderStatusBar() string {
 		// Keep the authentication warning in the fixed tail: long repository
 		// names and filters are informative, but this warning is actionable.
 		appendTail(6, styles.warn.Render(ctx.Glyph(theme.Warning)+" Unauthenticated"))
+	} else if source := m.auth.CredentialSource(); source != "" {
+		appendTail(6, "Auth: "+source)
 	}
 	marked := 0
 	for _, fork := range m.forks {

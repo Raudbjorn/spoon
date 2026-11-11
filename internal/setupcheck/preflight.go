@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 
+	ghauth "github.com/cli/go-gh/v2/pkg/auth"
 	"github.com/svnbjrn/spoon/internal/config"
 	"github.com/svnbjrn/spoon/internal/embed"
 	"github.com/svnbjrn/spoon/internal/forge"
@@ -61,7 +62,7 @@ func CheckProvider(ctx context.Context, input ProviderInput, probe ProviderProbe
 }
 
 // LocalProviderProbe checks spoon's loaded credentials and the startup
-// environment snapshot. GitLab also accepts local glab config. The probe
+// environment snapshot, plus local gh/glab account configuration. The probe
 // never invokes a CLI or constructs a network client.
 func LocalProviderProbe(ctx context.Context, input ProviderInput, transport http.RoundTripper) (forge.AuthInfo, error) {
 	host := input.Host
@@ -69,30 +70,45 @@ func LocalProviderProbe(ctx context.Context, input ProviderInput, transport http
 		if input.Provider == forge.ProviderGitLab {
 			host = "gitlab.com"
 		} else {
-			host = "github.com"
+			host = strings.TrimSpace(environmentValueForOS(input.Environment, "GH_HOST", runtime.GOOS))
+			if host == "" {
+				host = "github.com"
+			}
 		}
 	}
 	auth := forge.AuthInfo{Provider: input.Provider, Host: host}
 	if err := ctx.Err(); err != nil {
 		return auth, err
 	}
-	envToken, publicRate, unit := environmentValueForOS(input.Environment, "GH_TOKEN", runtime.GOOS) != "" ||
-		environmentValueForOS(input.Environment, "GITHUB_TOKEN", runtime.GOOS) != "", 60, "hour"
+	keys, publicRate, unit := []string{"GH_TOKEN", "GITHUB_TOKEN"}, 60, "hour"
 	if input.Provider == forge.ProviderGitLab {
-		envToken = environmentValueForOS(input.Environment, "GITLAB_TOKEN", runtime.GOOS) != "" ||
-			environmentValueForOS(input.Environment, "GITLAB_PAT", runtime.GOOS) != "" ||
-			environmentValueForOS(input.Environment, "CI_JOB_TOKEN", runtime.GOOS) != ""
+		keys = []string{"GITLAB_TOKEN", "GITLAB_PAT", "CI_JOB_TOKEN"}
 		publicRate, unit = 500, "minute"
+	} else if ghauth.IsEnterprise(host) {
+		keys = []string{"GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"}
 	}
 	auth.RateUnit, auth.RateLimit = unit, publicRate
-	if input.ConfiguredToken || envToken {
+	if input.ConfiguredToken {
 		auth.Configured = true
+		auth.TokenSource = "config"
 		return auth, nil
+	}
+	for _, key := range keys {
+		if strings.TrimSpace(environmentValueForOS(input.Environment, key, runtime.GOOS)) != "" {
+			auth.Configured = true
+			auth.TokenSource = key
+			return auth, nil
+		}
 	}
 	if transport == nil {
 		return auth, fmt.Errorf("provider network guard is unavailable")
 	}
-	auth.Configured = input.Provider == forge.ProviderGitLab && localGitLabTokenConfigured(host, input.Environment)
+	if input.Provider == forge.ProviderGitLab {
+		auth.Configured = localGitLabTokenConfigured(host, input.Environment)
+	} else if localGitHubLoginConfigured(host, input.Environment) {
+		auth.Configured = true
+		auth.TokenSource = "gh"
+	}
 	if err := ctx.Err(); err != nil {
 		return auth, err
 	}
@@ -103,6 +119,30 @@ const maxProviderConfigBytes = 1 << 20
 
 func localGitLabTokenConfigured(host string, env map[string]string) bool {
 	path := gitLabConfigPathForOS(env, runtime.GOOS)
+	var cfg struct {
+		Hosts map[string]struct {
+			Token string `yaml:"token"`
+		} `yaml:"hosts"`
+	}
+	return readProviderConfig(path, &cfg) && strings.TrimSpace(cfg.Hosts[host].Token) != ""
+}
+
+func localGitHubLoginConfigured(host string, env map[string]string) bool {
+	path := cliConfigPathForOS(env, runtime.GOOS, "GH_CONFIG_DIR", "gh", "hosts.yml")
+	var hosts map[string]struct {
+		User  string `yaml:"user"`
+		Token string `yaml:"oauth_token"`
+	}
+	if !readProviderConfig(path, &hosts) {
+		return false
+	}
+	account := hosts[ghauth.NormalizeHostname(host)]
+	// A named active account may keep its token exclusively in the keyring.
+	// This local probe reports configuration, never successful authentication.
+	return strings.TrimSpace(account.User) != "" || strings.TrimSpace(account.Token) != ""
+}
+
+func readProviderConfig(path string, target any) bool {
 	if path == "" {
 		return false
 	}
@@ -115,28 +155,27 @@ func localGitLabTokenConfigured(host string, env map[string]string) bool {
 	if err != nil || len(data) > maxProviderConfigBytes {
 		return false
 	}
-	var cfg struct {
-		Hosts map[string]struct {
-			Token string `yaml:"token"`
-		} `yaml:"hosts"`
-	}
-	return yaml.Unmarshal(data, &cfg) == nil && strings.TrimSpace(cfg.Hosts[host].Token) != ""
+	return yaml.Unmarshal(data, target) == nil
 }
 
 func gitLabConfigPathForOS(env map[string]string, goos string) string {
-	if root := environmentValueForOS(env, "GLAB_CONFIG_DIR", goos); root != "" {
-		return filepath.Join(root, "config.yml")
+	return cliConfigPathForOS(env, goos, "GLAB_CONFIG_DIR", "glab-cli", "config.yml")
+}
+
+func cliConfigPathForOS(env map[string]string, goos, override, dir, file string) string {
+	if root := environmentValueForOS(env, override, goos); root != "" {
+		return filepath.Join(root, file)
 	}
 	if root := environmentValueForOS(env, "XDG_CONFIG_HOME", goos); root != "" {
-		return filepath.Join(root, "glab-cli", "config.yml")
+		return filepath.Join(root, dir, file)
 	}
 	if goos == "windows" {
 		if root := environmentValueForOS(env, "AppData", goos); root != "" {
-			return filepath.Join(root, "glab-cli", "config.yml")
+			return filepath.Join(root, dir, file)
 		}
 	}
 	if home := environmentValueForOS(env, "HOME", goos); home != "" {
-		return filepath.Join(home, ".config", "glab-cli", "config.yml")
+		return filepath.Join(home, ".config", dir, file)
 	}
 	return ""
 }

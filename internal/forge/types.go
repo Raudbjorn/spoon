@@ -88,6 +88,7 @@ const (
 type AuthInfo struct {
 	Provider    Provider
 	Tier        AuthTier
+	TokenSource string // Credential provenance only; never contains the token.
 	Host        string // "github.com", "gitlab.com", or custom hostname.
 	Configured  bool   // Local credential material exists but has not been validated.
 	Username    string // empty if unauthenticated.
@@ -108,6 +109,20 @@ type AuthInfo struct {
 // Authenticated returns true if the user has any credentials.
 func (a AuthInfo) Authenticated() bool {
 	return a.Tier > AuthNone
+}
+
+// CredentialSource names the selected credentials without exposing their value.
+func (a AuthInfo) CredentialSource() string {
+	switch a.TokenSource {
+	case "config":
+		return "Spoon config/keyring"
+	case "gh":
+		return "gh auth login"
+	case "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN":
+		return a.TokenSource
+	default:
+		return ""
+	}
 }
 
 // BranchRef is a branch name and the timestamp of its most-recent commit.

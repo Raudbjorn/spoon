@@ -49,7 +49,7 @@ func TestLocalProviderProbeTreatsPresentTokenAsUnverified(t *testing.T) {
 	}
 }
 
-func TestLocalProviderProbeIgnoresGitHubCLIAndReadsGitLabConfig(t *testing.T) {
+func TestLocalProviderProbeReadsCLIConfigWithoutExecutingCLI(t *testing.T) {
 	tests := []struct {
 		name       string
 		provider   forge.Provider
@@ -59,25 +59,28 @@ func TestLocalProviderProbeIgnoresGitHubCLIAndReadsGitLabConfig(t *testing.T) {
 		configured bool
 	}{
 		{
-			name:     "github",
-			provider: forge.ProviderGitHub,
-			command:  "gh",
-			path:     filepath.Join("gh", "hosts.yml"),
-			config:   "github.com:\n  user: octocat\n  oauth_token: snapshot-token\n",
+			configured: true,
+			name:       "github",
+			provider:   forge.ProviderGitHub,
+			command:    "gh",
+			path:       filepath.Join("gh", "hosts.yml"),
+			config:     "github.com:\n  user: octocat\n  oauth_token: snapshot-token\n",
 		},
 		{
-			name:     "github multi-user",
-			provider: forge.ProviderGitHub,
-			command:  "gh",
-			path:     filepath.Join("gh", "hosts.yml"),
-			config:   "github.com:\n  user: octocat\n  users:\n    octocat:\n      oauth_token: snapshot-token\n",
+			configured: true,
+			name:       "github multi-user",
+			provider:   forge.ProviderGitHub,
+			command:    "gh",
+			path:       filepath.Join("gh", "hosts.yml"),
+			config:     "github.com:\n  user: octocat\n  users:\n    octocat:\n      oauth_token: snapshot-token\n",
 		},
 		{
-			name:     "github keyring",
-			provider: forge.ProviderGitHub,
-			command:  "gh",
-			path:     filepath.Join("gh", "hosts.yml"),
-			config:   "github.com:\n  user: octocat\n",
+			configured: true,
+			name:       "github keyring",
+			provider:   forge.ProviderGitHub,
+			command:    "gh",
+			path:       filepath.Join("gh", "hosts.yml"),
+			config:     "github.com:\n  user: octocat\n",
 		},
 		{
 			name:       "gitlab",
@@ -113,7 +116,10 @@ func TestLocalProviderProbeIgnoresGitHubCLIAndReadsGitLabConfig(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			// GitHub CLI credentials are deliberately ignored; glab credentials remain supported.
+			// A gh account now enables fallback; keyring contents remain unverified.
+			if tt.provider == forge.ProviderGitHub && auth.TokenSource != "gh" {
+				t.Fatalf("missing gh source: %q", auth.TokenSource)
+			}
 			if auth.Tier != forge.AuthNone || auth.Configured != tt.configured {
 				t.Fatalf("snapshot CLI config state = tier %v, configured %v; want configured=%v", auth.Tier, auth.Configured, tt.configured)
 			}
@@ -180,4 +186,24 @@ func installProviderCLITrap(t *testing.T, command string) string {
 	t.Setenv("PATH", binDir)
 	t.Setenv("SPOON_PROVIDER_PROBE_SENTINEL", sentinel)
 	return sentinel
+}
+
+func TestLocalProviderProbeCredentialPrecedence(t *testing.T) {
+	for _, tc := range []struct {
+		name, host, want string
+		saved            bool
+		env              map[string]string
+	}{
+		{"saved before environment", "", "config", true, map[string]string{"GH_TOKEN": "env"}},
+		{"GH_TOKEN before GITHUB_TOKEN", "", "GH_TOKEN", false, map[string]string{"GH_TOKEN": "first", "GITHUB_TOKEN": "second"}},
+		{"GITHUB_TOKEN fallback", "", "GITHUB_TOKEN", false, map[string]string{"GH_TOKEN": " ", "GITHUB_TOKEN": "second"}},
+		{"enterprise fallback", "git.example.com", "GITHUB_ENTERPRISE_TOKEN", false, map[string]string{"GH_TOKEN": "public", "GITHUB_ENTERPRISE_TOKEN": "enterprise"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			auth, err := LocalProviderProbe(context.Background(), ProviderInput{Provider: forge.ProviderGitHub, Host: tc.host, ConfiguredToken: tc.saved, Environment: tc.env}, rejectProviderHTTP{t})
+			if err != nil || !auth.Configured || auth.Authenticated() || auth.TokenSource != tc.want {
+				t.Fatalf("unexpected local credential state: %+v, %v", auth, err)
+			}
+		})
+	}
 }

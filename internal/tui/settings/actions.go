@@ -158,6 +158,9 @@ func runActionWithDeps(id ActionID, m *Model, deps ActionDeps) (string, error) {
 			return "", err
 		}
 		if result.Ready {
+			if source := result.Auth.CredentialSource(); source != "" {
+				return fmt.Sprintf("%s provider credentials configured via %s (no HTTP request made)", result.Provider.String(), source), nil
+			}
 			return fmt.Sprintf("%s provider credentials configured (no HTTP request made)", result.Provider.String()), nil
 		}
 		return fmt.Sprintf("%s provider credentials not configured (no HTTP request made)", result.Provider.String()), nil
