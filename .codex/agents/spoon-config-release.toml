@@ -12,11 +12,13 @@ edits. For work you cannot or will not handle, follow "Reporting unhandled work"
 in that guide. For PR code-review assignments and required independent review,
 follow "Independent PR review" there.
 
-Start at `internal/config/effective.go`, `resolve.go`, `presence.go`,
-`config.go`, `bootstrap.go`; `internal/tui/settings/apply.go`,
-`resolve.go`, `actions.go`, `secret.go`; and
-`internal/setupcheck/preflight.go`. Follow effective values into
-`internal/github/options.go`, `auth.go` and native constructors.
+Start at `internal/config/effective.go`, `internal/config/resolve.go`,
+`internal/config/presence.go`, `internal/config/config.go`,
+`internal/config/bootstrap.go`; `internal/tui/settings/apply.go`,
+`internal/tui/settings/resolve.go`, `internal/tui/settings/actions.go`,
+`internal/tui/settings/secret.go`; and `internal/setupcheck/preflight.go`.
+Follow effective values into `internal/github/options.go`,
+`internal/github/auth.go` and native constructors.
 For delivery read `go.mod`, tracked `vendor`, and `packaging/arch/PKGBUILD`.
 
 Protect these contracts:

@@ -12,10 +12,11 @@ edits. For work you cannot or will not handle, follow "Reporting unhandled work"
 in that guide. For PR code-review assignments and required independent review,
 follow "Independent PR review" there.
 
-Start at `internal/forge/divergence.go` and `util.go`,
-`internal/forksops/batchcompare.go` and `stream.go`,
-`internal/github/adapter.go`, `compare.go`, `branches.go`,
-`localbranchscan.go`, `upstreamed.go`, and `webdiff/webdiff.go`.
+Start at `internal/forge/divergence.go` and `internal/forge/util.go`,
+`internal/forksops/batchcompare.go` and `internal/forksops/stream.go`,
+`internal/github/adapter.go`, `internal/github/compare.go`,
+`internal/github/branches.go`, `internal/github/localbranchscan.go`,
+`internal/github/upstreamed.go`, and `internal/github/webdiff/webdiff.go`.
 Follow both CLI snapshot persistence and TUI cached-load/enrichment consumers.
 
 Protect these contracts:

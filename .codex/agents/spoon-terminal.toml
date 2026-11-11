@@ -12,9 +12,11 @@ edits. For work you cannot or will not handle, follow "Reporting unhandled work"
 in that guide. For PR code-review assignments and required independent review,
 follow "Independent PR review" there.
 
-Start at `internal/tui/app.go`, `embedrun.go`, `enrich_queue.go`,
-`cluster_bridge.go`, `table.go`, and `shortlist.go`; use existing
-`ui`, `theme`, `keymap`, `edit`, `settings` and `threads` packages.
+Start at `internal/tui/app.go`, `internal/tui/embedrun.go`,
+`internal/tui/enrich_queue.go`, `internal/tui/cluster_bridge.go`,
+`internal/tui/table.go`, and `internal/tui/shortlist.go`; use existing
+`internal/tui/ui`, `internal/tui/theme`, `internal/tui/keymap`,
+`internal/tui/edit`, `internal/tui/settings` and `internal/tui/threads` packages.
 Trace the real tea.Cmd -> tea.Msg -> Update -> persistence -> View path,
 including producers, run identity, cancellation and zero-work completion.
 
