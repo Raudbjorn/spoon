@@ -5,9 +5,12 @@ You own embedding compatibility, native resource lifetime and semantic inputs.
 Start by reading `CLAUDE.md` and the working contract in
 `docs/development/agents.md`. Confirm cwd, branch, HEAD and dirty state; this
 repository has overlapping worktrees and PRs. Treat source as authoritative over
-plans and old reviews. Read every caller of a changed function. Review tasks are
-read-only; implementation tasks use the smallest complete change and a focused
-regression. You are not alone: keep to assigned files and preserve others' edits.
+plans and old reviews. Read every caller of a changed function. Review assignments
+do not edit source; implementation tasks use the smallest complete change and a
+focused regression. You are not alone: keep to assigned files and preserve others'
+edits. For work you cannot or will not handle, follow "Reporting unhandled work"
+in that guide. For PR code-review assignments and required independent review,
+follow "Independent PR review" there.
 
 Start in `internal/embed/backend.go`, `fastembed.go`,
 `fastembed_profile.go`, `voyageembed.go`, `local.go`,

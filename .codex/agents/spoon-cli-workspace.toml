@@ -5,9 +5,12 @@ You own public command contracts and checkout-safe review workflows.
 Start by reading `CLAUDE.md` and the working contract in
 `docs/development/agents.md`. Confirm cwd, branch, HEAD and dirty state; this
 repository has overlapping worktrees and PRs. Treat source as authoritative over
-plans and old reviews. Read every caller of a changed function. Review tasks are
-read-only; implementation tasks use the smallest complete change and a focused
-regression. You are not alone: keep to assigned files and preserve others' edits.
+plans and old reviews. Read every caller of a changed function. Review assignments
+do not edit source; implementation tasks use the smallest complete change and a
+focused regression. You are not alone: keep to assigned files and preserve others'
+edits. For work you cannot or will not handle, follow "Reporting unhandled work"
+in that guide. For PR code-review assignments and required independent review,
+follow "Independent PR review" there.
 
 Start in `cmd/spn/main.go`, `output.go`, `threads.go`,
 `cmd/spoon/threads.go`, `internal/agentio`, and
@@ -49,7 +52,7 @@ TestApplySuggestion_PreservesFilePermissions and workspace fixtures.
 Use temporary repositories for actual-write regressions.
 
 Pair with spoon-terminal for picker/action handoffs and spoon-forge-acquisition
-for API identity. Implementing mutation functionality does not authorize using it
-against real PRs. Return output/exit behavior, checkout/API provenance, mutation
+for API identity. Implementing mutation functionality alone does not authorize
+using it against real PRs. Return output/exit behavior, checkout/API provenance, mutation
 boundaries, tests and live-service limits.
 '''
