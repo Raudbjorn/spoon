@@ -17,6 +17,9 @@ import (
 type enrichEntry struct {
 	fork     forge.T1Data
 	priority float64
+	cached   *forge.T2Data
+	// skipCache prevents a batch-invalidated compare from being read again.
+	skipCache bool
 	// sel is the branch the GraphQL divergence batch chose for this fork,
 	// or nil when the batch did not run or could not resolve it (the
 	// compare then scans branches itself, as it did before batching).
@@ -112,7 +115,11 @@ func (m *Model) nextBatchChunk() tea.Cmd {
 	// enrichDone reaches enrichTotal and raising the ceiling re-enriches them.
 	if m.maxTier() < 2 {
 		for _, e := range m.batchPending {
-			m.pendingUpdates = append(m.pendingUpdates, tier2ResultMsg{forkID: e.fork.ID, tierSkipped: true})
+			if e.cached != nil {
+				m.pendingUpdates = append(m.pendingUpdates, tier2ResultMsg{forkID: e.fork.ID, t2: *e.cached, fromCache: true})
+			} else {
+				m.pendingUpdates = append(m.pendingUpdates, tier2ResultMsg{forkID: e.fork.ID, tierSkipped: true})
+			}
 		}
 		m.batchPending = nil
 		m.batchResolving = false // no batch result will arrive to clear it
@@ -124,7 +131,11 @@ func (m *Model) nextBatchChunk() tea.Cmd {
 	// as the per-fork compare does, rather than draining the window further.
 	if m.provider.Headroom() < forksops.ReserveHeadroom {
 		for _, e := range m.batchPending {
-			m.pendingUpdates = append(m.pendingUpdates, tier2ResultMsg{forkID: e.fork.ID, budgetSkipped: true})
+			if e.cached != nil {
+				m.pendingUpdates = append(m.pendingUpdates, tier2ResultMsg{forkID: e.fork.ID, t2: *e.cached, fromCache: true})
+			} else {
+				m.pendingUpdates = append(m.pendingUpdates, tier2ResultMsg{forkID: e.fork.ID, budgetSkipped: true})
+			}
 		}
 		m.batchPending = nil
 		m.batchResolving = false // no batch result will arrive to clear it
@@ -142,10 +153,14 @@ func (m *Model) nextBatchChunk() tea.Cmd {
 func batchDivergenceCmd(ctx context.Context, bp forge.BatchCompareProvider, order []enrichEntry) tea.Cmd {
 	return func() tea.Msg {
 		forks := make([]forge.T1Data, len(order))
+		cached := make(map[string]*forge.T2Data)
 		for i, e := range order {
 			forks[i] = e.fork
+			if e.cached != nil {
+				cached[e.fork.ID] = e.cached
+			}
 		}
-		div, stats, err := bp.BatchCompare(ctx, forks, forksops.ReserveHeadroom)
+		div, stats, err := bp.BatchCompare(ctx, forks, cached, forksops.ReserveHeadroom)
 		msg := batchDivergenceMsg{ctx: ctx, order: order, divergence: div, stats: stats, err: err}
 		if errors.Is(err, forge.ErrRateReserve) {
 			return msg
@@ -212,7 +227,7 @@ func (m *Model) queuedCompareCmd(q *enrichQueue) tea.Cmd {
 			return tier2ResultMsg{forkID: f.ID, err: err}
 		}
 
-		if !refresh {
+		if !refresh && !e.skipCache {
 			if t2 := cached.ValidT2(f); t2 != nil {
 				return tier2ResultMsg{forkID: f.ID, t2: *t2, fromCache: true}
 			}
@@ -275,8 +290,29 @@ func (m *Model) handleBatchDivergence(msg batchDivergenceMsg) (tea.Model, tea.Cm
 		m.batchErr = msg.err.Error()
 	}
 
+	coverageDirty := false
 	rest := make([]enrichEntry, 0, len(msg.order))
 	for _, e := range msg.order {
+		if e.cached != nil && !msg.missing[e.fork.ID] {
+			t2, refreshed := forksops.RefreshCachedT2(e.cached, msg.divergence[e.fork.ID])
+			if t2 != nil {
+				m.pendingUpdates = append(m.pendingUpdates, tier2ResultMsg{forkID: e.fork.ID, t2: *t2, fromCache: true, cacheRefreshed: refreshed})
+				continue
+			}
+			e.skipCache = true
+			// Stale ahead/diff evidence must disappear even if the reserve
+			// prevents the replacement compare from running.
+			for i := range m.forks {
+				if m.forks[i].Fork.ID == e.fork.ID {
+					m.forks[i].T2 = nil
+					m.forks[i].Enriched = false
+					m.recomputeT2Score(i)
+					m.persistCompare(i, e.cached)
+					coverageDirty = true
+					break
+				}
+			}
+		}
 		res, ok := forksops.ResolveFromBatch(msg.divergence, e.fork.ID)
 		switch {
 		case msg.missing[e.fork.ID]:
@@ -299,6 +335,9 @@ func (m *Model) handleBatchDivergence(msg batchDivergenceMsg) (tea.Model, tea.Cm
 		}
 	}
 	cmds := m.dispatchQueued(rest)
+	if coverageDirty {
+		cmds = append(cmds, m.loadEmbedCoverage())
+	}
 	if next := m.nextBatchChunk(); next != nil {
 		cmds = append(cmds, next)
 	} else {

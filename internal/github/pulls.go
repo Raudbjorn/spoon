@@ -21,6 +21,12 @@ type PullRequest struct {
 	URL        string    `json:"url"`        // html_url
 	CreatedAt  time.Time `json:"createdAt"`
 	UpdatedAt  time.Time `json:"updatedAt"`
+
+	// RepoOwner, RepoName, and RepoDir are populated for multi-repo workspace discovery.
+	RepoOwner string `json:"repoOwner,omitempty"`
+	RepoName  string `json:"repoName,omitempty"`
+	RepoDir   string `json:"repoDir,omitempty"`
+	RepoRoot  string `json:"-"` // absolute checkout path for local operations
 }
 
 // pullRequestAPI is the on-the-wire shape from GET /repos/{owner}/{repo}/pulls.
@@ -98,8 +104,8 @@ func (c *Client) FindOpenPRForHead(ctx context.Context, owner, repo, headOwner, 
 	if headOwner == "" {
 		headOwner = owner
 	}
-	headParam := url.QueryEscape(headOwner + ":" + headBranch)
-	path := fmt.Sprintf("repos/%s/%s/pulls?state=open&head=%s&per_page=1", owner, repo, headParam)
+	head := fmt.Sprintf("%s:%s", headOwner, headBranch)
+	path := fmt.Sprintf("repos/%s/%s/pulls?state=open&head=%s&per_page=1", owner, repo, url.QueryEscape(head))
 
 	resp, err := c.GetRaw(ctx, path)
 	if err != nil {

@@ -88,10 +88,11 @@ func (f *fakeForge) Headroom() float64 {
 type batchFakeForge struct {
 	*fakeForge
 
-	batch      map[string]forge.ForkDivergence
-	batchErr   error
-	batchStats forge.BatchStats
-	batchCalls int // count of BatchCompare invocations
+	batch              map[string]forge.ForkDivergence
+	batchErr           error
+	batchStats         forge.BatchStats
+	batchCalls         int
+	headroomAfterBatch *float64
 
 	// resolvedCalls, when non-nil, has "<forkID>@<branch>" appended for
 	// every CompareResolved call, so a test can assert both which forks
@@ -104,8 +105,11 @@ type batchFakeForge struct {
 	resolvedErr map[string]error
 }
 
-func (f *batchFakeForge) BatchCompare(_ context.Context, _ []forge.T1Data, _ float64) (map[string]forge.ForkDivergence, forge.BatchStats, error) {
+func (f *batchFakeForge) BatchCompare(_ context.Context, _ []forge.T1Data, _ map[string]*forge.T2Data, _ float64) (map[string]forge.ForkDivergence, forge.BatchStats, error) {
 	f.batchCalls++
+	if f.headroomAfterBatch != nil {
+		f.headroom = f.headroomAfterBatch
+	}
 	if f.batchErr != nil {
 		return f.batch, f.batchStats, f.batchErr
 	}
@@ -275,7 +279,7 @@ func TestBatchEstimate_ContributorsCostAtTier3(t *testing.T) {
 		pending = append(pending, forge.T1Data{ID: fmt.Sprintf("o/unresolved%d", i)})
 	}
 
-	divergent, resolved, tier2Estimate := batchEstimate(pending, divergence, 2)
+	divergent, resolved, tier2Estimate := batchEstimate(pending, divergence, 2, nil)
 	if divergent != 10 {
 		t.Errorf("divergent = %d, want 10", divergent)
 	}
@@ -289,7 +293,7 @@ func TestBatchEstimate_ContributorsCostAtTier3(t *testing.T) {
 		t.Errorf("tier2Estimate = %d, want 25 (10 divergent + 5*3 unresolved)", tier2Estimate)
 	}
 
-	_, _, tier3Estimate := batchEstimate(pending, divergence, 3)
+	_, _, tier3Estimate := batchEstimate(pending, divergence, 3, nil)
 	// tier 3: every resolved fork (all 100) still pays a Contributors call
 	// -- perRequestCost(3)-perRequestCost(2) = 2 -- on top of the 10
 	// divergent compares; unresolved forks pay the full perRequestCost(3)=5
@@ -1064,7 +1068,8 @@ func TestStream_priorsLaneSplit_matchedBeforeUnmatched(t *testing.T) {
 	now := time.Now()
 	newForge := func() *fakeForge {
 		return &fakeForge{
-			parent: forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
+			concurrency: 1,
+			parent:      forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
 			forks: []forge.T1Data{
 				{ID: "o/docs", Owner: "o", Name: "docs", Stars: 500, SubForkCount: 20, PushedAt: now, DefaultBranch: "main"},
 				{ID: "o/auth", Owner: "o", Name: "auth", Stars: 1, PushedAt: now, DefaultBranch: "main"},

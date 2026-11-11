@@ -56,7 +56,8 @@ type Model struct {
 
 	// Verbose, when true, surfaces per-comment timestamps in the detail pane
 	// (matching gh-pr-display --verbose). Default off keeps the compact view.
-	Verbose bool
+	Verbose  bool
+	RepoRoot string // checkout for local suggestion application; empty uses cwd
 
 	// codeContexts caches per-thread CodeContext blocks indexed by thread ID.
 	// Populated by codeContextLoadedMsg events; consumed by view rendering.
@@ -530,7 +531,9 @@ func (m Model) applySuggestionCmd(sug threadsops.Suggestion) tea.Cmd {
 			return mutationDoneMsg{what: "apply-suggestion", err: fmt.Errorf("no thread selected")}
 		}
 		t := threadsops.ReviewThreadWithPolicy{ReviewThread: m.threads[m.cursor]}
-		_, opErr := threadsops.ApplySuggestion(context.Background(), t, sug, threadsops.ApplyOptions{})
+		_, opErr := threadsops.ApplySuggestion(context.Background(), t, sug, threadsops.ApplyOptions{
+			RepoRoot: m.RepoRoot,
+		})
 		if opErr != nil {
 			return mutationDoneMsg{what: "apply-suggestion", err: fmt.Errorf("%s", opErr.Message)}
 		}

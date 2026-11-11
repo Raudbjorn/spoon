@@ -1039,7 +1039,7 @@ func TestGHProviderBatchCompare_SkipsInheritedBranches(t *testing.T) {
 			{Name: "my-work", CommittedDate: created.AddDate(0, 1, 0)},
 		},
 	}
-	if _, _, err := p.BatchCompare(context.Background(), []forge.T1Data{fork}, 0); err != nil {
+	if _, _, err := p.BatchCompare(context.Background(), []forge.T1Data{fork}, nil, 0); err != nil {
 		t.Fatalf("BatchCompare: %v", err)
 	}
 	joined := strings.Join(docs(), "\n")
@@ -1048,5 +1048,79 @@ func TestGHProviderBatchCompare_SkipsInheritedBranches(t *testing.T) {
 	}
 	if !strings.Contains(joined, "my-work") {
 		t.Error("the post-fork branch was not paired")
+	}
+}
+
+func TestGHProviderBatchCompare_CachedBranchOnly(t *testing.T) {
+	phaseA := `{"data":{"repository":{"ref":{
+		"c0":{"aheadBy":3,"behindBy":7,"headTarget":{"oid":"cached-head"}},
+		"c1":{"aheadBy":1,"behindBy":2}
+	}},` + rl + `}}`
+	phaseB := `{"data":{"repository":{"ref":{
+		"c0":{"commits":{"nodes":[{"oid":"live-head","associatedPullRequests":{"nodes":[]}}]}}
+	}},` + rl + `}}`
+	srv, docs := batchStub(t, phaseA, phaseB)
+	p := NewGHProvider(newTestClientGQL(t, srv), AuthStatus{})
+	p.SetCompareBaseline("up", "stream", "main")
+	created := time.Now()
+	forks := []forge.T1Data{
+		{ID: "cached/repo", Owner: "cached", Name: "repo", DefaultBranch: "new-default", CreatedAt: created,
+			Branches: []forge.BranchRef{{Name: "old-branch", CommittedDate: created.Add(-time.Hour)}, {Name: "unused", CommittedDate: created.Add(time.Hour)}}},
+		{ID: "live/repo", Owner: "live", Name: "repo", DefaultBranch: "main"},
+		{ID: "unknown/repo", Owner: "unknown", Name: "repo", DefaultBranch: "main"},
+	}
+	cached := map[string]*forge.T2Data{
+		"cached/repo":  {ComparedBranch: "old-branch", HeadSHA: "cached-head", AheadCount: 3},
+		"unknown/repo": {HeadSHA: "unknown-head"},
+	}
+	got, stats, err := p.BatchCompare(context.Background(), forks, cached, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queries := docs()
+	if len(queries) != 2 || stats.Queries != 2 {
+		t.Fatalf("queries=%v stats=%+v", queries, stats)
+	}
+	if !strings.Contains(queries[0], `cached:old-branch`) || !strings.Contains(queries[0], `headTarget { oid }`) {
+		t.Fatalf("cached branch/identity missing: %s", queries[0])
+	}
+	for _, unwanted := range []string{"new-default", "unused", "unknown:", "cached:"} {
+		if strings.Contains(queries[1], unwanted) {
+			t.Errorf("Phase B queried %q: %s", unwanted, queries[1])
+		}
+	}
+	for _, unwanted := range []string{"new-default", "unused", "unknown:"} {
+		if strings.Contains(queries[0], unwanted) {
+			t.Errorf("Phase A queried %q: %s", unwanted, queries[0])
+		}
+	}
+	if !strings.Contains(queries[1], "live:main") {
+		t.Fatalf("uncached tip enrichment missing: %s", queries[1])
+	}
+	refresh := got["cached/repo"]
+	if !refresh.CountsOnly || !refresh.Resolved || refresh.Default.Name != "old-branch" || refresh.Default.TipSHA != "cached-head" || refresh.Default.BehindBy != 7 || len(refresh.Sides) != 0 {
+		t.Fatalf("cached result = %+v", refresh)
+	}
+	if got["live/repo"].CountsOnly || got["live/repo"].Default.TipSHA != "live-head" {
+		t.Fatalf("live result = %+v", got["live/repo"])
+	}
+}
+
+func TestFetchBatchDivergence_CachedAheadSkipsPhaseB(t *testing.T) {
+	phaseA := `{"data":{"repository":{"ref":{"c0":{"aheadBy":4,"behindBy":7,"headTarget":{"oid":"actual-head"}}}},` + rl + `}}`
+	srv, docs := batchStub(t, phaseA, "")
+	c := newTestClientGQL(t, srv)
+	got, stats, err := c.FetchBatchDivergence(context.Background(), "up", "stream", "main", []BatchTarget{{
+		ID: "f/repo", Owner: "f", Name: "repo", DefaultBranch: "feature", DefaultTipSHA: "stale-listing-head", CountsOnly: true,
+		Sides: []BatchBranch{{Name: "unused"}},
+	}}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(docs()) != 1 || stats.Queries != 1 || strings.Contains(docs()[0], "unused") {
+		t.Fatalf("unexpected queries: %v stats=%+v", docs(), stats)
+	}
+	if got["f/repo"].Default.TipSHA != "actual-head" {
+		t.Fatalf("used seed instead of queried head: %+v", got)
 	}
 }

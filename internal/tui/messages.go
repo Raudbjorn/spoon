@@ -76,6 +76,8 @@ type tier2ResultMsg struct {
 	// skips it), and re-persisting would overwrite full rows with patch-less
 	// ones — and the rows are identical anyway.
 	fromCache bool
+	// cacheRefreshed persists updated scalars without replacing cached patches.
+	cacheRefreshed bool
 }
 
 // patchResultMsg carries the outcome of a live provider.Compare call fetched

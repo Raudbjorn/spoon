@@ -57,6 +57,7 @@ func TestProductionWritesUseTypedOutput(t *testing.T) {
 // handoff, or direct write an explicit review event rather than an inherited
 // default. Structured records and agentio envelopes are data; the four
 // presentation routes identify the only human/error text currently emitted.
+// Persisting before failed-result skips moves the CSV warning site without changing its stream kind.
 var approvedOutputSites = map[string]StreamKind{
 	"main.go:101:call:writeError":    StreamError,
 	"main.go:104:call:writeError":    StreamError,
@@ -316,27 +317,28 @@ var approvedOutputSites = map[string]StreamKind{
 	"forks.go:919:call:Emit":           StreamData,
 	"forks.go:949:call:Emit":           StreamData,
 	"forks.go:953:call:WriteNDJSON":    StreamData,
-	"forks.go:1136:call:WriteNDJSON":   StreamData,
-	"forks.go:1164:call:WriteNDJSON":   StreamData,
-	"forks.go:1187:call:WriteNDJSON":   StreamData,
-	"forks.go:1203:call:WriteNDJSON":   StreamData,
-	"forks.go:1220:call:WriteNDJSON":   StreamData,
-	"forks.go:1281:call:WriteNDJSON":   StreamData,
-	"forks.go:1289:call:WriteNDJSON":   StreamData,
-	"forks.go:1652:call:Emit":          StreamData,
-	"forks.go:1670:call:WriteNDJSON":   StreamData,
-	"forks.go:1681:call:Emit":          StreamData,
+	// Cached comparison persistence adds four preceding lines; stream classifications are unchanged.
+	"forks.go:1140:call:WriteNDJSON":   StreamData,
+	"forks.go:1168:call:WriteNDJSON":   StreamData,
+	"forks.go:1191:call:WriteNDJSON":   StreamData,
+	"forks.go:1207:call:WriteNDJSON":   StreamData,
+	"forks.go:1224:call:WriteNDJSON":   StreamData,
+	"forks.go:1285:call:WriteNDJSON":   StreamData,
+	"forks.go:1293:call:WriteNDJSON":   StreamData,
+	"forks.go:1656:call:Emit":          StreamData,
+	"forks.go:1675:call:WriteNDJSON":   StreamData,
 	"forks.go:1685:call:Emit":          StreamData,
-	"forks.go:1764:call:WriteNDJSON":   StreamData,
-	"forks.go:1807:call:WriteNDJSON":   StreamData,
-	"forks.go:1818:call:WriteNDJSON":   StreamData,
-	"forks.go:1848:call:WriteNDJSON":   StreamData,
-	"forks.go:1873:call:WriteNDJSON":   StreamData,
-	"forks.go:1892:call:WriteNDJSON":   StreamData,
-	"forks.go:1951:call:Emit":          StreamData,
-	"forks.go:1965:call:WriteNDJSON":   StreamData,
-	"forks.go:2005:call:Emit":          StreamData,
-	"forks.go:2009:call:WriteNDJSON":   StreamData,
+	"forks.go:1689:call:Emit":          StreamData,
+	"forks.go:1768:call:WriteNDJSON":   StreamData,
+	"forks.go:1811:call:WriteNDJSON":   StreamData,
+	"forks.go:1822:call:WriteNDJSON":   StreamData,
+	"forks.go:1852:call:WriteNDJSON":   StreamData,
+	"forks.go:1877:call:WriteNDJSON":   StreamData,
+	"forks.go:1896:call:WriteNDJSON":   StreamData,
+	"forks.go:1955:call:Emit":          StreamData,
+	"forks.go:1969:call:WriteNDJSON":   StreamData,
+	"forks.go:2009:call:Emit":          StreamData,
+	"forks.go:2013:call:WriteNDJSON":   StreamData,
 }
 
 func TestOutputInventoryRejectsNegativeFixtures(t *testing.T) {

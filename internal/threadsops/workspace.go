@@ -4,126 +4,124 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/svnbjrn/spoon/internal/forge"
-	"github.com/svnbjrn/spoon/internal/github"
+	gh "github.com/svnbjrn/spoon/internal/github"
 )
 
 // WorkspaceRepo describes a sibling git checkout found in a workspace scan.
 type WorkspaceRepo struct {
-	Dir           string // absolute path to repository directory
-	OriginURL     string // decoded value of remote.origin.url
-	Owner         string // parsed from OriginURL via forge.ParseRepoURL
-	Repo          string // parsed repository name
-	Provider      string // "github" / "gitlab" / "gitea"
-	Host          string // origin host; never inferred from the API client
-	CurrentBranch string // current branch name, or empty if detached HEAD
-
-	UpstreamURL      string // decoded value of remote.upstream.url, if present
-	UpstreamOwner    string // parsed owner of upstream remote, if present
-	UpstreamRepo     string // parsed repository name of upstream remote, if present
-	UpstreamProvider string
-	UpstreamHost     string
+	Dir              string // absolute path to repository directory
+	RelDir           string // relative path from the scan root (e.g. "./frontend")
+	OriginURL        string // effective fetch URL for origin, including Git URL rewrites
+	UpstreamURL      string // effective fetch URL for upstream (if present)
+	Owner            string // target repo owner (upstream if present, else origin)
+	Repo             string // target repo name (upstream if present, else origin)
+	OriginOwner      string // owner parsed from OriginURL
+	OriginRepo       string // repo parsed from OriginURL
+	OriginHost       string // service host parsed from OriginURL
+	UpstreamOwner    string // owner parsed from UpstreamURL
+	UpstreamRepo     string // repo parsed from UpstreamURL
+	UpstreamHost     string // service host parsed from UpstreamURL
+	Provider         string // origin provider: "github" / "gitlab" / etc.
+	UpstreamProvider string // provider parsed from UpstreamURL
+	CurrentBranch    string // current branch from HEAD (empty on detached HEAD)
 }
 
-// ScanOptions configures workspace repository scanning.
+// ScanOptions configures ScanWorkspace.
 type ScanOptions struct {
-	Depth      int      // max directory search depth (default 1, max 3)
-	IgnoreDirs []string // extra directory names to skip (vendor, node_modules, etc.)
+	Depth      int      // max subdirectory depth (default 1, capped at 3)
+	IgnoreDirs []string // extra directory names to skip (vendor/, node_modules/, etc.)
 }
 
-// PRFetcher abstracts looking up an open pull request by head ref.
-// github.Client implements this via FindOpenPRForHead.
+// PRFetcher is the interface for resolving an open PR for a head branch.
+// Satisfied by *github.Client.
 type PRFetcher interface {
 	Host() string
-	FindOpenPRForHead(ctx context.Context, owner, repo, headOwner, headBranch string) (*github.PullRequest, error)
+	FindOpenPRForHead(ctx context.Context, owner, repo, headOwner, headBranch string) (*gh.PullRequest, error)
 }
 
-// parseRemoteIdentity rejects local paths instead of treating them as GitHub shorthand.
-func parseRemoteIdentity(raw string) (forge.Provider, string, string, string, error) {
-	normalized := normalizeRemoteURL(raw)
-	u, err := url.Parse(normalized)
-	if err != nil || u.Hostname() == "" || (u.Scheme != "https" && u.Scheme != "http") {
-		return 0, "", "", "", fmt.Errorf("remote has no supported host")
-	}
-	return forge.ParseRepoURL(normalized, "", 0)
-}
-
-// DiscoverOptions configures concurrent pull request discovery in a workspace.
+// DiscoverOptions configures DiscoverPRsInWorkspace.
 type DiscoverOptions struct {
-	Parallelism int // number of concurrent PR queries (default 8)
+	ScanOptions                 // embedded ScanOptions
+	Parallelism int             // bounded worker count (default 8)
+	Logger      io.Writer       // optional logger for per-repo lookup warnings/errors
+	IncludeAll  bool            // include confirmed no-PR results too; failures are always returned
+	Repos       []WorkspaceRepo // optional pre-scanned repos (if empty, ScanWorkspace is called)
 }
 
-// WorkspaceDiscovery holds the discovery result for one workspace repository.
+// WorkspaceDiscovery holds the discovery result for a single workspace checkout.
 type WorkspaceDiscovery struct {
 	Repo WorkspaceRepo
-	PR   *github.PullRequest
-	Err  error
+	PR   *gh.PullRequest // nil if no open PR found
+	Err  error           // non-nil if lookup failed
 }
 
-// defaultIgnoreDirs lists common non-repo or generated directories to skip during scanning.
-var defaultIgnoreDirs = map[string]bool{
-	".git":         true,
-	"node_modules": true,
-	"vendor":       true,
-	"dist":         true,
-	"build":        true,
-	".cache":       true,
-	".gemini":      true,
-	".superpowers": true,
-}
-
-// resolveGitDir handles standard .git directories, git worktrees, and submodules.
-// It returns the gitDir (where HEAD and refs reside) and commonDir (where config resides).
-func resolveGitDir(repoPath string) (gitDir string, commonDir string, err error) {
-	dotGit := filepath.Join(repoPath, ".git")
-	fi, err := os.Stat(dotGit)
+// resolveGitDir handles both standard .git directories and .git pointer files (gitdir: <path>),
+// resolving linked worktree commondir (for config) and worktree-local gitdir (for HEAD).
+func resolveGitDir(dir string) (gitDir, commonDir string, err error) {
+	gitPath := dir
+	baseDir := filepath.Dir(dir)
+	if filepath.Base(dir) != ".git" {
+		gitPath = filepath.Join(dir, ".git")
+		baseDir = dir
+	}
+	fi, err := os.Stat(gitPath)
 	if err != nil {
 		return "", "", err
 	}
+
 	if fi.IsDir() {
-		return dotGit, dotGit, nil
+		return gitPath, gitPath, nil
 	}
 
-	// .git is a regular file (worktree or submodule): "gitdir: <path>\n"
-	raw, err := os.ReadFile(dotGit)
+	// Pointer file: read "gitdir: <path>"
+	content, err := os.ReadFile(gitPath)
 	if err != nil {
-		return "", "", fmt.Errorf("read .git file: %w", err)
-	}
-	line := strings.TrimSpace(string(raw))
-	if !strings.HasPrefix(line, "gitdir:") {
-		return "", "", fmt.Errorf("invalid .git pointer file in %s", repoPath)
+		return "", "", fmt.Errorf("reading .git file: %w", err)
 	}
 
-	gitDir = strings.TrimSpace(strings.TrimPrefix(line, "gitdir:"))
-	if !filepath.IsAbs(gitDir) {
-		gitDir = filepath.Clean(filepath.Join(repoPath, gitDir))
+	trimmed := strings.TrimSpace(string(content))
+	if !strings.HasPrefix(trimmed, "gitdir:") {
+		return "", "", fmt.Errorf("invalid .git pointer file in %s", dir)
 	}
+	target := strings.TrimSpace(strings.TrimPrefix(trimmed, "gitdir:"))
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(baseDir, target)
+	}
+	gitDir = filepath.Clean(target)
+	commonDir = gitDir
 
-	// Check for commondir (present in linked worktrees)
-	if commonRaw, err := os.ReadFile(filepath.Join(gitDir, "commondir")); err == nil {
-		relCommon := strings.TrimSpace(string(commonRaw))
-		if filepath.IsAbs(relCommon) {
-			commonDir = filepath.Clean(relCommon)
-		} else {
-			commonDir = filepath.Clean(filepath.Join(gitDir, relCommon))
+	// Linked worktrees contain a commondir file pointing to the main git directory.
+	commonPath := filepath.Join(gitDir, "commondir")
+	if cBytes, err := os.ReadFile(commonPath); err == nil {
+		cTarget := strings.TrimSpace(string(cBytes))
+		if !filepath.IsAbs(cTarget) {
+			cTarget = filepath.Join(gitDir, cTarget)
 		}
-	} else {
-		commonDir = gitDir
+		commonDir = filepath.Clean(cTarget)
 	}
+
 	return gitDir, commonDir, nil
 }
 
-// normalizeRemoteURL converts git SSH and SCP-like URLs to https URLs that
-// forge.ParseRepoURL understands.
-func normalizeRemoteURL(raw string) string {
+// ResolveGitDir is resolveGitDir exported for external callers and tests.
+func ResolveGitDir(dir string) (gitDir, commonDir string, err error) {
+	return resolveGitDir(dir)
+}
+
+// normalizeGitURL converts scp-like SSH URLs (git@github.com:owner/repo.git)
+// and ssh:// URLs into an HTTPS form compatible with forge.ParseRepoURL.
+func normalizeGitURL(raw string) string {
 	s := strings.TrimSpace(raw)
 	if s == "" {
 		return ""
@@ -156,105 +154,140 @@ func normalizeRemoteURL(raw string) string {
 	return s
 }
 
-// readRepoDetails reads the current branch and remotes for a repository located at repoPath.
-func readRepoDetails(repoPath string) (WorkspaceRepo, error) {
-	absDir, err := filepath.Abs(repoPath)
+// parseRemoteIdentity rejects local paths instead of treating them as hosted repositories.
+func parseRemoteIdentity(raw string) (forge.Provider, string, string, string, error) {
+	normalized := normalizeGitURL(raw)
+	u, err := url.Parse(normalized)
+	if err != nil || u.Hostname() == "" || (u.Scheme != "https" && u.Scheme != "http") {
+		return 0, "", "", "", fmt.Errorf("remote has no supported host")
+	}
+	return forge.ParseRepoURL(normalized, "", 0)
+}
+
+// NormalizeGitURL is normalizeGitURL exported for testing.
+func NormalizeGitURL(raw string) string {
+	return normalizeGitURL(raw)
+}
+
+// parseBranch parses the current branch from <gitdir>/HEAD content.
+// Returns empty string on detached HEAD (raw commit hash) or invalid ref.
+func parseBranch(headContent string) string {
+	trimmed := strings.TrimSpace(headContent)
+	if strings.HasPrefix(trimmed, "ref: refs/heads/") {
+		return strings.TrimPrefix(trimmed, "ref: refs/heads/")
+	}
+	return ""
+}
+
+// readRemotes delegates includes, URL selection and insteadOf rewriting to Git.
+func readRemotes(dir string) (originURL, upstreamURL string, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var urls [2]string
+	for i, remote := range []string{"origin", "upstream"} {
+		out, err := exec.CommandContext(ctx, "git", "-C", dir, "remote", "get-url", remote).Output()
+		var exitErr *exec.ExitError
+		if err != nil {
+			if errors.As(err, &exitErr) && exitErr.ExitCode() == 2 {
+				continue // Git reports an absent remote with exit status 2.
+			}
+			return "", "", fmt.Errorf("reading remote %s in %q: %w", remote, dir, err)
+		}
+		urls[i] = strings.TrimSuffix(string(out), "\n")
+	}
+	return urls[0], urls[1], nil
+}
+
+func parseWorkspaceRepo(repoDir, root string) (WorkspaceRepo, error) {
+	gitDir, _, err := resolveGitDir(repoDir)
 	if err != nil {
-		absDir = repoPath
+		return WorkspaceRepo{}, err
+	}
+
+	absDir, err := filepath.Abs(repoDir)
+	if err != nil {
+		absDir = repoDir
+	}
+
+	relDir := "."
+	if absRoot, err := filepath.Abs(root); err == nil {
+		if rel, err := filepath.Rel(absRoot, absDir); err == nil {
+			if rel != "." && !strings.HasPrefix(rel, "./") && !strings.HasPrefix(rel, "../") {
+				relDir = "./" + rel
+			} else {
+				relDir = rel
+			}
+		}
 	}
 
 	repo := WorkspaceRepo{
-		Dir: absDir,
+		Dir:    absDir,
+		RelDir: relDir,
 	}
 
-	gitDir, commonDir, err := resolveGitDir(absDir)
+	// Read HEAD
+	if headBytes, err := os.ReadFile(filepath.Join(gitDir, "HEAD")); err == nil {
+		repo.CurrentBranch = parseBranch(string(headBytes))
+	}
+
+	repo.OriginURL, repo.UpstreamURL, err = readRemotes(absDir)
 	if err != nil {
-		return repo, err
+		return WorkspaceRepo{}, err
 	}
 
-	// 1. Read HEAD for current branch
-	headFile := filepath.Join(gitDir, "HEAD")
-	if headRaw, err := os.ReadFile(headFile); err == nil {
-		headContent := strings.TrimSpace(string(headRaw))
-		if strings.HasPrefix(headContent, "ref: refs/heads/") {
-			repo.CurrentBranch = strings.TrimPrefix(headContent, "ref: refs/heads/")
-		} else {
-			// Detached HEAD or 40-character commit SHA -> no branch
-			repo.CurrentBranch = ""
-		}
-	}
-
-	// 2. Read config for remotes
-	configFile := filepath.Join(commonDir, "config")
-	// Git handles quotes, escapes, comments, and continuations in config values.
-	const gitConfigTimeout = 5 * time.Second
-	ctx, cancel := context.WithTimeout(context.Background(), gitConfigTimeout)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, "git", "config", "--file", configFile, "--null", "--get-regexp", `^remote\.(origin|upstream)\.url$`).Output()
-	if err != nil {
-		var exitErr *exec.ExitError
-		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
-			return repo, fmt.Errorf("read remote config: %w", err)
-		}
-	}
-	for _, entry := range strings.Split(string(out), "\x00") {
-		key, val, _ := strings.Cut(entry, "\n")
-		switch key {
-		case "remote.origin.url":
-			if repo.OriginURL == "" {
-				repo.OriginURL = val
-			}
-		case "remote.upstream.url":
-			if repo.UpstreamURL == "" {
-				repo.UpstreamURL = val
-			}
-		}
-	}
-
-	// 3. Parse Origin URL
 	if repo.OriginURL != "" {
-		prov, host, owner, repoName, err := parseRemoteIdentity(repo.OriginURL)
+		provider, host, o, r, err := parseRemoteIdentity(repo.OriginURL)
 		if err == nil {
-			repo.Provider = prov.String()
-			repo.Host = host
-			repo.Owner = owner
-			repo.Repo = repoName
+			repo.OriginHost = host
+			repo.OriginOwner = o
+			repo.OriginRepo = r
+			repo.Owner = o
+			repo.Repo = r
+			repo.Provider = provider.String()
 		}
 	}
 
-	// 4. Parse Upstream URL if present
 	if repo.UpstreamURL != "" {
-		prov, host, upOwner, upRepo, err := parseRemoteIdentity(repo.UpstreamURL)
+		provider, host, o, r, err := parseRemoteIdentity(repo.UpstreamURL)
 		if err == nil {
-			repo.UpstreamProvider = prov.String()
+			repo.UpstreamProvider = provider.String()
 			repo.UpstreamHost = host
-			repo.UpstreamOwner = upOwner
-			repo.UpstreamRepo = upRepo
+			repo.UpstreamOwner = o
+			repo.UpstreamRepo = r
+			// Upstream takes precedence for target repository; Provider describes origin.
+			repo.Owner = o
+			repo.Repo = r
 		}
 	}
 
 	return repo, nil
 }
 
-// ScanWorkspace searches root and its subdirectories up to opts.Depth for git repositories.
+var defaultIgnoreDirs = map[string]bool{
+	".git":           true,
+	"node_modules":   true,
+	"vendor":         true,
+	".do-not-commit": true,
+	".cache":         true,
+	".gemini":        true,
+	".superpowers":   true,
+	"build":          true,
+	"dist":           true,
+}
+
+// ScanWorkspace returns one entry per .git directory or worktree pointer found
+// in root or immediate subdirectories up to opts.Depth (default 1, capped at 3).
 // From inside a checkout, it scans the checkout's parent to include siblings.
 func ScanWorkspace(root string, opts ScanOptions) ([]WorkspaceRepo, error) {
-	depth := opts.Depth
-	if depth <= 0 {
-		depth = 1
-	}
-	if depth > 3 {
-		depth = 3
-	}
-
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("resolving workspace root: %w", err)
 	}
+
 	if fi, err := os.Stat(absRoot); err != nil {
 		return nil, err
 	} else if !fi.IsDir() {
-		return nil, fmt.Errorf("workspace root is not a directory: %s", absRoot)
+		return nil, fmt.Errorf("workspace root is not a directory: %q", absRoot)
 	}
 	for dir := absRoot; ; dir = filepath.Dir(dir) {
 		if _, _, err := resolveGitDir(dir); err == nil {
@@ -266,34 +299,40 @@ func ScanWorkspace(root string, opts ScanOptions) ([]WorkspaceRepo, error) {
 		}
 	}
 
-	ignored := make(map[string]bool)
-	for k, v := range defaultIgnoreDirs {
-		ignored[k] = v
+	depth := opts.Depth
+	if depth <= 0 {
+		depth = 1
 	}
-	for _, dir := range opts.IgnoreDirs {
-		ignored[dir] = true
+	if depth > 3 {
+		depth = 3
 	}
 
-	var results []WorkspaceRepo
+	ignore := make(map[string]bool, len(defaultIgnoreDirs)+len(opts.IgnoreDirs))
+	for k, v := range defaultIgnoreDirs {
+		ignore[k] = v
+	}
+	for _, d := range opts.IgnoreDirs {
+		ignore[d] = true
+	}
+
+	var repos []WorkspaceRepo
 	seenDirs := make(map[string]bool)
 
-	// Check if root itself is a git repo
+	// Check if root itself is a git repository
 	if _, _, err := resolveGitDir(absRoot); err == nil {
-		if r, err := readRepoDetails(absRoot); err == nil {
-			results = append(results, r)
-			seenDirs[absRoot] = true
+		r, err := parseWorkspaceRepo(absRoot, absRoot)
+		if err != nil {
+			return nil, err
 		}
+		repos = append(repos, r)
+		seenDirs[absRoot] = true
 	}
 
-	var scanSubdirs func(dir string, currentDepth int)
-	scanSubdirs = func(dir string, currentDepth int) {
-		if currentDepth > depth {
-			return
-		}
-
+	var walk func(dir string, curDepth int) error
+	walk = func(dir string, curDepth int) error {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
-			return
+			return fmt.Errorf("reading workspace directory %q: %w", dir, err)
 		}
 
 		for _, e := range entries {
@@ -301,7 +340,7 @@ func ScanWorkspace(root string, opts ScanOptions) ([]WorkspaceRepo, error) {
 				continue
 			}
 			name := e.Name()
-			if strings.HasPrefix(name, ".") || ignored[name] {
+			if ignore[name] || (strings.HasPrefix(name, ".") && name != ".worktrees") {
 				continue
 			}
 
@@ -310,81 +349,135 @@ func ScanWorkspace(root string, opts ScanOptions) ([]WorkspaceRepo, error) {
 				continue
 			}
 
-			// If subPath is a git repository, record it and do not descend into it
+			// Check if subPath is a git repo/worktree
 			if _, _, err := resolveGitDir(subPath); err == nil {
-				if r, err := readRepoDetails(subPath); err == nil {
-					results = append(results, r)
-					seenDirs[subPath] = true
+				r, err := parseWorkspaceRepo(subPath, absRoot)
+				if err != nil {
+					return err
 				}
-				continue
+				repos = append(repos, r)
+				seenDirs[subPath] = true
 			}
 
-			// Recurse to next depth
-			scanSubdirs(subPath, currentDepth+1)
+			if curDepth < depth {
+				if err := walk(subPath, curDepth+1); err != nil {
+					return err
+				}
+			}
 		}
+		return nil
 	}
 
-	scanSubdirs(absRoot, 1)
-	return results, nil
+	if err := walk(absRoot, 1); err != nil {
+		return nil, err
+	}
+
+	sort.Slice(repos, func(i, j int) bool {
+		return repos[i].Dir < repos[j].Dir
+	})
+
+	return repos, nil
 }
 
-// DiscoverPRsInWorkspace concurrently queries fetcher for open PRs for each workspace repo's current branch.
-func DiscoverPRsInWorkspace(ctx context.Context, fetcher PRFetcher, repos []WorkspaceRepo, opts DiscoverOptions) []WorkspaceDiscovery {
+// DiscoverPRsForRepos concurrently queries open PRs for each workspace repo
+// against upstream (with origin fallback) using bounded workers.
+func DiscoverPRsForRepos(ctx context.Context, fetcher PRFetcher, repos []WorkspaceRepo, opts DiscoverOptions) []WorkspaceDiscovery {
+	if len(repos) == 0 {
+		return nil
+	}
+
 	parallelism := opts.Parallelism
 	if parallelism <= 0 {
 		parallelism = 8
 	}
+	if parallelism > len(repos) {
+		parallelism = len(repos)
+	}
 
-	results := make([]WorkspaceDiscovery, len(repos))
 	sem := make(chan struct{}, parallelism)
 	var wg sync.WaitGroup
+	rawResults := make([]WorkspaceDiscovery, len(repos))
 
 	for i, r := range repos {
-		results[i].Repo = r
-
-		if r.CurrentBranch == "" || r.Owner == "" || r.Repo == "" || fetcher == nil {
-			continue
-		}
-		if r.Provider != "github" || !strings.EqualFold(r.Host, fetcher.Host()) {
-			results[i].Err = fmt.Errorf("origin is not served by GitHub host %s", fetcher.Host())
-			continue
-		}
-
 		wg.Add(1)
 		go func(idx int, repo WorkspaceRepo) {
 			defer wg.Done()
-
 			select {
-			case sem <- struct{}{}:
 			case <-ctx.Done():
-				results[idx].Err = ctx.Err()
+				rawResults[idx] = WorkspaceDiscovery{Repo: repo, Err: ctx.Err()}
 				return
+			case sem <- struct{}{}:
 			}
 			defer func() { <-sem }()
 
-			// Both the head and target must belong to the client's host.
-			if repo.UpstreamURL != "" || repo.UpstreamRepo != "" {
-				if repo.UpstreamProvider != "github" || !strings.EqualFold(repo.UpstreamHost, fetcher.Host()) || repo.UpstreamOwner == "" || repo.UpstreamRepo == "" {
-					results[idx].Err = fmt.Errorf("upstream is not served by GitHub host %s", fetcher.Host())
-				} else if !strings.EqualFold(repo.UpstreamOwner+"/"+repo.UpstreamRepo, repo.Owner+"/"+repo.Repo) {
-					pr, err := fetcher.FindOpenPRForHead(ctx, repo.UpstreamOwner, repo.UpstreamRepo, repo.Owner, repo.CurrentBranch)
-					if err != nil {
-						results[idx].Err = fmt.Errorf("upstream lookup: %w", err)
-					}
-					if pr != nil {
-						results[idx].PR = pr
-						return
-					}
-				}
-			}
-			pr, err := fetcher.FindOpenPRForHead(ctx, repo.Owner, repo.Repo, repo.Owner, repo.CurrentBranch)
-			if err != nil {
-				results[idx].Err = errors.Join(results[idx].Err, fmt.Errorf("origin lookup: %w", err))
-			}
-			results[idx].PR = pr
+			rawResults[idx] = discoverPRForRepo(ctx, fetcher, repo)
 		}(i, r)
 	}
 
 	wg.Wait()
-	return results
+
+	var filtered []WorkspaceDiscovery
+	for _, d := range rawResults {
+		// Writers need not be concurrency-safe; emit warnings after all workers finish.
+		if d.Err != nil && opts.Logger != nil {
+			fmt.Fprintf(opts.Logger, "warning: checking PR for %q: %q\n", d.Repo.RelDir, d.Err.Error())
+		}
+		if opts.IncludeAll || d.PR != nil || d.Err != nil {
+			filtered = append(filtered, d)
+		}
+	}
+	return filtered
+}
+
+func discoverPRForRepo(ctx context.Context, fetcher PRFetcher, repo WorkspaceRepo) WorkspaceDiscovery {
+	d := WorkspaceDiscovery{Repo: repo}
+	if repo.CurrentBranch == "" || fetcher == nil {
+		return d
+	}
+	// Both the head and target identities must belong to the client's service.
+	host := fetcher.Host()
+	if repo.Provider != "github" || !strings.EqualFold(repo.OriginHost, host) {
+		d.Err = fmt.Errorf("origin host %q is not served by GitHub host %q", repo.OriginHost, host)
+		return d
+	}
+	if repo.OriginOwner == "" || repo.OriginRepo == "" {
+		return d
+	}
+	lookup := func(owner, name, headOwner string) {
+		pr, err := fetcher.FindOpenPRForHead(ctx, owner, name, headOwner, repo.CurrentBranch)
+		if err != nil {
+			d.Err = errors.Join(d.Err, fmt.Errorf("%s/%s: %w", owner, name, err))
+			return
+		}
+		if pr != nil {
+			copyPR := *pr
+			copyPR.RepoOwner, copyPR.RepoName = owner, name
+			copyPR.RepoDir, copyPR.RepoRoot = repo.RelDir, repo.Dir
+			d.PR = &copyPR
+		}
+	}
+	upstreamSupported := repo.UpstreamProvider == "github" && strings.EqualFold(repo.UpstreamHost, host) && repo.UpstreamOwner != "" && repo.UpstreamRepo != ""
+	if upstreamSupported {
+		lookup(repo.UpstreamOwner, repo.UpstreamRepo, repo.OriginOwner)
+	} else if repo.UpstreamURL != "" || repo.UpstreamOwner != "" {
+		d.Err = fmt.Errorf("upstream host %q is not served by GitHub host %q", repo.UpstreamHost, host)
+	}
+	if d.PR == nil && (!upstreamSupported || !strings.EqualFold(repo.OriginOwner+"/"+repo.OriginRepo, repo.UpstreamOwner+"/"+repo.UpstreamRepo)) {
+		lookup(repo.OriginOwner, repo.OriginRepo, repo.OriginOwner)
+	}
+	return d
+}
+
+// DiscoverPRsInWorkspace scans sibling checkouts up to opts.Depth (or uses opts.Repos)
+// and concurrently queries open PRs against upstream (with origin fallback) using bounded workers.
+func DiscoverPRsInWorkspace(ctx context.Context, fetcher PRFetcher, root string, opts DiscoverOptions) ([]WorkspaceDiscovery, error) {
+	repos := opts.Repos
+	if len(repos) == 0 {
+		var err error
+		repos, err = ScanWorkspace(root, opts.ScanOptions)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return DiscoverPRsForRepos(ctx, fetcher, repos, opts), nil
 }

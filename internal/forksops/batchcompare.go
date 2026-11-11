@@ -73,7 +73,7 @@ type batchResolution struct {
 }
 
 func cachedComparisonMatches(t2 *forge.T2Data, sel *forge.BranchSelection) bool {
-	return sel != nil && t2.Performed && t2.HeadSHA != "" &&
+	return sel != nil && (t2.ComparedBranch == "" || t2.ComparedBranch == sel.Branch) && t2.Performed && t2.HeadSHA != "" &&
 		t2.HeadSHA == sel.TipSHA && t2.AheadCount == sel.Ahead &&
 		t2.IsBranchWork == sel.IsSide && (!sel.IsSide || t2.ActiveBranch == sel.Branch) &&
 		t2.Upstreamed == sel.Upstreamed && t2.UpstreamedPR == sel.UpstreamedPR
@@ -87,7 +87,7 @@ func cachedComparisonMatches(t2 *forge.T2Data, sel *forge.BranchSelection) bool 
 // would without a batch at all.
 func resolveFromBatch(divergence map[string]forge.ForkDivergence, forkID string) (batchResolution, bool) {
 	d, ok := divergence[forkID]
-	if !ok || !d.Resolved {
+	if !ok || !d.Resolved || d.CountsOnly {
 		return batchResolution{}, false
 	}
 	sel := forge.SelectDivergentBranch(d)
@@ -107,11 +107,12 @@ func resolveFromBatch(divergence map[string]forge.ForkDivergence, forkID string)
 // CompareFiles from Diffs.
 func synthesiseT2(d forge.ForkDivergence) forge.T2Data {
 	return forge.T2Data{
-		Performed:     true,
-		AheadCount:    0,
-		BehindCount:   d.Default.BehindBy,
-		HeadSHA:       d.Default.TipSHA,
-		CompareSource: "graphql_batch",
+		Performed:      true,
+		AheadCount:     0,
+		BehindCount:    d.Default.BehindBy,
+		HeadSHA:        d.Default.TipSHA,
+		ComparedBranch: d.Default.Name,
+		CompareSource:  "graphql_batch",
 	}
 }
 
@@ -155,7 +156,9 @@ func logCompareResolvedFallback(logger io.Writer, forkID string, err error) {
 // CompareResolved call each), versus resolved to nothing ahead (no REST
 // call at all, already fully known) or were not resolved by the batch at
 // all (fall back to a full per-fork Compare, same cost as before the
-// batch existed).
+// batch existed). Cached forks that pass through the batch to refresh
+// BehindCount do not incur REST compare calls, so they are excluded from
+// the divergent and unresolved counts in the REST estimate.
 //
 // restEstimate adds those together: one request per divergent fork, plus
 // the old per-fork tier estimate for every fork the batch could not
@@ -167,23 +170,22 @@ func logCompareResolvedFallback(logger io.Writer, forkID string, err error) {
 // contributors-only share -- perRequestCost(3)-perRequestCost(2) -- to
 // every resolved fork, not just the unresolved ones already folded into
 // perRequestCost(tier).
-func batchEstimate(pending []forge.T1Data, divergence map[string]forge.ForkDivergence, tier int) (divergent, resolved, restEstimate int) {
-	return batchEstimateWithCached(pending, divergence, nil, tier)
-}
-
-func batchEstimateWithCached(pending []forge.T1Data, divergence map[string]forge.ForkDivergence, cachedComparisons map[string]*forge.T2Data, tier int) (divergent, resolved, restEstimate int) {
+func batchEstimate(pending []forge.T1Data, divergence map[string]forge.ForkDivergence, tier int, isCached func(forge.T1Data) bool) (divergent, resolved, restEstimate int) {
 	unresolved := 0
+	cachedUnresolved := 0
 	for _, f := range pending {
+		cached := isCached != nil && isCached(f)
 		d, ok := divergence[f.ID]
 		if !ok || !d.Resolved {
-			if cachedComparisons[f.ID] == nil {
+			if !cached {
 				unresolved++
+			} else {
+				cachedUnresolved++
 			}
 			continue
 		}
 		resolved++
-		sel := forge.SelectDivergentBranch(d)
-		if cached := cachedComparisons[f.ID]; sel.NeedsREST && (cached == nil || !cachedComparisonMatches(cached, &sel)) {
+		if !cached && forge.SelectDivergentBranch(d).NeedsREST {
 			divergent++
 		}
 	}
@@ -191,8 +193,58 @@ func batchEstimateWithCached(pending []forge.T1Data, divergence map[string]forge
 	if tier >= 3 {
 		contributorsShare = perRequestCost(3) - perRequestCost(2)
 	}
-	restEstimate = divergent + resolved*contributorsShare + unresolved*perRequestCost(tier)
+	restEstimate = divergent + (resolved+cachedUnresolved)*contributorsShare + unresolved*perRequestCost(tier)
 	return divergent, resolved, restEstimate
+}
+
+// RefreshCachedT2 returns a private copy and whether its behind count changed.
+// A different full-batch selection, head, or ahead count invalidates the old
+// commits/diffs (nil result). CountsOnly results can refresh just their named branch.
+func RefreshCachedT2(t2 *forge.T2Data, d forge.ForkDivergence) (*forge.T2Data, bool) {
+	if t2 == nil {
+		return nil, false
+	}
+	copy := *t2
+	if d.Resolved && !d.CountsOnly {
+		// A full batch can choose different work or prove every branch is zero-ahead.
+		// Only reuse the cache when it describes that exact selected comparison.
+		sel := forge.SelectDivergentBranch(d)
+		if !sel.NeedsREST || !cachedComparisonMatches(t2, &sel) {
+			return nil, false
+		}
+		copy.BehindCount = sel.Behind
+		return &copy, copy.BehindCount != t2.BehindCount
+	}
+	branch := t2.ComparedBranch
+	if branch == "" && t2.IsBranchWork {
+		branch = t2.ActiveBranch
+	}
+	if !d.Resolved || branch == "" {
+		return &copy, false
+	}
+	var compared *forge.BranchDivergence
+	if d.Default.Name == branch {
+		compared = &d.Default
+	} else {
+		for i := range d.Sides {
+			if d.Sides[i].Name == branch {
+				compared = &d.Sides[i]
+				break
+			}
+		}
+	}
+	if compared == nil {
+		return &copy, false
+	}
+	if compared.AheadBy != t2.AheadCount || (compared.TipSHA != "" && t2.HeadSHA != "" && compared.TipSHA != t2.HeadSHA) {
+		return nil, false
+	}
+	// Missing identity cannot establish that the cached diffs still match this head.
+	if compared.TipSHA == "" || t2.HeadSHA == "" {
+		return &copy, false
+	}
+	copy.BehindCount = compared.BehindBy
+	return &copy, copy.BehindCount != t2.BehindCount
 }
 
 // BatchResolution is the exported form of batchResolution, for callers

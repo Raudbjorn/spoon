@@ -252,7 +252,7 @@ func Reassign(existing []Cluster, currentForks []ForkPoint, opts ReassignOptions
     // 1. Reconstruct each unnormalized sum from stored embeddings in stable fork-key order.
     // Subtract removed/changed members' old vectors, then normalize surviving sums
     // for assignment. Never reconstruct a sum as Centroid * MemberCount.
-    
+
     // 2. Assign new/updated forks to nearest existing centroid (Cosine Distance < Epsilon)
     // Collect batch additions per cluster without mutating centroids mid-loop (order-independent).
     for _, pt := range newForks {

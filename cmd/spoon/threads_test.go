@@ -11,34 +11,6 @@ import (
 	"github.com/svnbjrn/spoon/internal/tui/theme"
 )
 
-func TestWorkspacePRsReportsIncompleteDiscovery(t *testing.T) {
-	failed := threadsops.WorkspaceDiscovery{Repo: threadsops.WorkspaceRepo{Dir: "/workspace/failed"}, Err: errors.New("403 forbidden")}
-	matched := threadsops.WorkspaceDiscovery{PR: &gh.PullRequest{Number: 42}}
-	for _, tc := range []struct {
-		name                 string
-		results              []threadsops.WorkspaceDiscovery
-		wantCount            int
-		wantErr, wantWarning bool
-	}{
-		{"no matches", []threadsops.WorkspaceDiscovery{{}}, 0, false, false},
-		{"all failed", []threadsops.WorkspaceDiscovery{failed}, 0, true, true},
-		{"failure and no match", []threadsops.WorkspaceDiscovery{failed, {}}, 0, true, true},
-		{"partial success", []threadsops.WorkspaceDiscovery{failed, matched}, 1, false, true},
-		{"success", []threadsops.WorkspaceDiscovery{matched}, 1, false, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var stderr bytes.Buffer
-			prs, err := workspacePRs(tc.results, &stderr)
-			if len(prs) != tc.wantCount || (err != nil) != tc.wantErr || (stderr.Len() > 0) != tc.wantWarning {
-				t.Fatalf("prs=%v err=%v stderr=%q", prs, err, stderr.String())
-			}
-			if tc.wantWarning && !strings.Contains(stderr.String(), "/workspace/failed: 403 forbidden") {
-				t.Fatalf("missing repository error: %q", stderr.String())
-			}
-		})
-	}
-}
-
 func TestParseThreadsFlags(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -560,6 +532,94 @@ func TestThreadsTUIContextCacheReusesPickerContextForTUI(t *testing.T) {
 	}
 	if pickerContext != tuiContext || tuiContext != ctx {
 		t.Fatalf("picker and TUI contexts differ: %#v / %#v", pickerContext, tuiContext)
+	}
+}
+
+func TestParseThreadsFlags_ScanDepth(t *testing.T) {
+	cases := []struct {
+		name      string
+		args      []string
+		wantDepth int
+		wantErr   bool
+	}{
+		{"scan depth flag space", []string{"--interactive", "--scan-depth", "2"}, 2, false},
+		{"scan depth flag equals", []string{"--interactive", "--scan-depth=3"}, 3, false},
+		{"scan depth capped at 3", []string{"--interactive", "--scan-depth", "5"}, 3, false},
+		{"scan depth zero error", []string{"--interactive", "--scan-depth", "0"}, 0, true},
+		{"scan depth negative error", []string{"--interactive", "--scan-depth", "-1"}, 0, true},
+		{"scan depth invalid error", []string{"--interactive", "--scan-depth", "foo"}, 0, true},
+		{"scan depth missing arg error", []string{"--interactive", "--scan-depth"}, 0, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f, err := parseThreadsFlags(tc.args)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if f.scanDepth != tc.wantDepth {
+				t.Errorf("scanDepth = %d, want %d", f.scanDepth, tc.wantDepth)
+			}
+		})
+	}
+}
+
+func TestParseThreadsFlags_ScanOnly(t *testing.T) {
+	f, err := parseThreadsFlags([]string{"--scan-only"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !f.scanOnly {
+		t.Errorf("scanOnly should be true")
+	}
+	if f.prRef != "" {
+		t.Errorf("prRef should be empty, got %q", f.prRef)
+	}
+
+	// With PR ref
+	f2, err := parseThreadsFlags([]string{"owner/repo#42", "--scan-only"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !f2.scanOnly {
+		t.Errorf("scanOnly should be true")
+	}
+	if f2.prRef != "owner/repo#42" {
+		t.Errorf("prRef = %q, want owner/repo#42", f2.prRef)
+	}
+}
+
+func TestWorkspacePRsReportsIncompleteDiscovery(t *testing.T) {
+	failed := threadsops.WorkspaceDiscovery{Repo: threadsops.WorkspaceRepo{Dir: "/workspace/failed"}, Err: errors.New("403 forbidden")}
+	matched := threadsops.WorkspaceDiscovery{PR: &gh.PullRequest{Number: 42}}
+	for _, tc := range []struct {
+		name                 string
+		results              []threadsops.WorkspaceDiscovery
+		wantCount            int
+		wantErr, wantWarning bool
+	}{
+		{"no matches", []threadsops.WorkspaceDiscovery{{}}, 0, false, false},
+		{"all failed", []threadsops.WorkspaceDiscovery{failed}, 0, true, true},
+		{"failure and no match", []threadsops.WorkspaceDiscovery{failed, {}}, 0, true, true},
+		{"partial success", []threadsops.WorkspaceDiscovery{failed, matched}, 1, false, true},
+		{"success", []threadsops.WorkspaceDiscovery{matched}, 1, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stderr bytes.Buffer
+			prs, err := workspacePRs(tc.results, &stderr)
+			if len(prs) != tc.wantCount || (err != nil) != tc.wantErr || (stderr.Len() > 0) != tc.wantWarning {
+				t.Fatalf("prs=%v err=%v stderr=%q", prs, err, stderr.String())
+			}
+			// The directory and error are quoted so untrusted controls cannot reach the terminal.
+			if tc.wantWarning && !strings.Contains(stderr.String(), `"/workspace/failed": "403 forbidden"`) {
+				t.Fatalf("missing repository error: %q", stderr.String())
+			}
+		})
 	}
 }
 
