@@ -86,8 +86,9 @@ func TestApplyWebDiffPatchesFillsOnlyEmptyPatches(t *testing.T) {
 	if got := t2.Diffs[0].Patch; got != "+from web\n" {
 		t.Errorf("a.go patch = %q, want the web-diff content", got)
 	}
-	if t2.Diffs[0].PatchSource != "github_web" {
-		t.Errorf("a.go patchSource = %q, want github_web", t2.Diffs[0].PatchSource)
+	// Verified patches need distinct provenance so legacy-cache repair preserves them.
+	if t2.Diffs[0].PatchSource != "github_web_v2" {
+		t.Errorf("a.go patchSource = %q, want github_web_v2", t2.Diffs[0].PatchSource)
 	}
 	if got := t2.Diffs[1].Patch; got != "-already from compare\n" {
 		t.Errorf("b.go patch = %q, want the compare-supplied patch untouched", got)
@@ -117,7 +118,8 @@ func TestApplyWebDiffPatchesChecksRESTCounts(t *testing.T) {
 			t2 := forge.T2Data{Diffs: []forge.FileDiff{{Path: "a.go", Additions: 2, Deletions: 1}}}
 			applyWebDiffPatches(&t2, map[string]string{"a.go": tc.patch}, false, nil)
 			if tc.complete {
-				if t2.Diffs[0].Patch != tc.patch || t2.Diffs[0].PatchSource != "github_web" || t2.PatchSkipReason != "" {
+				// Accepted patches must survive legacy-cache invalidation.
+				if t2.Diffs[0].Patch != tc.patch || t2.Diffs[0].PatchSource != "github_web_v2" || t2.PatchSkipReason != "" {
 					t.Fatalf("complete patch rejected: %+v, skip reason %q", t2.Diffs[0], t2.PatchSkipReason)
 				}
 				return
@@ -143,10 +145,11 @@ func TestApplyWebDiffPatchesKeepsCompleteSibling(t *testing.T) {
 		"complete.go": "-old\n+new\n",
 		"rest.go":     "+overwrite\n",
 	}, false, nil)
-	if t2.Diffs[0].Patch != "" || t2.Diffs[0].PatchSource == "github_web" {
+	// Rejected fragments cannot claim v2; verified siblings retain that provenance.
+	if t2.Diffs[0].Patch != "" || t2.Diffs[0].PatchSource == "github_web_v2" {
 		t.Fatalf("partial patch accepted: %+v", t2.Diffs[0])
 	}
-	if t2.Diffs[1].Patch != "-old\n+new\n" || t2.Diffs[1].PatchSource != "github_web" {
+	if t2.Diffs[1].Patch != "-old\n+new\n" || t2.Diffs[1].PatchSource != "github_web_v2" {
 		t.Fatalf("complete sibling lost: %+v", t2.Diffs[1])
 	}
 	if t2.Diffs[2].Patch != "+rest\n" || t2.Diffs[2].PatchSource != "compare_rest" {

@@ -227,3 +227,31 @@ func TestWaitCancelledContextReservesNoSlot(t *testing.T) {
 		t.Errorf("cancelled wait advanced c.next from %v to %v; it consumed a slot", before, c.next)
 	}
 }
+
+func TestCompletePatch(t *testing.T) {
+	for _, tc := range []struct {
+		name, patch string
+		complete    bool
+	}{
+		{"context", "@@ -1,2 +1,2 @@\n keep\n-old\n+new\n", true},
+		{"implicit counts", "@@ -10 +20 @@ function\n-old\n+new\n", true},
+		{"addition", "@@ -0,0 +1 @@\n+new\n", true},
+		{"deletion", "@@ -1 +0,0 @@\n-old\n", true},
+		{"multiple hunks", "@@ -1 +1 @@\n-old\n+new\n@@ -10 +10 @@\n keep\n", true},
+		{"no trailing newline", "@@ -1 +1 @@\n-old\n\\ No newline at end of file\n+new\n\\ No newline at end of file\n", true},
+		{"missing context", "@@ -1,2 +1,2 @@\n-old\n+new\n", false},
+		{"lost hunk body", "@@ -1 +1 @@\n@@ -10 +10 @@\n-old\n+new\n", false},
+		{"too many rows", "@@ -1 +1 @@\n-old\n+new\n extra\n", false},
+		{"no header", "-old\n+new\n", false},
+		{"bad header", "@@ -1,? +1 @@\n-old\n+new\n", false},
+		{"overflow", "@@ -1,999999999999999999999 +1 @@\n-old\n+new\n", false},
+		{"unknown row", "@@ -1 +1 @@\n?missing\n-old\n+new\n", false},
+		{"empty", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := completePatch(tc.patch); got != tc.complete {
+				t.Fatalf("completePatch = %v, want %v", got, tc.complete)
+			}
+		})
+	}
+}

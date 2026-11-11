@@ -678,6 +678,7 @@ var migrations = []struct {
 	{version: 3, stmts: schemaV3},
 	{version: 4, stmts: schemaV4},
 	{version: 5, stmts: schemaV5},
+	{version: 6, stmts: schemaV6},
 }
 
 // createdTable and addedColumn match the exact shapes every step in the
@@ -1788,6 +1789,15 @@ var schemaV5 = []string{
 	`ALTER TABLE forks ADD COLUMN merge_commit_truncated INTEGER NOT NULL DEFAULT 0`,
 	`CREATE TABLE IF NOT EXISTS merge_commit_history (fork_key TEXT NOT NULL REFERENCES forks(fork_key) ON DELETE CASCADE, idx INTEGER NOT NULL, parents INTEGER NOT NULL, PRIMARY KEY(fork_key, idx))`,
 	`CREATE INDEX IF NOT EXISTS merge_commit_history_fork_idx ON merge_commit_history(fork_key)`,
+}
+
+// Legacy HTML patches lack proof of complete hunks; force refetch and remove
+// their derived search data while preserving REST file metadata and commits.
+// New validated patches use github_web_v2 so migration replay leaves them alone.
+var schemaV6 = []string{
+	`DELETE FROM documents WHERE fork_key IN (SELECT fork_key FROM compare_files WHERE patch_source='github_web')`,
+	`UPDATE forks SET t2_json='', t2_fetched_at='' WHERE fork_key IN (SELECT fork_key FROM compare_files WHERE patch_source='github_web')`,
+	`UPDATE compare_files SET patch=NULL, patch_source='' WHERE patch_source='github_web'`,
 }
 
 // downgradeStep rolls a store that is one schema step ahead of

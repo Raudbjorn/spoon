@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -20,6 +21,7 @@ const (
 	maxResponseBytes = 16 << 20  // per page
 	maxTotalBytes    = 128 << 20 // cumulative across all pages
 	maxPages         = 512       // bound the pagination loop
+	maxFetchDuration = 2 * time.Minute
 )
 
 type FilePatch struct {
@@ -109,6 +111,8 @@ func (c *Client) Fetch(ctx context.Context, owner, repo, base, head string) (map
 	if c.cookie == "" {
 		return nil, false, fmt.Errorf("SPOON_GH_COOKIE is empty")
 	}
+	ctx, cancel := context.WithTimeout(ctx, maxFetchDuration)
+	defer cancel()
 	start := 0
 	acc := map[string]*strings.Builder{}
 	var total int64
@@ -186,11 +190,68 @@ func (c *Client) Fetch(ctx context.Context, owner, repo, base, head string) (map
 	}
 	out := make(map[string]string, len(acc))
 	for path, b := range acc {
-		out[path] = b.String()
+		patch := b.String()
+		// A hunk can span pages; validate its context only after accumulation.
+		if !truncated && !completePatch(patch) {
+			return nil, false, fmt.Errorf("GitHub web diff has incomplete hunks for %q", path)
+		}
+		out[path] = patch
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
 	}
 	return out, truncated, nil
 }
 
+var hunkHeader = regexp.MustCompile(`^@@ -[0-9]+(?:,([0-9]+))? \+[0-9]+(?:,([0-9]+))? @@(?: .*)?$`)
+
+// completePatch checks both sides of every hunk, including unchanged context.
+func completePatch(patch string) bool {
+	var remaining [2]int
+	seenHunk := false
+	for line := range strings.SplitSeq(strings.TrimSuffix(patch, "\n"), "\n") {
+		if strings.HasPrefix(line, "@@") {
+			match := hunkHeader.FindStringSubmatch(line)
+			if match == nil || remaining != [2]int{} {
+				return false
+			}
+			for i := range remaining {
+				remaining[i] = 1 // Omitted counts mean one line in unified diffs.
+				if match[i+1] != "" {
+					var err error
+					remaining[i], err = strconv.Atoi(match[i+1])
+					if err != nil {
+						return false
+					}
+				}
+			}
+			seenHunk = true
+			continue
+		}
+		if !seenHunk || line == "" {
+			return false
+		}
+		switch line[0] {
+		case ' ':
+			remaining[0]--
+			remaining[1]--
+		case '-':
+			remaining[0]--
+		case '+':
+			remaining[1]--
+		default:
+			if line != `\ No newline at end of file` {
+				return false
+			}
+		}
+		if remaining[0] < 0 || remaining[1] < 0 {
+			return false
+		}
+	}
+	return seenHunk && remaining == [2]int{}
+}
+
+// ParseHTML extracts page fragments; Fetch checks hunk completeness across pages.
 func ParseHTML(r io.Reader) (map[string]string, int, error) {
 	root, err := html.Parse(r)
 	if err != nil {
@@ -215,6 +276,9 @@ func ParseHTML(r io.Reader) (map[string]string, int, error) {
 			class := attr(n, "class")
 			if current != "" && n.Data == "td" && strings.Contains(class, "blob-code") {
 				line := strings.TrimSuffix(text(n), "\n")
+				if strings.ContainsRune(line, '\n') {
+					return nil, -1, fmt.Errorf("GitHub web diff has multiline rows for %q", current)
+				}
 				b := acc[current]
 				if b == nil {
 					b = &strings.Builder{}
@@ -222,12 +286,17 @@ func ParseHTML(r io.Reader) (map[string]string, int, error) {
 				}
 				var prefix byte
 				switch {
+				case strings.Contains(class, "hunk"):
+					b.WriteString(line)
+					b.WriteByte('\n')
 				case strings.Contains(class, "addition"):
 					prefix = '+'
 				case strings.Contains(class, "deletion"):
 					prefix = '-'
 				case strings.Contains(class, "context"):
 					prefix = ' '
+				default:
+					return nil, -1, fmt.Errorf("GitHub web diff has unrecognized rows for %q", current)
 				}
 				if prefix != 0 {
 					b.WriteByte(prefix)
@@ -236,7 +305,9 @@ func ParseHTML(r io.Reader) (map[string]string, int, error) {
 				}
 			}
 			if n.Data == "a" && !nextAuthoritative {
-				rel := slices.Contains(strings.Fields(attr(n, "rel")), "next")
+				rel := slices.ContainsFunc(strings.Fields(attr(n, "rel")), func(token string) bool {
+					return strings.EqualFold(token, "next")
+				})
 				// Text-only "Next" links need a valid cursor to distinguish them
 				// from unrelated navigation; rel="next" remains authoritative.
 				if rel || (next < 0 && strings.EqualFold(strings.TrimSpace(text(n)), "next")) {

@@ -6,6 +6,7 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -249,6 +250,24 @@ func TestForksNDJSONEmitterIsANSIAndJSONSafe(t *testing.T) {
 	}
 }
 
+func TestStandardForkRouteIsolatesCallerStore(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "spoon", "spoon.db")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := []byte("caller store must not be opened or migrated")
+	if err := os.WriteFile(path, sentinel, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", root)
+	runStandardForkRoute(t, "no-color", false, false)
+	got, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(got, sentinel) {
+		t.Fatalf("caller store changed: err=%v", err)
+	}
+}
+
 type machineOutput struct {
 	stdout string
 	stderr string
@@ -299,13 +318,12 @@ func TestMachineRoutesAreColorInvariant(t *testing.T) {
 
 func runStandardForkRoute(t *testing.T, color string, csvMode, perForkError bool) machineOutput {
 	t.Helper()
+	isolateSpoonRun(t) // Store paths use XDG_CONFIG_HOME, not the cache directory.
 	now := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
 	t.Setenv("SPOON_TUI_COLOR", color)
 	t.Setenv("NO_COLOR", "")
-	t.Setenv("SPOON_NO_CONFIG", "1")
 	t.Setenv("SPOON_NO_EMBED", "1")
 	t.Setenv("SPOON_NO_VOYAGE", "1")
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	deps := commandDeps{now: func() time.Time { return now }}
 	prev := providerFactory
 	t.Cleanup(func() { providerFactory = prev })
