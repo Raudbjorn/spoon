@@ -26,6 +26,7 @@ type PullRequest struct {
 	RepoOwner string `json:"repoOwner,omitempty"`
 	RepoName  string `json:"repoName,omitempty"`
 	RepoDir   string `json:"repoDir,omitempty"`
+	RepoRoot  string `json:"-"` // absolute checkout path for local operations
 }
 
 // pullRequestAPI is the on-the-wire shape from GET /repos/{owner}/{repo}/pulls.
@@ -138,4 +139,3 @@ func (c *Client) FindOpenPRForHead(ctx context.Context, owner, repo, headOwner, 
 		UpdatedAt:  p.UpdatedAt,
 	}, nil
 }
-

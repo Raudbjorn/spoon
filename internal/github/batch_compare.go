@@ -186,6 +186,7 @@ type BatchBranch struct {
 // BatchTarget is one fork to resolve divergence for: its default branch plus
 // the side branches (the listing's top-5-by-recency) to check alongside it.
 type BatchTarget struct {
+	CountsOnly         bool // cached branch: no tip/PR enrichment or branch selection
 	ID                 string
 	Owner              string
 	Name               string
@@ -201,10 +202,11 @@ type BatchTarget struct {
 // can walk them by target without re-deriving which branch belongs to which
 // fork.
 type batchAttempt struct {
-	targetIdx int
-	isDefault bool
-	owner     string
-	branch    string
+	targetIdx  int
+	isDefault  bool
+	countsOnly bool
+	owner      string
+	branch     string
 
 	// seedTipSHA/seedCommittedAt are the listing-known tip, used whenever
 	// Phase B does not run or does not resolve for this branch -- correct
@@ -294,11 +296,15 @@ func (c *Client) FetchBatchDivergence(
 		attempts = append(attempts, &batchAttempt{
 			targetIdx:       ti,
 			isDefault:       true,
+			countsOnly:      t.CountsOnly,
 			owner:           t.Owner,
 			branch:          t.DefaultBranch,
 			seedTipSHA:      t.DefaultTipSHA,
 			seedCommittedAt: t.DefaultCommittedAt,
 		})
+		if t.CountsOnly {
+			continue
+		}
 		for _, s := range t.Sides {
 			attempts = append(attempts, &batchAttempt{
 				targetIdx:       ti,
@@ -361,7 +367,7 @@ func (c *Client) FetchBatchDivergence(
 
 	var ahead []*batchAttempt
 	for _, a := range attempts {
-		if !unresolvedTarget[a.targetIdx] && a.resolved && a.aheadBy > 0 {
+		if !a.countsOnly && !unresolvedTarget[a.targetIdx] && a.resolved && a.aheadBy > 0 {
 			ahead = append(ahead, a)
 		}
 	}
@@ -372,11 +378,11 @@ func (c *Client) FetchBatchDivergence(
 			// The caller must fall back to the REST path for this fork
 			// wholesale, same as a target absent from the map entirely --
 			// see forge.ForkDivergence.Resolved's doc.
-			out[t.ID] = forge.ForkDivergence{Resolved: false}
+			out[t.ID] = forge.ForkDivergence{Resolved: false, CountsOnly: t.CountsOnly}
 			continue
 		}
 
-		fd := forge.ForkDivergence{Resolved: true}
+		fd := forge.ForkDivergence{Resolved: true, CountsOnly: t.CountsOnly}
 		for _, a := range byTarget[ti] {
 			bd := branchDivergenceFor(a, tips[a])
 			if a.isDefault {
@@ -463,8 +469,12 @@ func (c *Client) runAheadBehindChunk(
 	fmt.Fprintf(&q, "  repository(owner: %s, name: %s) {\n", gqlString(baseOwner), gqlString(baseRepo))
 	fmt.Fprintf(&q, "    ref(qualifiedName: %s) {\n", gqlString(qualified))
 	for i, a := range batch {
-		fmt.Fprintf(&q, "      c%d: compare(headRef: %s) { aheadBy behindBy }\n",
-			i, gqlString(a.owner+":"+a.branch))
+		fields := "aheadBy behindBy"
+		if a.countsOnly {
+			fields += " headTarget { oid }"
+		}
+		fmt.Fprintf(&q, "      c%d: compare(headRef: %s) { %s }\n",
+			i, gqlString(a.owner+":"+a.branch), fields)
 	}
 	q.WriteString("    }\n  }\n  rateLimit { limit remaining used resetAt cost }\n}")
 
@@ -544,8 +554,11 @@ func (c *Client) runAheadBehindChunk(
 			continue // branch vanished or fork is inaccessible; leave unresolved
 		}
 		var cmp struct {
-			AheadBy  int `json:"aheadBy"`
-			BehindBy int `json:"behindBy"`
+			AheadBy    int `json:"aheadBy"`
+			BehindBy   int `json:"behindBy"`
+			HeadTarget struct {
+				OID string `json:"oid"`
+			} `json:"headTarget"`
 		}
 		if err := json.Unmarshal(raw, &cmp); err != nil {
 			continue
@@ -553,6 +566,9 @@ func (c *Client) runAheadBehindChunk(
 		a.resolved = true
 		a.aheadBy = cmp.AheadBy
 		a.behindBy = cmp.BehindBy
+		if a.countsOnly {
+			a.seedTipSHA = cmp.HeadTarget.OID
+		}
 	}
 
 	if len(retryBatch) > 0 {

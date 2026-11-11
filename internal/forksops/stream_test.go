@@ -87,10 +87,11 @@ func (f *fakeForge) Headroom() float64 {
 type batchFakeForge struct {
 	*fakeForge
 
-	batch      map[string]forge.ForkDivergence
-	batchErr   error
-	batchStats forge.BatchStats
-	batchCalls int // count of BatchCompare invocations
+	batch              map[string]forge.ForkDivergence
+	batchErr           error
+	batchStats         forge.BatchStats
+	batchCalls         int
+	headroomAfterBatch *float64
 
 	// resolvedCalls, when non-nil, has "<forkID>@<branch>" appended for
 	// every CompareResolved call, so a test can assert both which forks
@@ -103,8 +104,11 @@ type batchFakeForge struct {
 	resolvedErr map[string]error
 }
 
-func (f *batchFakeForge) BatchCompare(_ context.Context, _ []forge.T1Data) (map[string]forge.ForkDivergence, forge.BatchStats, error) {
+func (f *batchFakeForge) BatchCompare(_ context.Context, _ []forge.T1Data, _ map[string]*forge.T2Data) (map[string]forge.ForkDivergence, forge.BatchStats, error) {
 	f.batchCalls++
+	if f.headroomAfterBatch != nil {
+		f.headroom = f.headroomAfterBatch
+	}
 	if f.batchErr != nil {
 		return f.batch, f.batchStats, f.batchErr
 	}

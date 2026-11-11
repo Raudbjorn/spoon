@@ -70,3 +70,24 @@ func TestCommitFileBudgetPerCallFallback(t *testing.T) {
 		t.Fatalf("per-call fallback calls = %d, want 4", got)
 	}
 }
+
+func TestCommitFilesPreservesCachedCommits(t *testing.T) {
+	cached := &forge.T2Data{Commits: []forge.AheadCommit{
+		{SHA: "new", Timestamp: time.Unix(2, 0), Files: []forge.FileDiff{{Path: "cached-new.go"}}},
+		{SHA: "old", Timestamp: time.Unix(1, 0), Files: []forge.FileDiff{{Path: "cached-old.go"}}},
+	}}
+	copy := *cached
+	results := []Result{{Fork: forge.T1Data{ID: "o/repo"}, T2: &copy, T2FromCache: true}}
+	var calls int32
+	prov := countingFileForge{fakeForge: &fakeForge{}, calls: &calls}
+	enrichCommitFiles(context.Background(), prov, results, Options{ReserveDisabled: true})
+
+	if calls != 2 || results[0].T2.Commits[0].SHA != "old" || results[0].T2.Commits[0].Files != nil {
+		t.Fatalf("enrichment failed to sort and replace commit files: %+v", results[0].T2.Commits)
+	}
+	if cached.Commits[0].SHA != "new" || cached.Commits[1].SHA != "old" ||
+		len(cached.Commits[0].Files) != 1 || cached.Commits[0].Files[0].Path != "cached-new.go" ||
+		len(cached.Commits[1].Files) != 1 || cached.Commits[1].Files[0].Path != "cached-old.go" {
+		t.Fatalf("enrichment mutated shared cache: %+v", cached.Commits)
+	}
+}

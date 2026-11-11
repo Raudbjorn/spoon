@@ -2,203 +2,125 @@ package forksops
 
 import (
 	"context"
+	"fmt"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/svnbjrn/spoon/internal/forge"
 )
 
-func TestRefreshCachedBehind_DefaultBranch(t *testing.T) {
-	t2 := &forge.T2Data{Performed: true, AheadCount: 3, BehindCount: 2}
-	d := forge.ForkDivergence{
-		Resolved: true,
-		Default:  forge.BranchDivergence{Name: "main", BehindBy: 5},
+func TestRefreshCachedT2(t *testing.T) {
+	base := forge.T2Data{Performed: true, ComparedBranch: "main", HeadSHA: "cached-head", AheadCount: 3, BehindCount: 2,
+		Diffs: []forge.FileDiff{{Path: "keep.go", Patch: "keep patch"}}}
+	for _, tc := range []struct {
+		name             string
+		t2               forge.T2Data
+		d                forge.ForkDivergence
+		wantBehind       int
+		changed, invalid bool
+	}{
+		{"default", base, forge.ForkDivergence{Resolved: true, CountsOnly: true, Default: forge.BranchDivergence{Name: "main", TipSHA: "cached-head", AheadBy: 3, BehindBy: 5}}, 5, true, false},
+		{"changed default", base, forge.ForkDivergence{Resolved: true, Default: forge.BranchDivergence{Name: "develop", TipSHA: "other-head", AheadBy: 3, BehindBy: 9}}, 2, false, false},
+		{"old default now side", base, forge.ForkDivergence{Resolved: true, Default: forge.BranchDivergence{Name: "develop"}, Sides: []forge.BranchDivergence{{Name: "main", TipSHA: "cached-head", AheadBy: 3, BehindBy: 5}}}, 5, true, false},
+		{"upstream absorbed work", base, forge.ForkDivergence{Resolved: true, CountsOnly: true, Default: forge.BranchDivergence{Name: "main", TipSHA: "cached-head", AheadBy: 0, BehindBy: 5}}, 0, false, true},
+		{"head moved", base, forge.ForkDivergence{Resolved: true, CountsOnly: true, Default: forge.BranchDivergence{Name: "main", TipSHA: "new-head", AheadBy: 3, BehindBy: 5}}, 0, false, true},
+		{"missing head", base, forge.ForkDivergence{Resolved: true, Default: forge.BranchDivergence{Name: "main", AheadBy: 3, BehindBy: 5}}, 2, false, false},
+		{"unresolved", base, forge.ForkDivergence{}, 2, false, false},
+		{"unknown default identity", forge.T2Data{AheadCount: 3, BehindCount: 2, HeadSHA: "cached-head"}, forge.ForkDivergence{Resolved: true, Default: forge.BranchDivergence{Name: "main", TipSHA: "cached-head", AheadBy: 3, BehindBy: 9}}, 2, false, false},
+		{"legacy active branch", forge.T2Data{IsBranchWork: true, ActiveBranch: "feature", HeadSHA: "cached-head", AheadCount: 3, BehindCount: 2}, forge.ForkDivergence{Resolved: true, CountsOnly: true, Default: forge.BranchDivergence{Name: "feature", TipSHA: "cached-head", AheadBy: 3, BehindBy: 5}}, 5, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, changed := RefreshCachedT2(&tc.t2, tc.d)
+			if (got == nil) != tc.invalid || changed != tc.changed {
+				t.Fatalf("refresh = (%+v, %v), want invalid=%v changed=%v", got, changed, tc.invalid, tc.changed)
+			}
+			if got != nil {
+				if got == &tc.t2 || got.BehindCount != tc.wantBehind || got.AheadCount != tc.t2.AheadCount {
+					t.Fatalf("refresh = %+v; original = %+v", got, tc.t2)
+				}
+				if len(got.Diffs) != len(tc.t2.Diffs) {
+					t.Fatal("refresh changed cached diffs")
+				}
+				_, changedAgain := RefreshCachedT2(got, tc.d)
+				if changedAgain {
+					t.Fatal("unchanged count reported as refreshed")
+				}
+			}
+			if tc.t2.BehindCount != 2 {
+				t.Fatal("shared cache was mutated")
+			}
+		})
 	}
-
-	changed := RefreshCachedBehind(t2, d)
-	if !changed {
-		t.Fatal("expected RefreshCachedBehind to report changed=true")
-	}
-	if t2.BehindCount != 5 {
-		t.Fatalf("BehindCount = %d, want 5", t2.BehindCount)
-	}
-
-	// Calling again with the same divergence should report changed=false
-	changedAgain := RefreshCachedBehind(t2, d)
-	if changedAgain {
-		t.Fatal("expected RefreshCachedBehind to report changed=false when already up to date")
-	}
-	if t2.BehindCount != 5 {
-		t.Fatalf("BehindCount = %d, want 5", t2.BehindCount)
+	if got, changed := RefreshCachedT2(nil, forge.ForkDivergence{}); got != nil || changed {
+		t.Fatal("nil cache was refreshed")
 	}
 }
 
-func TestRefreshCachedBehind_SideBranch(t *testing.T) {
+func TestResolveFromBatch_RejectsCountsOnly(t *testing.T) {
+	if _, ok := ResolveFromBatch(map[string]forge.ForkDivergence{"fork": {Resolved: true, CountsOnly: true}}, "fork"); ok {
+		t.Fatal("cached branch counts cannot select a full fork comparison")
+	}
+}
+
+func TestRefreshCachedT2_ReconcilesAheadCountZero(t *testing.T) {
 	t2 := &forge.T2Data{
-		Performed:    true,
-		AheadCount:   2,
-		BehindCount:  1,
-		IsBranchWork: true,
-		ActiveBranch: "feature",
+		Performed: true, ComparedBranch: "main", HeadSHA: "oldsha123",
+		AheadCount: 3, BehindCount: 2,
+		Diffs: []forge.FileDiff{{Path: "old.go", Patch: "old patch"}},
 	}
 	d := forge.ForkDivergence{
 		Resolved: true,
-		Default:  forge.BranchDivergence{Name: "main", BehindBy: 10},
-		Sides: []forge.BranchDivergence{
-			{Name: "feature", BehindBy: 4},
-		},
+		Default:  forge.BranchDivergence{Name: "main", TipSHA: "oldsha123", AheadBy: 0, BehindBy: 5},
 	}
 
-	changed := RefreshCachedBehind(t2, d)
-	if !changed {
-		t.Fatal("expected RefreshCachedBehind to report changed=true")
+	got, changed := RefreshCachedT2(t2, d)
+	// Clearing only AheadCount would leave stale commits/diffs attached to an empty comparison.
+	if got != nil || changed {
+		t.Fatalf("absorbed work must invalidate the comparison for a full refresh, got (%+v, %v)", got, changed)
 	}
-	if t2.BehindCount != 4 {
-		t.Fatalf("BehindCount = %d, want 4 (from side branch)", t2.BehindCount)
+	if t2.AheadCount != 3 || t2.BehindCount != 2 || len(t2.Diffs) != 1 {
+		t.Fatal("invalidation modified caller-owned evidence")
 	}
 }
 
-func TestRefreshCachedBehind_ActiveBranchMatchesDefault(t *testing.T) {
+func TestRefreshCachedT2_DefaultBranchTipMismatch_NotFoundInSides(t *testing.T) {
 	t2 := &forge.T2Data{
-		Performed:    true,
-		AheadCount:   1,
-		BehindCount:  0,
-		IsBranchWork: true,
-		ActiveBranch: "main",
-	}
-	d := forge.ForkDivergence{
-		Resolved: true,
-		Default:  forge.BranchDivergence{Name: "main", BehindBy: 6},
-	}
-
-	changed := RefreshCachedBehind(t2, d)
-	if !changed {
-		t.Fatal("expected RefreshCachedBehind to report changed=true")
-	}
-	if t2.BehindCount != 6 {
-		t.Fatalf("BehindCount = %d, want 6", t2.BehindCount)
-	}
-}
-
-func TestRefreshCachedBehind_SideBranchNotFound(t *testing.T) {
-	t2 := &forge.T2Data{
-		Performed:    true,
-		AheadCount:   2,
-		BehindCount:  3,
-		IsBranchWork: true,
-		ActiveBranch: "deleted-branch",
-	}
-	d := forge.ForkDivergence{
-		Resolved: true,
-		Default:  forge.BranchDivergence{Name: "main", BehindBy: 12},
-		Sides: []forge.BranchDivergence{
-			{Name: "other", BehindBy: 4},
-		},
-	}
-
-	changed := RefreshCachedBehind(t2, d)
-	if changed {
-		t.Fatal("expected changed=false when active branch is not in sides")
-	}
-	if t2.BehindCount != 3 {
-		t.Fatalf("BehindCount = %d, want 3 (original value preserved)", t2.BehindCount)
-	}
-}
-
-func TestRefreshCachedBehind_Unresolved(t *testing.T) {
-	t2 := &forge.T2Data{Performed: true, AheadCount: 2, BehindCount: 1}
-	d := forge.ForkDivergence{Resolved: false}
-
-	changed := RefreshCachedBehind(t2, d)
-	if changed {
-		t.Fatal("expected changed=false when divergence is unresolved")
-	}
-	if t2.BehindCount != 1 {
-		t.Fatalf("BehindCount = %d, want 1", t2.BehindCount)
-	}
-}
-
-func TestRefreshCachedBehind_NilT2(t *testing.T) {
-	d := forge.ForkDivergence{
-		Resolved: true,
-		Default:  forge.BranchDivergence{Name: "main", BehindBy: 5},
-	}
-	if RefreshCachedBehind(nil, d) {
-		t.Fatal("expected false for nil t2")
-	}
-}
-
-func TestRefreshCachedBehind_ReconcilesAheadCountZero(t *testing.T) {
-	t2 := &forge.T2Data{
-		Performed:   true,
-		AheadCount:  3,
-		BehindCount: 2,
-	}
-	d := forge.ForkDivergence{
-		Resolved: true,
-		Default:  forge.BranchDivergence{Name: "main", AheadBy: 0, BehindBy: 5},
-	}
-
-	changed := RefreshCachedBehind(t2, d)
-	if !changed {
-		t.Fatal("expected RefreshCachedBehind to report changed=true when ahead cleared")
-	}
-	if t2.AheadCount != 0 {
-		t.Fatalf("AheadCount = %d, want 0 (cleared stale ahead)", t2.AheadCount)
-	}
-	if t2.BehindCount != 5 {
-		t.Fatalf("BehindCount = %d, want 5", t2.BehindCount)
-	}
-}
-
-func TestRefreshCachedBehind_DefaultBranchTipMismatch_NotFoundInSides(t *testing.T) {
-	t2 := &forge.T2Data{
-		Performed:   true,
-		AheadCount:  3,
-		BehindCount: 2,
-		HeadSHA:     "oldsha123",
+		Performed: true, ComparedBranch: "old-default",
+		AheadCount: 3, BehindCount: 2, HeadSHA: "oldsha123",
 	}
 	d := forge.ForkDivergence{
 		Resolved: true,
 		Default:  forge.BranchDivergence{Name: "main", TipSHA: "newsha456", BehindBy: 10},
-		Sides: []forge.BranchDivergence{
-			{Name: "other", TipSHA: "othersha789", BehindBy: 4},
-		},
+		Sides:    []forge.BranchDivergence{{Name: "other", TipSHA: "othersha789", BehindBy: 4}},
 	}
 
-	changed := RefreshCachedBehind(t2, d)
-	if changed {
-		t.Fatal("expected changed=false when default branch tip changed and old branch not in sides")
+	got, changed := RefreshCachedT2(t2, d)
+	// An unrelated default cannot refresh the recorded branch's comparison.
+	if changed || got == nil || got.BehindCount != 2 || got.AheadCount != 3 {
+		t.Fatalf("unmatched comparison changed: (%+v, %v)", got, changed)
+	}
+}
+
+func TestRefreshCachedT2_DefaultBranchTipMismatch_FoundInSides(t *testing.T) {
+	t2 := &forge.T2Data{
+		Performed: true, ComparedBranch: "old-default",
+		AheadCount: 3, BehindCount: 2, HeadSHA: "oldsha123",
+	}
+	d := forge.ForkDivergence{
+		Resolved: true,
+		Default:  forge.BranchDivergence{Name: "main", TipSHA: "newsha456", BehindBy: 10},
+		Sides:    []forge.BranchDivergence{{Name: "old-default", TipSHA: "oldsha123", AheadBy: 3, BehindBy: 7}},
+	}
+
+	got, changed := RefreshCachedT2(t2, d)
+	// Both recorded branch and head must match; update the result, not the shared cache.
+	if !changed || got == nil || got.BehindCount != 7 || got.AheadCount != 3 {
+		t.Fatalf("old default in sides was not refreshed: (%+v, %v)", got, changed)
 	}
 	if t2.BehindCount != 2 {
-		t.Fatalf("BehindCount = %d, want 2 (original count preserved)", t2.BehindCount)
-	}
-	if t2.AheadCount != 3 {
-		t.Fatalf("AheadCount = %d, want 3 (original count preserved)", t2.AheadCount)
-	}
-}
-
-func TestRefreshCachedBehind_DefaultBranchTipMismatch_FoundInSides(t *testing.T) {
-	t2 := &forge.T2Data{
-		Performed:   true,
-		AheadCount:  3,
-		BehindCount: 2,
-		HeadSHA:     "oldsha123",
-	}
-	d := forge.ForkDivergence{
-		Resolved: true,
-		Default:  forge.BranchDivergence{Name: "main", TipSHA: "newsha456", BehindBy: 10},
-		Sides: []forge.BranchDivergence{
-			{Name: "old-default", TipSHA: "oldsha123", AheadBy: 3, BehindBy: 7},
-		},
-	}
-
-	changed := RefreshCachedBehind(t2, d)
-	if !changed {
-		t.Fatal("expected changed=true when old default branch found in sides")
-	}
-	if t2.BehindCount != 7 {
-		t.Fatalf("BehindCount = %d, want 7 (from side matching old HeadSHA)", t2.BehindCount)
+		t.Fatal("shared cached count was mutated")
 	}
 }
 
@@ -206,18 +128,21 @@ func TestBatchEstimate_CachedForksExcludedFromRestEstimate(t *testing.T) {
 	pending := []forge.T1Data{
 		{ID: "o/cached1"},
 		{ID: "o/cached2"},
+		{ID: "o/cached_missing"},
+		{ID: "o/cached_unresolved"},
 		{ID: "o/uncached_zero"},
 		{ID: "o/uncached_div"},
 		{ID: "o/uncached_unresolved"},
 	}
 	divergence := map[string]forge.ForkDivergence{
-		"o/cached1":       {Resolved: true, Default: forge.BranchDivergence{AheadBy: 0}},
-		"o/cached2":       {Resolved: true, Default: forge.BranchDivergence{AheadBy: 3}},
-		"o/uncached_zero": {Resolved: true, Default: forge.BranchDivergence{AheadBy: 0}},
-		"o/uncached_div":  {Resolved: true, Default: forge.BranchDivergence{AheadBy: 2}},
+		"o/cached_unresolved": {Resolved: false},
+		"o/cached1":           {Resolved: true, Default: forge.BranchDivergence{AheadBy: 0}},
+		"o/cached2":           {Resolved: true, Default: forge.BranchDivergence{AheadBy: 3}},
+		"o/uncached_zero":     {Resolved: true, Default: forge.BranchDivergence{AheadBy: 0}},
+		"o/uncached_div":      {Resolved: true, Default: forge.BranchDivergence{AheadBy: 2}},
 	}
 	cached := func(f forge.T1Data) bool {
-		return f.ID == "o/cached1" || f.ID == "o/cached2"
+		return strings.HasPrefix(f.ID, "o/cached")
 	}
 
 	divergent, resolved, tier2Estimate := batchEstimate(pending, divergence, 2, cached)
@@ -233,21 +158,22 @@ func TestBatchEstimate_CachedForksExcludedFromRestEstimate(t *testing.T) {
 	}
 
 	_, _, tier3Estimate := batchEstimate(pending, divergence, 3, cached)
-	// tier 3: 1 divergent * 1 + 4 resolved * 2 contributors + 1 unresolved * 5 = 1 + 8 + 5 = 14
-	if tier3Estimate != 14 {
-		t.Errorf("tier3Estimate = %d, want 14", tier3Estimate)
+	// Cached missing/unresolved forks still need contributors: 1 + 6*2 + 1*5 = 18.
+	if tier3Estimate != 18 {
+		t.Errorf("tier3Estimate = %d, want 18", tier3Estimate)
 	}
 }
 
-func TestStream_cachedT2_refreshesBehindCountInPlace(t *testing.T) {
+func TestStream_cachedT2_refreshesPrivateCopy(t *testing.T) {
 	now := time.Now()
-	cachedT2Def := forge.T2Data{Performed: true, AheadCount: 4, BehindCount: 1}
+	cachedT2Def := forge.T2Data{Performed: true, ComparedBranch: "main", HeadSHA: "def-head", AheadCount: 4, BehindCount: 1}
 	cachedT2Side := forge.T2Data{
 		Performed:    true,
 		AheadCount:   2,
 		BehindCount:  3,
 		IsBranchWork: true,
 		ActiveBranch: "feature",
+		HeadSHA:      "side-head",
 	}
 
 	var resolvedCalls []string
@@ -263,18 +189,19 @@ func TestStream_cachedT2_refreshesBehindCountInPlace(t *testing.T) {
 		batch: map[string]forge.ForkDivergence{
 			"o/cached_def": {
 				Resolved: true,
-				Default:  forge.BranchDivergence{Name: "main", AheadBy: 4, BehindBy: 9},
+				Default:  forge.BranchDivergence{Name: "main", TipSHA: "def-head", AheadBy: 4, BehindBy: 9},
 			},
 			"o/cached_side": {
 				Resolved: true,
 				Default:  forge.BranchDivergence{Name: "main", AheadBy: 0, BehindBy: 15},
-				Sides:    []forge.BranchDivergence{{Name: "feature", AheadBy: 2, BehindBy: 7, TipCommittedAt: now}},
+				Sides:    []forge.BranchDivergence{{Name: "feature", TipSHA: "side-head", AheadBy: 2, BehindBy: 7, TipCommittedAt: now}},
 			},
 		},
 		batchStats:    forge.BatchStats{Queries: 1, Cost: 2},
 		resolvedCalls: &resolvedCalls,
 	}
 
+	var cacheCalls atomic.Int32
 	cachedMap := map[string]*forge.T2Data{
 		"o/cached_def":  &cachedT2Def,
 		"o/cached_side": &cachedT2Side,
@@ -285,6 +212,7 @@ func TestStream_cachedT2_refreshesBehindCountInPlace(t *testing.T) {
 		Tier:          2,
 		CompareReport: summary,
 		CachedT2: func(f forge.T1Data) *forge.T2Data {
+			cacheCalls.Add(1)
 			return cachedMap[f.ID]
 		},
 	}
@@ -299,6 +227,9 @@ func TestStream_cachedT2_refreshesBehindCountInPlace(t *testing.T) {
 		results[r.Fork.ID] = r
 	}
 
+	if cacheCalls.Load() != 2 {
+		t.Errorf("cache called %d times, want once per fork", cacheCalls.Load())
+	}
 	if len(results) != 2 {
 		t.Fatalf("got %d results, want 2", len(results))
 	}
@@ -306,6 +237,9 @@ func TestStream_cachedT2_refreshesBehindCountInPlace(t *testing.T) {
 	resDef := results["o/cached_def"]
 	if resDef.T2 == nil {
 		t.Fatal("expected T2 on o/cached_def, got nil")
+	}
+	if !resDef.T2BehindRefreshed {
+		t.Error("missing scalar refresh persistence flag")
 	}
 	if !resDef.T2FromCache {
 		t.Error("expected T2FromCache=true for o/cached_def")
@@ -316,8 +250,8 @@ func TestStream_cachedT2_refreshesBehindCountInPlace(t *testing.T) {
 	if resDef.T2.AheadCount != 4 {
 		t.Errorf("o/cached_def AheadCount = %d, want 4 (preserved)", resDef.T2.AheadCount)
 	}
-	if cachedT2Def.BehindCount != 9 {
-		t.Errorf("cachedT2Def in-place BehindCount = %d, want 9", cachedT2Def.BehindCount)
+	if cachedT2Def.BehindCount != 1 {
+		t.Errorf("cachedT2Def original BehindCount = %d, want 1", cachedT2Def.BehindCount)
 	}
 
 	resSide := results["o/cached_side"]
@@ -333,8 +267,8 @@ func TestStream_cachedT2_refreshesBehindCountInPlace(t *testing.T) {
 	if resSide.T2.AheadCount != 2 {
 		t.Errorf("o/cached_side AheadCount = %d, want 2 (preserved)", resSide.T2.AheadCount)
 	}
-	if cachedT2Side.BehindCount != 7 {
-		t.Errorf("cachedT2Side in-place BehindCount = %d, want 7", cachedT2Side.BehindCount)
+	if cachedT2Side.BehindCount != 3 {
+		t.Errorf("cachedT2Side original BehindCount = %d, want 3", cachedT2Side.BehindCount)
 	}
 
 	if summary.Cached != 2 {
@@ -399,5 +333,80 @@ func TestStream_cachedT2_noBatchCompare_leavesBehindCountUnchanged(t *testing.T)
 	}
 	if summary.Cached != 1 {
 		t.Errorf("summary.Cached = %d, want 1", summary.Cached)
+	}
+}
+
+func TestStream_CachedAheadChangeRefetchesOrInvalidates(t *testing.T) {
+	for _, lowAfterBatch := range []bool{false, true} {
+		t.Run(fmt.Sprintf("reserve=%v", lowAfterBatch), func(t *testing.T) {
+			now := time.Now()
+			cached := forge.T2Data{Performed: true, ComparedBranch: "main", HeadSHA: "old-head", AheadCount: 4, BehindCount: 1,
+				Diffs: []forge.FileDiff{{Path: "old.go", Patch: "old patch"}}}
+			var compares []string
+			ff := &batchFakeForge{
+				fakeForge: &fakeForge{parent: forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
+					forks: []forge.T1Data{{ID: "o/cached", Owner: "o", Name: "cached", DefaultBranch: "main", PushedAt: now}},
+					t2:    map[string]forge.T2Data{"o/cached": {Performed: true, ComparedBranch: "feature", IsBranchWork: true, ActiveBranch: "feature", AheadCount: 1, BehindCount: 8, Diffs: []forge.FileDiff{{Path: "feature.go", Patch: "feature patch"}}}}, compareOrder: &compares},
+				batch: map[string]forge.ForkDivergence{"o/cached": {Resolved: true, CountsOnly: true, Default: forge.BranchDivergence{Name: "main", TipSHA: "old-head", AheadBy: 0, BehindBy: 9}}},
+			}
+			if lowAfterBatch {
+				low := .01
+				ff.headroomAfterBatch = &low
+			}
+			ch, err := Stream(context.Background(), ff, "o", "r", Options{Tier: 2, CachedT2: func(forge.T1Data) *forge.T2Data { return &cached }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var result Result
+			for r := range ch {
+				result = r
+			}
+			if result.T2FromCache || result.T2Invalidated == nil || result.T2Invalidated.HeadSHA != "old-head" {
+				t.Fatalf("stale comparison not invalidated: %+v", result)
+			}
+			if lowAfterBatch {
+				if result.T2 != nil || result.BudgetSkip == nil || len(compares) != 0 {
+					t.Fatalf("reserve ignored: %+v compares=%v", result, compares)
+				}
+			} else if result.T2 == nil || result.T2.ComparedBranch != "feature" || !result.T2.IsBranchWork ||
+				result.T2.AheadCount != 1 || result.T2.BehindCount != 8 || len(result.T2.Diffs) != 1 || result.T2.Diffs[0].Path != "feature.go" || len(compares) != 1 {
+				t.Fatalf("full branch scan not repeated after invalidation: %+v compares=%v", result, compares)
+			}
+			if cached.AheadCount != 4 || cached.BehindCount != 1 || len(cached.Diffs) != 1 {
+				t.Fatal("original cache modified")
+			}
+		})
+	}
+}
+
+func TestStream_CachedContributorsHonorReserve(t *testing.T) {
+	for _, disabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("disabled=%v", disabled), func(t *testing.T) {
+			low := .01
+			now := time.Now()
+			ff := &batchFakeForge{fakeForge: &fakeForge{
+				parent: forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
+				forks:  []forge.T1Data{{ID: "o/cached", DefaultBranch: "main", PushedAt: now}}, headroom: &low,
+			}}
+			cached := forge.T2Data{Performed: true, AheadCount: 3}
+			ch, err := Stream(context.Background(), ff, "o", "r", Options{Tier: 3, ReserveDisabled: disabled, CachedT2: func(forge.T1Data) *forge.T2Data { return &cached }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var result Result
+			for r := range ch {
+				result = r
+			}
+			if result.T2 == nil || !result.T2FromCache {
+				t.Fatal("reserve suppressed free cached evidence")
+			}
+			if disabled {
+				if result.T3 == nil || result.T3Skip != nil || ff.batchCalls != 1 {
+					t.Fatalf("disabled reserve not honored: %+v batch=%d", result, ff.batchCalls)
+				}
+			} else if result.T3 != nil || result.T3Skip == nil || ff.batchCalls != 0 {
+				t.Fatalf("reserve failed: %+v batch=%d", result, ff.batchCalls)
+			}
+		})
 	}
 }

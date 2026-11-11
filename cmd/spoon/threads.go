@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -454,34 +455,33 @@ func runThreadsWithEffective(args []string, effective config.EffectiveConfig) in
 		if depth <= 0 {
 			depth = 1
 		}
-		cwd, _ := os.Getwd()
-		discoveredRepos, _ := threadsops.ScanWorkspace(cwd, threadsops.ScanOptions{Depth: depth})
+		cwd, err := os.Getwd()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error getting workspace directory: %q\n", err.Error())
+			return 1
+		}
+		discoveredRepos, err := threadsops.ScanWorkspace(cwd, threadsops.ScanOptions{Depth: depth})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error scanning workspace: %q\n", err.Error())
+			return 1
+		}
 
 		if flags.scanOnly || len(discoveredRepos) > 1 {
 			discoveries, derr := threadsops.DiscoverPRsInWorkspace(ctx, client, cwd, threadsops.DiscoverOptions{
 				ScanOptions: threadsops.ScanOptions{Depth: depth},
 				Repos:       discoveredRepos,
+				IncludeAll:  true,
 			})
 			if derr != nil {
-				fmt.Fprintln(os.Stderr, "❌ Error scanning workspace:", derr)
+				fmt.Fprintf(os.Stderr, "Error scanning workspace: %q\n", derr.Error())
 				return 1
 			}
-			var prs []gh.PullRequest
-			for _, d := range discoveries {
-				if d.PR != nil {
-					prs = append(prs, *d.PR)
-				}
+			prs, err := workspacePRs(discoveries, os.Stderr)
+			if err != nil {
+				return 1
 			}
 			if len(prs) == 0 {
-				if len(discoveredRepos) == 0 {
-					fmt.Println("No git repositories found in workspace")
-				} else {
-					dirs := make([]string, 0, len(discoveredRepos))
-					for _, r := range discoveredRepos {
-						dirs = append(dirs, r.RelDir)
-					}
-					fmt.Printf("No open PRs found for current branches in %s. Use --interactive in a single repo to list all open PRs, or pass a PR ref directly.\n", strings.Join(dirs, ", "))
-				}
+				fmt.Println(workspaceNoPRMessage(discoveredRepos))
 				return 0
 			}
 
@@ -509,8 +509,13 @@ func runThreadsWithEffective(args []string, effective config.EffectiveConfig) in
 			if selRepo == "" {
 				selRepo = fallbackRepo
 			}
-			flags.prRef = fmt.Sprintf("%s/%s#%d", selOwner, selRepo, sel.Number)
+			sel.RepoOwner, sel.RepoName = selOwner, selRepo
+			flags.selectWorkspacePR(*sel)
 		} else {
+			if len(discoveredRepos) == 1 && discoveredRepos[0].OriginHost != "github.com" {
+				fmt.Fprintf(os.Stderr, "Error: unsupported origin host %q (PR discovery requires github.com)\n", discoveredRepos[0].OriginHost)
+				return 1
+			}
 			if fallbackOwner == "" || fallbackRepo == "" {
 				fmt.Fprintln(os.Stderr, "❌ Error: --interactive needs a git checkout (couldn't detect origin owner/repo)")
 				return 2
@@ -807,12 +812,48 @@ func runThreadsWithEffective(args []string, effective config.EffectiveConfig) in
 			fmt.Fprintln(os.Stderr, "Error:", contextErr)
 			return 1
 		}
-		return runThreadsTUI(ctx, client, owner, repo, number, flags.filter, flags.showCodeLines, flags.verbose, tuiContext)
+		return runThreadsTUI(ctx, client, owner, repo, number, flags.filter, flags.showCodeLines, flags.verbose, flags.repoRoot, tuiContext)
 
 	default:
 		fmt.Fprintln(os.Stderr, "❌ Error: unknown mode")
 		return 2
 	}
+}
+
+func (f *threadsFlags) selectWorkspacePR(pr gh.PullRequest) {
+	f.prRef = fmt.Sprintf("%s/%s#%d", pr.RepoOwner, pr.RepoName, pr.Number)
+	if f.repoRoot == "" {
+		f.repoRoot = pr.RepoRoot
+	}
+}
+
+func workspacePRs(discoveries []threadsops.WorkspaceDiscovery, logger io.Writer) ([]gh.PullRequest, error) {
+	var prs []gh.PullRequest
+	var lookupErr error
+	for _, d := range discoveries {
+		if d.Err != nil {
+			fmt.Fprintf(logger, "Warning: checking PR for %q: %q\n", d.Repo.RelDir, d.Err.Error())
+			lookupErr = errors.Join(lookupErr, d.Err)
+		}
+		if d.PR != nil {
+			prs = append(prs, *d.PR)
+		}
+	}
+	if len(prs) == 0 {
+		return nil, lookupErr
+	}
+	return prs, nil
+}
+
+func workspaceNoPRMessage(repos []threadsops.WorkspaceRepo) string {
+	if len(repos) == 0 {
+		return "No git repositories found in workspace"
+	}
+	dirs := make([]string, 0, len(repos))
+	for _, r := range repos {
+		dirs = append(dirs, strconv.Quote(r.RelDir))
+	}
+	return fmt.Sprintf("No open PRs found for current branches in %s. Use --interactive in a single repo to list all open PRs, or pass a PR ref directly.", strings.Join(dirs, ", "))
 }
 
 func printThreadsHelp() {
@@ -886,11 +927,12 @@ Examples:
 `)
 }
 
-func runThreadsTUI(ctx context.Context, client *gh.Client, owner, repo string, number int, mode threadsops.FilterMode, showCodeLines int, verbose bool, tuiContext theme.Context) int {
+func runThreadsTUI(ctx context.Context, client *gh.Client, owner, repo string, number int, mode threadsops.FilterMode, showCodeLines int, verbose bool, repoRoot string, tuiContext theme.Context) int {
 	_ = ctx // reserved for future cancellable Init paths
 	m := threadstui.NewWithFilter(client, owner, repo, number, mode).WithTheme(tuiContext)
 	m.ShowCodeLines = showCodeLines
 	m.Verbose = verbose
+	m.RepoRoot = repoRoot
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)

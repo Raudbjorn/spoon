@@ -1022,7 +1022,11 @@ func persistForkSnapshot(ctx context.Context, db *store.Store, auth forge.AuthIn
 		// Full-fidelity halves: T1 makes the fork reusable as a listing entry
 		// (t1_json), T2 preserves the triage scalars alongside the relational
 		// compare rows so later runs can serve the compare from the store.
-		T1: &r.Fork,
+		T1:           &r.Fork,
+		T2Invalidate: r.T2Invalidated,
+	}
+	if r.T2FromCache && r.T2BehindRefreshed {
+		snapshot.T2Refresh = r.T2
 	}
 	// r.T2FilesUnfetched marks a T2 synthesised by the last-touch skip stage:
 	// scalars only, no file diffs or commits fetched. Persisting it would

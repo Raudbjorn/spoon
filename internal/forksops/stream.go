@@ -319,6 +319,10 @@ type Result struct {
 	// cached T2s carry no patch text (the store's read path skips it), and
 	// re-persisting them would overwrite full rows with patch-less ones.
 	T2FromCache bool
+	// T2BehindRefreshed allows persistence of only the refreshed scalar.
+	T2BehindRefreshed bool
+	// T2Invalidated identifies stale cached evidence when a replacement cannot be fetched.
+	T2Invalidated *forge.T2Data
 
 	// T2FilesUnfetched marks a T2 synthesised by the last-touch skip stage
 	// (lasttouch.go): AheadCount/BehindCount/HeadSHA come from the
@@ -617,6 +621,20 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 			tier = 3
 		}
 
+		cachedT2 := make(map[string]*forge.T2Data)
+		if tier >= 2 && opts.CachedT2 != nil {
+			for i, s := range all {
+				if eligible(s.fork.ID, i) {
+					if t2 := opts.CachedT2(s.fork); t2 != nil {
+						copy := *t2
+						cachedT2[s.fork.ID] = &copy
+					}
+				}
+			}
+		}
+		refreshedT2 := make(map[string]bool)
+		invalidatedT2 := make(map[string]*forge.T2Data)
+
 		// Pre-dispatch GraphQL divergence batch (see batchcompare.go): resolve
 		// ahead/behind for every fork that would otherwise get a REST compare,
 		// in one batched call, before any worker starts. A fork the batch finds
@@ -630,7 +648,7 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 		// Type-assert before building `pending`: on a provider that can't
 		// batch at all (gitea, gitlab, or a plain REST-only GitHub client),
 		// this skips the loop entirely.
-		if bp, hasBatch := provider.(forge.BatchCompareProvider); tier >= 2 && !opts.NoBatchCompare && hasBatch {
+		if bp, hasBatch := provider.(forge.BatchCompareProvider); tier >= 2 && !opts.NoBatchCompare && hasBatch && (opts.ReserveDisabled || provider.Headroom() >= ReserveHeadroom) {
 			for i, s := range all {
 				if !eligible(s.fork.ID, i) {
 					continue
@@ -640,7 +658,7 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 			if len(pending) > 0 {
 				fmt.Fprintf(logger, "[triage] resolving divergence for %d forks via GraphQL batch…\n", len(pending))
 				var berr error
-				divergence, batchStats, berr = bp.BatchCompare(ctx, pending)
+				divergence, batchStats, berr = bp.BatchCompare(ctx, pending, cachedT2)
 				switch {
 				case berr == nil:
 					batchRan = true
@@ -660,17 +678,26 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 				}
 			}
 		}
+		for id, t2 := range cachedT2 {
+			refreshed, changed := RefreshCachedT2(t2, divergence[id])
+			if refreshed == nil {
+				invalidatedT2[id] = t2
+				delete(cachedT2, id)
+				// A cached-branch refresh cannot select the fork's next active branch.
+				delete(divergence, id)
+			} else {
+				cachedT2[id] = refreshed
+				refreshedT2[id] = changed
+			}
+		}
 
 		// Up-front request estimate + headroom heads-up, so the user sees the
 		// scope without having to count forks. The live reserve floor below, not
 		// this estimate, governs when enrichment actually stops.
 		if tier >= 2 && len(all) > 0 {
 			if batchRan {
-				var cachedFn func(forge.T1Data) bool
-				if opts.CachedT2 != nil {
-					cachedFn = func(f forge.T1Data) bool {
-						return opts.CachedT2(f) != nil
-					}
+				cachedFn := func(f forge.T1Data) bool {
+					return cachedT2[f.ID] != nil
 				}
 				divergent, resolved, restEstimate := batchEstimate(pending, divergence, tier, cachedFn)
 				fmt.Fprintf(logger, "[triage] %d forks; ~%d REST requests (%d divergent of %d resolved by one GraphQL batch); rate headroom %.0f%%\n",
@@ -762,9 +789,10 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 					i := dispatchOrder[pos]
 					s := all[i]
 					r := Result{
-						Fork:     s.fork,
-						Heat:     s.res,
-						Momentum: momentumByID[s.fork.ID],
+						T2Invalidated: invalidatedT2[s.fork.ID],
+						Fork:          s.fork,
+						Heat:          s.res,
+						Momentum:      momentumByID[s.fork.ID],
 						Lineage: Lineage{
 							NetworkRoot:   s.fork.SourceFullPath,
 							DirectParent:  s.fork.ParentFullPath,
@@ -853,19 +881,15 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 					// A stored compare costs no API budget, so it is consulted
 					// before the rate-reserve gate: even a drained window can
 					// serve cached divergence. Cached forks that passed through
-					// the GraphQL batch refresh BehindCount in-place when
+					// the GraphQL batch refresh BehindCount on a private copy when
 					// upstream advances, without incurring redundant T2 re-fetch
 					// overhead.
-					if enrich && tier >= 2 && opts.CachedT2 != nil {
-						if t2 := opts.CachedT2(s.fork); t2 != nil {
+					if enrich && tier >= 2 {
+						if t2 := cachedT2[s.fork.ID]; t2 != nil {
 							r.T2 = t2
 							r.T2FromCache = true
+							r.T2BehindRefreshed = refreshedT2[s.fork.ID]
 							compareCached.Add(1)
-							if divergence != nil {
-								if d, ok := divergence[s.fork.ID]; ok && d.Resolved {
-									refreshCachedBehind(r.T2, d)
-								}
-							}
 						}
 					}
 					// Batch-resolved divergence costs no per-fork API budget
@@ -902,14 +926,15 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 					if enrich && tier >= 2 && r.T2 == nil && ltGate != nil && sel != nil {
 						if skip, _ := ltGate.decide(ctx, s.fork, *sel); skip {
 							t2 := forge.T2Data{
-								Performed:     true,
-								AheadCount:    sel.Ahead,
-								BehindCount:   sel.Behind,
-								HeadSHA:       sel.TipSHA,
-								IsBranchWork:  sel.IsSide,
-								Upstreamed:    sel.Upstreamed,
-								UpstreamedPR:  sel.UpstreamedPR,
-								CompareSource: "graphql_batch",
+								Performed:      true,
+								AheadCount:     sel.Ahead,
+								BehindCount:    sel.Behind,
+								HeadSHA:        sel.TipSHA,
+								ComparedBranch: sel.Branch,
+								IsBranchWork:   sel.IsSide,
+								Upstreamed:     sel.Upstreamed,
+								UpstreamedPR:   sel.UpstreamedPR,
+								CompareSource:  "graphql_batch",
 							}
 							if sel.IsSide {
 								t2.ActiveBranch = sel.Branch
@@ -1205,6 +1230,10 @@ func enrichCommitFiles(ctx context.Context, provider forge.Forge, collected []Re
 		if result.T2 == nil {
 			result.CommitFilesSkip = &StageSkip{Stage: "commit_files", ForkID: result.Fork.ID, Reason: "compare data unavailable"}
 			continue
+		}
+		if result.T2FromCache {
+			// Sorting and assigning Files below must not mutate the caller's cached slice.
+			result.T2.Commits = append([]forge.AheadCommit(nil), result.T2.Commits...)
 		}
 		sort.SliceStable(result.T2.Commits, func(i, j int) bool {
 			return result.T2.Commits[i].Timestamp.Before(result.T2.Commits[j].Timestamp)

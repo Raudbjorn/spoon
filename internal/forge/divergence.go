@@ -29,8 +29,10 @@ type BranchDivergence struct {
 // listed them (newest tip first). SelectDivergentBranch consumes this to
 // pick the branch to attribute the fork's work to.
 type ForkDivergence struct {
-	Default BranchDivergence
-	Sides   []BranchDivergence
+	// CountsOnly identifies a cached branch refresh, not a full branch scan.
+	CountsOnly bool
+	Default    BranchDivergence
+	Sides      []BranchDivergence
 	// Resolved is false when the batch call could not resolve this
 	// particular fork (e.g. deleted, made private, or otherwise
 	// unreachable at query time). Default and Sides are then zero and
@@ -82,8 +84,10 @@ var ErrBatchCompareUnavailable = errors.New("forge: batch compare unavailable")
 // A fork ID absent from the returned map was not resolved by the batch and
 // must be handled by the REST path individually, same as a present entry
 // with Resolved == false.
+// Cached entries query only their recorded branch and return CountsOnly results.
+// Callers must reconcile those against the cache before selecting a live branch.
 type BatchCompareProvider interface {
-	BatchCompare(ctx context.Context, forks []T1Data) (map[string]ForkDivergence, BatchStats, error)
+	BatchCompare(ctx context.Context, forks []T1Data, cached map[string]*T2Data) (map[string]ForkDivergence, BatchStats, error)
 }
 
 // MissingReposProvider is an optional provider capability that reports which

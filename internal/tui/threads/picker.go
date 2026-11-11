@@ -2,6 +2,7 @@ package threads
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -122,6 +123,8 @@ func (m PickerModel) View() string {
 		} else {
 			row = fmt.Sprintf("PR #%d: %s (@%s, updated %s)", pr.Number, pr.Title, pr.Author, humanizeDuration(m.now.Sub(pr.UpdatedAt)))
 		}
+		quoted := strconv.Quote(row)
+		row = quoted[1 : len(quoted)-1]
 		selected := i == m.cursor
 		if selected {
 			row = ctx.Glyph(theme.Selected) + " " + row

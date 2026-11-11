@@ -308,3 +308,18 @@ func TestFindOpenPRForHead_InvalidJSON(t *testing.T) {
 	}
 }
 
+func TestFindOpenPRForHead_EscapesBranchQuery(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("head"); got != "alice:fix&urgent" {
+			t.Errorf("head = %q", got)
+		}
+		if r.URL.Query().Has("urgent") {
+			t.Error("branch injected another query parameter")
+		}
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer srv.Close()
+	if _, err := newTestClient(t, srv).FindOpenPRForHead(context.Background(), "acme", "project", "alice", "fix&urgent"); err != nil {
+		t.Fatal(err)
+	}
+}

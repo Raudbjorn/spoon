@@ -210,3 +210,16 @@ func TestPicker_SingleRepoRenderingSuppressesSuffix(t *testing.T) {
 	}
 }
 
+func TestPickerEscapesWorkspaceDirectory(t *testing.T) {
+	prs := []gh.PullRequest{
+		{Number: 1, RepoOwner: "acme", RepoName: "one", RepoDir: "./one\x1b]52;c;YQ==\a\nforged"},
+		{Number: 2, RepoOwner: "acme", RepoName: "two", RepoDir: "./two"},
+	}
+	view := NewPicker(prs).View()
+	if strings.Contains(view, "\x1b]52;") || strings.ContainsRune(view, '\a') {
+		t.Fatalf("active terminal controls: %q", view)
+	}
+	if !strings.Contains(view, `\x1b]52;`) {
+		t.Fatalf("escaped directory missing: %q", view)
+	}
+}
