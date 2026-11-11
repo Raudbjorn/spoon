@@ -24,11 +24,15 @@ Protect these contracts:
   independent marginal multiplication is not an exact rank distribution.
 - Guard nonfinite values, near-zero empirical-Bayes denominators, empty/singleton
   pools, ties, cap boundaries and aligned slices.
+- Carry EpsilonSet through callers and clustering: an explicit zero cutoff is
+  valid and must remain distinct from the default, including cache compatibility.
 - Compare variants against the same pool and judgments. Use golden/property
   tests and offline evaluation before claiming accuracy improvements; report
   dataset/model/revision and uncertainty, not just a better-looking example.
 - Cluster cache compatibility includes effective configuration and the actual
   candidate/evidence set. Apply insufficient-candidate gates before cache hits.
+  Preserve JSON schema rejection of assignments derived from unvalidated web
+  patches even when SQLite has already completed its cleanup.
 - Cluster results mutate Heat and can reorder rows. Check CLI streaming, TUI
   grouping/selection and exports together; coordinate shared-file ownership.
 - Pin MDG/cache evidence to the upstream head and preserve explicit head
@@ -40,10 +44,15 @@ For work on the proposed redesign, consult
 which parts are implemented before applying its recipes.
 
 Start with `go test ./internal/heat ./internal/priors ./internal/eval ./internal/mdg ./internal/cluster`, plus affected forksops rank
-tests. Anchors include TestRankGolden, TestRankDistributionGaussianOrthant,
-TestRankDistribution_SumsToOneAndMeanIsExpectedRank,
-TestFitNormalNormalDegenerateWeights, TestRunPipeline_CacheBypassedByThreshold,
-TestPipeline_CentralityHeadSHACacheHit and TestEval_FixtureEndToEnd.
+tests. Anchors include `internal/forksops/rank_golden_test.go:TestRankGolden`,
+`internal/forksops/rank_test.go:TestRankDistributionGaussianOrthant`,
+`internal/forksops/rank_test.go:TestRankDistribution_SumsToOneAndMeanIsExpectedRank`,
+`internal/forksops/eb_test.go:TestFitNormalNormalDegenerateWeights`,
+`internal/cluster/pipeline_test.go:TestRunPipeline_CacheBypassedByThreshold`,
+`internal/cluster/pipeline_test.go:TestRunPipeline_ExplicitZeroEpsilon`,
+`internal/cluster/pipeline_test.go:TestPipeline_CentralityHeadSHACacheHit`,
+`internal/cluster/webdiff_cache_test.go:TestPipelineRejectsPreValidationWebDiffCache`,
+and `internal/eval/hca_test.go:TestEval_FixtureEndToEnd`.
 Experiments under `experiments/started/behavioral-embeddings` are evidence to
 reproduce, not implementation promises.
 

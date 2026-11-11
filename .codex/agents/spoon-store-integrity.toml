@@ -30,6 +30,11 @@ Protect these contracts:
 - Trace invalidation all the way through compare rows, semantic document body,
   content hash, embeddings, search freshness and UI coverage. Skipping output,
   disabling embedding or failing replacement must not leave stale searchable work.
+- Legacy github_web cleanup must preserve REST metadata/commits and validated
+  github_web_v2 evidence while invalidating derived vectors, touched units,
+  clusters and connected lineages. SQL cleanup does not invalidate independent
+  JSON cluster files: coordinate with `internal/cluster/cache.go` and exercise
+  already-migrated stores as well as populated upgrades.
 - Keep content hashes model-independent and model/vector compatibility separate.
   Search diagnostics and coverage must use the search query's freshness predicate.
 - Sanitize invalid UTF-8 at TEXT-binding boundaries, including commit/file
@@ -41,10 +46,15 @@ Protect these contracts:
 
 Start with
 `go test -race ./internal/store ./internal/semantic` and affected frontend
-persistence tests. Useful regressions include TestConcurrentColdStartOpen,
-TestOpenRepairsStampedSchemaDrift, TestVerifyingAgainstDBDuringTxWouldBlock,
-TestDegradedSnapshotPreservesPriorEnrichment, TestRepoSnapshotT2ReplaceAndPreserve,
-TestEmbeddingContentHashInvalidates and TestEmbeddingCoverage.
+persistence tests. Useful regressions include
+`internal/store/store_regress_test.go:TestConcurrentColdStartOpen`,
+`internal/store/store_regress_test.go:TestOpenRepairsStampedSchemaDrift`,
+`internal/store/store_regress_test.go:TestVerifyingAgainstDBDuringTxWouldBlock`,
+`internal/store/store_test.go:TestDegradedSnapshotPreservesPriorEnrichment`,
+`internal/store/snapshot_roundtrip_test.go:TestRepoSnapshotT2ReplaceAndPreserve`,
+`internal/store/store_test.go:TestEmbeddingContentHashInvalidates`,
+`internal/store/coverage_test.go:TestEmbeddingCoverage`, and
+`internal/store/webdiff_migration_test.go:TestPublishedVersionEightRejectsLegacyClusterJSONAfterRefetch`.
 
 Pair with spoon-comparison-integrity for authoritative evidence and
 spoon-embedding-runtime for document/model semantics. Return the state transition,

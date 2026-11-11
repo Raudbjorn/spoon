@@ -11,7 +11,9 @@ GitHub reporting and review publication follow the shared guide separately.
 For GitHub start at `internal/github/graphql.go`, `internal/github/forks.go`,
 `internal/github/client.go`, `internal/github/batch_compare.go`,
 `internal/github/limiter.go`, `internal/github/retry.go`, and
-`internal/github/proxy_pool.go`. For GitLab use `internal/gitlab/forks.go` and
+`internal/github/proxy_pool.go`; authentication is in `internal/github/auth.go`
+and the GraphQL wrapper is in `internal/github/graphql_client.go`.
+For GitLab use `internal/gitlab/forks.go` and
 `internal/gitlab/client.go`; for Gitea use `internal/gitea/provider.go` and
 `internal/gitea/client.go`.
 Trace optional capabilities in `internal/forge/types.go` through adapters,
@@ -36,16 +38,19 @@ Protect these contracts:
   sends, semaphore acquisition, retries and subprocess waits.
 - Keep provider/host, API version, credential identity and cache scope distinct.
   Never print credentials or infer authorization from a proxy route.
+- go-github REST and githubv4 GraphQL clients sit behind Spoon's dispatcher.
+  Preserve its token/proxy selection, rate accounting and retries when changing
+  SDK calls. Loaded Spoon credentials and environment tokens replace gh CLI auth.
 - Prefer existing batch and last-touch mechanisms before adding calls. Measure
   request count on cold, warm, partial and reserve-exhausted paths.
 
 Start validation with affected fixtures in `internal/github`, `internal/gitlab`,
 `internal/gitea`, `internal/forksops`, and the frontend caller. Useful anchors:
-`TestFetchForksAuto_DuplicateOnlyPagesStillCounted`,
-`TestFetchForksAuto_RESTDedupAndOrder`,
-`TestSortForksByStars_MismatchedExtrasLeavesBothAligned`,
-`TestBatchDivergenceStopsAtReserveBetweenRequests`, and
-`TestBatchDivergenceCmd_ReserveStopsMissingRepoProbes`.
+`internal/github/acquisition_report_test.go:TestFetchForksAuto_DuplicateOnlyPagesStillCounted`,
+`internal/github/acquisition_report_test.go:TestFetchForksAuto_RESTDedupAndOrder`,
+`internal/github/acquisition_report_test.go:TestSortForksByStars_MismatchedExtrasLeavesBothAligned`,
+`internal/github/batch_compare_test.go:TestBatchDivergenceStopsAtReserveBetweenRequests`, and
+`internal/tui/enrich_queue_test.go:TestBatchDivergenceCmd_ReserveStopsMissingRepoProbes`.
 Use the race detector for changed worker/dispatcher paths.
 
 Handoff comparison identity and patch acceptance to spoon-comparison-integrity;

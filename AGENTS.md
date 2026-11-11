@@ -1,6 +1,7 @@
 # AGENTS.md
 
-This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
+Shared repository guidance for coding agents. Codex loads this file directly;
+`CLAUDE.md` points here so repository facts have one maintained copy.
 
 ## What this is
 
@@ -29,8 +30,8 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
   direct issue/review publication and define the narrower adjudication boundary.
   The coordinator must arrange required independent review; labels do not do it.
 
-These rules are shared by all native roles; do not reread `CLAUDE.md` for the
-duplicate repository guidance. Role entrypoints guide navigation, not ownership.
+These rules are shared by all native roles. Maintain common guidance here;
+role entrypoints guide navigation, not ownership.
 
 ## Commands
 
@@ -44,17 +45,17 @@ go test -tags integration -run TestFetchForksIntegration ./internal/github/   # 
 ```
 
 - Go version is pinned by `go.mod` (1.26.2). The module path `github.com/svnbjrn/spoon` is not a published repo (real remote is `Raudbjorn/spoon`), so `go install ...@latest` does not work.
-- `vendor/` is **tracked**. After any `go.mod` change run `go mod vendor` and commit the result, or builds fail with an inconsistent-vendoring error.
+- `vendor/` is **tracked**, including local fixes and native libraries absent from regenerated output. After `go.mod` changes, follow the preservation procedure in `packaging/arch/README.md` before committing vendor changes; a bare `go mod vendor` drops required patches.
 - No CI workflows and no Makefile; the verification path is the three commands above.
 
 ## Architecture (the parts that span files)
 
 - **Pipeline:** `internal/forksops` owns streaming fork enumeration, enrichment, ranking and profiles. It calls forge adapters (`internal/forge` abstracts `github`, `gitlab`, `gitea`), then scoring (`heat`, `priors`, `cluster`, optional `mdg`), then persistence (`store`, a libsql DB caching repos, forks, compares and embeddings). `spn forks list` is: detect forge, enumerate and enrich, score/rank, snapshot, embed changed docs, emit NDJSON.
-- **GitHub layer** (`internal/github`) is a dispatcher, not a single client: token pool with failover, proxy pool, a token-bucket `limiter.go`, GraphQL with REST fallback, and a web-diff fallback. Fork lists are cached scoped to API version and credential identity. REST pins `X-GitHub-Api-Version: 2022-11-28`. The HTTP client is `cli/go-gh/v2`; `go-github` is not a dependency.
+- **GitHub layer** (`internal/github`) is a dispatcher, not a single client: token pool with failover, proxy pool, a token-bucket `limiter.go`, GraphQL with REST fallback, and a web-diff fallback. Fork lists are cached scoped to API version and credential identity. REST pins `X-GitHub-Api-Version: 2022-11-28` and uses `google/go-github/v90` through path-based `restGet`; GraphQL uses `shurcooL/githubv4`. Credentials come from Spoon config/environment; `cli/go-gh/v2` remains for hostname helpers and the browser opener, not token discovery. Use `httpFailure`/`statusCode` to handle transport errors.
 - **Cost model:** the code is organised as a cheap-to-expensive tiered pipeline (list, then compare/divergence, then diff/blob fetch). Most work here is about spending as few API points as possible, so check existing batching (`batch_compare.go`, `last_touch.go`, `divergent_branches.go`) before adding calls. Undocumented routes such as private `/network/meta` are deliberately not used.
 - **TUI:** a single `Update` loop in `internal/tui/app.go`. Embedding and clustering are separate paths: embed data is read back through the store (`internal/tui/embedcolumn.go`), while the cluster pipeline (`cluster_bridge.go`) works on the in-memory `Model.forks` slice — `maybeStartClusterPipeline` captures it, `runTUIClusterPipeline` passes `*Heat` pointers into the pipeline, and `handleClusterResult` re-sorts those mutated values. Nothing round-trips clusters through the store, and `cache_bridge.go` holds only forge→export conversions (the JSON cache it once served is gone).
 - **`spn` contract:** machine-readable errors go through `internal/agentio` envelopes; PR thread operations are shared between both binaries in `internal/threadsops`.
-- **Config:** zero-config bootstrap writes `~/.config/spoon/config.json` on first run; `SPOON_NO_CONFIG=1` ignores the config file entirely.
+- **Config/auth:** zero-config bootstrap writes `~/.config/spoon/config.json` on first run; `SPOON_NO_CONFIG=1` ignores the config file entirely. Both CLIs share login/logout through `internal/authops` and OAuth authorization-code login with PKCE/state through `internal/oauth`. GitHub tokens default to OS keyring storage (`internal/secrets`); `internal/config/secrets.go` resolves `keyring:<entry>` references on load and verifies new entries before publishing references on save. Unavailable keyring writes fall back to inline storage with a warning. `SPOON_SECRET_STORE=file` or `secrets.store: file` selects inline writes. Tests inject stores with `config.UseSecretStore`; the default keyring opener is disabled under `testing.Testing()`.
 
 ## Repo conventions
 
@@ -69,5 +70,5 @@ Read `docs/research/2026-10-01-github-recon-capabilities.md` before touching dan
 - GH Archive PushEvents no longer carry `size`/`commits` (dropped between 2025-09-15 and 2025-10-15), so the "zero-commit force-push" filter is gone. Detect rewrites with `compare before...head` (`diverged`, `behind`, no common ancestor).
 - Orphaned `before` commits were still served by SHA; GraphQL `object(oid:)` aliases cost 1 point per ~20 lookups, so batch existence checks in GraphQL and use REST `compare` only on survivors.
 - Alert APIs (code scanning, secret scanning, push protection) are not readable on third-party repos; do not plan fork-prospecting signals on them.
-- Decided: native Go enumeration (no TruffleHog shell-out), and a content scan (`internal/secretscan`, not yet created) that inspects only what a fork adds. The `go-github` addition is flagged "open" in that doc; confirm before adding.
+- Decided: native Go enumeration (no TruffleHog shell-out), and a content scan (`internal/secretscan`, not present in this checkout) that inspects only what a fork adds. The research document's later resolution records adoption of `go-github/v90` for REST transport; that migration is now in main.
 - Scope is defensive/authorized use. Never validate discovered credentials, and do not read or print scanned commit contents in logs or tests.

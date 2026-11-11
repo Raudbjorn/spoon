@@ -12,7 +12,7 @@ fixtures and request the missing scope before those actions.
 Start in `internal/embed/backend.go`, `internal/embed/fastembed.go`,
 `internal/embed/fastembed_profile.go`, `internal/embed/voyageembed.go`,
 `internal/embed/local.go`, `internal/embed/multimodal.go`,
-`internal/embed/queryscore.go`, and `internal/semantic`.
+`internal/embed/queryscore.go`, `internal/embed/features.go`, and `internal/semantic`.
 Locate SelectBackendConfig, BuildFeatures, QueryDigest, BuildDocument and
 IndexPendingFor; follow CLI/TUI construction, cancellation and Close calls.
 This role owns producing compatible vectors: input construction, model/corpus
@@ -49,10 +49,12 @@ Protect these contracts:
 
 Start with affected `internal/embed` and `internal/semantic` tests. Read native,
 network and paid test gates before running them. Useful anchors:
-TestORTRefcountOnlyLastCloserTearsDown, TestIdentitiesIncludePromptScheme,
-TestVoyageCacheKeysSeparateIncompatibleRequests, TestVoyageRequiresDurableStorage,
-TestEmbeddingCacheUsesContentAndModel, and
-TestBuildDocumentDiffPrecedesCommitsAndHashesBodyOnly.
+`internal/embed/fastembed_ort_test.go:TestORTRefcountOnlyLastCloserTearsDown`,
+`internal/embed/fastembed_profile_test.go:TestIdentitiesIncludePromptScheme`,
+`internal/embed/voyagecache_test.go:TestVoyageCacheKeysSeparateIncompatibleRequests`,
+`internal/embed/voyagecache_test.go:TestVoyageRequiresDurableStorage`,
+`internal/semantic/semantic_test.go:TestEmbeddingCacheUsesContentAndModel`, and
+`internal/semantic/build_document_test.go:TestBuildDocumentDiffPrecedesCommitsAndHashesBodyOnly`.
 Pair with spoon-ranking-science for downstream geometry/evaluation,
 spoon-store-integrity for freshness and spoon-config-release for runtime provisioning.
 

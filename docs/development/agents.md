@@ -48,8 +48,8 @@ to report to the coordinator; it does not authorize spawning another agent.
 
 ## Working contract
 
-The common starting instructions live in `AGENTS.md`; do not duplicate them in
-each role or load `CLAUDE.md` for the same guidance. Read the relevant procedures
+The common starting instructions live in `AGENTS.md`; `CLAUDE.md` points there
+instead of maintaining a duplicate. Read the relevant procedures
 below, then verify current source. Historical evidence explains the checks; it
 is not a frozen architecture specification or proof that a bug remains present.
 
@@ -101,8 +101,28 @@ For agent/documentation-only changes, validate TOML, referenced paths/test names
 runtime discovery and representative delegation instead of downloading models.
 Run `python3 scripts/check-agent-anchors.py` and
 `python3 -m unittest discover -s scripts -p 'test_check_agent_anchors.py'` for the
-static checks. They require Python 3.11+, not third-party packages, and do not
-prove semantic coverage or enforce review dispatch. No CI job currently runs them.
+static checks. They require Python 3.11+, Git and a local Go toolchain; the Go
+helper uses only the standard library, with dependency/toolchain downloads
+disabled. No third-party Python dependency is needed. Repeat these checks after
+integrating current main and from a clean checkout before publication. No CI job
+currently runs them.
+
+The inventory comes from Git; add new definitions and referenced files to the
+index before checking them. Paths may be inline backticks (including wrapped
+spans), inline Markdown link destinations, or recognizable bare filenames and
+tracked-root paths. Mark ambiguous extensionless paths explicitly with backticks
+and `./` or a directory separator; slash-separated prose is not automatically a
+repository reference. Paths with whitespace and reference-style Markdown links
+are unsupported; keep role anchors simple and repository-relative.
+
+Keep each executable regression anchor file-qualified, for example
+`internal/setupcheck/preflight_snapshot_test.go:TestLocalProviderProbeReportsCancellation`.
+`Fuzz` and `Benchmark` anchors use the same form. The checker uses tracked files
+and Go's parser/build selection to validate declarations in the exact test file;
+an unrelated package, untracked scratch copy or inactive build-tagged file cannot
+satisfy the reference. Role TOMLs allow only the three string fields above.
+These checks do not type-check packages, execute the referenced tests, establish
+coverage quality or enforce review dispatch.
 
 ## Reporting unhandled work
 
@@ -290,19 +310,21 @@ the durable evidence is the source and links below.
 | [#106 validation rebuttal](https://github.com/Raudbjorn/spoon/pull/106#discussion_r3770031431), [#128 locking rebuttal](https://github.com/Raudbjorn/spoon/pull/128#discussion_r4062802078) | Verify the mechanism; a bot's proposed fix can solve the wrong problem |
 | [#124 declined micro-optimization](https://github.com/Raudbjorn/spoon/pull/124#discussion_r3848405795) | Avoid extra code whose benefit is noise or whose guard changes a contract |
 
-### Review status at research and publication
+### Source baseline and historical review status
 
-At the research snapshot, these PRs were open. Refresh their state before acting.
-Before publication, this branch was rebased onto `main` at
-`d48702d450b5e64bfbf6c5b250da8ab1a1bd3b48`, which includes the merge of #145.
-Its workspace/cache changes are now part of the source baseline; the initial
-research and native smoke-test observations above remain pinned to `774c4af`.
+At the research snapshot, these PRs were open. They are now merged. On
+2026-11-11 this branch integrated `main` at
+`0631fdf`, including #142 and #147, in merge commit `a061136`.
+That is the source baseline for the refreshed role guidance. The earlier
+publication base was `d48702d`, which already included #145. Historical research,
+smoke checks and evaluation results retain their own recorded revisions; updating
+the source baseline does not rerun or extend those observations.
 
 | PR | Boundary for agents |
 | --- | --- |
-| [#142 auth/client migration](https://github.com/Raudbjorn/spoon/pull/142) | OAuth/keyring packages and migration behavior are pending; main still uses the go-gh client/config path. The [timeout review](https://github.com/Raudbjorn/spoon/pull/142#discussion_r4202058463) informs future work, not a claim those modules already exist. |
+| [#142 auth/client migration](https://github.com/Raudbjorn/spoon/pull/142) | Merged in `8f811d1`. REST uses go-github/v90, GraphQL uses githubv4; Spoon no longer discovers tokens through gh. `internal/authops`, `internal/oauth`, `internal/secrets` and `internal/config/secrets.go` implement shared authorization-code login and keyring persistence. Preserve cancellation, bounded callbacks, storage policy and publication/cleanup ordering. The old gh-token subprocess regression has been replaced by `TestLocalProviderProbeReportsCancellation`. |
 | [#145 discovery/cache hardening](https://github.com/Raudbjorn/spoon/pull/145) | Open during research, merged before publication. Effective remote handling, selected-checkout propagation and stronger durable invalidation now exist in the base; keep the [checkout finding](https://github.com/Raudbjorn/spoon/pull/145#discussion_r4457979074) as a regression boundary. |
-| [#147 webdiff follow-up](https://github.com/Raudbjorn/spoon/pull/147) | It overlaps merged #144 but carries additional review concerns; verify its diff and current source before deciding a finding is fixed. |
+| [#147 webdiff follow-up](https://github.com/Raudbjorn/spoon/pull/147) | Merged in `0631fdf`. `internal/github/webdiff/validate.go` validates complete hunk rows and unchanged gaps. Accepted scraped patches carry `github_web_v2` provenance; legacy evidence is invalidated through persistence and search rather than treated as newly verified. |
 
 Merged/resolved also does not mean exhausted: #146 later received a
 [missing branch inventory finding](https://github.com/Raudbjorn/spoon/pull/146#discussion_r4536877943).
@@ -379,6 +401,17 @@ Those initial smoke checks exercised three roles; the later diagnosis pilot
 above has its own role inventory and limits. No Go suite, native inference,
 live forge operation, interactive TUI or package installation was run for these
 agent-only changes.
+
+### Checks after integrating main
+
+On 2026-11-11, after merging `0631fdf`, the refreshed nine roles passed the
+tracked-path checker with 57 exact file-qualified executable anchors. All 14
+temporary-Git-repository fixture tests and `go vet ./scripts` passed, using
+Python 3.14.10 and Go 1.27.3-X:nodwarf5 on Linux/amd64. The five existing
+`TestTruncateEncodings` regressions also passed offline with an isolated tokenizer
+cache. Application source, dependencies and vendor files match that main revision.
+This updates source/anchor evidence; it does not rerun the native-agent pilot or
+establish application-wide, live-authentication or native-model behavior.
 
 ### Revised verifier smoke check
 

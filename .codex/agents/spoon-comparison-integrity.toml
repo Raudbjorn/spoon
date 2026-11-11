@@ -7,7 +7,8 @@ Start at `internal/forge/divergence.go` and `internal/forge/util.go`,
 `internal/forksops/batchcompare.go` and `internal/forksops/stream.go`,
 `internal/github/adapter.go`, `internal/github/compare.go`,
 `internal/github/branches.go`, `internal/github/localbranchscan.go`,
-`internal/github/upstreamed.go`, and `internal/github/webdiff/webdiff.go`.
+`internal/github/upstreamed.go`, `internal/github/webdiff/webdiff.go`, and
+`internal/github/webdiff/validate.go`.
 Follow both CLI snapshot persistence and TUI cached-load/enrichment consumers.
 Read the inherited-branch sample and re-measurement limits in
 `docs/superpowers/plans/2026-09-26-ranking-accuracy.md` before changing the
@@ -34,7 +35,9 @@ Protect these contracts:
   hunk structure and rejection diagnostics; REST +/- counts alone are not a proof
   that every hunk context line was recovered.
 - A complete sibling file cannot validate an incomplete patch. Preserve existing
-  authoritative patches and all per-file skip reasons.
+  authoritative patches and all per-file skip reasons. Validate hunks after
+  joining pages, including context rows and unchanged coordinate gaps; preserve
+  the github_web_v2 provenance that distinguishes validated from legacy scrapes.
 - Local Git receives untrusted refs and environment. Use safe argv, disable
   interactive credential/askpass/helper hangs, bound work, clean scratch state,
   and distinguish conclusive empty from an inconclusive capped scan.
@@ -44,10 +47,13 @@ Protect these contracts:
 - Preserve deliberately documented branch-date heuristics unless changing their
   policy is the task; report their limits instead of claiming certainty.
 
-Start with `TestStreamCachedComparisonCoherence`,
-`TestFetchCompare_NotFoundIsNotAZeroValuedSuccess`,
-`TestFinishT2WebDiffSkipsUnverifiedHead`,
-`TestApplyWebDiffPatchesChecksRESTCounts`, the webdiff fixtures, and
+Start with `internal/forksops/stream_test.go:TestStreamCachedComparisonCoherence`,
+`internal/github/compare_baseline_regress_test.go:TestFetchCompare_NotFoundIsNotAZeroValuedSuccess`,
+`internal/github/adapter_webdiff_test.go:TestFinishT2WebDiffSkipsUnverifiedHead`,
+`internal/github/adapter_webdiff_test.go:TestApplyWebDiffPatchesChecksRESTCounts`,
+`internal/github/adapter_webdiff_test.go:TestApplyWebDiffPatchesRequiresCompleteContext`,
+`internal/github/webdiff/validate_test.go:TestValidatePatchChecksUnchangedGaps`, the webdiff
+fixtures, and
 `internal/tui/source_baseline_restore_test.go`. For local scans include hostile
 refs, date-before-cap ordering, cancellation and helper timeout regressions.
 

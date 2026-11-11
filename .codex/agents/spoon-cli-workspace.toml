@@ -13,6 +13,8 @@ Start in `cmd/spn/main.go`, `cmd/spn/output.go`, `cmd/spn/threads.go`,
 `cmd/spoon/threads.go`, `internal/agentio`, and
 `internal/threadsops/workspace.go`, `internal/threadsops/resolve.go`,
 `internal/threadsops/suggestions.go`, `internal/threadsops/bulk.go`.
+Shared authentication commands live in `internal/authops/authops.go` and
+`internal/authops/storage.go`; coordinate credential effects with spoon-config-release.
 Trace `internal/tui/threads/picker.go` and `internal/tui/threads/model.go`
 when discovery or local mutation crosses the UI boundary.
 
@@ -21,7 +23,9 @@ Protect these contracts:
   semantics must not. Follow every JSON/NDJSON/CSV/error consumer of changed data.
 - Machine success data belongs on stdout, structured diagnostics on stderr.
   Preserve stable error/exit codes, retryability, degradation fields and ANSI-free
-  records; don't hide partial acquisition failures behind success output.
+  records; don't hide partial acquisition failures behind success output. Search
+  store-open and embedding failures use actionable bad_input envelopes; distinguish
+  those setup failures from internal search failures.
 - Help/version/invalid dispatch must not bootstrap config, open stores, obtain
   credentials, prompt or perform network work.
 - Confirmed absence differs from failed discovery. Keep usable partial matches,
@@ -46,10 +50,15 @@ Protect these contracts:
   flag is not proof its concern was fixed.
 
 Start with `internal/agentio`, `internal/threadsops` and affected CLI tests.
-Anchors: TestDispatchPreBootstrapPathsAreSideEffectFree,
-TestProductionWritesUseTypedOutput, TestMachineRoutesAreColorInvariant,
-TestResolve_partialFailure_commentPosted, TestResolve_DryRun_NoMutation,
-TestApplySuggestion_PreservesFilePermissions and workspace fixtures.
+Anchors: `cmd/spn/cli_contract_test.go:TestDispatchPreBootstrapPathsAreSideEffectFree`,
+`cmd/spn/cli_contract_test.go:TestDispatchInvalidStorageDoesNotLoadKeyringConfig`,
+`cmd/spn/output_classification_test.go:TestProductionWritesUseTypedOutput`,
+`cmd/spn/color_test.go:TestMachineRoutesAreColorInvariant`,
+`internal/threadsops/resolve_test.go:TestResolve_partialFailure_commentPosted`,
+`internal/threadsops/resolve_test.go:TestResolve_DryRun_NoMutation`,
+`internal/threadsops/apply_test.go:TestApplySuggestion_PreservesFilePermissions`,
+`internal/authops/authops_test.go:TestAuthLoginSavesTokenAndNeverPrintsIt`,
+and workspace fixtures.
 
 Pair with spoon-terminal for picker/action handoffs and spoon-forge-acquisition
 for API identity. Return output/exit behavior, checkout/API provenance, mutation

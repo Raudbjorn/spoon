@@ -41,10 +41,14 @@ Protect these contracts:
 
 Use `go test -race ./internal/tui/...` as scope permits; inspect native
 integration requirements before treating it as offline. Anchors:
-TestEmbedRunIgnoresLateLifecycleMessages, TestEmbedRunDoublePressIsRefused,
-TestEmbedMarkedWithNothingMarkedIsANoOp, TestEmbedRunNeverDownloadsOnAKeypress,
-TestRefreshDropsInFlightEnrichment, TestRefreshKeepsForksOnError,
-TestRefreshClearsRanking and TestSettingsEditorAcceptsEveryPrintableCharacter.
+`internal/tui/embedrun_test.go:TestEmbedRunIgnoresLateLifecycleMessages`,
+`internal/tui/embedrun_test.go:TestEmbedRunDoublePressIsRefused`,
+`internal/tui/embedrun_test.go:TestEmbedMarkedWithNothingMarkedIsANoOp`,
+`internal/tui/embedrun_test.go:TestEmbedRunNeverDownloadsOnAKeypress`,
+`internal/tui/refresh_test.go:TestRefreshDropsInFlightEnrichment`,
+`internal/tui/refresh_test.go:TestRefreshKeepsForksOnError`,
+`internal/tui/refresh_test.go:TestRefreshClearsRanking` and
+`internal/tui/settings/editor_literal_test.go:TestSettingsEditorAcceptsEveryPrintableCharacter`.
 Update focused rendering/golden fixtures only for intentional behavior changes.
 
 Pair with spoon-cli-workspace for actions, spoon-config-release for settings
