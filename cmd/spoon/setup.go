@@ -283,8 +283,6 @@ func authSource(provider forge.Provider, auth forge.AuthInfo) string {
 	switch {
 	case provider == forge.ProviderGitLab && auth.Tier == forge.AuthCLI:
 		return " via the glab CLI"
-	case provider == forge.ProviderGitHub && auth.Tier == forge.AuthCLI:
-		return " via gh auth login"
 	case provider == forge.ProviderGitLab && auth.Tier == forge.AuthToken:
 		return " via GITLAB_TOKEN"
 	case auth.Tier == forge.AuthToken:
