@@ -181,7 +181,7 @@ type RateLimit struct {
 type AuthStatus struct {
 	Authenticated       bool
 	Host                string
-	TokenSource         string   // "gh", "env", "none"
+	TokenSource         string   // "config", "env", "none"
 	Scopes              []string // OAuth scopes attached to the token (empty if unauthenticated)
 	RateLimit           RateLimit
 	DuplicateIdentities int    // configured tokens collapsed because they resolve to the same login

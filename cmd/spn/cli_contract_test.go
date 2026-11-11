@@ -6,11 +6,14 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/svnbjrn/spoon/internal/agentio"
+	"github.com/svnbjrn/spoon/internal/config"
 	"github.com/svnbjrn/spoon/internal/forge"
+	"github.com/svnbjrn/spoon/internal/secrets"
 )
 
 // Both top-level failure paths must emit the JSON envelope on stderr and keep
@@ -98,6 +101,60 @@ func TestDispatchPreBootstrapPathsAreSideEffectFree(t *testing.T) {
 				t.Fatalf("pre-bootstrap dispatch created files: %v", entries)
 			}
 		})
+	}
+}
+
+type dispatchStorageProbe struct {
+	*secrets.MemoryStore
+	reads, lists int
+}
+
+func (s *dispatchStorageProbe) Get(string) (string, bool, error) {
+	s.reads++
+	return "", false, secrets.ErrLocked
+}
+
+func (s *dispatchStorageProbe) Names() ([]string, error) {
+	s.lists++
+	return nil, secrets.ErrLocked
+}
+
+func TestDispatchInvalidStorageDoesNotLoadKeyringConfig(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	t.Setenv("SPOON_NO_CONFIG", "")
+	t.Setenv(secrets.EnvBackend, "keyring")
+	path := filepath.Join(xdg, "spoon", "config.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	contents := []byte(`{"github":{"tokens":["keyring:synthetic-entry"]}}`)
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	probe := &dispatchStorageProbe{MemoryStore: secrets.NewMemoryStore()}
+	t.Cleanup(config.UseSecretStore(probe))
+	for _, args := range [][]string{
+		nil, {"stats"}, {"status", "extra"}, {"test", "--extra"},
+		{"migrate"}, {"migrate", "--to"}, {"migrate", "--to", "cloud"},
+		{"migrate", "--to", "file", "--extra"},
+	} {
+		var stdout, stderr bytes.Buffer
+		if code := dispatch(append([]string{"auth", "storage"}, args...), &stdout, &stderr); code != 2 || stdout.Len() != 0 {
+			t.Fatalf("%v: exit %d stdout %q stderr %q", args, code, stdout.String(), stderr.String())
+		}
+		if probe.reads != 0 || probe.lists != 0 {
+			t.Fatalf("%v: malformed storage command read keyring %d times and listed it %d times", args, probe.reads, probe.lists)
+		}
+		var envelope struct {
+			Error struct{ Code string } `json:"error"`
+		}
+		if err := json.Unmarshal(stderr.Bytes(), &envelope); err != nil || envelope.Error.Code != "bad_input" {
+			t.Fatalf("%v: expected one bad_input envelope, got %q", args, stderr.String())
+		}
+	}
+	if after, err := os.ReadFile(path); err != nil || !bytes.Equal(contents, after) {
+		t.Fatal("malformed storage commands changed the config")
 	}
 }
 

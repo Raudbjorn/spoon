@@ -9,8 +9,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	ghAPI "github.com/cli/go-gh/v2/pkg/api"
 )
 
 // backendForServer builds a *backend whose REST calls land on srv.
@@ -20,20 +18,11 @@ func backendForServer(t *testing.T, login string, srv *httptest.Server) *backend
 	if err != nil {
 		t.Fatalf("parse server URL: %v", err)
 	}
-	rest, err := ghAPI.NewRESTClient(ghAPI.ClientOptions{
-		AuthToken: "x", Host: "github.com",
-		Transport: &rewriteTransport{target: u, base: http.DefaultTransport},
-	})
+	rest, err := newRESTClient("x", &rewriteTransport{target: u, base: http.DefaultTransport})
 	if err != nil {
 		t.Fatalf("NewRESTClient: %v", err)
 	}
-	gql, err := ghAPI.NewGraphQLClient(ghAPI.ClientOptions{
-		AuthToken: "x", Host: "github.com",
-		Transport: &rewriteTransport{target: u, base: http.DefaultTransport},
-	})
-	if err != nil {
-		t.Fatalf("NewGraphQLClient: %v", err)
-	}
+	gql := newGraphQLClient("x", defaultHost, &rewriteTransport{target: u, base: http.DefaultTransport})
 	b := &backend{Rest: rest, GraphQL: gql, Login: login}
 	b.REST.Limiter = newLimiterRPM(6000, 100)
 	b.GraphQLBudget.Limiter = newLimiterRPM(6000, 100)
@@ -166,7 +155,7 @@ func TestDoGraphQLRotatesToHealthyBackendOnRateLimit(t *testing.T) {
 	var out struct {
 		Viewer struct{ Login string }
 	}
-	if err := c.doGraphQL(context.Background(), "query{viewer{login}}", nil, &out); err != nil {
+	if err := c.doGraphQL(context.Background(), &out, nil, &out); err != nil {
 		t.Fatalf("doGraphQL failed: %v (exhausted=%d healthy=%d)", err, exhaustedHits.Load(), healthyHits.Load())
 	}
 	if healthyHits.Load() == 0 {

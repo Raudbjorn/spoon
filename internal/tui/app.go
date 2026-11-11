@@ -450,7 +450,7 @@ func (m Model) Init() tea.Cmd {
 		m.authMsg = fmt.Sprintf("Authenticated (%s, %d req/%s)",
 			m.auth.Provider.String(), m.auth.RateLimit, m.auth.RateUnit)
 	} else {
-		m.authMsg = "Not authenticated. Run `gh auth login` for 5,000 req/hr (currently 60/hr)."
+		m.authMsg = "Not authenticated. Run `spoon auth login` for 5,000 req/hr (currently 60/hr)."
 	}
 	pump := waitForClusterMsg(m.clusterMsgs, m.lifecycleCtx)
 	if m.initRepo != "" {
@@ -879,9 +879,13 @@ func (m *Model) processPendingUpdates() (tea.Model, tea.Cmd) {
 
 				// Cache-served compares are already in the store, verbatim
 				// minus patch text — re-persisting would degrade the rows.
-				if !update.fromCache {
-					m.persistCompare(i)
-					coverageDirty = true
+				if !update.fromCache || update.cacheRefreshed {
+					var cached *forge.T2Data
+					if update.fromCache {
+						cached = &update.t2
+					}
+					m.persistCompare(i, cached)
+					coverageDirty = coverageDirty || !update.fromCache
 				}
 
 				break
@@ -938,10 +942,10 @@ func (m *Model) processPendingUpdates() (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-// recomputeT2Score recalculates the heat score for a fork after T2 data arrives.
+// recomputeT2Score recalculates heat after T2 arrives or becomes stale.
 func (m *Model) recomputeT2Score(i int) {
 	t2 := m.forks[i].T2
-	if t2 == nil || m.parent == nil || m.scorer == nil {
+	if m.parent == nil || m.scorer == nil {
 		return
 	}
 
@@ -949,11 +953,16 @@ func (m *Model) recomputeT2Score(i int) {
 	now := time.Now()
 
 	input := buildTUIScoreInput(f, *m.parent, now)
-	input.T2 = &heat.Tier2ParamsV2{
-		MNA:                t2.MNA,
-		AheadBy:            t2.AheadCount,
-		BehindBy:           t2.BehindCount,
-		FeatureCommitRatio: t2.FeatureCommitRatio,
+	penalty := heat.PenaltyInput{Archived: f.IsArchived}
+	if t2 != nil {
+		input.T2 = &heat.Tier2ParamsV2{
+			MNA:                t2.MNA,
+			AheadBy:            t2.AheadCount,
+			BehindBy:           t2.BehindCount,
+			FeatureCommitRatio: t2.FeatureCommitRatio,
+		}
+		penalty.AheadKnown = true
+		penalty.AheadAllBranches = t2.AheadCount
 	}
 
 	// Wire v2 lone wolf when we have commits to analyze -- but only up to the
@@ -961,7 +970,7 @@ func (m *Model) recomputeT2Score(i int) {
 	// drops out of the score and the 🐺 badge clears on its own: result is
 	// freshly built by ScoreRaw below, and LoneWolfV2 is only set when
 	// input.T3 is non-nil.
-	if m.maxTier() >= 3 && len(t2.Commits) > 0 {
+	if t2 != nil && m.maxTier() >= 3 && len(t2.Commits) > 0 {
 		lw := buildTUILoneWolfInput(f, now, t2)
 		input.T3 = &heat.Tier3ParamsV2{
 			LoneWolf: heat.DetectLoneWolfV2(lw),
@@ -972,11 +981,7 @@ func (m *Model) recomputeT2Score(i int) {
 	if input.T3 != nil && input.T3.LoneWolf != nil {
 		result.LoneWolfV2 = input.T3.LoneWolf
 	}
-	m.scorer.Finalize(&result, m.forks[i].statID, heat.PenaltyInput{
-		AheadKnown:       true,
-		AheadAllBranches: t2.AheadCount,
-		Archived:         f.IsArchived,
-	})
+	m.scorer.Finalize(&result, m.forks[i].statID, penalty)
 
 	// result is a fresh HeatResult, so assigning it wholesale would erase
 	// everything the cluster pipeline wrote in place through &forks[i].Heat
@@ -1466,10 +1471,9 @@ func (m *Model) persistForkList() tea.Cmd {
 	}
 }
 
-// persistCompare writes one fork's fresh compare (with its full T1 context and
-// updated heat) to the store, synchronously — a single-fork snapshot is a few
-// milliseconds and keeps the update loop simple.
-func (m *Model) persistCompare(i int) {
+// persistCompare writes a fresh compare or refreshes/invalidates the supplied
+// cached comparison without replacing its patches.
+func (m *Model) persistCompare(i int, cached *forge.T2Data) {
 	if m.db == nil || i < 0 || i >= len(m.forks) {
 		return
 	}
@@ -1479,7 +1483,18 @@ func (m *Model) persistCompare(i int) {
 	}
 	f := &m.forks[i]
 	snap := store.SnapshotFromForge(repo, f.Fork, f.T2, f.Heat.Score, f.Heat.Tier, time.Now().UTC())
-	attachDocument(&snap, f)
+	if cached != nil {
+		snap.T2Present = false
+		if f.T2 != nil {
+			snap.T2Refresh = f.T2
+		} else {
+			snap.T2Invalidate = cached
+			// Superseded compare evidence must also leave the search document.
+			attachDocument(&snap, f)
+		}
+	} else {
+		attachDocument(&snap, f)
+	}
 	if err := m.db.UpsertSnapshot(context.Background(), snap); err != nil {
 		m.errMsg = fmt.Sprintf("Store write failed: %s", err)
 		m.errMsgTime = time.Now()
@@ -1719,19 +1734,19 @@ func (m *Model) startEnrichment() tea.Cmd {
 		return nil
 	}
 
-	// Only forks without a compare need one: applyCachedCompares has already
-	// served every fork whose stored compare is still valid (and on a
-	// refresh nothing was cached, so every fork qualifies).
+	// Cached compares join the batch for count refresh; their patches are reused.
+	bp, hasBatch := m.provider.(forge.BatchCompareProvider)
 	parentPushed := m.parent.PushedAt
 	var order []enrichEntry
 	for i := range m.forks {
-		if m.forks[i].T2 != nil {
+		if m.forks[i].T2 != nil && (!hasBatch || m.refresh) {
 			continue
 		}
 		m.forks[i].Enriching = true
 		order = append(order, enrichEntry{
 			fork:     m.forks[i].Fork,
 			priority: forksops.DispatchPriority(m.forks[i].Fork, parentPushed, m.forks[i].Heat.Score),
+			cached:   m.forks[i].T2,
 		})
 	}
 	m.enrichTotal = len(order)
@@ -1755,7 +1770,7 @@ func (m *Model) startEnrichment() tea.Cmd {
 	// Resolve divergence for the whole list in one GraphQL sweep first,
 	// as `spn forks list` does: forks with nothing ahead then never spend a
 	// REST compare, and divergent ones carry a pre-chosen branch.
-	if bp, ok := m.provider.(forge.BatchCompareProvider); ok {
+	if hasBatch {
 		m.batchResolving = true
 		m.batchProvider = bp
 		m.batchPending = order
@@ -1887,8 +1902,9 @@ func (m *Model) reenrichPending() tea.Cmd {
 		m.forks[i].TierSkipped = false
 		m.forks[i].BudgetSkipped = false
 		entries = append(entries, enrichEntry{
-			fork:     m.forks[i].Fork,
-			priority: forksops.DispatchPriority(m.forks[i].Fork, parentPushed, m.forks[i].Heat.Score),
+			fork:      m.forks[i].Fork,
+			priority:  forksops.DispatchPriority(m.forks[i].Fork, parentPushed, m.forks[i].Heat.Score),
+			skipCache: true, // cached compares were served before the initial pass
 		})
 	}
 	// Appended to a running pass's queue, these are ordered against the

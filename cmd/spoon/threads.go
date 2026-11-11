@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -81,6 +82,10 @@ type threadsFlags struct {
 	// PR ref present, the flag is ignored (with a warning) so existing
 	// scripts keep working.
 	interactive bool
+	// scanDepth overrides the default workspace scan depth (1, max 3).
+	scanDepth int
+	// scanOnly forces workspace discovery even when only one repo exists.
+	scanOnly bool
 }
 
 // parseThreadsFlags parses the args after "spoon threads".
@@ -234,6 +239,27 @@ func parseThreadsFlags(args []string) (threadsFlags, error) {
 			f.verbose = true
 		case a == "--interactive" || a == "-i":
 			f.interactive = true
+		case a == "--scan-depth", strings.HasPrefix(a, "--scan-depth="):
+			var val string
+			if a == "--scan-depth" {
+				if i+1 >= len(args) {
+					return f, fmt.Errorf("--scan-depth requires a value")
+				}
+				i++
+				val = args[i]
+			} else {
+				val = strings.TrimPrefix(a, "--scan-depth=")
+			}
+			n, err := strconv.Atoi(val)
+			if err != nil || n < 1 {
+				return f, fmt.Errorf("--scan-depth must be a positive integer (1-3)")
+			}
+			if n > 3 {
+				n = 3
+			}
+			f.scanDepth = n
+		case a == "--scan-only":
+			f.scanOnly = true
 		case a == "-h" || a == "--help":
 			return f, errThreadsHelp
 		default:
@@ -247,7 +273,7 @@ func parseThreadsFlags(args []string) (threadsFlags, error) {
 		}
 	}
 
-	if f.prRef == "" && !f.interactive {
+	if f.prRef == "" && !f.interactive && !f.scanOnly {
 		return f, fmt.Errorf("missing PR reference (e.g. owner/repo#42) — pass --interactive/-i to pick one")
 	}
 
@@ -396,9 +422,10 @@ func runThreadsWithEffective(args []string, effective config.EffectiveConfig) in
 	// --interactive with a PR ref already supplied is a user error in
 	// spirit, but rather than refuse, warn and fall through to the
 	// existing PR-ref code path.
-	if flags.interactive && flags.prRef != "" {
+	if (flags.interactive || flags.scanOnly) && flags.prRef != "" {
 		fmt.Fprintln(os.Stderr, "⚠️  Warning: --interactive ignored: PR ref already supplied")
 		flags.interactive = false
+		flags.scanOnly = false
 	}
 
 	client, status, err := gh.CheckAuthWithEffective(effective)
@@ -407,12 +434,12 @@ func runThreadsWithEffective(args []string, effective config.EffectiveConfig) in
 		return 1
 	}
 	if !client.IsAuthenticated() {
-		fmt.Fprintln(os.Stderr, "❌ Error: spoon threads requires authentication (run `gh auth login`).")
+		fmt.Fprintln(os.Stderr, "❌ Error: spoon threads requires authentication (run `spoon auth login`).")
 		return 1
 	}
 	if !status.HasScope("repo") {
 		fmt.Fprintln(os.Stderr, "❌ Error: spoon threads requires the 'repo' OAuth scope.")
-		fmt.Fprintln(os.Stderr, "Refresh your token with:  gh auth refresh -s repo")
+		fmt.Fprintln(os.Stderr, "Authorize with:  spoon auth login --scope repo")
 		return 2
 	}
 
@@ -420,41 +447,113 @@ func runThreadsWithEffective(args []string, effective config.EffectiveConfig) in
 
 	tuiContexts := newThreadsTUIContextCache(effective)
 
-	// Interactive picker: no PR ref given, --interactive was set, repo
-	// context detected. Fetch open PRs, run the picker, and treat the
-	// chosen PR as if the user had typed it on the command line.
-	if flags.interactive && flags.prRef == "" {
-		if fallbackOwner == "" || fallbackRepo == "" {
-			fmt.Fprintln(os.Stderr, "❌ Error: --interactive needs a git checkout (couldn't detect origin owner/repo)")
-			return 2
+	// Interactive picker: no PR ref given, --interactive or --scan-only was set.
+	// When multiple sibling checkouts exist (or --scan-only is set), run the
+	// workspace multi-repo discovery flow. Otherwise, run single-repo mode (G7).
+	if (flags.interactive || flags.scanOnly) && flags.prRef == "" {
+		depth := flags.scanDepth
+		if depth <= 0 {
+			depth = 1
 		}
-		prs, perr := client.ListOpenPRs(ctx, fallbackOwner, fallbackRepo, 30)
-		if perr != nil {
-			fmt.Fprintln(os.Stderr, "❌ Error: listing open PRs:", perr)
+		cwd, err := os.Getwd()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error getting workspace directory: %q\n", err.Error())
 			return 1
 		}
-		if len(prs) == 0 {
-			fmt.Println("No open PRs in this repo")
-			return 0
-		}
-		tuiContext, contextErr := tuiContexts.Context()
-		if contextErr != nil {
-			fmt.Fprintln(os.Stderr, "Error:", contextErr)
+		discoveredRepos, err := threadsops.ScanWorkspace(cwd, threadsops.ScanOptions{Depth: depth})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error scanning workspace: %q\n", err.Error())
 			return 1
 		}
-		picker := threadstui.NewPicker(prs).WithTheme(tuiContext)
-		final, runErr := tea.NewProgram(picker, tea.WithAltScreen()).Run()
-		if runErr != nil {
-			fmt.Fprintln(os.Stderr, "❌ Error:", runErr)
-			return 1
+
+		if flags.scanOnly || len(discoveredRepos) > 1 {
+			discoveries, derr := threadsops.DiscoverPRsInWorkspace(ctx, client, cwd, threadsops.DiscoverOptions{
+				ScanOptions: threadsops.ScanOptions{Depth: depth},
+				Repos:       discoveredRepos,
+				IncludeAll:  true,
+			})
+			if derr != nil {
+				fmt.Fprintf(os.Stderr, "Error scanning workspace: %q\n", derr.Error())
+				return 1
+			}
+			prs, err := workspacePRs(discoveries, os.Stderr)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %q\n", err.Error())
+				return 1
+			}
+			if len(prs) == 0 {
+				fmt.Println(workspaceNoPRMessage(discoveredRepos))
+				return 0
+			}
+
+			tuiContext, contextErr := tuiContexts.Context()
+			if contextErr != nil {
+				fmt.Fprintln(os.Stderr, "Error:", contextErr)
+				return 1
+			}
+			picker := threadstui.NewPicker(prs).WithTheme(tuiContext)
+			final, runErr := tea.NewProgram(picker, tea.WithAltScreen()).Run()
+			if runErr != nil {
+				fmt.Fprintln(os.Stderr, "❌ Error:", runErr)
+				return 1
+			}
+			pm := final.(threadstui.PickerModel)
+			if pm.Cancelled() || pm.Selected() == nil {
+				return 0
+			}
+			sel := pm.Selected()
+			selOwner := sel.RepoOwner
+			selRepo := sel.RepoName
+			if selOwner == "" {
+				selOwner = fallbackOwner
+			}
+			if selRepo == "" {
+				selRepo = fallbackRepo
+			}
+			sel.RepoOwner, sel.RepoName = selOwner, selRepo
+			flags.selectWorkspacePR(*sel)
+		} else {
+			if len(discoveredRepos) == 1 {
+				r := discoveredRepos[0]
+				if r.Provider != "github" || !strings.EqualFold(r.OriginHost, client.Host()) {
+					fmt.Fprintf(os.Stderr, "Error: checkout origin host %q is not served by GitHub host %q\n", r.OriginHost, client.Host())
+					return 1
+				}
+				fallbackOwner, fallbackRepo = r.OriginOwner, r.OriginRepo
+				if flags.repoRoot == "" {
+					flags.repoRoot = r.Dir
+				}
+			}
+			if fallbackOwner == "" || fallbackRepo == "" {
+				fmt.Fprintln(os.Stderr, "❌ Error: --interactive needs a git checkout (couldn't detect origin owner/repo)")
+				return 2
+			}
+			prs, perr := client.ListOpenPRs(ctx, fallbackOwner, fallbackRepo, 30)
+			if perr != nil {
+				fmt.Fprintln(os.Stderr, "❌ Error: listing open PRs:", perr)
+				return 1
+			}
+			if len(prs) == 0 {
+				fmt.Println("No open PRs in this repo")
+				return 0
+			}
+			tuiContext, contextErr := tuiContexts.Context()
+			if contextErr != nil {
+				fmt.Fprintln(os.Stderr, "Error:", contextErr)
+				return 1
+			}
+			picker := threadstui.NewPicker(prs).WithTheme(tuiContext)
+			final, runErr := tea.NewProgram(picker, tea.WithAltScreen()).Run()
+			if runErr != nil {
+				fmt.Fprintln(os.Stderr, "❌ Error:", runErr)
+				return 1
+			}
+			pm := final.(threadstui.PickerModel)
+			if pm.Cancelled() || pm.Selected() == nil {
+				return 0
+			}
+			flags.prRef = fmt.Sprintf("%s/%s#%d", fallbackOwner, fallbackRepo, pm.Selected().Number)
 		}
-		pm := final.(threadstui.PickerModel)
-		if pm.Cancelled() || pm.Selected() == nil {
-			return 0
-		}
-		// Synthesize the PR ref so the existing parse/dispatch path takes
-		// over unchanged.
-		flags.prRef = fmt.Sprintf("%s/%s#%d", fallbackOwner, fallbackRepo, pm.Selected().Number)
 	}
 
 	owner, repo, number, err := parsePRRef(flags.prRef, fallbackOwner, fallbackRepo)
@@ -721,12 +820,57 @@ func runThreadsWithEffective(args []string, effective config.EffectiveConfig) in
 			fmt.Fprintln(os.Stderr, "Error:", contextErr)
 			return 1
 		}
-		return runThreadsTUI(ctx, client, owner, repo, number, flags.filter, flags.showCodeLines, flags.verbose, tuiContext)
+		return runThreadsTUI(ctx, client, owner, repo, number, flags.filter, flags.showCodeLines, flags.verbose, flags.repoRoot, tuiContext)
 
 	default:
 		fmt.Fprintln(os.Stderr, "❌ Error: unknown mode")
 		return 2
 	}
+}
+
+func (f *threadsFlags) selectWorkspacePR(pr gh.PullRequest) {
+	f.prRef = fmt.Sprintf("%s/%s#%d", pr.RepoOwner, pr.RepoName, pr.Number)
+	if f.repoRoot == "" {
+		f.repoRoot = pr.RepoRoot
+	}
+}
+
+func workspacePRs(discoveries []threadsops.WorkspaceDiscovery, logger io.Writer) ([]gh.PullRequest, error) {
+	var prs []gh.PullRequest
+	var lookupErr error
+	failures := 0
+	for _, d := range discoveries {
+		if d.Err != nil {
+			failures++
+			dir := d.Repo.RelDir
+			if dir == "" {
+				dir = d.Repo.Dir
+			}
+			fmt.Fprintf(logger, "Warning: checking PR for %q: %q\n", dir, d.Err.Error())
+			lookupErr = errors.Join(lookupErr, d.Err)
+		}
+		if d.PR != nil {
+			prs = append(prs, *d.PR)
+		}
+	}
+	if failures > 0 {
+		if len(prs) == 0 {
+			return nil, fmt.Errorf("workspace PR discovery incomplete: %d lookup(s) failed: %w", failures, lookupErr)
+		}
+		fmt.Fprintf(logger, "Warning: workspace PR discovery incomplete (%d failed); showing available matches\n", failures)
+	}
+	return prs, nil
+}
+
+func workspaceNoPRMessage(repos []threadsops.WorkspaceRepo) string {
+	if len(repos) == 0 {
+		return "No git repositories found in workspace"
+	}
+	dirs := make([]string, 0, len(repos))
+	for _, r := range repos {
+		dirs = append(dirs, strconv.Quote(r.RelDir))
+	}
+	return fmt.Sprintf("No open PRs found for current branches in %s. Use --interactive in a single repo to list all open PRs, or pass a PR ref directly.", strings.Join(dirs, ", "))
 }
 
 func printThreadsHelp() {
@@ -744,8 +888,10 @@ PR reference forms:
 Flags:
   (no mode flag)        Open the TUI for the selected filter (default: unresolved)
   -i, --interactive     If no PR ref is given, present a picker over the open
-                        PRs in the current repo (origin). With a PR ref the
-                        flag is ignored (with a warning).
+                        PRs in the current repo (origin). With sibling checkouts,
+                        automatically runs workspace PR discovery across repos.
+  --scan-depth <N>      Maximum scan depth for workspace repo discovery (1-3, default 1).
+  --scan-only           Force workspace multi-repo discovery mode even with a single repo.
   --json                Print threads as JSON (filtered by --filter)
   --filter MODE         Which threads to surface. One of:
                           all                  every thread (resolved + unresolved)
@@ -798,11 +944,12 @@ Examples:
 `)
 }
 
-func runThreadsTUI(ctx context.Context, client *gh.Client, owner, repo string, number int, mode threadsops.FilterMode, showCodeLines int, verbose bool, tuiContext theme.Context) int {
+func runThreadsTUI(ctx context.Context, client *gh.Client, owner, repo string, number int, mode threadsops.FilterMode, showCodeLines int, verbose bool, repoRoot string, tuiContext theme.Context) int {
 	_ = ctx // reserved for future cancellable Init paths
 	m := threadstui.NewWithFilter(client, owner, repo, number, mode).WithTheme(tuiContext)
 	m.ShowCodeLines = showCodeLines
 	m.Verbose = verbose
+	m.RepoRoot = repoRoot
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)

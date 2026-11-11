@@ -4,8 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
+	"reflect"
 
+	"github.com/shurcooL/githubv4"
 	"github.com/svnbjrn/spoon/internal/forge"
 )
 
@@ -34,15 +35,16 @@ func (p *GHProvider) MissingRepos(ctx context.Context, forks []forge.T1Data) (ma
 	var firstErr error
 	for start := 0; start < len(forks); start += missingReposChunk {
 		chunk := forks[start:min(start+missingReposChunk, len(forks))]
-		var q strings.Builder
-		q.WriteString("query {")
+		fields := make([]reflect.StructField, 0, len(chunk))
+		vars := make(map[string]interface{}, len(chunk)*2)
 		for i, f := range chunk {
-			fmt.Fprintf(&q, " r%d: repository(owner: %s, name: %s) { id }", i, gqlString(f.Owner), gqlString(f.Name))
+			fields = append(fields, gqlField(fmt.Sprintf("R%d", i), fmt.Sprintf("r%d: repository(owner: $owner%d, name: $name%d)", i, i, i), (*struct{ ID string })(nil)))
+			vars[fmt.Sprintf("owner%d", i)] = githubv4.String(f.Owner)
+			vars[fmt.Sprintf("name%d", i)] = githubv4.String(f.Name)
 		}
-		q.WriteString(" }")
 
 		var resp map[string]json.RawMessage
-		err := p.client.doGraphQLWithRetry(ctx, q.String(), nil, &resp)
+		err := p.client.doGraphQLWithRetry(ctx, gqlObject(fields...), vars, &resp)
 		if err != nil && !isPartialLookupError(err) {
 			if firstErr == nil {
 				firstErr = err

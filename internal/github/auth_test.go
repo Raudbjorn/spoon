@@ -2,7 +2,11 @@ package github
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
+
+	"github.com/svnbjrn/spoon/internal/forge"
 )
 
 func TestGHProviderAuth_reportsHost(t *testing.T) {
@@ -20,6 +24,59 @@ func TestGHProviderAuth_reportsHost(t *testing.T) {
 	}
 	if info.Host != "github.com" {
 		t.Errorf("AuthInfo.Host = %q, want github.com", info.Host)
+	}
+	if info.Tier != forge.AuthToken {
+		t.Errorf("auth tier = %v, want token auth", info.Tier)
+	}
+}
+
+func TestClientAuthenticationWithoutGH(t *testing.T) {
+	for _, key := range []string{"GH_HOST", "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"} {
+		t.Setenv(key, "")
+	}
+	// A gh login must neither authenticate Spoon nor select its default host.
+	ghConfig := t.TempDir()
+	t.Setenv("GH_CONFIG_DIR", ghConfig)
+	t.Setenv("PATH", t.TempDir())
+	if err := os.WriteFile(filepath.Join(ghConfig, "hosts.yml"), []byte("other.example.com:\n  oauth_token: ignored-gh-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, ghToken, githubToken, enterpriseToken, host, wantToken string
+		tokens                                                       []string
+	}{
+		{name: "gh login ignored"},
+		{name: "GH_TOKEN first", ghToken: "gh-env", githubToken: "github-env", wantToken: "gh-env"},
+		{name: "GITHUB_TOKEN fallback", githubToken: "github-env", wantToken: "github-env"},
+		{name: "Spoon OAuth token", ghToken: "gh-env", tokens: []string{"spoon-oauth"}, wantToken: "spoon-oauth"},
+		{name: "enterprise environment", host: "git.example.com", enterpriseToken: "enterprise-env", wantToken: "enterprise-env"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("GH_HOST", tc.host)
+			t.Setenv("GH_TOKEN", tc.ghToken)
+			t.Setenv("GITHUB_TOKEN", tc.githubToken)
+			t.Setenv("GH_ENTERPRISE_TOKEN", tc.enterpriseToken)
+			c, err := NewClientWithOptions(ClientOptions{Tokens: tc.tokens})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			wantAuth := tc.wantToken != ""
+			if c.IsAuthenticated() != wantAuth || c.HasGraphQL() != wantAuth {
+				t.Fatalf("authenticated=%v GraphQL=%v, want %v", c.IsAuthenticated(), c.HasGraphQL(), wantAuth)
+			}
+			host := tc.host
+			if host == "" {
+				host = defaultHost
+			}
+			var tokens []string
+			if wantAuth {
+				tokens = []string{tc.wantToken}
+			}
+			if c.AuthScopeID() != computeAuthScopeID("github", host, tokens) {
+				t.Fatal("client used the wrong credential source or host")
+			}
+		})
 	}
 }
 

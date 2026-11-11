@@ -41,9 +41,10 @@ type Assignment struct {
 	CategoryScore float64 `json:"categoryScore,omitempty"`
 }
 
-// Options tunes the clustering. Zero-value fields fall back to defaults.
+// Options tunes the clustering. Unset zero-value fields fall back to defaults.
 type Options struct {
 	Epsilon        float64
+	EpsilonSet     bool // distinguish an explicit zero cutoff from the default
 	MinClusterSize int
 }
 
@@ -74,7 +75,7 @@ func Run(points []Point, opts Options) ([]Cluster, []Assignment) {
 	}
 
 	eps := opts.Epsilon
-	if eps <= 0 {
+	if eps < 0 || (eps == 0 && !opts.EpsilonSet) {
 		eps = defaultEpsilon
 	}
 	minSize := opts.MinClusterSize
@@ -195,7 +196,7 @@ func Run(points []Point, opts Options) ([]Cluster, []Assignment) {
 		var novelty float64
 		if cid == noiseID {
 			novelty = 1.0
-		} else {
+		} else if eps > 0 {
 			d := cosineDistance(points[idx].Vec, clusterCentroid[cid])
 			novelty = d / eps
 			if novelty < 0 {

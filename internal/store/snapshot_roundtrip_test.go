@@ -185,3 +185,221 @@ func TestRepoSnapshotT2ReplaceAndPreserve(t *testing.T) {
 		t.Fatalf("old compare rows survived replacement: %v", shas)
 	}
 }
+
+func TestCachedBehindRefreshPreservesStoredComparison(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "spoon.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	repo := RepoRecord{Provider: "github", Host: "github.com", Owner: "up", Name: "stream", FirstSeen: now, LastSeen: now}
+	t1 := forge.T1Data{ID: "a/s", Owner: "a", Name: "s", DefaultBranch: "main", PushedAt: now}
+	t2 := forge.T2Data{
+		Performed: true, HeadSHA: "head", BaseSHA: "base", ComparedBranch: "main", AheadCount: 1, BehindCount: 2, MNA: 7,
+		Diffs: []forge.FileDiff{{Path: "a.go", Patch: "compare patch", Additions: 7}},
+		Commits: []forge.AheadCommit{{SHA: "head", Message: "keep commit", Timestamp: now,
+			Files: []forge.FileDiff{{Path: "a.go", Patch: "commit patch", Additions: 7}}}},
+	}
+	base := SnapshotFromForge(repo, t1, &t2, 10, 2, now)
+	base.Document = DocumentRecord{DocumentID: "doc", ContentHash: "hash", Body: "keep document", UpdatedAt: now}
+	if err := s.UpsertSnapshot(ctx, base); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := s.LoadRepoSnapshot(ctx, "github", "github.com", "up", "stream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	refresh := loaded.ValidT2(t1)
+	refresh.BehindCount = 23
+	refresh.MNA = 999 // A refresh may update only BehindCount, never other cached scalars.
+	snap := SnapshotFromForge(repo, t1, nil, 12, 2, now.Add(time.Hour))
+	snap.T2Refresh = refresh
+	if err := s.UpsertSnapshot(ctx, snap); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err = s.LoadRepoSnapshot(ctx, "github", "github.com", "up", "stream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := loaded.ValidT2(t1)
+	if got == nil || got.BehindCount != 23 || got.AheadCount != 1 || got.MNA != 7 || len(got.Commits) != 1 || got.Commits[0].Message != "keep commit" {
+		t.Fatalf("refreshed comparison = %+v", got)
+	}
+	var comparePatch, commitPatch, document, fetchedAt, head string
+	for _, check := range []struct {
+		query string
+		into  *string
+		want  string
+	}{
+		{`SELECT patch FROM compare_files WHERE fork_key=?`, &comparePatch, "compare patch"},
+		{`SELECT patch FROM commit_files WHERE fork_key=?`, &commitPatch, "commit patch"},
+		{`SELECT body FROM documents WHERE fork_key=?`, &document, "keep document"},
+		{`SELECT t2_fetched_at FROM forks WHERE fork_key=?`, &fetchedAt, ts(now)},
+		{`SELECT head_sha FROM forks WHERE fork_key=?`, &head, "head"},
+	} {
+		if err := s.db.QueryRowContext(ctx, check.query, snap.ForkKey()).Scan(check.into); err != nil {
+			t.Fatal(err)
+		}
+		if *check.into != check.want {
+			t.Errorf("%s = %q, want %q", check.query, *check.into, check.want)
+		}
+	}
+}
+
+func TestCachedBehindRefreshRejectsDifferentComparison(t *testing.T) {
+	for _, field := range []string{"head", "branch", "base", "ahead", "pushed", "unknown head"} {
+		t.Run(field, func(t *testing.T) {
+			s, err := Open(filepath.Join(t.TempDir(), "spoon.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			ctx := context.Background()
+			now := time.Now().UTC().Truncate(time.Second)
+			repo := RepoRecord{Provider: "github", Host: "github.com", Owner: "up", Name: "stream"}
+			t1 := forge.T1Data{ID: "a/s", DefaultBranch: "main", PushedAt: now}
+			t2 := forge.T2Data{HeadSHA: "head", BaseSHA: "base", ComparedBranch: "main", AheadCount: 1, BehindCount: 2}
+			if err := s.UpsertSnapshot(ctx, SnapshotFromForge(repo, t1, &t2, 0, 2, now)); err != nil {
+				t.Fatal(err)
+			}
+			refresh := t2
+			refresh.BehindCount = 23
+			switch field {
+			case "head":
+				refresh.HeadSHA = "stale"
+			case "branch":
+				refresh.ComparedBranch = "develop"
+			case "base":
+				refresh.BaseSHA = "stale"
+			case "ahead":
+				refresh.AheadCount++
+			case "pushed":
+				t1.PushedAt = now.Add(-time.Hour)
+			case "unknown head":
+				refresh.HeadSHA = ""
+			}
+			snap := SnapshotFromForge(repo, t1, nil, 0, 2, now)
+			snap.T2Refresh = &refresh
+			if err := s.UpsertSnapshot(ctx, snap); err != nil {
+				t.Fatal(err)
+			}
+			loaded, err := s.LoadRepoSnapshot(ctx, "github", "github.com", "up", "stream")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if field == "pushed" {
+				if loaded.Fork(t1.ID).T2 != nil {
+					t.Fatal("changed pushed_at retained a reusable comparison")
+				}
+				return
+			}
+			if got := loaded.Fork(t1.ID).T2.BehindCount; got != 2 {
+				t.Fatalf("stale refresh changed BehindCount to %d", got)
+			}
+		})
+	}
+}
+
+func TestLegacyComparisonInvalidatedAfterDefaultBranchChange(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "spoon.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	repo := RepoRecord{Provider: "github", Host: "github.com", Owner: "up", Name: "stream"}
+	t1 := forge.T1Data{ID: "a/s", DefaultBranch: "main", PushedAt: now}
+	t2 := forge.T2Data{HeadSHA: "head", AheadCount: 1, BehindCount: 2}
+	if err := s.UpsertSnapshot(ctx, SnapshotFromForge(repo, t1, &t2, 0, 2, now)); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := s.LoadRepoSnapshot(ctx, "github", "github.com", "up", "stream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := loaded.ValidT2(t1)
+	if got == nil || got.ComparedBranch != "main" || loaded.Fork(t1.ID).T2.ComparedBranch != "" {
+		t.Fatalf("legacy identity was not copied from its listing: %+v", got)
+	}
+	t1.DefaultBranch = "develop"
+	if loaded.ValidT2(t1) != nil {
+		t.Fatal("default branch change reused the old comparison")
+	}
+	if err := s.UpsertSnapshot(ctx, SnapshotFromForge(repo, t1, nil, 0, 1, now)); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err = s.LoadRepoSnapshot(ctx, "github", "github.com", "up", "stream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Fork(t1.ID).T2 != nil || loaded.ValidT2(t1) != nil {
+		t.Fatal("T1-only save reassigned the old comparison to the new default branch")
+	}
+}
+
+func TestCachedComparisonInvalidationPreservesEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name, head           string
+		staleHead, stalePush bool
+	}{
+		{name: "matching", head: "head"},
+		{name: "replacement", head: "head", staleHead: true},
+		{name: "legacy_empty_head"},
+		{name: "legacy_replacement", staleHead: true},
+		{name: "legacy_new_push", stalePush: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, err := Open(filepath.Join(t.TempDir(), "spoon.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			ctx := context.Background()
+			now := time.Now().UTC().Truncate(time.Second)
+			repo := RepoRecord{Provider: "github", Host: "github.com", Owner: "up", Name: "stream"}
+			t1 := forge.T1Data{ID: "a/s", DefaultBranch: "main", PushedAt: now}
+			t2 := forge.T2Data{HeadSHA: tc.head, BaseSHA: "base", ComparedBranch: "main", AheadCount: 1, BehindCount: 2,
+				Diffs:   []forge.FileDiff{{Path: "a.go", Patch: "keep patch"}},
+				Commits: []forge.AheadCommit{{SHA: "head", Message: "keep commit", Timestamp: now}}}
+			base := SnapshotFromForge(repo, t1, &t2, 0, 2, now)
+			if err := s.UpsertSnapshot(ctx, base); err != nil {
+				t.Fatal(err)
+			}
+			invalidated := t2
+			if tc.staleHead {
+				invalidated.HeadSHA = "old-head"
+			}
+			snap := SnapshotFromForge(repo, t1, nil, 0, 1, now)
+			snap.T2Invalidate = &invalidated
+			if tc.stalePush {
+				// Isolate the invalidation guard from the separate listing refresh path.
+				snap.T1 = nil
+				snap.Fork.PushedAt = now.Add(-time.Hour)
+			}
+			if err := s.UpsertSnapshot(ctx, snap); err != nil {
+				t.Fatal(err)
+			}
+			loaded, err := s.LoadRepoSnapshot(ctx, "github", "github.com", "up", "stream")
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Empty-head legacy caches must be evicted, while stale writes preserve newer evidence.
+			if (loaded.ValidT2(t1) != nil) != (tc.staleHead || tc.stalePush) {
+				t.Fatalf("cache validity after invalidation: %+v", loaded.ValidT2(t1))
+			}
+			var patch, message string
+			if err := s.db.QueryRowContext(ctx, `SELECT patch FROM compare_files WHERE fork_key=?`, snap.ForkKey()).Scan(&patch); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.db.QueryRowContext(ctx, `SELECT message FROM commits WHERE fork_key=?`, snap.ForkKey()).Scan(&message); err != nil {
+				t.Fatal(err)
+			}
+			if patch != "keep patch" || message != "keep commit" {
+				t.Fatalf("invalidation lost evidence: %q, %q", patch, message)
+			}
+		})
+	}
+}

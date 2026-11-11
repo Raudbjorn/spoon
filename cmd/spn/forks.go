@@ -191,7 +191,6 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 	// did not address this knob". Used by OwnerCacheTTL (default 24h)
 	// and topic-mode SiblingSimEnabled (default off).
 	ownerCacheTTLSet := false
-	clusterEpsilonSet := false
 	siblingSimFlagSet := false
 	noSiblingSimFlagSet := false
 	siblingSimModeSet := false
@@ -348,7 +347,7 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 				return agentio.NewError(agentio.CodeBadInput, "--cluster-epsilon requires a non-negative number", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
 			}
 			opts.Cluster.Epsilon = f
-			clusterEpsilonSet = true
+			opts.Cluster.EpsilonSet = true
 		case "--cluster-min-size":
 			if i+1 >= len(args) {
 				return agentio.NewError(agentio.CodeBadInput, "--cluster-min-size requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
@@ -660,9 +659,9 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 		}
 	}
 	// Only fill the backend default when the user did not set epsilon: a struct
-	// zero and an explicit --cluster-epsilon 0 (force singleton clusters) are
+	// zero and an explicit --cluster-epsilon 0 (zero distance cutoff) are
 	// otherwise indistinguishable, and the latter was silently overwritten.
-	if !clusterEpsilonSet {
+	if !opts.Cluster.EpsilonSet {
 		if fastembedActive {
 			opts.Cluster.Epsilon = 0.35
 		} else {
@@ -933,6 +932,7 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 		if r.CommitFilesSkip != nil {
 			emitStageSkipWarning(stderr, r.CommitFilesSkip)
 		}
+		persistSnapshotBestEffort(ctx, db, auth, owner, name, semanticModelID, r, &storeWarned, &truncWarned, stderr)
 		if r.Err != nil {
 			_ = emitPerForkError(stderr, r.Err)
 			continue
@@ -941,7 +941,6 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 		if r.BudgetSkip != nil {
 			degraded++
 		}
-		persistSnapshotBestEffort(ctx, db, auth, owner, name, semanticModelID, r, &storeWarned, &truncWarned, stderr)
 		if !shouldEmitFork(opts, r) {
 			continue
 		}
@@ -1022,7 +1021,11 @@ func persistForkSnapshot(ctx context.Context, db *store.Store, auth forge.AuthIn
 		// Full-fidelity halves: T1 makes the fork reusable as a listing entry
 		// (t1_json), T2 preserves the triage scalars alongside the relational
 		// compare rows so later runs can serve the compare from the store.
-		T1: &r.Fork,
+		T1:           &r.Fork,
+		T2Invalidate: r.T2Invalidated,
+	}
+	if r.T2FromCache && r.T2BehindRefreshed {
+		snapshot.T2Refresh = r.T2
 	}
 	// r.T2FilesUnfetched marks a T2 synthesised by the last-touch skip stage:
 	// scalars only, no file diffs or commits fetched. Persisting it would
@@ -1045,13 +1048,13 @@ func persistForkSnapshot(ctx context.Context, db *store.Store, auth forge.AuthIn
 				AuthorEmail: commit.AuthorEmail, CommittedAt: commit.Timestamp, Files: storeFiles(commit.Files),
 			})
 		}
-		if modelID != "" {
+		if modelID != "" || r.T2Invalidated != nil {
 			repoKey := store.RepoKey(snapshot.Repo.Provider, snapshot.Repo.Host, owner, name)
 			forkKey := store.ForkKey(repoKey, r.Fork.ID)
 			snapshot.Document, diffTruncated = semantic.BuildDocument(forkKey, r.Fork, r.T2)
 		}
-	} else if modelID != "" && r.T2 == nil {
-		// No compare at all: the T1-only document still indexes the fork.
+	} else if (r.T2 == nil && modelID != "") || r.T2Invalidated != nil {
+		// Synthetic T2 cannot replace invalidated evidence; only T1 is safe to index.
 		repoKey := store.RepoKey(snapshot.Repo.Provider, snapshot.Repo.Host, owner, name)
 		forkKey := store.ForkKey(repoKey, r.Fork.ID)
 		snapshot.Document, diffTruncated = semantic.BuildDocument(forkKey, r.Fork, nil)
@@ -1272,7 +1275,7 @@ func resolveVoyageEmbedder(ctx context.Context, disable bool, cache embed.Respon
 // one structured warning per run (via warned) so a persistent write failure
 // can't flood stderr.
 func persistSnapshotBestEffort(ctx context.Context, db *store.Store, auth forge.AuthInfo, owner, name, modelID string, r forksops.Result, warned, truncWarned *bool, stderr io.Writer) {
-	if db == nil {
+	if db == nil || (r.Err != nil && r.T2Invalidated == nil) {
 		return
 	}
 	diffTruncated, err := persistForkSnapshot(ctx, db, auth, owner, name, modelID, r)
@@ -1666,6 +1669,7 @@ func emitForksCSV(ctx context.Context, db *store.Store, auth forge.AuthInfo, own
 		if r.SiblingSimSkip != nil {
 			emitStageSkipWarning(stderr, r.SiblingSimSkip)
 		}
+		persistSnapshotBestEffort(ctx, db, auth, owner, name, modelID, r, &storeWarned, &truncWarned, stderr)
 		if r.Err != nil {
 			_ = agentio.WriteNDJSON(stderr, map[string]any{
 				"error": map[string]any{
@@ -1676,7 +1680,6 @@ func emitForksCSV(ctx context.Context, db *store.Store, auth forge.AuthInfo, own
 			})
 			continue
 		}
-		persistSnapshotBestEffort(ctx, db, auth, owner, name, modelID, r, &storeWarned, &truncWarned, stderr)
 		if err := w.writeRecord(forkToCSVRow(r)); err != nil {
 			return agentio.NewError(agentio.CodeInternal, "write csv row: "+err.Error(), agentio.RemediationInternal()).Emit(stderr)
 		}
@@ -1989,6 +1992,7 @@ func streamAndEmit(ctx context.Context, db *store.Store, auth forge.AuthInfo, pr
 		if r.CommitFilesSkip != nil {
 			emitStageSkipWarning(stderr, r.CommitFilesSkip)
 		}
+		persistSnapshotBestEffort(ctx, db, auth, owner, name, modelID, r, &storeWarned, &truncWarned, stderr)
 		if r.Err != nil {
 			_ = emitTopicPerForkError(stderr, r.Err)
 			continue
@@ -1997,7 +2001,6 @@ func streamAndEmit(ctx context.Context, db *store.Store, auth forge.AuthInfo, pr
 		if r.BudgetSkip != nil {
 			degraded++
 		}
-		persistSnapshotBestEffort(ctx, db, auth, owner, name, modelID, r, &storeWarned, &truncWarned, stderr)
 		if !shouldEmitFork(opts, r) {
 			continue
 		}

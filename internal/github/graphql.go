@@ -8,26 +8,15 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
-	ghAPI "github.com/cli/go-gh/v2/pkg/api"
+	"github.com/shurcooL/githubv4"
 	"github.com/svnbjrn/spoon/internal/forge"
 )
-
-// defaultBranchTipQuery is a one-off GraphQL query used to fetch the
-// upstream default branch's tip SHA. Used by FetchParent to populate
-// ParentData.HeadSHA so the MDG cache (cluster.PipelineOptions) can pin
-// entries against the right revision. Authentication is required for
-// private repos; for public ones the unauthenticated path is still allowed.
-const defaultBranchTipQuery = `query($owner: String!, $name: String!) {
-  repository(owner: $owner, name: $name) {
-    defaultBranchRef { target { oid } }
-  }
-  rateLimit { limit remaining used resetAt cost }
-}`
 
 // defaultBranchTipSHA returns the upstream default-branch tip SHA using
 // the GraphQL client. Returns the empty string and no error when the
@@ -41,7 +30,7 @@ type defaultBranchTipResponse struct {
 				OID string `json:"oid"`
 			} `json:"target"`
 		} `json:"defaultBranchRef"`
-	} `json:"repository"`
+	} `json:"repository" graphql:"repository(owner: $owner, name: $name)"`
 	RateLimit gqlRateLimit `json:"rateLimit"`
 }
 
@@ -52,9 +41,9 @@ func (c *Client) defaultBranchTipSHA(ctx context.Context, owner, repo string) (s
 		return "", nil
 	}
 	var resp defaultBranchTipResponse
-	if err := c.doGraphQLWithRetry(ctx, defaultBranchTipQuery, map[string]interface{}{
-		"owner": owner,
-		"name":  repo,
+	if err := c.doGraphQLWithRetry(ctx, &resp, map[string]interface{}{
+		"owner": githubv4.String(owner),
+		"name":  githubv4.String(repo),
 	}, &resp); err != nil {
 		return "", err
 	}
@@ -64,63 +53,20 @@ func (c *Client) defaultBranchTipSHA(ctx context.Context, owner, repo string) (s
 	return resp.Repository.DefaultBranchRef.Target.OID, nil
 }
 
-// forksGraphQLQuery pages by CREATED_AT, not STARGAZERS: most forks tie at 0
-// stars and cursor paging over a heavily tied key is unstable (pages overlap
-// and others are skipped). See fetchForksREST for the measured impact.
-const forksGraphQLQuery = `
-query($owner: String!, $name: String!, $cursor: String) {
-  repository(owner: $owner, name: $name) {
-    forkCount
-    forks(first: 50, after: $cursor, orderBy: {field: CREATED_AT, direction: ASC}) {
-      totalCount
-      pageInfo { hasNextPage endCursor }
-      nodes {
-        databaseId
-        nameWithOwner
-        name
-        description
-        stargazerCount
-        pushedAt
-        createdAt
-        isArchived
-        isDisabled
-        forkCount
-        diskUsage
-        primaryLanguage { name }
-        defaultBranchRef { name target { ... on Commit { oid committedDate } } }
-        owner { login avatarUrl }
-        pullRequests(states: OPEN, first: 1) { totalCount }
-        releases(first: 1) { totalCount }
-        repositoryTopics(first: 20) { nodes { topic { name } } }
-        refs(refPrefix: "refs/heads/", first: 10, orderBy: {field: ALPHABETICAL, direction: ASC}) {
-          nodes {
-            name
-            target {
-              ... on Commit { oid committedDate }
-            }
-          }
-        }
-        parent { nameWithOwner databaseId }
-      }
-    }
-  }
-  rateLimit { limit remaining used resetAt cost }
-}
-`
-
 // gqlResponse maps the GraphQL JSON response.
 type gqlResponse struct {
 	Repository struct {
 		ForkCount int `json:"forkCount"`
-		Forks     struct {
+		// Creation order is stable; star counts tie and cause overlapping pages.
+		Forks struct {
 			TotalCount int `json:"totalCount"`
 			PageInfo   struct {
 				HasNextPage bool   `json:"hasNextPage"`
 				EndCursor   string `json:"endCursor"`
 			} `json:"pageInfo"`
 			Nodes []gqlForkNode `json:"nodes"`
-		} `json:"forks"`
-	} `json:"repository"`
+		} `json:"forks" graphql:"forks(first: 50, after: $cursor, orderBy: {field: CREATED_AT, direction: ASC})"`
+	} `json:"repository" graphql:"repository(owner: $owner, name: $name)"`
 	RateLimit gqlRateLimit `json:"rateLimit"`
 }
 
@@ -144,8 +90,7 @@ type gqlForkNode struct {
 	DefaultBranchRef *struct {
 		Name   string `json:"name"`
 		Target struct {
-			OID           string `json:"oid"`
-			CommittedDate string `json:"committedDate"`
+			gqlCommitFields `graphql:"... on Commit"`
 		} `json:"target"`
 	} `json:"defaultBranchRef"`
 	Owner struct {
@@ -154,20 +99,20 @@ type gqlForkNode struct {
 	} `json:"owner"`
 	PullRequests struct {
 		TotalCount int `json:"totalCount"`
-	} `json:"pullRequests"`
+	} `json:"pullRequests" graphql:"pullRequests(states: OPEN, first: 1)"`
 	Releases struct {
 		TotalCount int `json:"totalCount"`
-	} `json:"releases"`
+	} `json:"releases" graphql:"releases(first: 1)"`
 	RepositoryTopics struct {
 		Nodes []struct {
 			Topic struct {
 				Name string `json:"name"`
 			} `json:"topic"`
 		} `json:"nodes"`
-	} `json:"repositoryTopics"`
+	} `json:"repositoryTopics" graphql:"repositoryTopics(first: 20)"`
 	Refs struct {
 		Nodes []gqlRefNode `json:"nodes"`
-	} `json:"refs"`
+	} `json:"refs" graphql:"refs(refPrefix: \"refs/heads/\", first: 10, orderBy: {field: ALPHABETICAL, direction: ASC})"`
 
 	// Parent is the fork's direct parent repository. Populated via the
 	// forks query's parent { nameWithOwner databaseId } extension. Nil
@@ -179,11 +124,15 @@ type gqlForkNode struct {
 	} `json:"parent"`
 }
 
+type gqlCommitFields struct {
+	OID           string `json:"oid"`
+	CommittedDate string `json:"committedDate"`
+}
+
 type gqlRefNode struct {
 	Name   string `json:"name"`
 	Target struct {
-		OID           string `json:"oid"`
-		CommittedDate string `json:"committedDate"`
+		gqlCommitFields `graphql:"... on Commit"`
 	} `json:"target"`
 }
 
@@ -214,15 +163,13 @@ func (c *Client) FetchForksGraphQL(ctx context.Context, owner, repo string, onPa
 
 	for {
 		variables := map[string]interface{}{
-			"owner": owner,
-			"name":  repo,
+			"owner": githubv4.String(owner),
+			"name":  githubv4.String(repo),
 		}
-		if cursor != nil {
-			variables["cursor"] = *cursor
-		}
+		variables["cursor"] = (*githubv4.String)(cursor)
 
 		var resp gqlResponse
-		err := c.doGraphQLWithRetry(ctx, forksGraphQLQuery, variables, &resp)
+		err := c.doGraphQLWithRetry(ctx, &resp, variables, &resp)
 		if err != nil {
 			report := &forge.AcquisitionReport{
 				Method:        "graphql",
@@ -457,8 +404,8 @@ func (c *Client) FetchForksBounded(ctx context.Context, owner, repo string, onBa
 		vars := make(map[string]interface{})
 		for j, e := range batch {
 			aliases[j] = fmt.Sprintf("r%d", j)
-			vars[fmt.Sprintf("owner%d", j)] = e.owner
-			vars[fmt.Sprintf("name%d", j)] = e.repo
+			vars[fmt.Sprintf("owner%d", j)] = githubv4.String(e.owner)
+			vars[fmt.Sprintf("name%d", j)] = githubv4.String(e.repo)
 		}
 
 		query := buildBatchedForksQuery(aliases)
@@ -571,30 +518,20 @@ func (c *Client) FetchForksBounded(ctx context.Context, owner, repo string, onBa
 	return allForks, extrasMap, report, nil
 }
 
-func buildBatchedForksQuery(aliases []string) string {
-	var sb strings.Builder
-	sb.WriteString("query(")
-	args := make([]string, 0, len(aliases)*2)
-	for i := range aliases {
-		args = append(args, fmt.Sprintf("$owner%d: String!", i), fmt.Sprintf("$name%d: String!", i))
+func buildBatchedForksQuery(aliases []string) interface{} {
+	type repository struct {
+		ForkCount int
+		Forks     struct {
+			TotalCount int
+			Nodes      []gqlForkNode
+		} `graphql:"forks(first: 50)"`
 	}
-	sb.WriteString(strings.Join(args, ", "))
-	sb.WriteString(`) {`)
-	forkFrag := `forkCount forks(first:50)` +
-		`{totalCount nodes{databaseId nameWithOwner name description stargazerCount` +
-		` pushedAt createdAt isArchived isDisabled forkCount diskUsage` +
-		` primaryLanguage{name} defaultBranchRef{name target{... on Commit{oid committedDate}}} owner{login avatarUrl}` +
-		` pullRequests(states:OPEN,first:1){totalCount}` +
-		` releases(first:1){totalCount}` +
-		` repositoryTopics(first:20){nodes{topic{name}}}` +
-		` refs(refPrefix:"refs/heads/",first:10,orderBy:{field:ALPHABETICAL,direction:ASC})` +
-		`{nodes{name target{... on Commit{oid committedDate}}}}` +
-		` parent{nameWithOwner databaseId}}}`
+	fields := make([]reflect.StructField, 0, len(aliases)+1)
 	for i := range aliases {
-		sb.WriteString(fmt.Sprintf(` r%d: repository(owner: $owner%d, name: $name%d) {%s}`, i, i, i, forkFrag))
+		fields = append(fields, gqlField(fmt.Sprintf("R%d", i), fmt.Sprintf("r%d: repository(owner: $owner%d, name: $name%d)", i, i, i), (*repository)(nil)))
 	}
-	sb.WriteString(` rateLimit{limit remaining used resetAt cost}}`)
-	return sb.String()
+	fields = append(fields, gqlField("RateLimit", "rateLimit", gqlRateLimit{}))
+	return gqlObject(fields...)
 }
 
 // gqlMaxAttempts bounds retries for transient GraphQL failures. GitHub returns
@@ -609,7 +546,7 @@ const gqlRetryBackoff = time.Second
 // (HTTP 502/503/504) with linear backoff. Context cancellation aborts early.
 // Non-transient errors (auth, rate limit, malformed query) are returned
 // immediately without retrying.
-func (c *Client) doGraphQLWithRetry(ctx context.Context, query string, variables map[string]interface{}, out interface{}) error {
+func (c *Client) doGraphQLWithRetry(ctx context.Context, query interface{}, variables map[string]interface{}, out interface{}) error {
 	var err error
 	for attempt := range gqlMaxAttempts {
 		err = c.doGraphQL(ctx, query, variables, out)
@@ -687,20 +624,16 @@ func isTransientServerError(err error) bool {
 	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) || strings.Contains(err.Error(), "unexpected end of JSON input") {
 		return true
 	}
-	var httpErr *ghAPI.HTTPError
-	if asHTTPError(err, &httpErr) {
-		switch httpErr.StatusCode {
+	if status, _, ok := httpFailure(err); ok {
+		switch status {
 		case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
 			return true
 		default:
 			return false
 		}
 	}
-	// go-gh does not always surface the GraphQL HTTP status as a typed error;
-	// fall back to matching the status code in the message. Match the "HTTP 50x"
-	// prefix go-gh uses rather than a bare "50x" substring, which would false-
-	// positive on port numbers, IDs, or timestamps that happen to contain those
-	// digits.
+	// Preserve compatibility with wrapped legacy status messages. Match the
+	// HTTP prefix so port numbers and IDs cannot look like gateway errors.
 	msg := err.Error()
 	return strings.Contains(msg, "HTTP 502") ||
 		strings.Contains(msg, "HTTP 503") ||

@@ -46,7 +46,20 @@ func TestOpenInvalidatesLegacyWebPatches(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := s.db.ExecContext(ctx, "PRAGMA user_version=5"); err != nil {
+	// Main's published v6 already contains these tables and their data.
+	for _, statement := range []string{
+		`INSERT INTO cluster_runs VALUES('repo','model','now','now',1)`,
+		`INSERT INTO clusters VALUES('repo','cluster',x'0000803f',x'0000803f',1,'label','summary','lineage','now')`,
+		`INSERT INTO cluster_members VALUES('repo','fork','sha','cluster',x'0000803f')`,
+		`INSERT INTO global_lineage VALUES('lineage','model',x'0000803f','label','repo','cluster','now','now')`,
+		`INSERT INTO lineage_occurrences VALUES('lineage','repo','cluster',1,'now','now')`,
+		`INSERT INTO touched_units VALUES('fork','path','base','head',0,'[]',NULL)`,
+	} {
+		if _, err := s.db.ExecContext(ctx, statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, "PRAGMA user_version=6"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.db.ExecContext(ctx, `CREATE TRIGGER fail_web_patch_invalidation BEFORE UPDATE OF patch ON compare_files BEGIN SELECT RAISE(ABORT,'invalidation blocked'); END`); err != nil {
@@ -63,7 +76,7 @@ func TestOpenInvalidatesLegacyWebPatches(t *testing.T) {
 	}
 	// A failed invalidation must leave the cache and all derived data together.
 	for query, want := range map[string]int{
-		`PRAGMA user_version`:                                        5,
+		`PRAGMA user_version`:                                        6,
 		`SELECT COUNT(*) FROM documents`:                             3,
 		`SELECT COUNT(*) FROM embeddings`:                            3,
 		`SELECT COUNT(*) FROM forks WHERE t2_json<>''`:               3,
@@ -101,11 +114,18 @@ func TestOpenInvalidatesLegacyWebPatches(t *testing.T) {
 			t.Errorf("REST metadata changed: %q %q +%d/-%d", previousPath, status, additions, deletions)
 		}
 		for query, want := range map[string]int{
+			`PRAGMA user_version`: 7,
 			`SELECT COUNT(*) FROM compare_files WHERE path='rest.go' AND patch_source='compare_rest'`: 3,
 			`SELECT COUNT(*) FROM compare_files WHERE patch IS NOT NULL`:                              5,
 			`SELECT COUNT(*) FROM commits`:                                                            3,
 			`SELECT COUNT(*) FROM documents`:                                                          2,
 			`SELECT COUNT(*) FROM embeddings`:                                                         2,
+			`SELECT COUNT(*) FROM cluster_runs`:                                                       1,
+			`SELECT COUNT(*) FROM clusters`:                                                           1,
+			`SELECT COUNT(*) FROM cluster_members`:                                                    1,
+			`SELECT COUNT(*) FROM global_lineage`:                                                     1,
+			`SELECT COUNT(*) FROM lineage_occurrences`:                                                1,
+			`SELECT COUNT(*) FROM touched_units`:                                                      1,
 		} {
 			var got int
 			if err := s.db.QueryRowContext(ctx, query).Scan(&got); err != nil {
@@ -158,4 +178,61 @@ func TestOpenInvalidatesLegacyWebPatches(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertMigrated()
+}
+
+func TestOpenRepairsPublishedWebDiffVersionSix(t *testing.T) {
+	ctx := t.Context()
+	path := filepath.Join(t.TempDir(), "spoon.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if s != nil {
+			s.Close()
+		}
+	})
+	patch := "@@ -0,0 +1 @@\n+new\n"
+	snapshot := Snapshot{
+		Repo:         RepoRecord{Provider: "github", Host: "github.com", Owner: "up", Name: "repo"},
+		Fork:         ForkRecord{ForgeID: "fork/repo", Owner: "fork", Name: "repo"},
+		T2Present:    true,
+		CompareFiles: []FileRecord{{Path: "new.go", Patch: &patch, PatchSource: "github_web_v2"}},
+		Document:     DocumentRecord{DocumentID: "document", ContentHash: "verified", Body: "verified patch"},
+	}
+	if err := s.UpsertSnapshot(ctx, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	// Commit 387e8e4 stamped v6 after invalidation but had none of main's v6 tables.
+	for _, table := range []string{"cluster_runs", "clusters", "cluster_members", "global_lineage", "lineage_occurrences", "touched_units"} {
+		if _, err := s.db.ExecContext(ctx, "DROP TABLE "+table); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, "PRAGMA user_version=6"); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	s, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intact, err := schemaIntact(ctx, s.db)
+	if err != nil || !intact {
+		t.Fatalf("published branch-v6 upgrade has incomplete schema: intact=%v err=%v", intact, err)
+	}
+	var version int
+	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil || version != 7 {
+		t.Fatalf("schema version=%d err=%v", version, err)
+	}
+	var gotPatch, source, body string
+	if err := s.db.QueryRowContext(ctx, `SELECT patch,patch_source FROM compare_files`).Scan(&gotPatch, &source); err != nil {
+		t.Fatal(err)
+	}
+	if gotPatch != patch || source != "github_web_v2" {
+		t.Errorf("verified patch changed: %q %q", gotPatch, source)
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT body FROM documents WHERE document_id='document'`).Scan(&body); err != nil || body != "verified patch" {
+		t.Errorf("verified document changed: body=%q err=%v", body, err)
+	}
 }

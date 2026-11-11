@@ -31,8 +31,8 @@ func (c Config) Validate() error {
 	// Negated range so NaN (which fails every comparison) is rejected too;
 	// a NaN epsilon would otherwise slip through and break json.Marshal in
 	// Fingerprint.
-	if !(c.Epsilon > 0 && c.Epsilon < 2) {
-		return fmt.Errorf("epsilon %.3f out of range (0, 2)", c.Epsilon)
+	if !(c.Epsilon >= 0 && c.Epsilon < 2) {
+		return fmt.Errorf("epsilon %.3f out of range [0, 2)", c.Epsilon)
 	}
 	if c.MinClusterSize < 2 {
 		return fmt.Errorf("minClusterSize %d < 2", c.MinClusterSize)

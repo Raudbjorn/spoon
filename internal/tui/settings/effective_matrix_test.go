@@ -62,6 +62,8 @@ func matrixValue(key string) string {
 	switch key {
 	case "github.requestsPerMinute":
 		return "321"
+	case "secrets.store":
+		return "file"
 	case "github.proxy.enabled", "github.proxy.whitelistPublicIp", "embedder.voyage.disabled",
 		"embedder.voyage.autoIndex":
 		return "true"
@@ -102,6 +104,8 @@ func matrixEnvironmentValue(key string) string {
 		return "512"
 	case "ui.color":
 		return "ansi16"
+	case "secrets.store":
+		return "file"
 	}
 	return "env-source"
 }
