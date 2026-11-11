@@ -66,6 +66,38 @@ class AgentAnchorTests(unittest.TestCase):
                 self.write_agent(developer_instructions=name)
                 self.assertIn(f"missing top-level test: {name}", "\n".join(check_agents(self.root)))
 
+    def test_test_names_ignore_reference_clones_and_fixture_directories(self):
+        directories = (
+            ".do-not-commit/reference", ".hidden", "_reference",
+            "internal/example/_scratch", "internal/example/testdata", "testdata",
+        )
+        for index, directory in enumerate(directories):
+            with self.subTest(directory=directory):
+                target = self.root / directory
+                target.mkdir(parents=True)
+                name = f"TestIgnored{index}"
+                (target / "reference_test.go").write_text(f"package fixture\nfunc {name}() {{}}\n")
+                self.write_agent(developer_instructions=name)
+                # Reference/fixture trees are not runnable package-test anchors.
+                self.assertIn(f"missing top-level test: {name}", "\n".join(check_agents(self.root)))
+
+    def test_module_vendor_experiment_and_script_paths_must_exist(self):
+        files = ("go.mod", "go.sum", "scripts/check-agent-anchors.py")
+        directories = ("vendor/", "experiments/started/behavioral-embeddings")
+        self.write_agent(developer_instructions=" ".join(f"`{path}`" for path in files + directories))
+        errors = "\n".join(check_agents(self.root))
+        for path in files + directories:
+            with self.subTest(path=path):
+                # These explicit current/future prompt paths must not be ignored.
+                self.assertIn(f"missing path: {path}", errors)
+        for path in files:
+            target = self.root / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.touch()
+        for path in directories:
+            (self.root / path).mkdir(parents=True)
+        self.assertEqual(check_agents(self.root), [])
+
     def test_invalid_toml_fields_and_duplicate_name(self):
         agent = self.root / ".codex/agents/alpha.toml"
         agent.write_text("name = [")
