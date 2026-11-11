@@ -796,6 +796,8 @@ func schemaIntact(ctx context.Context, q querier) (bool, error) {
 	return true, nil
 }
 
+// initialize upgrades the schema atomically and repairs drift without replaying
+// one-time data cleanup against evidence rebuilt after its original migration.
 func (s *Store) initialize(ctx context.Context) error {
 	var version int
 	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
@@ -1902,6 +1904,9 @@ var schemaV8 = []string{
 	`UPDATE compare_files SET patch=NULL, patch_source='' WHERE patch_source='github_web'`,
 	`UPDATE commit_files SET patch=NULL, patch_source='' WHERE patch_source='github_web'`,
 	`DELETE FROM touched_units WHERE fork_key IN (SELECT fork_key FROM webdiff_v8_forks)`,
+	// JSON assignments/labels are independent of these tables. Cluster cache
+	// schema 4 invalidates older JSON through LoadCache, including already-v8
+	// stores whose affected repository set is no longer available here.
 	`DELETE FROM cluster_runs WHERE repo_key IN (SELECT repo_key FROM webdiff_v8_repos)`,
 	`DELETE FROM clusters WHERE repo_key IN (SELECT repo_key FROM webdiff_v8_repos)`,
 	`DELETE FROM cluster_members WHERE repo_key IN (SELECT repo_key FROM webdiff_v8_repos)`,

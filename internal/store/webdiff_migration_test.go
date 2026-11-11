@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/svnbjrn/spoon/internal/cluster"
 	"github.com/svnbjrn/spoon/internal/forge"
 )
 
@@ -19,6 +20,8 @@ func schemaV6TestStore(t *testing.T) *Store {
 	return historicalSchemaTestStore(t, 6)
 }
 
+// historicalSchemaTestStore builds an isolated database through the requested
+// published migration without opening today's schema or using a real store.
 func historicalSchemaTestStore(t *testing.T, version int) *Store {
 	t.Helper()
 	t.Setenv("TURSO_DATABASE_URL", "")
@@ -47,6 +50,8 @@ func historicalSchemaTestStore(t *testing.T, version int) *Store {
 	return &Store{db: db, path: path}
 }
 
+// TestWebDiffMigrationInvalidatesLegacyEvidence covers real released v6 and v7
+// upgrades, preserving authoritative evidence while invalidating derived caches.
 func TestWebDiffMigrationInvalidatesLegacyEvidence(t *testing.T) {
 	for _, version := range []int{6, 7} {
 		t.Run(fmt.Sprintf("published_v%d", version), func(t *testing.T) {
@@ -55,6 +60,8 @@ func TestWebDiffMigrationInvalidatesLegacyEvidence(t *testing.T) {
 	}
 }
 
+// testWebDiffMigrationInvalidatesLegacyEvidence checks one historical upgrade
+// and ensures subsequent schema repairs retain rebuilt documents and clusters.
 func testWebDiffMigrationInvalidatesLegacyEvidence(t *testing.T, version int) {
 	ctx := context.Background()
 	legacy := schemaV6TestStore(t)
@@ -318,6 +325,8 @@ func testWebDiffMigrationInvalidatesLegacyEvidence(t *testing.T, version int) {
 	}
 }
 
+// TestWebDiffMigrationUpgradesAlternateVersionSix reproduces the alternate v6
+// cleanup statements before upgrading its validated web and REST evidence.
 func TestWebDiffMigrationUpgradesAlternateVersionSix(t *testing.T) {
 	ctx := t.Context()
 	legacy := historicalSchemaTestStore(t, 5)
@@ -399,5 +408,58 @@ func TestWebDiffMigrationUpgradesAlternateVersionSix(t *testing.T) {
 	}
 	if pending, err := current.PendingDocuments(ctx, "new-model"); err != nil || len(pending) != 2 {
 		t.Fatalf("validated/REST documents lost: %+v %v", pending, err)
+	}
+}
+
+// TestPublishedVersionEightRejectsLegacyClusterJSONAfterRefetch verifies that
+// stale JSON cannot survive merely because SQL v8 already ran and T2 was rebuilt.
+func TestPublishedVersionEightRejectsLegacyClusterJSONAfterRefetch(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	legacy := historicalSchemaTestStore(t, 8)
+	ctx := t.Context()
+	now := time.Now().UTC().Truncate(time.Second)
+	repo := RepoRecord{Provider: "github", Host: "github.com", Owner: "up", Name: "repo"}
+	t1 := forge.T1Data{ID: "fork/repo", Owner: "fork", Name: "repo", DefaultBranch: "main", PushedAt: now}
+	t2 := &forge.T2Data{Performed: true, ComparedBranch: "main", HeadSHA: "refetched", AheadCount: 1,
+		Diffs: []forge.FileDiff{{Path: "file.go", Additions: 1, Patch: "@@ -0,0 +1 @@\n+verified\n", PatchSource: "github_web_v2"}}}
+	if err := legacy.UpsertSnapshot(ctx, SnapshotFromForge(repo, t1, t2, 1, 2, now)); err != nil {
+		t.Fatal(err)
+	}
+	oldCache := cluster.ClusterCache{
+		SchemaVersion: 3, ComputedAt: now, Provider: "github", Owner: "up", Repo: "repo",
+		EmbedderModel: "test-model", ConfigFingerprint: "same-config",
+		Clusters:    []cluster.Cluster{{ID: "old", Label: "derived from partial patch", Members: []string{t1.ID}}},
+		Assignments: []cluster.Assignment{{ForkID: t1.ID, Cluster: "old", Novelty: 0.8}},
+	}
+	if err := cluster.SaveCache(oldCache); err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	current, err := Open(legacy.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer current.Close()
+	var version int
+	if err := current.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil || version != 8 {
+		t.Fatalf("published-v8 reopen changed SQL version: %d %v", version, err)
+	}
+	loaded, err := current.LoadRepoSnapshot(ctx, "github", "github.com", "up", "repo")
+	if err != nil || loaded.ValidT2(t1) == nil {
+		t.Fatalf("refetched comparison was invalidated: snapshot=%+v err=%v", loaded, err)
+	}
+	if cached, ok := cluster.LoadCache("github", "up", "repo", "", "test-model", "same-config"); ok {
+		t.Fatalf("already-v8 store reused stale JSON labels/assignments: %+v", cached)
+	}
+	// Current JSON remains reusable independently of the unchanged SQL version.
+	oldCache.SchemaVersion = cluster.SchemaVersion
+	oldCache.Clusters[0].Label = "rebuilt from verified comparison"
+	if err := cluster.SaveCache(oldCache); err != nil {
+		t.Fatal(err)
+	}
+	if cached, ok := cluster.LoadCache("github", "up", "repo", "", "test-model", "same-config"); !ok || cached.Clusters[0].Label != oldCache.Clusters[0].Label {
+		t.Fatalf("current JSON cache did not remain reusable: ok=%v cache=%+v", ok, cached)
 	}
 }

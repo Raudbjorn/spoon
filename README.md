@@ -285,6 +285,9 @@ be fetched and indexed again. Newly validated patches use `github_web_v2`
 provenance and survive later opens and schema repairs.
 Version 8 may also rebuild derived caches for already-invalidated GitHub forks
 whose missing patch text has no source marker.
+The separate JSON cluster cache now uses format version 4, so older cached
+assignments and labels are recomputed once, including for stores already on
+schema version 8. This also refreshes unaffected repositories' old cluster caches.
 
 With `--touching` and only literal paths, `spn` also turns on an anonymous,
 best-effort lookup against GitHub's undocumented tree-commit-info page to

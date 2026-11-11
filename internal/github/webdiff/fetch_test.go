@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -88,6 +89,7 @@ func TestParseHTMLNextLinkPrefersRel(t *testing.T) {
 	}
 }
 
+// TestParseHTMLPaginationLinkValidation checks case-insensitive next relations and rejects invalid pagination targets.
 func TestParseHTMLPaginationLinkValidation(t *testing.T) {
 	for _, tc := range []struct {
 		name, link string
@@ -267,6 +269,7 @@ func TestFetchTruncatesOnBrokenPagination(t *testing.T) {
 	}
 }
 
+// TestParseHTMLAcceptsMixedTextAndBinaryFiles preserves textual hunks beside explicitly nontextual files.
 func TestParseHTMLAcceptsMixedTextAndBinaryFiles(t *testing.T) {
 	fixture := `<div data-path="a.go"></div>
 <table><tr><td class="blob-code blob-code-hunk">@@ -0,0 +1 @@</td></tr><tr><td class="blob-code blob-code-addition">x()</td></tr></table>
@@ -278,6 +281,7 @@ func TestParseHTMLAcceptsMixedTextAndBinaryFiles(t *testing.T) {
 	}
 }
 
+// TestFetchAccumulatesFileAcrossPages validates a hunk only after all of its pages have arrived.
 func TestFetchAccumulatesFileAcrossPages(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("start_entry") == "0" {
@@ -299,6 +303,7 @@ func TestFetchAccumulatesFileAcrossPages(t *testing.T) {
 	}
 }
 
+// TestFetchAccumulatesSeparateHunksAcrossPages retains ordered hunk headers across pagination.
 func TestFetchAccumulatesSeparateHunksAcrossPages(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("start_entry") == "0" {
@@ -318,58 +323,64 @@ func TestFetchAccumulatesSeparateHunksAcrossPages(t *testing.T) {
 	}
 }
 
+// TestFetchOperationDeadlineIncludesAllWaits bounds each wait using virtual time, which advances only after the fetch reaches a blocking stage.
 func TestFetchOperationDeadlineIncludesAllWaits(t *testing.T) {
 	for _, stage := range []string{"queued pacing", "pagination pacing", "gate", "http", "shorter caller deadline"} {
 		t.Run(stage, func(t *testing.T) {
-			var requests atomic.Int32
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				requests.Add(1)
-				if stage == "http" {
-					<-r.Context().Done()
-					return
+			synctest.Test(t, func(t *testing.T) {
+				var requests atomic.Int32
+				c := New("test-cookie", nil)
+				c.http.Transport = deadlineRoundTrip(func(r *http.Request) (*http.Response, error) {
+					requests.Add(1)
+					if stage == "http" {
+						<-r.Context().Done()
+						return nil, r.Context().Err()
+					}
+					w := httptest.NewRecorder()
+					fmt.Fprint(w, pageHTML("a.go", 1))
+					resp := w.Result()
+					resp.Request = r
+					return resp, nil
+				})
+				c.fetchTimeout = 50 * time.Millisecond
+				ctx := context.Background()
+				var parentDeadline, gateDeadline time.Time
+				if stage == "shorter caller deadline" {
+					var cancel context.CancelFunc
+					ctx, cancel = context.WithTimeout(ctx, c.fetchTimeout)
+					defer cancel()
+					parentDeadline, _ = ctx.Deadline()
+					c.fetchTimeout = time.Hour
 				}
-				fmt.Fprint(w, pageHTML("a.go", 1))
-			}))
-			defer srv.Close()
-			c := newTestClient(t, srv)
-			c.fetchTimeout = 50 * time.Millisecond
-			ctx := context.Background()
-			var parentDeadline, gateDeadline time.Time
-			if stage == "shorter caller deadline" {
-				var cancel context.CancelFunc
-				ctx, cancel = context.WithTimeout(ctx, c.fetchTimeout)
-				defer cancel()
-				parentDeadline, _ = ctx.Deadline()
-				c.fetchTimeout = time.Hour
-			}
-			if stage == "queued pacing" {
-				c.next = time.Now().Add(time.Hour)
-			}
-			if stage == "gate" || stage == "shorter caller deadline" {
-				c.gate = func(ctx context.Context) error {
-					gateDeadline, _ = ctx.Deadline()
-					<-ctx.Done()
-					return ctx.Err()
+				if stage == "queued pacing" {
+					c.next = time.Now().Add(time.Hour)
 				}
-			}
-			started := time.Now()
-			patches, _, err := c.Fetch(ctx, "o", "r", "b", "h")
-			if !errors.Is(err, context.DeadlineExceeded) || patches != nil {
-				t.Fatalf("deadline did not discard incomplete work: patches=%v, err=%v", patches, err)
-			}
-			if time.Since(started) > 2*time.Second {
-				t.Fatal("fetch exceeded its overall deadline")
-			}
-			wantRequests := int32(0)
-			if stage == "http" || stage == "pagination pacing" {
-				wantRequests = 1
-			}
-			if requests.Load() != wantRequests {
-				t.Fatalf("requests=%d, want %d", requests.Load(), wantRequests)
-			}
-			if stage == "shorter caller deadline" && !gateDeadline.Equal(parentDeadline) {
-				t.Fatal("fetch extended the caller's shorter deadline")
-			}
+				if stage == "gate" || stage == "shorter caller deadline" {
+					c.gate = func(ctx context.Context) error {
+						gateDeadline, _ = ctx.Deadline()
+						<-ctx.Done()
+						return ctx.Err()
+					}
+				}
+				started := time.Now()
+				patches, _, err := c.Fetch(ctx, "o", "r", "b", "h")
+				if !errors.Is(err, context.DeadlineExceeded) || patches != nil {
+					t.Fatalf("deadline did not discard incomplete work: patches=%v, err=%v", patches, err)
+				}
+				if time.Since(started) > 2*time.Second {
+					t.Fatal("fetch exceeded its overall deadline")
+				}
+				wantRequests := int32(0)
+				if stage == "http" || stage == "pagination pacing" {
+					wantRequests = 1
+				}
+				if requests.Load() != wantRequests {
+					t.Fatalf("requests=%d, want %d", requests.Load(), wantRequests)
+				}
+				if stage == "shorter caller deadline" && !gateDeadline.Equal(parentDeadline) {
+					t.Fatal("fetch extended the caller's shorter deadline")
+				}
+			})
 		})
 	}
 }
@@ -421,6 +432,7 @@ func TestFetchDoesNotFollowRedirects(t *testing.T) {
 	}
 }
 
+// TestFetchRejectsMissingContext rejects incomplete hunks and unrecognized code-row markup.
 func TestFetchRejectsMissingContext(t *testing.T) {
 	for _, tc := range []struct{ name, body string }{
 		{"missing context", `<tr><td class="blob-code blob-code-hunk">@@ -1,2 +1,2 @@</td></tr><tr><td class="blob-code blob-code-deletion">old</td></tr><tr><td class="blob-code blob-code-addition">new</td></tr>`},
@@ -442,6 +454,7 @@ func TestFetchRejectsMissingContext(t *testing.T) {
 	}
 }
 
+// TestFetchRejectsMalformedHunkEvenBesideCompleteFile discards an entire scrape containing a malformed hunk.
 func TestFetchRejectsMalformedHunkEvenBesideCompleteFile(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `<div data-path="complete.go"></div><table>
@@ -461,41 +474,46 @@ func TestFetchRejectsMalformedHunkEvenBesideCompleteFile(t *testing.T) {
 	}
 }
 
-// The caller's deadline must bound the entire scrape, including a later HTTP
-// request and pacing after a successfully collected first page.
+// TestFetchDeadlineDiscardsCollectedPatches expires only after collecting a page and reaching the next HTTP or pacing wait.
 func TestFetchDeadlineDiscardsCollectedPatches(t *testing.T) {
 	for _, waitIn := range []string{"request", "pacing"} {
 		t.Run(waitIn, func(t *testing.T) {
-			var requests atomic.Int32
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				requests.Add(1)
-				if waitIn == "request" && r.URL.Query().Get("start_entry") != "0" {
-					<-r.Context().Done()
-					return
+			synctest.Test(t, func(t *testing.T) {
+				var requests atomic.Int32
+				c := New("test-cookie", nil)
+				c.http.Transport = deadlineRoundTrip(func(r *http.Request) (*http.Response, error) {
+					requests.Add(1)
+					if waitIn == "request" && r.URL.Query().Get("start_entry") != "0" {
+						<-r.Context().Done()
+						return nil, r.Context().Err()
+					}
+					w := httptest.NewRecorder()
+					fmt.Fprint(w, pageHTML("a.go", 1))
+					resp := w.Result()
+					resp.Request = r
+					return resp, nil
+				})
+				wantRequests := int32(1)
+				if waitIn == "request" {
+					wantRequests = 2
+					// Exercise a later HTTP request without spending the budget pacing.
+					c.gate = func(context.Context) error {
+						c.next = time.Time{}
+						return nil
+					}
 				}
-				fmt.Fprint(w, pageHTML("a.go", 1))
-			}))
-			defer srv.Close()
-			c := newTestClient(t, srv)
-			wantRequests := int32(1)
-			if waitIn == "request" {
-				wantRequests = 2
-				// Exercise a later HTTP request without spending the budget pacing.
-				c.gate = func(context.Context) error {
-					c.next = time.Time{}
-					return nil
+				ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+				defer cancel()
+				patches, _, err := c.Fetch(ctx, "o", "r", "b", "h")
+				if !errors.Is(err, context.DeadlineExceeded) || patches != nil || requests.Load() != wantRequests {
+					t.Fatalf("deadline failed: patches=%v requests=%d err=%v", patches, requests.Load(), err)
 				}
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-			defer cancel()
-			patches, _, err := c.Fetch(ctx, "o", "r", "b", "h")
-			if !errors.Is(err, context.DeadlineExceeded) || patches != nil || requests.Load() != wantRequests {
-				t.Fatalf("deadline failed: patches=%v requests=%d err=%v", patches, requests.Load(), err)
-			}
+			})
 		})
 	}
 }
 
+// TestFetchSuppliesOverallDeadline verifies that the request gate receives the whole-fetch deadline.
 func TestFetchSuppliesOverallDeadline(t *testing.T) {
 	var deadline time.Time
 	c := New("cookie", func(ctx context.Context) error {
@@ -509,6 +527,7 @@ func TestFetchSuppliesOverallDeadline(t *testing.T) {
 	}
 }
 
+// TestFetchValidatesHunkAcrossPages checks context completeness after joining a split hunk.
 func TestFetchValidatesHunkAcrossPages(t *testing.T) {
 	for _, omitContext := range []bool{false, true} {
 		t.Run(fmt.Sprintf("omit_context=%v", omitContext), func(t *testing.T) {
@@ -536,3 +555,9 @@ func TestFetchValidatesHunkAcrossPages(t *testing.T) {
 		})
 	}
 }
+
+// deadlineRoundTrip serves fixtures in the synctest bubble without real network scheduling.
+type deadlineRoundTrip func(*http.Request) (*http.Response, error)
+
+// RoundTrip handles one request synchronously with the test clock.
+func (f deadlineRoundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

@@ -38,6 +38,7 @@ type Client struct {
 	next         time.Time
 }
 
+// New builds a bounded, paced web-diff client with an optional request gate.
 func New(cookie string, gate func(context.Context) error) *Client {
 	return &Client{
 		maxPages:     maxPages,
@@ -215,7 +216,8 @@ func (c *Client) Fetch(ctx context.Context, owner, repo, base, head string) (map
 	return out, truncated, nil
 }
 
-// ParseHTML extracts page fragments, including hunks split across pages.
+// ParseHTML extracts page fragments and rejects unrecognized diff-table cells.
+// Fragments may include hunks split across pages.
 // Fetch validates complete patches after concatenation; direct callers must do the same.
 func ParseHTML(r io.Reader) (map[string]string, int, error) {
 	root, err := html.Parse(r)
@@ -223,6 +225,8 @@ func ParseHTML(r io.Reader) (map[string]string, int, error) {
 		return nil, -1, fmt.Errorf("parse GitHub diff HTML: %w", err)
 	}
 	acc := map[string]*strings.Builder{}
+	diffTables := findDiffTables(root)
+	unparsed := map[string]bool{}
 	next := -1
 	nextAuthoritative := false // a rel="next" link outranks a text-"next" match
 	var current string
@@ -230,15 +234,33 @@ func ParseHTML(r io.Reader) (map[string]string, int, error) {
 	// DOM is externally supplied, and although html.Parse caps tree depth, an
 	// explicit stack makes the bound a heap allocation rather than the Go stack
 	// — whose exhaustion is fatal and uncatchable (#83).
-	stack := []*html.Node{root}
+	type visit struct {
+		node      *html.Node
+		diffTable bool
+	}
+	stack := []visit{{node: root}}
 	for len(stack) > 0 {
-		n := stack[len(stack)-1]
+		v := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
+		n := v.node
 		if n.Type == html.ElementNode {
+			if n.Data == "table" {
+				v.diffTable = diffTables[n]
+			}
 			if path := filePath(n); path != "" {
 				current = path
 			}
 			classes := strings.Fields(attr(n, "class"))
+			if current != "" && n.Data == "td" && !slices.Contains(classes, "blob-code") && v.diffTable {
+				// Gutters and empty padding carry no patch rows. Any other
+				// unrecognized cell may hide even an entire context-only hunk,
+				// whose loss cannot be detected from the surviving hunk counts.
+				metadata := slices.Contains(classes, "blob-num") ||
+					(slices.Contains(classes, "blob-code-empty") && strings.TrimSpace(text(n)) == "")
+				if !metadata {
+					unparsed[current] = true
+				}
+			}
 			if current != "" && n.Data == "td" && slices.Contains(classes, "blob-code") {
 				line := strings.TrimSuffix(text(n), "\n")
 				if strings.ContainsRune(line, '\n') {
@@ -300,7 +322,7 @@ func ParseHTML(r io.Reader) (map[string]string, int, error) {
 		// the current-file state machine needs a file header visited before its
 		// descendant blob-code cells.
 		for child := n.LastChild; child != nil; child = child.PrevSibling {
-			stack = append(stack, child)
+			stack = append(stack, visit{node: child, diffTable: v.diffTable})
 		}
 	}
 	// Check every listed file, even on a partly readable page: one parsed file
@@ -308,11 +330,69 @@ func ParseHTML(r io.Reader) (map[string]string, int, error) {
 	if !explainsItself(root, acc) {
 		return nil, next, fmt.Errorf("GitHub web diff markup contained incomplete or unparseable files")
 	}
+	for path := range unparsed {
+		// Nontextual files may put their explanation in a table cell. A
+		// parsed textual hunk, however, cannot vouch for unparsed siblings.
+		if patch := acc[path]; patch != nil && patch.Len() > 0 {
+			return nil, next, fmt.Errorf("GitHub web diff contains an unrecognized diff cell for %q", path)
+		}
+	}
 	out := make(map[string]string, len(acc))
 	for path, b := range acc {
 		out[path] = b.String()
 	}
 	return out, next, nil
+}
+
+// findDiffTables identifies code tables before extraction, so unreadable rows
+// preceding a recognized row are checked without treating page layout as code.
+func findDiffTables(root *html.Node) map[*html.Node]bool {
+	tables := map[*html.Node]bool{}
+	nested := map[*html.Node]bool{}
+	type visit struct{ node, table, cell *html.Node }
+	var candidates []visit
+	stack := []visit{{node: root}}
+	for len(stack) > 0 {
+		v := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		n := v.node
+		if n.Type == html.ElementNode {
+			classes := strings.Fields(attr(n, "class"))
+			if n.Data == "table" {
+				if v.cell != nil {
+					nested[v.cell] = true
+				}
+				v.table = n
+				v.cell = nil
+				if slices.Contains(classes, "diff-table") || slices.Contains(classes, "js-diff-table") {
+					tables[n] = true
+				}
+			}
+			if n.Data == "td" {
+				v.cell = n
+				if v.table != nil && !tables[v.table] {
+					code := slices.Contains(classes, "blob-code") || slices.Contains(classes, "blob-num") ||
+						slices.ContainsFunc(classes, func(class string) bool { return strings.HasPrefix(class, "blob-code-") })
+					if code {
+						tables[v.table] = true
+					} else {
+						candidates = append(candidates, v)
+					}
+				}
+			}
+		}
+		for child := n.LastChild; child != nil; child = child.PrevSibling {
+			stack = append(stack, visit{node: child, table: v.table, cell: v.cell})
+		}
+	}
+	for _, v := range candidates {
+		// Hunk text identifies classless code tables, but text aggregated
+		// from a nested table must not classify its surrounding layout.
+		if !tables[v.table] && !nested[v.node] && strings.HasPrefix(strings.TrimSpace(text(v.node)), "@@ -") {
+			tables[v.table] = true
+		}
+	}
+	return tables
 }
 
 // nontextualMarkers are the phrases GitHub renders in place of diff hunks for

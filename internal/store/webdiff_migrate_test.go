@@ -9,6 +9,8 @@ import (
 	"github.com/svnbjrn/spoon/internal/forge"
 )
 
+// TestOpenInvalidatesLegacyWebPatches checks atomic cleanup and preservation of
+// unrelated REST, verified web, and cluster data across upgrades and replay.
 func TestOpenInvalidatesLegacyWebPatches(t *testing.T) {
 	ctx := t.Context()
 	// Build the actual main v6 schema, including its persisted cluster data.
@@ -180,6 +182,8 @@ func TestOpenInvalidatesLegacyWebPatches(t *testing.T) {
 	assertMigrated()
 }
 
+// TestOpenRepairsPublishedWebDiffVersionSix covers the alternate published v6
+// database that lacked main's cluster tables but already held validated patches.
 func TestOpenRepairsPublishedWebDiffVersionSix(t *testing.T) {
 	t.Setenv("TURSO_DATABASE_URL", "")
 	t.Setenv("TURSO_AUTH_TOKEN", "")

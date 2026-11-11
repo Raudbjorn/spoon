@@ -77,6 +77,7 @@ func TestApplyWebDiffPatchesDiscardsUntrustedScrape(t *testing.T) {
 	}
 }
 
+// TestApplyWebDiffPatchesFillsOnlyEmptyPatches fills missing patches without replacing authoritative REST data.
 func TestApplyWebDiffPatchesFillsOnlyEmptyPatches(t *testing.T) {
 	t2 := forge.T2Data{Diffs: []forge.FileDiff{
 		{Path: "a.go", Additions: 1, Patch: ""}, // REST statistics must match the complete web patch.
@@ -139,6 +140,7 @@ func TestApplyWebDiffPatchesChecksRESTCounts(t *testing.T) {
 	}
 }
 
+// TestApplyWebDiffPatchesKeepsCompleteSibling retains valid siblings when a candidate fails per-file validation.
 func TestApplyWebDiffPatchesKeepsCompleteSibling(t *testing.T) {
 	t2 := compareToT2(CompareResult{Files: []FileChange{
 		{Filename: "partial.go", Additions: 2},
@@ -166,6 +168,7 @@ func TestApplyWebDiffPatchesKeepsCompleteSibling(t *testing.T) {
 	}
 }
 
+// TestApplyWebDiffPatchesRequiresCompleteContext rejects markup drift even when REST change counts match.
 func TestApplyWebDiffPatchesRequiresCompleteContext(t *testing.T) {
 	fixture := `<div data-path="context.go"></div><table>
 <tr><td class="blob-code blob-code-hunk">@@ -1,2 +1,2 @@</td></tr>
@@ -184,22 +187,27 @@ func TestApplyWebDiffPatchesRequiresCompleteContext(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			patches, _, err := webdiff.ParseHTML(strings.NewReader(strings.ReplaceAll(fixture, "CONTEXT_CLASS", tc.contextClass)))
-			if err != nil {
-				t.Fatal(err)
+			if (err == nil) != tc.complete {
+				t.Fatalf("parse error=%v, want complete=%v", err, tc.complete)
 			}
 			t2 := forge.T2Data{Diffs: []forge.FileDiff{
 				{Path: "context.go", Additions: 1, Deletions: 1},
 				{Path: "sibling.go", Additions: 1},
 			}}
-			applyWebDiffPatches(&t2, patches, false, nil)
+			applyWebDiffPatches(&t2, patches, false, err)
 			if accepted := t2.Diffs[0].PatchSource == "github_web_v2"; accepted != tc.complete {
 				t.Fatalf("context patch accepted=%v, want %v: %+v", accepted, tc.complete, t2)
 			}
 			if !tc.complete && (t2.Diffs[0].Patch != "" || !strings.Contains(t2.PatchSkipReason, `"context.go"`)) {
 				t.Fatalf("incomplete context was not rejected with a diagnostic: %+v", t2)
 			}
-			if t2.Diffs[1].Patch != "@@ -0,0 +1 @@\n+sibling\n" || t2.Diffs[1].PatchSource != "github_web_v2" {
-				t.Fatalf("complete sibling lost: %+v", t2.Diffs[1])
+			// Markup drift invalidates the entire scrape, including complete siblings.
+			if tc.complete {
+				if t2.Diffs[1].Patch != "@@ -0,0 +1 @@\n+sibling\n" || t2.Diffs[1].PatchSource != "github_web_v2" {
+					t.Fatalf("complete sibling lost: %+v", t2.Diffs[1])
+				}
+			} else if t2.Diffs[1].Patch != "" || t2.Diffs[1].PatchSource != "" {
+				t.Fatalf("untrustworthy scrape leaked a sibling: %+v", t2.Diffs[1])
 			}
 		})
 	}

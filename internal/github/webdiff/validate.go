@@ -12,9 +12,9 @@ type hunkRange struct {
 }
 
 // ValidatePatch proves that every declared hunk contains all of its old and
-// new rows, including context. Matching REST addition/deletion totals alone
-// cannot detect lost context rows. Validate only after joining all pages for
-// a file: a page boundary may split a hunk.
+// new rows, including context, with consistent unchanged gaps between hunks.
+// Matching REST addition/deletion totals alone cannot detect lost context rows.
+// Validate only after joining all pages for a file: a page boundary may split a hunk.
 func ValidatePatch(patch string) error {
 	var oldLeft, newLeft, oldEnd, newEnd int
 	var haveHunk, canMarkNewline bool
@@ -28,10 +28,23 @@ func ValidatePatch(patch string) error {
 			if err != nil {
 				return err
 			}
-			if haveHunk && (old.start < oldEnd || new.start < newEnd) {
+			// Nonempty ranges name their first line (one-based); empty ranges
+			// name the preceding line. Normalize both to zero-based boundaries
+			// before comparing gaps, including adjacent insertion/deletion hunks.
+			oldStart, newStart := old.start, new.start
+			if old.count > 0 {
+				oldStart--
+			}
+			if new.count > 0 {
+				newStart--
+			}
+			if haveHunk && (oldStart < oldEnd || newStart < newEnd) {
 				return fmt.Errorf("GitHub web diff contains overlapping or reordered hunks")
 			}
-			oldEnd, newEnd = old.start+old.count, new.start+new.count
+			if haveHunk && oldStart-oldEnd != newStart-newEnd {
+				return fmt.Errorf("GitHub web diff contains inconsistent unchanged gaps between hunks")
+			}
+			oldEnd, newEnd = oldStart+old.count, newStart+new.count
 			oldLeft, newLeft = old.count, new.count
 			haveHunk, canMarkNewline = true, false
 			continue
@@ -65,6 +78,7 @@ func ValidatePatch(patch string) error {
 	return nil
 }
 
+// parseHunkHeader reads a unified-diff header without including source text in errors.
 func parseHunkHeader(line string) (hunkRange, hunkRange, error) {
 	fields := strings.Fields(line)
 	if len(fields) < 4 || fields[0] != "@@" || fields[3] != "@@" {
@@ -78,6 +92,7 @@ func parseHunkHeader(line string) (hunkRange, hunkRange, error) {
 	return old, new, nil
 }
 
+// parseHunkRange checks a signed line range, including count defaults and overflow.
 func parseHunkRange(field string, sign byte) (hunkRange, bool) {
 	if len(field) < 2 || field[0] != sign {
 		return hunkRange{}, false

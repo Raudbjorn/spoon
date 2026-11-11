@@ -8,6 +8,82 @@ import (
 	"time"
 )
 
+// TestParseHTMLRejectsLostCodeClasses covers an omitted context-only hunk whose
+// loss leaves a valid changed hunk and unchanged REST addition/deletion totals.
+func TestParseHTMLRejectsLostCodeClasses(t *testing.T) {
+	const changed = `<tr><td class="blob-code blob-code-hunk">@@ -1 +1 @@</td></tr>
+<tr><td class="blob-code blob-code-deletion">old</td></tr>
+<tr><td class="blob-code blob-code-addition">new</td></tr>`
+	const lost = `<tr><td class="changed-hunk">@@ -10 +10 @@</td></tr>
+<tr><td class="changed-context">omitted context</td></tr>`
+	for _, tc := range []struct{ name, tables string }{
+		{"same table", `<table>` + changed + lost + `</table>`},
+		{"before readable rows", `<table>` + lost + strings.ReplaceAll(changed, "@@ -1 +1 @@", "@@ -20 +20 @@") + `</table>`},
+		{"no cell classes", `<table>` + changed + strings.ReplaceAll(strings.ReplaceAll(lost, ` class="changed-hunk"`, ""), ` class="changed-context"`, "") + `</table>`},
+		{"separate marked table", `<table>` + changed + `</table><table class="diff-table">` + lost + `</table>`},
+		{"separate marked continuation", `<table>` + changed + `</table><table class="diff-table"><tr><td class="changed-context">omitted context</td></tr></table>`},
+		{"separate hunk table", `<table>` + changed + `</table><table>` + lost + `</table>`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			patches, _, err := ParseHTML(strings.NewReader(`<div data-path="a.go"></div>` + tc.tables))
+			if err == nil || patches != nil {
+				t.Fatalf("lost hunk was accepted: patches=%v, error=%v", patches, err)
+			}
+			if strings.Contains(err.Error(), "omitted context") {
+				t.Fatal("parser diagnostic exposed source text")
+			}
+		})
+	}
+}
+
+// TestParseHTMLSkipsNonContentCells limits strict row handling to diff tables,
+// while retaining line-number gutters, empty padding, and complete context.
+func TestParseHTMLSkipsNonContentCells(t *testing.T) {
+	fixture := `<table><tr><td>Repository overview</td></tr></table>
+<div data-path="a.go"></div><table>
+<tr><td class="blob-num"></td><td class="blob-code blob-code-hunk">@@ -1 +1 @@</td></tr>
+<tr><td class="blob-num">1</td><td class="blob-code blob-code-deletion">old</td></tr>
+<tr><td class="blob-num">1</td><td class="blob-code blob-code-addition">new</td><td class="blob-code-empty"></td></tr>
+<tr><td class="blob-num"></td><td class="blob-code blob-code-hunk">@@ -10 +10 @@</td></tr>
+<tr><td class="blob-num">10</td><td class="blob-code blob-code-context">kept</td></tr></table>
+<table><tr><td class="diff-context-cell">Other repository settings</td><td><a href="/settings">Next</a></td></tr></table>`
+	patches, _, err := ParseHTML(strings.NewReader(fixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "@@ -1 +1 @@\n-old\n+new\n@@ -10 +10 @@\n kept\n"
+	if patches["a.go"] != want {
+		t.Fatalf("patch=%q, want %q", patches["a.go"], want)
+	}
+	if err := ValidatePatch(patches["a.go"]); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestParseHTMLSkipsNestedLayoutTables keeps a wrapper cell's aggregate hunk
+// text from making unrelated layout cells look like unparsed code.
+func TestParseHTMLSkipsNestedLayoutTables(t *testing.T) {
+	fixture := `<div data-path="a.go"></div><table><tr><td><table>
+<tr><td class="blob-code blob-code-hunk">@@ -1 +1 @@</td></tr>
+<tr><td class="blob-code blob-code-deletion">old</td></tr>
+<tr><td class="blob-code blob-code-addition">new</td></tr>
+</table></td><td>File controls</td></tr></table>`
+	patches, _, err := ParseHTML(strings.NewReader(fixture))
+	if err != nil || patches["a.go"] != "@@ -1 +1 @@\n-old\n+new\n" {
+		t.Fatalf("nested layout confused with code: patches=%v, error=%v", patches, err)
+	}
+}
+
+// TestParseHTMLAcceptsNontextualTable preserves explained binary-only files
+// even when their placeholder occupies a diff table cell instead of a div.
+func TestParseHTMLAcceptsNontextualTable(t *testing.T) {
+	fixture := `<div data-path="logo.png"></div><table class="diff-table"><tr><td>Binary files differ</td></tr></table>`
+	patches, _, err := ParseHTML(strings.NewReader(fixture))
+	if err != nil || len(patches) != 0 {
+		t.Fatalf("nontextual table rejected: patches=%v, error=%v", patches, err)
+	}
+}
+
 func TestWebDiffParsesFilesAndPagination(t *testing.T) {
 	fixture := `<html><body>
 <div class="js-file-header" data-path="internal/auth.go"></div>
@@ -228,6 +304,7 @@ func TestWaitCancelledContextReservesNoSlot(t *testing.T) {
 	}
 }
 
+// TestCompletePatch checks complete and malformed unified-diff hunk sequences.
 func TestCompletePatch(t *testing.T) {
 	for _, tc := range []struct {
 		name, patch string

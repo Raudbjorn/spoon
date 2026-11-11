@@ -147,6 +147,7 @@ func buildDiffChunk(diffs []forge.FileDiff, maxChars int) (string, bool) {
 	return string(out), truncated
 }
 
+// diffLine supplies patch text or a canonical file header for embedding normalization.
 func diffLine(d forge.FileDiff) string {
 	if d.Path == "" {
 		return ""

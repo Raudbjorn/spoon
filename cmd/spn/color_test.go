@@ -250,6 +250,7 @@ func TestForksNDJSONEmitterIsANSIAndJSONSafe(t *testing.T) {
 	}
 }
 
+// TestStandardForkRouteIsolatesCallerStore proves the route helper cannot open or migrate the caller's database.
 func TestStandardForkRouteIsolatesCallerStore(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "spoon", "spoon.db")
@@ -316,6 +317,7 @@ func TestMachineRoutesAreColorInvariant(t *testing.T) {
 	}
 }
 
+// runStandardForkRoute runs the standard fork route with isolated configuration, cache, and store paths.
 func runStandardForkRoute(t *testing.T, color string, csvMode, perForkError bool) machineOutput {
 	t.Helper()
 	isolateSpoonRun(t) // Store paths use XDG_CONFIG_HOME, not the cache directory.
