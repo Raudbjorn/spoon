@@ -3,6 +3,8 @@ package authops
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
@@ -146,5 +148,74 @@ func TestStorageMigrateRejectsFileOverride(t *testing.T) {
 	}
 	if names, _ := mem.Names(); len(names) != 0 {
 		t.Fatalf("conflicting migration created entries: %v", names)
+	}
+}
+
+func TestStorageRejectsSyntaxBeforeBackendSelection(t *testing.T) {
+	t.Cleanup(config.UseSecretStore(secrets.NewMemoryStore()))
+	for _, backend := range []string{"keyring", "invalid-backend"} {
+		t.Setenv(secrets.EnvBackend, backend)
+		for _, args := range [][]string{{"stats"}, {"status", "extra"}, {"test", "--extra"}} {
+			code, out, errOut := runStorageCmd(t, config.BootstrapResult{}, args...)
+			if code != 2 || out != nil || !strings.Contains(errOut, "bad_input") || strings.Contains(errOut, secrets.EnvBackend) {
+				t.Errorf("%v (%s): exit %d stdout %v stderr %q; want syntax error before backend selection", args, backend, code, out, errOut)
+			}
+		}
+	}
+}
+
+type removeFailureStore struct{ *secrets.MemoryStore }
+
+func (*removeFailureStore) Remove(string) error { return errors.New("keyring is locked") }
+
+func TestStorageMigrateReferencedTokensWithFileOverride(t *testing.T) {
+	for _, cleanupFails := range []bool{false, true} {
+		t.Run(map[bool]string{false: "cleanup succeeds", true: "cleanup warns"}[cleanupFails], func(t *testing.T) {
+			t.Setenv(secrets.EnvBackend, "keyring")
+			mem := secrets.NewMemoryStore()
+			var store secrets.Store = mem
+			if cleanupFails {
+				store = &removeFailureStore{mem}
+			}
+			t.Cleanup(config.UseSecretStore(store))
+			boot := authBoot(t, "synthetic-token")
+			t.Setenv(secrets.EnvBackend, "file")
+			var err error
+			boot.Config, err = config.Load(boot.Layer.Path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var processLog bytes.Buffer
+			previousLogger := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&processLog, nil)))
+			t.Cleanup(func() { slog.SetDefault(previousLogger) })
+			code, out, errOut := runStorageCmd(t, boot, "migrate", "--to", "file")
+			if code != 0 || out["from"] != "keyring" || out["to"] != "file" {
+				t.Fatalf("exit %d stdout %v stderr %q", code, out, errOut)
+			}
+			loaded, err := config.Load(boot.Layer.Path)
+			if err != nil || len(loaded.GitHub.Tokens) != 1 || loaded.GitHub.Tokens[0] != "synthetic-token" {
+				t.Fatal("migration lost the referenced token")
+			}
+			if processLog.Len() != 0 {
+				t.Fatalf("cleanup bypassed the command writer: %q", processLog.String())
+			}
+			if cleanupFails {
+				var envelope struct {
+					Warning struct{ Code string } `json:"warning"`
+				}
+				if err := json.Unmarshal([]byte(errOut), &envelope); err != nil || envelope.Warning.Code != "keyring_cleanup_failed" {
+					t.Fatalf("cleanup diagnostic is not a warning envelope: %q", errOut)
+				}
+			} else if errOut != "" {
+				t.Fatalf("unexpected warning: %q", errOut)
+			}
+			if strings.Contains(errOut, "synthetic-token") {
+				t.Fatal("cleanup diagnostic leaked the token")
+			}
+			if names, _ := mem.Names(); !cleanupFails && len(names) != 0 {
+				t.Fatal("migration left unused entries behind")
+			}
+		})
 	}
 }

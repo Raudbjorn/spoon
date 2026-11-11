@@ -78,16 +78,18 @@ func Selected(getenv func(string) string) (string, error) {
 	}
 }
 
-// Default returns the process's secret store, or (nil, nil) when secrets stay
-// inline: SPOON_SECRET_STORE=file, or a test binary (go test must stay hermetic
-// and never touch the developer's real keyring; tests inject a Store instead).
-// A non-nil error means the keyring was requested but is unusable.
+// Default opens the keyring on demand, including reads of existing references
+// under SPOON_SECRET_STORE=file. Callers apply that write policy before opening
+// a store. Tests never open the real keyring; they inject a Store instead.
 func Default() (Store, error) {
-	backend, err := Selected(os.Getenv)
-	if err != nil {
+	if _, err := Selected(os.Getenv); err != nil {
 		return nil, err
 	}
-	if backend == BackendFile || testing.Testing() {
+	return openDefaultKeyring()
+}
+
+var openDefaultKeyring = func() (Store, error) {
+	if testing.Testing() {
 		return nil, nil
 	}
 	return NewKeyringStore(KeyringConfig{})

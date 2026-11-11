@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -259,6 +260,54 @@ func TestSpnForksList_clusterFieldsPopulated(t *testing.T) {
 	}
 	if gotCluster == 0 {
 		t.Errorf("expected at least one fork in a non-noise cluster\nstdout:\n%s\nstderr:\n%s", stdout.String(), stderr.String())
+	}
+}
+
+func TestSpnForksList_ExplicitZeroEpsilon(t *testing.T) {
+	for _, explicit := range []bool{false, true} {
+		t.Run(fmt.Sprintf("explicit=%v", explicit), func(t *testing.T) {
+			isolateSpoonRun(t)
+			prev := providerFactory
+			t.Cleanup(func() { providerFactory = prev })
+			providerFactory = func(_ context.Context, _, _, _ string) (forge.Forge, string, *agentio.Error) {
+				now := time.Now()
+				provider := makeClusterForks(now, now.Add(-7*24*time.Hour))
+				for i, fork := range provider.forks {
+					t2 := provider.t2[fork.ID]
+					t2.Diffs[0].Path = fmt.Sprintf("%c/file.go", 'A'+i)
+					t2.Commits = []forge.AheadCommit{{Message: "implement feature"}}
+					provider.t2[fork.ID] = t2
+				}
+				return provider, "up/stream", nil
+			}
+			embedderHookForTest = &stubEmbedder{dim: 8}
+			t.Cleanup(func() { embedderHookForTest = nil })
+			args := []string{"list", "up/stream", "--tier", "2"}
+			wantCluster := "c0"
+			if explicit {
+				args = append(args, "--cluster-epsilon", "0")
+				wantCluster = "noise"
+			}
+			var stdout, stderr bytes.Buffer
+			if exit := runForksWith(args, &stdout, &stderr); exit != 0 {
+				t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+			}
+			lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
+			if len(lines) != 10 {
+				t.Fatalf("got %d rows, want 10: %s", len(lines), stdout.String())
+			}
+			for _, line := range lines {
+				var row struct {
+					ClusterID string `json:"clusterId"`
+				}
+				if err := json.Unmarshal([]byte(line), &row); err != nil {
+					t.Fatal(err)
+				}
+				if row.ClusterID != wantCluster {
+					t.Errorf("cluster=%q, want %q; stderr=%s", row.ClusterID, wantCluster, stderr.String())
+				}
+			}
+		})
 	}
 }
 

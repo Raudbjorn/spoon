@@ -25,6 +25,7 @@ type ClusterOptions struct {
 	Enabled        bool
 	TopN           int
 	Epsilon        float64
+	EpsilonSet     bool
 	MinClusterSize int
 	Refresh        bool
 
@@ -190,6 +191,7 @@ func runTUIClusterPipeline(
 		Enabled:           opts.Enabled,
 		TopN:              opts.TopN,
 		Epsilon:           opts.Epsilon,
+		EpsilonSet:        opts.EpsilonSet,
 		MinClusterSize:    opts.MinClusterSize,
 		Refresh:           opts.Refresh,
 		Embedder:          opts.Embedder,

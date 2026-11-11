@@ -204,6 +204,30 @@ func TestRefsAndSelection(t *testing.T) {
 	}
 }
 
+func TestDefaultAllowsExistingKeyringReadsWithFileOverride(t *testing.T) {
+	previous := openDefaultKeyring
+	t.Cleanup(func() { openDefaultKeyring = previous })
+	store := NewMemoryStore()
+	opens := 0
+	openDefaultKeyring = func() (Store, error) {
+		opens++
+		return store, nil
+	}
+	for _, choice := range []string{"file", " FILE ", "keyring", ""} {
+		t.Setenv(EnvBackend, choice)
+		if got, err := Default(); err != nil || got != store {
+			t.Fatalf("Default with %q blocked reference reads: %v", choice, err)
+		}
+	}
+	if opens != 4 {
+		t.Fatalf("opened %d stores, want 4", opens)
+	}
+	t.Setenv(EnvBackend, "typo")
+	if _, err := Default(); err == nil || opens != 4 {
+		t.Fatal("invalid selection must fail before opening a store")
+	}
+}
+
 func TestUnsupportedPlatformBackendsAreNonNilEmpty(t *testing.T) {
 	// keyring.Open treats a nil AllowedBackends as "every backend", which would
 	// admit pass or the password-less file backend.

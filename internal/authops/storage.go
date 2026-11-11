@@ -18,25 +18,73 @@ func storageUsage(prog string) string {
 	return prog + " auth storage status | test | migrate --to keyring|file [--dry-run]"
 }
 
-// runStorage implements "auth storage": where GitHub tokens live and moving
-// them between the OS keyring (default) and the 0600 config file.
-func runStorage(prog string, args []string, stdout, stderr io.Writer, boot config.BootstrapResult) int {
-	usage := storageUsage(prog)
-	bad := func(msg string) int { return agentio.NewError(agentio.CodeBadInput, msg, usage).Emit(stderr) }
+type storageOptions struct {
+	verb, to string
+	dryRun   bool
+}
+
+// ValidateStorageArgs rejects malformed commands before bootstrap can unlock a keyring.
+func ValidateStorageArgs(prog string, args []string) *agentio.Error {
+	_, err := parseStorageArgs(prog, args)
+	return err
+}
+
+func parseStorageArgs(prog string, args []string) (storageOptions, *agentio.Error) {
+	bad := func(msg string) (storageOptions, *agentio.Error) {
+		return storageOptions{}, agentio.NewError(agentio.CodeBadInput, msg, storageUsage(prog))
+	}
 	if len(args) == 0 {
 		return bad("missing storage verb (status, test, migrate)")
 	}
+	opts := storageOptions{verb: args[0]}
+	switch args[0] {
+	case "status", "test":
+		if len(args) != 1 {
+			return bad(args[0] + " does not accept arguments")
+		}
+		return opts, nil
+	case "migrate":
+	default:
+		return bad("unknown storage verb: " + args[0])
+	}
+	for i := 1; i < len(args); i++ {
+		switch args[i] {
+		case "--to":
+			if i+1 >= len(args) {
+				return bad("--to requires keyring or file")
+			}
+			i++
+			opts.to = args[i]
+		case "--dry-run":
+			opts.dryRun = true
+		default:
+			return bad("unknown flag: " + args[i])
+		}
+	}
+	if !slices.Contains([]string{secrets.BackendKeyring, secrets.BackendFile}, opts.to) {
+		return bad("--to must be keyring or file")
+	}
+	return opts, nil
+}
+
+// runStorage implements "auth storage": where GitHub tokens live and moving
+// them between the OS keyring (default) and the 0600 config file.
+func runStorage(prog string, args []string, stdout, stderr io.Writer, boot config.BootstrapResult) int {
+	opts, inputErr := parseStorageArgs(prog, args)
+	if inputErr != nil {
+		return inputErr.Emit(stderr)
+	}
 	selected, err := secrets.Selected(os.Getenv)
 	if err != nil {
-		return bad(err.Error())
+		return agentio.NewError(agentio.CodeBadInput, err.Error(), storageUsage(prog)).Emit(stderr)
 	}
 	// The environment wins; otherwise honour the file's persisted choice.
 	if strings.TrimSpace(os.Getenv(secrets.EnvBackend)) == "" && boot.Config != nil &&
 		strings.EqualFold(boot.Config.Secrets.Store, secrets.BackendFile) {
 		selected = secrets.BackendFile
 	}
-	if args[0] == "migrate" {
-		return storageMigrate(prog, args[1:], stdout, stderr, boot)
+	if opts.verb == "migrate" {
+		return storageMigrate(opts, stdout, stderr, boot)
 	}
 	var store secrets.Store
 	var storeErr error
@@ -44,14 +92,10 @@ func runStorage(prog string, args []string, stdout, stderr io.Writer, boot confi
 	if selected != secrets.BackendFile {
 		store, storeErr = config.SecretStore()
 	}
-	switch args[0] {
-	case "status":
+	if opts.verb == "status" {
 		return storageStatus(stdout, stderr, boot, selected, store, storeErr)
-	case "test":
-		return storageTest(stdout, stderr, selected, store, storeErr)
-	default:
-		return bad("unknown storage verb: " + args[0])
 	}
+	return storageTest(stdout, stderr, selected, store, storeErr)
 }
 
 func storageStatus(stdout, stderr io.Writer, boot config.BootstrapResult, selected string, store secrets.Store, storeErr error) int {
@@ -126,27 +170,8 @@ func requireKeyring(selected string, store secrets.Store, storeErr error) error 
 	return nil
 }
 
-func storageMigrate(prog string, args []string, stdout, stderr io.Writer, boot config.BootstrapResult) int {
-	usage := storageUsage(prog)
-	bad := func(msg string) int { return agentio.NewError(agentio.CodeBadInput, msg, usage).Emit(stderr) }
-	to, dryRun := "", false
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--to":
-			if i+1 >= len(args) {
-				return bad("--to requires keyring or file")
-			}
-			i++
-			to = args[i]
-		case "--dry-run":
-			dryRun = true
-		default:
-			return bad("unknown flag: " + args[i])
-		}
-	}
-	if !slices.Contains([]string{secrets.BackendKeyring, secrets.BackendFile}, to) {
-		return bad("--to must be keyring or file")
-	}
+func storageMigrate(opts storageOptions, stdout, stderr io.Writer, boot config.BootstrapResult) int {
+	to, dryRun := opts.to, opts.dryRun
 	if to == secrets.BackendKeyring && strings.EqualFold(strings.TrimSpace(os.Getenv(secrets.EnvBackend)), secrets.BackendFile) {
 		return agentio.NewError(agentio.CodeBadInput, "SPOON_SECRET_STORE=file conflicts with --to keyring",
 			"Unset SPOON_SECRET_STORE or set it to keyring, then retry the migration.").Emit(stderr)
@@ -171,10 +196,10 @@ func storageMigrate(prog string, args []string, stdout, stderr io.Writer, boot c
 		} else {
 			err = config.SaveInline(boot.Layer.Path, &cfg)
 		}
-		emitInlineFallback(stderr, &cfg)
 		if err != nil {
 			return agentio.NewError(agentio.CodeInternal, "migration failed: "+err.Error(), agentio.RemediationInternal()).Emit(stderr)
 		}
+		emitSaveWarnings(stderr, &cfg)
 	}
 	after := config.TokenStorage(&cfg)
 	if dryRun {

@@ -33,6 +33,9 @@ func main() {
 	// config degrades to built-in defaults with a warning.
 	bootstrap := config.Bootstrap
 	if len(os.Args) >= 3 && os.Args[1] == "auth" && os.Args[2] == "storage" {
+		if err := authops.ValidateStorageArgs("spoon", os.Args[3:]); err != nil {
+			os.Exit(err.Emit(os.Stderr))
+		}
 		// Storage commands must see the pre-migration config; see BootstrapSnapshot.
 		bootstrap = config.BootstrapSnapshot
 	}
@@ -234,6 +237,7 @@ func main() {
 		Enabled:           !noCluster,
 		TopN:              clusterTop,
 		Epsilon:           clusterEpsilon,
+		EpsilonSet:        clusterEpsilonSet,
 		MinClusterSize:    clusterMinSize,
 		Refresh:           refresh,
 		CentralityBackend: backendFor(fullMDG),

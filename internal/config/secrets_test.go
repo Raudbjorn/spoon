@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -155,6 +157,130 @@ func TestSaveKeepsTokensInlineWhenKeyringFails(t *testing.T) {
 	}
 }
 
+func TestInlineFallbackPrunesLoadedEntriesOnlyAfterPublication(t *testing.T) {
+	for _, failRead := range []bool{false, true} {
+		for _, failPublish := range []bool{false, true} {
+			t.Run(fmt.Sprintf("read=%t/publish=%t", failRead, failPublish), func(t *testing.T) {
+				t.Setenv(secrets.EnvBackend, "")
+				store := &flakyStore{MemoryStore: secrets.NewMemoryStore()}
+				defer UseSecretStore(store)()
+				path := filepath.Join(t.TempDir(), "config.json")
+				if err := Save(path, tokenConfig(tokA)); err != nil {
+					t.Fatal(err)
+				}
+				loaded, err := Load(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				before := readFile(t, path)
+				loaded.GitHub.Tokens = append(loaded.GitHub.Tokens, tokB)
+				store.failSet, store.dropReads = !failRead, failRead
+				if failPublish {
+					if err := os.Mkdir(path+".tmp", 0o700); err != nil {
+						t.Fatal(err)
+					}
+				}
+				err = Save(path, loaded)
+				if (err != nil) != failPublish {
+					t.Fatalf("Save error = %v, publication failure = %t", err, failPublish)
+				}
+				names, _ := store.Names()
+				if failPublish {
+					if len(names) != 1 || readFile(t, path) != before {
+						t.Fatal("failed publication changed existing credentials")
+					}
+				} else {
+					if len(names) != 0 {
+						t.Fatal("inline fallback left loaded keyring entries behind")
+					}
+					again, err := Load(path)
+					if err != nil || !reflect.DeepEqual(again.GitHub.Tokens, []string{tokA, tokB}) {
+						t.Fatalf("inline credentials did not survive: %v", err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestMigrateInlineSecretsRejectsChangedTokens(t *testing.T) {
+	for _, replacement := range []string{`["new-token"]`, `[]`, `["keyring:new-entry"]`} {
+		t.Run(replacement, func(t *testing.T) {
+			t.Setenv(secrets.EnvBackend, "")
+			store := secrets.NewMemoryStore()
+			defer UseSecretStore(store)()
+			path := filepath.Join(t.TempDir(), "config.json")
+			initial := `{"github":{"tokens":["old-token"]},"github.tokens":` + replacement + `}`
+			if err := os.WriteFile(path, []byte(initial), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			loaded, err := Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// A literal dotted key can win flattened metadata; force that ordering.
+			loaded.raw["github.tokens"] = json.RawMessage(replacement)
+			newer := `{"github":{"tokens":` + replacement + `},"future":true}`
+			if err := os.WriteFile(path, []byte(newer), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var stderr bytes.Buffer
+			if moved := MigrateInlineSecrets(path, loaded, &stderr); moved != 0 {
+				t.Fatalf("migrated %d stale tokens", moved)
+			}
+			if readFile(t, path) != newer {
+				t.Fatal("migration overwrote a newer credential document")
+			}
+			if names, _ := store.Names(); len(names) != 0 {
+				t.Fatal("migration wrote keyring entries for a stale snapshot")
+			}
+			if !strings.Contains(stderr.String(), "changed") || strings.Contains(stderr.String(), "old-token") || strings.Contains(stderr.String(), "new-token") {
+				t.Fatalf("expected a credential-free conflict warning, got %q", stderr.String())
+			}
+		})
+	}
+}
+
+type cleanupFailStore struct {
+	*secrets.MemoryStore
+	err error
+}
+
+func (s *cleanupFailStore) Remove(name string) error { return s.err }
+
+func TestSaveRecordsCleanupFailureWithoutLogging(t *testing.T) {
+	t.Setenv(secrets.EnvBackend, "")
+	store := &cleanupFailStore{MemoryStore: secrets.NewMemoryStore(), err: errors.New("remove refused")}
+	defer UseSecretStore(store)()
+	path := filepath.Join(t.TempDir(), "config.json")
+	cfg := tokenConfig(tokA)
+	if err := Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	if err := SaveInline(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(cfg.SecretCleanupError(), store.err) {
+		t.Fatalf("cleanup failure not available to caller: %v", cfg.SecretCleanupError())
+	}
+	if logs.Len() != 0 {
+		t.Fatalf("Save bypassed the command writer: %q", logs.String())
+	}
+	if !strings.Contains(readFile(t, path), tokA) {
+		t.Fatal("cleanup failure lost the published credential")
+	}
+	if names, _ := store.Names(); len(names) != 1 {
+		t.Fatal("test did not leave an entry requiring manual cleanup")
+	}
+	if err := Save(path, cfg); err != nil || cfg.SecretCleanupError() != nil {
+		t.Fatalf("next save retained an old diagnostic: %v / %v", err, cfg.SecretCleanupError())
+	}
+}
+
 func TestLoadFailsLoudlyWhenReferencedEntryIsUnreachable(t *testing.T) {
 	mem := secrets.NewMemoryStore()
 	restore := UseSecretStore(mem)
@@ -233,7 +359,7 @@ func TestMigrateInlineSecretsPreservesOtherJSON(t *testing.T) {
 	t.Setenv(secrets.EnvBackend, "")
 	defer UseSecretStore(secrets.NewMemoryStore())()
 	path := filepath.Join(t.TempDir(), "config.json")
-	original := `{"version":99,"extension":{"large":9007199254740993,"empty":{},"values":[false,null]},"github":{"tokens":["synthetic-token"],"requestsPerMinute":0,"future.setting":{"enabled":false}},"embedder":{"future":[]}}`
+	original := `{"version":99,"github.tokens":["unrelated"],"extension":{"large":9007199254740993,"empty":{},"values":[false,null]},"github":{"tokens":["synthetic-token"],"requestsPerMinute":0,"future.setting":{"enabled":false}},"embedder":{"future":[]}}`
 	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -241,6 +367,8 @@ func TestMigrateInlineSecretsPreservesOtherJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Migration compares the real nested token snapshot, never dotted metadata.
+	cfg.raw["github.tokens"] = json.RawMessage(`["unrelated"]`)
 	var stderr bytes.Buffer
 	if moved := MigrateInlineSecrets(path, cfg, &stderr); moved != 1 {
 		t.Fatalf("moved = %d, stderr %q", moved, stderr.String())

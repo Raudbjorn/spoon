@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"maps"
+	"slices"
 	"strings"
 )
 
@@ -58,6 +59,7 @@ func Clone(c *Config) (*Config, error) {
 	}
 	clone.present, clone.raw = copyPresence(c.present), copyRaw(c.raw)
 	clone.secretRefs = maps.Clone(c.secretRefs)
+	clone.sourceTokens = slices.Clone(c.sourceTokens)
 	return &clone, nil
 }
 

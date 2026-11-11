@@ -4,9 +4,9 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"slices"
 	"strings"
@@ -53,9 +53,8 @@ func UseSecretStore(st secrets.Store) (restore func()) {
 	}
 }
 
-// SecretStore returns the active store: (nil, nil) when secrets stay inline,
-// an error when the keyring was requested but is unusable. The default is
-// resolved once per process.
+// SecretStore returns the active keyring for references and writes that need
+// it, or an error when unusable. The default is resolved once per process.
 func SecretStore() (secrets.Store, error) {
 	secretStoreMu.Lock()
 	defer secretStoreMu.Unlock()
@@ -102,7 +101,7 @@ func (c *Config) resolveSecrets() error {
 
 func unavailableReason(err error) string {
 	if err == nil {
-		return "disabled by " + secrets.EnvBackend
+		return "no keyring store is available"
 	}
 	return err.Error()
 }
@@ -123,7 +122,7 @@ func (c *Config) externalizeSecrets(forceInline bool) (persist []string, refs ma
 		if err != nil {
 			c.inlineFallback = err
 		}
-		return inline, nil, nil, nil
+		return inline, nil, c.staleRefs(nil), nil
 	}
 	refs = make(map[string]string, len(inline))
 	persist = make([]string, 0, len(inline))
@@ -160,7 +159,7 @@ func (c *Config) externalizeSecrets(forceInline bool) (persist []string, refs ma
 func (c *Config) rollback(st secrets.Store, created, inline []string, cause error) ([]string, map[string]string, []string, []string) {
 	removeEntries(st, created)
 	c.inlineFallback = cause
-	return inline, nil, nil, nil
+	return inline, nil, c.staleRefs(nil), nil
 }
 
 // removeEntries best-effort deletes keyring entries this save created.
@@ -191,6 +190,15 @@ func (c *Config) InlineFallback() error {
 	return c.inlineFallback
 }
 
+// SecretCleanupError reports cleanup failures after a successful Save, for
+// callers to surface through their own output channel.
+func (c *Config) SecretCleanupError() error {
+	if c == nil {
+		return nil
+	}
+	return c.secretCleanupError
+}
+
 // staleRefs lists loaded keyring entries that the saved config no longer uses.
 func (c *Config) staleRefs(keep map[string]string) []string {
 	var stale []string
@@ -212,19 +220,21 @@ func newTokenName() (string, error) {
 
 // pruneSecrets deletes keyring entries the saved config stopped referencing.
 // Best effort and last: a failure leaves an unreferenced entry, never a lost token.
-func pruneSecrets(names []string) {
+func pruneSecrets(names []string) error {
 	if len(names) == 0 {
-		return
+		return nil
 	}
-	st, _ := SecretStore()
+	st, err := SecretStore()
 	if st == nil {
-		return
+		return fmt.Errorf("could not remove unused keyring entries: %s", unavailableReason(err))
 	}
+	var failures []error
 	for _, name := range names {
 		if err := st.Remove(name); err != nil {
-			slog.Warn("could not remove unused keyring entry", "entry", name, "error", err)
+			failures = append(failures, fmt.Errorf("could not remove unused keyring entry %q: %w", name, err))
 		}
 	}
+	return errors.Join(failures...)
 }
 
 // TokenStorage reports where c's GitHub tokens are persisted: "keyring" when
@@ -285,7 +295,10 @@ func MigrateInlineSecrets(path string, c *Config, stderr io.Writer) int {
 	if cause := c.InlineFallback(); cause != nil {
 		fmt.Fprintf(stderr, "warning: GitHub tokens stay in the 0600 config file: the OS keyring could not be used (%v); set %s=file to silence this\n", cause, secrets.EnvBackend)
 	}
-	moved := len(c.secretRefs) - before
+	if cause := c.SecretCleanupError(); cause != nil {
+		fmt.Fprintf(stderr, "warning: %v\n", cause)
+	}
+	moved := max(0, len(c.secretRefs)-before)
 	if moved > 0 {
 		fmt.Fprintf(stderr, "moved %d GitHub token(s) from %s into the OS keyring\n", moved, path)
 	}

@@ -64,8 +64,12 @@ against `/user` before it is stored and is never printed. Tokens (from `auth log
 `spoon setup` or Settings) are stored in the OS keyring by default (Keychain,
 Secret Service/KWallet, Windows Credential Manager); the config file then holds
 only `keyring:<entry>` references. `SPOON_SECRET_STORE=file` keeps them inline in
-the 0600 config instead, as does a machine with no usable keyring (spoon warns).
-Tokens already inline are moved on the next run, preserving other JSON fields.
+the 0600 config on the next save, as does a machine with no usable keyring (spoon warns).
+Existing keyring references remain readable under the file override; use
+`auth storage migrate --to file` to move them immediately. Tokens already inline
+are moved on the next run, preserving other JSON fields. Automatic migration
+refuses to overwrite tokens changed since loading. `auth login` requires a
+personal config; it refuses the machine-wide system layer.
 `spn auth storage status|test|migrate` inspects and moves them. Unset
 `SPOON_SECRET_STORE=file` before `auth storage migrate --to keyring`, including
 with `--dry-run`. Keyring calls time out after 20 seconds; a blocked backend
@@ -503,7 +507,9 @@ always clusters with this lexical engine — semantic search and persistence liv
 in the `spn` agent CLI. Clusters get deterministic heuristic labels (dominant
 directory prefix + the most discriminative commit/path tokens). Tune with
 `--cluster-epsilon` / `--cluster-min-size`, cap the embedded set with
-`--cluster-top`, or disable with `--no-cluster`.
+`--cluster-top`, or disable with `--no-cluster`. An explicit `--cluster-epsilon 0`
+uses a zero cosine-distance cutoff (identical vectors may still cluster);
+omitting the flag retains the default cutoff.
 
 `--query` relevance is scored over each fork's change digest — by the built-in
 lexical scorer with no extra runtime, or by the Voyage cross-encoder when a key

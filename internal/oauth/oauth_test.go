@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -147,6 +148,65 @@ func TestLoginReportsDenial(t *testing.T) {
 	get(t, "http://"+addr+"/auth?error=access_denied&state="+url.QueryEscape(u.Query().Get("state")))
 	if err := <-res; err == nil || !strings.Contains(err.Error(), "access_denied") {
 		t.Fatalf("err = %v, want access_denied", err)
+	}
+}
+
+func TestLoginRejectsDenialDuringCodeExchange(t *testing.T) {
+	exchanging := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseExchange := func() { releaseOnce.Do(func() { close(release) }) }
+	ts := &tokenServer{Server: httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(exchanging)
+		<-release
+		_ = json.NewEncoder(w).Encode(map[string]string{"access_token": "gho_x"})
+	}))}
+	t.Cleanup(ts.Close)
+	t.Cleanup(releaseExchange)
+	c, addr := testConfig(t, ts)
+	authURL, res, tok := run(t, c, 10*time.Second)
+	u, _ := url.Parse(authURL)
+	callback := "http://" + addr + "/auth?state=" + url.QueryEscape(u.Query().Get("state"))
+	codeResult := make(chan error, 1)
+	go func() {
+		resp, err := http.Get(callback + "&code=ok")
+		if err == nil {
+			resp.Body.Close()
+		}
+		codeResult <- err
+	}()
+	select {
+	case <-exchanging:
+	case <-time.After(5 * time.Second):
+		t.Fatal("code callback did not reach the token endpoint")
+	}
+	status := get(t, callback+"&error=access_denied")
+	releaseExchange()
+	if status != http.StatusConflict {
+		t.Errorf("denial status = %d, want 409 while code exchange owns the login", status)
+	}
+	if err := <-codeResult; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-res; err != nil || tok.AccessToken != "gho_x" {
+		t.Fatalf("Login = %v, token obtained=%v; denial displaced the in-flight exchange", err, tok.AccessToken != "")
+	}
+}
+
+func TestLoginMissingCodeDoesNotClaimCallback(t *testing.T) {
+	ts := newTokenServer(t, map[string]string{"access_token": "gho_x"}, 200)
+	c, addr := testConfig(t, ts)
+	authURL, res, _ := run(t, c, 10*time.Second)
+	u, _ := url.Parse(authURL)
+	callback := "http://" + addr + "/auth?state=" + url.QueryEscape(u.Query().Get("state"))
+	if status := get(t, callback); status != http.StatusBadRequest {
+		t.Fatalf("missing code status = %d, want 400", status)
+	}
+	if status := get(t, callback+"&code=ok"); status != http.StatusOK {
+		t.Fatalf("valid code status = %d, want 200", status)
+	}
+	if err := <-res; err != nil {
+		t.Fatal(err)
 	}
 }
 

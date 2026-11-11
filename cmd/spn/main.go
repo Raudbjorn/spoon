@@ -99,6 +99,9 @@ func dispatchConfigured(args []string, stdout, stderr io.Writer, presentation pr
 	var bootstrapStderr bytes.Buffer
 	bootstrap := config.Bootstrap
 	if isAuthStorage(args) {
+		if err := authops.ValidateStorageArgs("spn", args[2:]); err != nil {
+			return err.Emit(stderr)
+		}
 		bootstrap = config.BootstrapSnapshot
 	}
 	boot := bootstrap(&bootstrapStderr)

@@ -184,6 +184,38 @@ func TestAuthLoginWithoutWritableConfigFailsBeforeAuthorizing(t *testing.T) {
 	}
 }
 
+func TestAuthLoginRefusesSystemConfigBeforeAuthorizing(t *testing.T) {
+	boot := authBoot(t, "existing")
+	boot.Layer.System = true
+	before, err := os.ReadFile(boot.Layer.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mem := secrets.NewMemoryStore()
+	t.Cleanup(config.UseSecretStore(mem))
+	stubOAuth(t, oauth.Token{AccessToken: testOAuthToken}, nil)
+	called := false
+	prev := oauthLogin
+	oauthLogin = func(ctx context.Context, c oauth.Config, d time.Duration, a func(string)) (oauth.Token, error) {
+		called = true
+		return prev(ctx, c, d, a)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := Run("spn", []string{"login"}, &stdout, &stderr, boot, authEnv()); code != 2 || called {
+		t.Fatalf("exit %d, oauth started=%v; want refusal before authorizing", code, called)
+	}
+	if errCode(t, &stderr) != "bad_input" || stdout.Len() != 0 || !strings.Contains(stderr.String(), "system config") {
+		t.Fatalf("stdout %q stderr %q", stdout.String(), stderr.String())
+	}
+	after, err := os.ReadFile(boot.Layer.Path)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatal("system config changed")
+	}
+	if names, _ := mem.Names(); len(names) != 0 {
+		t.Fatalf("system login created keyring entries: %v", names)
+	}
+}
+
 func TestAuthLoginDeniedIsAuthRequired(t *testing.T) {
 	stubOAuth(t, oauth.Token{}, errors.New("oauth: authorization denied: access_denied"))
 	boot := authBoot(t)

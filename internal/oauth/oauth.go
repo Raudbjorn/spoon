@@ -145,18 +145,18 @@ func (c Config) Login(ctx context.Context, timeout time.Duration, announce func(
 			writePage(w, http.StatusBadRequest, "Invalid state", "This callback does not belong to the running login.")
 			return
 		}
-		if e := q.Get("error"); e != "" {
-			writePage(w, http.StatusForbidden, "Authorization failed", e)
-			finish(Token{}, fmt.Errorf("oauth: authorization denied: %s", sanitize(e)))
-			return
-		}
-		code := q.Get("code")
-		if code == "" {
+		code, denial := q.Get("code"), q.Get("error")
+		if code == "" && denial == "" {
 			writePage(w, http.StatusBadRequest, "Missing code", "The callback carried no authorization code.")
 			return
 		}
 		if !claimed.CompareAndSwap(false, true) {
 			writePage(w, http.StatusConflict, "Already handled", "This login is already being completed; see the terminal.")
+			return
+		}
+		if denial != "" {
+			writePage(w, http.StatusForbidden, "Authorization failed", denial)
+			finish(Token{}, fmt.Errorf("oauth: authorization denied: %s", sanitize(denial)))
 			return
 		}
 		ectx, cancel := context.WithTimeout(r.Context(), tokenExchangeBudget)

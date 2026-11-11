@@ -29,6 +29,7 @@ type PipelineOptions struct {
 	Enabled           bool // false → skip clustering entirely
 	TopN              int  // max forks to embed
 	Epsilon           float64
+	EpsilonSet        bool // distinguish an explicit zero cutoff from the default
 	MinClusterSize    int
 	MinimumCandidates int  // default 10 if zero
 	Refresh           bool // true → skip LoadCache, force a fresh clustering pass
@@ -170,8 +171,8 @@ func RunPipeline(ctx context.Context, opts PipelineOptions, inputs PipelineInput
 	if opts.MinimumCandidates == 0 {
 		opts.MinimumCandidates = 10
 	}
-	if opts.Epsilon == 0 {
-		opts.Epsilon = 0.55
+	if opts.Epsilon == 0 && !opts.EpsilonSet {
+		opts.Epsilon = defaultEpsilon
 	}
 	if opts.MinClusterSize == 0 {
 		opts.MinClusterSize = 3
@@ -368,6 +369,7 @@ func RunPipeline(ctx context.Context, opts PipelineOptions, inputs PipelineInput
 	// 7. Run clustering.
 	clusters, assignments := Run(points, Options{
 		Epsilon:        opts.Epsilon,
+		EpsilonSet:     opts.EpsilonSet,
 		MinClusterSize: opts.MinClusterSize,
 	})
 

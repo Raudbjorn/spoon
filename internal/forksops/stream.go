@@ -243,6 +243,7 @@ type ClusterOptions struct {
 	Enabled        bool
 	TopN           int
 	Epsilon        float64
+	EpsilonSet     bool
 	MinClusterSize int
 	Refresh        bool
 
@@ -1310,6 +1311,7 @@ func clusterEnv(ctx context.Context, provider forge.Forge, parent *forge.ParentD
 		Enabled:           opts.Enabled,
 		TopN:              opts.TopN,
 		Epsilon:           opts.Epsilon,
+		EpsilonSet:        opts.EpsilonSet,
 		MinClusterSize:    opts.MinClusterSize,
 		MinimumCandidates: 10,
 		Refresh:           opts.Refresh,

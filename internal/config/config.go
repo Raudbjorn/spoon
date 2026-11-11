@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 )
@@ -46,9 +47,12 @@ type Config struct {
 	// secretRefs maps each GitHub token loaded from (or saved to) the OS keyring
 	// to its entry name; see secrets.go. Also outside the persisted schema.
 	secretRefs map[string]string
+	// sourceTokens is the unresolved on-disk snapshot used to guard migration.
+	sourceTokens []string
 	// inlineFallback is why the last Save kept tokens inline despite wanting
 	// the keyring; see InlineFallback.
-	inlineFallback error
+	inlineFallback     error
+	secretCleanupError error
 }
 
 // SecretsConfig records where GitHub tokens are stored. Store is "" or
@@ -190,6 +194,7 @@ func Load(path string) (*Config, error) {
 	}
 	c.present, c.raw = leafMetadata(data)
 	c.normalizeLegacy()
+	c.sourceTokens = slices.Clone(c.GitHub.Tokens)
 	if err := c.resolveSecrets(); err != nil {
 		return nil, fmt.Errorf("config %s: %w", path, err)
 	}
@@ -219,6 +224,8 @@ func Save(path string, c *Config) error { return save(path, c, false, nil) }
 
 // original is used only for automatic migration, which owns github.tokens alone.
 func save(path string, c *Config, forceInline bool, original map[string]json.RawMessage) error {
+	c.inlineFallback = nil
+	c.secretCleanupError = nil
 	if err := c.Validate(); err != nil {
 		return err
 	}
@@ -235,13 +242,18 @@ func save(path string, c *Config, forceInline bool, original map[string]json.Raw
 		if err := json.Unmarshal(original["github"], &githubFields); err != nil || githubFields == nil {
 			return fmt.Errorf("config github section changed before token migration")
 		}
+		var currentTokens []string
+		// shortcut: checks the migration reread only; use cross-process locking to cover later writes.
+		if json.Unmarshal(githubFields["tokens"], &currentTokens) != nil ||
+			!slices.Equal(currentTokens, c.sourceTokens) {
+			return fmt.Errorf("config github.tokens changed before token migration; reload the config and retry")
+		}
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
 	}
 	// Keyring first, file second, prune last: a failure at any step leaves every
 	// token reachable from either the old or the new file.
-	c.inlineFallback = nil
 	persistTokens, newRefs, stale, created := c.externalizeSecrets(forceInline)
 	published := false
 	defer func() {
@@ -285,8 +297,9 @@ func save(path string, c *Config, forceInline bool, original map[string]json.Raw
 	}
 	published = true
 	c.present, c.raw = leafMetadata(data)
+	c.sourceTokens = slices.Clone(persistTokens)
 	c.secretRefs = newRefs
-	pruneSecrets(stale)
+	c.secretCleanupError = pruneSecrets(stale)
 	return nil
 }
 
