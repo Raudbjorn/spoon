@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import stat
 import subprocess
 import sys
 import tomllib
@@ -35,6 +36,8 @@ def safe_read(root: Path, path: str, errors: list[str]) -> str | None:
             if parent.is_symlink():
                 errors.append(f"{path}: symlink sources are not allowed ({parent.relative_to(root)})")
                 return None
+        if not stat.S_ISREG(target.stat().st_mode):
+            raise OSError("not a regular file")
         return target.read_text(encoding="utf-8")
     except UnicodeError as error:
         errors.append(f"{path}: cannot decode UTF-8: {error}")

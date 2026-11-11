@@ -40,7 +40,9 @@ Protect these contracts:
   Never print credentials or infer authorization from a proxy route.
 - go-github REST and githubv4 GraphQL clients sit behind Spoon's dispatcher.
   Preserve its token/proxy selection, rate accounting and retries when changing
-  SDK calls. Loaded Spoon credentials and environment tokens replace gh CLI auth.
+  SDK calls. Saved Spoon credentials precede host-appropriate environment tokens;
+  only their absence permits the bounded gh login fallback. Carry the selected
+  source through auth diagnostics and cache identity; rejection is not absence.
 - Prefer existing batch and last-touch mechanisms before adding calls. Measure
   request count on cold, warm, partial and reserve-exhausted paths.
 
@@ -51,6 +53,7 @@ Start validation with affected fixtures in `internal/github`, `internal/gitlab`,
 `internal/github/acquisition_report_test.go:TestSortForksByStars_MismatchedExtrasLeavesBothAligned`,
 `internal/github/batch_compare_test.go:TestBatchDivergenceStopsAtReserveBetweenRequests`, and
 `internal/tui/enrich_queue_test.go:TestBatchDivergenceCmd_ReserveStopsMissingRepoProbes`.
+Credential precedence: `internal/github/auth_test.go:TestClientAuthenticationPrecedence`.
 Use the race detector for changed worker/dispatcher paths.
 
 Handoff comparison identity and patch acceptance to spoon-comparison-integrity;

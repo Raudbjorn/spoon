@@ -313,16 +313,17 @@ the durable evidence is the source and links below.
 ### Source baseline and historical review status
 
 At the research snapshot, these PRs were open. They are now merged. On
-2026-11-11 this branch integrated `main` at
-`0631fdf`, including #142 and #147, in merge commit `a061136`.
-That is the source baseline for the refreshed role guidance. The earlier
-publication base was `d48702d`, which already included #145. Historical research,
+2026-11-11 this branch integrated `main` at `9472092` in merge commit `5096f9c`,
+including #142, #147 and the subsequent GitHub login-fallback restoration.
+That is the source baseline for the refreshed role guidance. The preceding
+integration of `0631fdf` was recorded in `a061136`; the original publication base
+was `d48702d`, which already included #145. Historical research,
 smoke checks and evaluation results retain their own recorded revisions; updating
 the source baseline does not rerun or extend those observations.
 
 | PR | Boundary for agents |
 | --- | --- |
-| [#142 auth/client migration](https://github.com/Raudbjorn/spoon/pull/142) | Merged in `8f811d1`. REST uses go-github/v90, GraphQL uses githubv4; Spoon no longer discovers tokens through gh. `internal/authops`, `internal/oauth`, `internal/secrets` and `internal/config/secrets.go` implement shared authorization-code login and keyring persistence. Preserve cancellation, bounded callbacks, storage policy and publication/cleanup ordering. The old gh-token subprocess regression has been replaced by `TestLocalProviderProbeReportsCancellation`. |
+| [#142 auth/client migration](https://github.com/Raudbjorn/spoon/pull/142) | Merged in `8f811d1`. REST uses go-github/v90 and GraphQL uses githubv4. `internal/authops`, `internal/oauth`, `internal/secrets` and `internal/config/secrets.go` implement shared authorization-code login and keyring persistence. Later commit `154b265` restored bounded gh credential fallback after Spoon/environment credentials; local readiness still never executes the CLI. Preserve cancellation, callbacks, storage policy and publication/cleanup ordering. The current cancellation anchor is `TestLocalProviderProbeReportsCancellation`. |
 | [#145 discovery/cache hardening](https://github.com/Raudbjorn/spoon/pull/145) | Open during research, merged before publication. Effective remote handling, selected-checkout propagation and stronger durable invalidation now exist in the base; keep the [checkout finding](https://github.com/Raudbjorn/spoon/pull/145#discussion_r4457979074) as a regression boundary. |
 | [#147 webdiff follow-up](https://github.com/Raudbjorn/spoon/pull/147) | Merged in `0631fdf`. `internal/github/webdiff/validate.go` validates complete hunk rows and unchanged gaps. Accepted scraped patches carry `github_web_v2` provenance; legacy evidence is invalidated through persistence and search rather than treated as newly verified. |
 
@@ -404,12 +405,14 @@ agent-only changes.
 
 ### Checks after integrating main
 
-On 2026-11-11, after merging `0631fdf`, the refreshed nine roles passed the
-tracked-path checker with 57 exact file-qualified executable anchors. All 14
+On 2026-11-11, after merging `9472092`, the refreshed nine roles passed the
+tracked-path checker with 59 exact file-qualified executable anchors. All 15
 temporary-Git-repository fixture tests and `go vet ./scripts` passed, using
 Python 3.14.10 and Go 1.27.3-X:nodwarf5 on Linux/amd64. The five existing
 `TestTruncateEncodings` regressions also passed offline with an isolated tokenizer
-cache. Application source, dependencies and vendor files match that main revision.
+cache. Focused credential-precedence, fake-CLI lookup and local-readiness tests
+passed after the fallback restoration; no live credentials were read. Application
+source, dependencies and vendor files match that main revision.
 This updates source/anchor evidence; it does not rerun the native-agent pilot or
 establish application-wide, live-authentication or native-model behavior.
 
