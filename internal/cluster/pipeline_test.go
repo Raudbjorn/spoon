@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -756,6 +758,37 @@ func TestRunPipeline_ZeroValueOptionDefaults(t *testing.T) {
 	}
 }
 
+func TestRunPipeline_ExplicitZeroEpsilon(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	// Reuse one cache location: explicit zero must not reuse the default's clusters.
+	for _, explicit := range []bool{false, true, false} {
+		forks := []EnrichedFork{
+			makePipelineFork("o/a", 3, []string{"Alpha/x.go"}, 90),
+			makePipelineFork("o/b", 3, []string{"Beta/x.go"}, 85),
+			makePipelineFork("o/c", 3, []string{"Gamma/x.go"}, 80),
+		}
+		skip, err := RunPipeline(context.Background(), PipelineOptions{
+			Enabled: true, MinimumCandidates: 1, EpsilonSet: explicit,
+			Embedder: pipelineStubEmbedder{},
+		}, PipelineInputs{
+			Provider: "github", UpstreamOwner: "up", UpstreamRepo: "stream",
+			Upstream: parentDataFixture(), Forks: forks,
+		}, nil)
+		if err != nil || skip != nil {
+			t.Fatalf("explicit zero=%v: err=%v skip=%+v", explicit, err, skip)
+		}
+		want := "c0"
+		if explicit {
+			want = "noise"
+		}
+		for _, fork := range forks {
+			if fork.Heat.ClusterID != want {
+				t.Errorf("explicit zero=%v: %s cluster=%q, want %q", explicit, fork.T1.ID, fork.Heat.ClusterID, want)
+			}
+		}
+	}
+}
+
 // failingEmbedder succeeds at construction and fails at embed time — the shape
 // of a corrupt model_optimized.onnx or an ONNX allocation failure.
 type failingEmbedder struct{ calls int }
@@ -835,5 +868,25 @@ func TestPipeline_CancelledContextDoesNotFallBack(t *testing.T) {
 	var buf bytes.Buffer
 	if _, err := RunPipeline(ctx, opts, inputs, &buf); err == nil && strings.Contains(buf.String(), "falling back to lexical") {
 		t.Errorf("cancelled run re-embedded lexically instead of bailing\nlog: %s", buf.String())
+	}
+}
+
+// The archive must match the SHA used to key the resulting MDG cache.
+func TestLoadOrComputeMDGRequestsPinnedArchive(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	want := errors.New("stop after resolving snapshot")
+	called := false
+	_, ok, err := loadOrComputeMDG(context.Background(), PipelineOptions{CentralityHeadSHA: "deadbeef"}, PipelineInputs{
+		Provider: "github", UpstreamOwner: "owner", UpstreamRepo: "repo",
+		ArchiveLink: func(ctx context.Context, owner, repo, ref string) (*url.URL, error) {
+			called = true
+			if owner != "owner" || repo != "repo" || ref != "deadbeef" {
+				t.Fatalf("unexpected snapshot: %s/%s@%s", owner, repo, ref)
+			}
+			return nil, want
+		},
+	}, io.Discard)
+	if !called || ok || !errors.Is(err, want) {
+		t.Fatalf("called=%v ok=%v err=%v", called, ok, err)
 	}
 }

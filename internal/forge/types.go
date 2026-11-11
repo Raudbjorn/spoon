@@ -305,6 +305,7 @@ type T2Data struct {
 	FeatureCommitRatio float64 // fraction of non-merge, non-sync commits
 	IsBranchWork       bool    // true when significant work is on a non-default branch
 	ActiveBranch       string  // non-empty when IsBranchWork == true
+	ComparedBranch     string  // branch represented by this comparison, including the default branch
 	Upstreamed         bool    // true when the active branch tip heads a merged upstream PR (work already integrated)
 	UpstreamedPR       int     // the merged upstream PR number when Upstreamed == true
 	BaseSHA            string  // merge-base commit used for the comparison

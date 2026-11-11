@@ -27,8 +27,13 @@ func TestConfigValidate(t *testing.T) {
 	}{
 		{name: "valid", mutate: func(*Config) {}},
 		{
-			name:    "zero epsilon",
-			mutate:  func(c *Config) { c.Epsilon = 0 },
+			// Zero is a valid explicit cutoff; defaults are resolved before validation.
+			name:   "zero epsilon",
+			mutate: func(c *Config) { c.Epsilon = 0 },
+		},
+		{
+			name:    "negative epsilon",
+			mutate:  func(c *Config) { c.Epsilon = -0.1 },
 			wantErr: "epsilon",
 		},
 		{

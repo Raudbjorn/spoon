@@ -4,7 +4,10 @@ _post() {
 ==> spoon and spn installed to /usr/bin
 
 ==> Authenticate before use:
-      gh auth login        (GitHub)
+      spoon auth login     (GitHub; requires SPOON_OAUTH_CLIENT_ID and
+                            SPOON_OAUTH_CLIENT_SECRET in the environment;
+                            see README for OAuth callback setup)
+      or export GH_TOKEN / GITHUB_TOKEN
       glab auth login      (GitLab, optional)
 
 ==> spn agent skills installed to:

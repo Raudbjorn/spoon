@@ -2,14 +2,62 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/svnbjrn/spoon/internal/forge"
+	"github.com/svnbjrn/spoon/internal/store"
 )
+
+type missingProbeFake struct {
+	err    error
+	probed []forge.T1Data
+}
+
+func (f *missingProbeFake) BatchCompare(context.Context, []forge.T1Data, map[string]*forge.T2Data, float64) (map[string]forge.ForkDivergence, forge.BatchStats, error) {
+	return map[string]forge.ForkDivergence{"resolved": {Resolved: true}}, forge.BatchStats{Queries: 1}, f.err
+}
+
+func (f *missingProbeFake) MissingRepos(_ context.Context, forks []forge.T1Data) (map[string]bool, error) {
+	f.probed = append(f.probed, forks...)
+	return map[string]bool{"unresolved": true}, nil
+}
+
+func TestBatchDivergenceCmd_ReserveStopsMissingRepoProbes(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		err       error
+		wantProbe bool
+	}{
+		{"reserve", forge.ErrRateReserve, false},
+		{"wrapped reserve", fmt.Errorf("phase A: %w", forge.ErrRateReserve), false},
+		{"partial result", nil, true},
+		{"other failure", errors.New("lookup failed"), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &missingProbeFake{err: tc.err}
+			msg := batchDivergenceCmd(context.Background(), fake, []enrichEntry{
+				{fork: forge.T1Data{ID: "resolved"}},
+				{fork: forge.T1Data{ID: "unresolved"}},
+			})().(batchDivergenceMsg)
+			if !errors.Is(msg.err, tc.err) || msg.stats.Queries != 1 || !msg.divergence["resolved"].Resolved {
+				t.Fatalf("batch evidence lost: %+v", msg)
+			}
+			if tc.wantProbe {
+				if len(fake.probed) != 1 || fake.probed[0].ID != "unresolved" || !msg.missing["unresolved"] {
+					t.Fatalf("probed=%v missing=%v; want only the unresolved fork", fake.probed, msg.missing)
+				}
+			} else if len(fake.probed) != 0 || len(msg.missing) != 0 {
+				t.Fatalf("reserve must stop probes: probed=%v missing=%v", fake.probed, msg.missing)
+			}
+		})
+	}
+}
 
 // orderFakeForge records the order Compare is called in.
 type orderFakeForge struct {
@@ -186,15 +234,19 @@ func TestQueuedCompares_CancelledPassReportsEveryFork(t *testing.T) {
 }
 
 // runBatch executes cmd and, recursively, every command in a tea.BatchMsg.
-func runBatch(cmd tea.Cmd) {
+func runBatch(cmd tea.Cmd) []tea.Msg {
 	if cmd == nil {
-		return
+		return nil
 	}
-	if batch, ok := cmd().(tea.BatchMsg); ok {
+	msg := cmd()
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		var messages []tea.Msg
 		for _, c := range batch {
-			runBatch(c)
+			messages = append(messages, runBatch(c)...)
 		}
+		return messages
 	}
+	return []tea.Msg{msg}
 }
 
 // A fork whose repository no longer exists is settled without a compare and
@@ -252,7 +304,7 @@ type batchFake struct {
 	chunks [][]string
 }
 
-func (f *batchFake) BatchCompare(_ context.Context, forks []forge.T1Data) (map[string]forge.ForkDivergence, forge.BatchStats, error) {
+func (f *batchFake) BatchCompare(_ context.Context, forks []forge.T1Data, _ map[string]*forge.T2Data, _ float64) (map[string]forge.ForkDivergence, forge.BatchStats, error) {
 	ids := make([]string, len(forks))
 	div := make(map[string]forge.ForkDivergence, len(forks))
 	for i, fk := range forks {
@@ -377,5 +429,163 @@ func TestNextBatchChunk_BelowReserveSkipsBatch(t *testing.T) {
 	}
 	if len(m.batchPending) != 0 {
 		t.Errorf("batchPending = %d, want drained", len(m.batchPending))
+	}
+}
+
+// A cache hit must still join the count batch and persist only its new scalar.
+func TestCachedBatchRefreshPersistsWithoutReplacingPatches(t *testing.T) {
+	db, raw := documentStore(t)
+	fk := tierTestFork()
+	fk.PushedAt = time.Now().UTC().Truncate(time.Second)
+	cached := forge.T2Data{Performed: true, ComparedBranch: "main", HeadSHA: "head", AheadCount: 2, BehindCount: 1,
+		Diffs: []forge.FileDiff{{Path: "keep.go", Patch: "keep patch"}}}
+	repo := store.RepoRecord{Provider: "github", Host: "github.com", Owner: "up", Name: "repo"}
+	if err := db.UpsertSnapshot(context.Background(), store.SnapshotFromForge(repo, fk, &cached, 1, 2, time.Now())); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := db.LoadRepoSnapshot(context.Background(), "github", "github.com", "up", "repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &cachedBatchFake{batchFake: batchFake{orderFakeForge: orderFakeForge{tierFakeForge: tierFakeForge{headroom: 1}}}, divergence: map[string]forge.ForkDivergence{
+		fk.ID: {Resolved: true, CountsOnly: true, Default: forge.BranchDivergence{Name: "main", TipSHA: "head", AheadBy: 2, BehindBy: 9}},
+	}}
+	m := movementModel(1)
+	m.db, m.cached, m.provider = db, snap, fake
+	m.auth = forge.AuthInfo{Provider: forge.ProviderGitHub, Host: "github.com"}
+	m.parent = &forge.ParentData{FullName: "up/repo"}
+	m.forks[0].Fork = fk
+	m.applyCachedCompares(snap)
+	cmd := m.startEnrichment()
+	if cmd == nil {
+		t.Fatal("cached fork was omitted from enrichment")
+	}
+	t.Cleanup(m.cancelEnrichment)
+	var msg *batchDivergenceMsg
+	for _, c := range cmd().(tea.BatchMsg) {
+		if result, ok := c().(batchDivergenceMsg); ok {
+			msg = &result
+		}
+	}
+	if msg == nil || fake.cached[fk.ID] == nil {
+		t.Fatal("cache identity did not reach the batch")
+	}
+	m.handleBatchDivergence(*msg)
+	m.processPendingUpdates()
+	if m.errMsg != "" {
+		t.Fatalf("persistence failed: %s", m.errMsg)
+	}
+	if len(fake.order) != 0 {
+		t.Fatalf("cached refresh fetched REST comparison: %v", fake.order)
+	}
+	if m.forks[0].T2.BehindCount != 9 || m.forks[0].T2.AheadCount != 2 {
+		t.Fatalf("updated T2: %+v", m.forks[0].T2)
+	}
+	if snap.ValidT2(fk).BehindCount != 1 {
+		t.Fatal("shared cache pointer was mutated")
+	}
+	reloaded, err := db.LoadRepoSnapshot(context.Background(), "github", "github.com", "up", "repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reloaded.ValidT2(fk); got == nil || got.BehindCount != 9 {
+		t.Fatalf("reloaded T2: %+v", got)
+	}
+	var patch string
+	if err := raw.QueryRow("SELECT patch FROM compare_files WHERE path='keep.go'").Scan(&patch); err != nil {
+		t.Fatal(err)
+	}
+	if patch != "keep patch" {
+		t.Fatalf("stored patch replaced: %q", patch)
+	}
+}
+
+type cachedBatchFake struct {
+	batchFake
+	cached     map[string]*forge.T2Data
+	divergence map[string]forge.ForkDivergence
+}
+
+func (f *cachedBatchFake) BatchCompare(_ context.Context, _ []forge.T1Data, cached map[string]*forge.T2Data, _ float64) (map[string]forge.ForkDivergence, forge.BatchStats, error) {
+	f.cached = cached
+	return f.divergence, forge.BatchStats{Queries: 1}, nil
+}
+
+func TestCachedBatchInvalidationCannotReuseOldCompare(t *testing.T) {
+	for _, headroom := range []float64{1, 0} {
+		t.Run(fmt.Sprintf("headroom=%v", headroom), func(t *testing.T) {
+			fake := &orderFakeForge{tierFakeForge: tierFakeForge{headroom: headroom}}
+			m := queueTestModel(fake)
+			m.refresh = false
+			fk := tierTestFork()
+			cached := &forge.T2Data{Performed: true, ComparedBranch: "main", HeadSHA: "head", AheadCount: 2, BehindCount: 1}
+			db, _ := documentStore(t)
+			repo := store.RepoRecord{Provider: "github", Host: "github.com", Owner: "up", Name: "repo"}
+			if err := db.UpsertSnapshot(context.Background(), store.SnapshotFromForge(repo, fk, cached, 1, 2, time.Now())); err != nil {
+				t.Fatal(err)
+			}
+			m.db = db
+			m.auth = forge.AuthInfo{Provider: forge.ProviderGitHub, Host: "github.com"}
+			m.parent = &forge.ParentData{FullName: "up/repo"}
+			m.cached = store.NewRepoSnapshot([]store.CachedFork{{T1: fk, T2: cached}})
+			m.forks[0].Fork, m.forks[0].T2 = fk, cached
+			m.forks[0].Enriched = true
+			_, cmd := m.handleBatchDivergence(batchDivergenceMsg{ctx: m.enrichCtx,
+				order:      []enrichEntry{{fork: fk, cached: cached}},
+				divergence: map[string]forge.ForkDivergence{fk.ID: {Resolved: true, CountsOnly: true, Default: forge.BranchDivergence{Name: "main", TipSHA: "head", AheadBy: 0, BehindBy: 9}}},
+			})
+			if m.forks[0].T2 != nil || m.forks[0].Enriched {
+				t.Fatal("stale ahead evidence remains visible")
+			}
+			reloaded, err := db.LoadRepoSnapshot(context.Background(), "github", "github.com", "up", "repo")
+			if err != nil || reloaded.ValidT2(fk) != nil {
+				t.Fatalf("invalidated comparison survived reload: %v", err)
+			}
+			if cmd == nil {
+				t.Fatal("invalid cache did not dispatch replacement")
+			}
+			// Invalidation now refreshes coverage alongside the replacement compare.
+			var msg tier2ResultMsg
+			for _, result := range runBatch(cmd) {
+				if compare, ok := result.(tier2ResultMsg); ok {
+					msg = compare
+				}
+			}
+			if msg.forkID != fk.ID {
+				t.Fatal("invalid cache did not produce a replacement result")
+			}
+			if msg.fromCache {
+				t.Fatal("invalidated comparison was read from cache again")
+			}
+			if headroom == 0 && (!msg.budgetSkipped || len(fake.order) != 0) {
+				t.Fatal("replacement bypassed reserve")
+			}
+			if headroom == 1 && len(fake.order) != 1 {
+				t.Fatal("replacement comparison was not fetched")
+			}
+			if headroom == 0 {
+				m.pendingUpdates = append(m.pendingUpdates, msg)
+				m.processPendingUpdates()
+				fake.headroom = 1
+				cmd := m.reenrichPending()
+				if cmd == nil {
+					t.Fatal("reserve-skipped fork could not resume")
+				}
+				runBatch(cmd)
+				if len(fake.order) != 1 {
+					t.Fatal("resumed compare resurrected the invalid cache")
+				}
+			}
+		})
+	}
+}
+
+func TestCachedBatchUnavailableKeepsComparison(t *testing.T) {
+	fake := &orderFakeForge{tierFakeForge: tierFakeForge{headroom: 1}}
+	m := queueTestModel(fake)
+	cached := &forge.T2Data{Performed: true, ComparedBranch: "main", HeadSHA: "head", AheadCount: 2, BehindCount: 1}
+	_, cmd := m.handleBatchDivergence(batchDivergenceMsg{ctx: m.enrichCtx, order: []enrichEntry{{fork: tierTestFork(), cached: cached}}})
+	if cmd != nil || len(m.pendingUpdates) != 1 || !m.pendingUpdates[0].fromCache || m.pendingUpdates[0].cacheRefreshed {
+		t.Fatalf("unavailable batch should preserve cache: %+v", m.pendingUpdates)
 	}
 }

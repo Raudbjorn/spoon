@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/svnbjrn/spoon/internal/forge"
+	"github.com/svnbjrn/spoon/internal/github/webdiff"
 )
 
 // A capped commit list ends before the fork tip. Its last commit cannot be
@@ -58,6 +59,7 @@ func TestApplyWebDiffPatchesDiscardsUntrustedScrape(t *testing.T) {
 	}{
 		{name: "truncated pagination", truncated: true},
 		{name: "fetch error", webErr: errors.New("GitHub web diff returned HTTP 500")},
+		{name: "scrape deadline", webErr: context.DeadlineExceeded},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t2 := forge.T2Data{Diffs: []forge.FileDiff{{Path: "a.go", Patch: ""}}}
@@ -81,9 +83,10 @@ func TestApplyWebDiffPatchesFillsOnlyEmptyPatches(t *testing.T) {
 		{Path: "b.go", Patch: "-already from compare\n"},
 		{Path: "c.go", Patch: ""},
 	}}
-	applyWebDiffPatches(&t2, map[string]string{"a.go": "+from web\n", "b.go": "+overwrite\n"}, false, nil)
+	// Web patches now need declared hunk ranges as evidence of context completeness.
+	applyWebDiffPatches(&t2, map[string]string{"a.go": "@@ -0,0 +1 @@\n+from web\n", "b.go": "+overwrite\n"}, false, nil)
 
-	if got := t2.Diffs[0].Patch; got != "+from web\n" {
+	if got := t2.Diffs[0].Patch; got != "@@ -0,0 +1 @@\n+from web\n" {
 		t.Errorf("a.go patch = %q, want the web-diff content", got)
 	}
 	if t2.Diffs[0].PatchSource != "github_web" {
@@ -111,7 +114,9 @@ func TestApplyWebDiffPatchesChecksRESTCounts(t *testing.T) {
 		{"missing additions", "+first\n-old\n", false},
 		{"missing deletions", "+first\n+second\n", false},
 		{"duplicate lines", "+first\n+second\n+duplicate\n-old\n", false},
-		{"complete", "+first\n context\n-old\n+second\n", true},
+		{"matching counts without hunks", "+first\n context\n-old\n+second\n", false},
+		// Hunk ranges must account for context as well as REST additions/deletions.
+		{"complete", "@@ -1,2 +1,3 @@\n+first\n context\n-old\n+second\n", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t2 := forge.T2Data{Diffs: []forge.FileDiff{{Path: "a.go", Additions: 2, Deletions: 1}}}
@@ -140,13 +145,14 @@ func TestApplyWebDiffPatchesKeepsCompleteSibling(t *testing.T) {
 	}})
 	applyWebDiffPatches(&t2, map[string]string{
 		"partial.go":  "+first\n",
-		"complete.go": "-old\n+new\n",
+		"complete.go": "@@ -1 +1 @@\n-old\n+new\n",
 		"rest.go":     "+overwrite\n",
 	}, false, nil)
 	if t2.Diffs[0].Patch != "" || t2.Diffs[0].PatchSource == "github_web" {
 		t.Fatalf("partial patch accepted: %+v", t2.Diffs[0])
 	}
-	if t2.Diffs[1].Patch != "-old\n+new\n" || t2.Diffs[1].PatchSource != "github_web" {
+	// The accepted sibling keeps its hunk header so completeness remains verifiable.
+	if t2.Diffs[1].Patch != "@@ -1 +1 @@\n-old\n+new\n" || t2.Diffs[1].PatchSource != "github_web" {
 		t.Fatalf("complete sibling lost: %+v", t2.Diffs[1])
 	}
 	if t2.Diffs[2].Patch != "+rest\n" || t2.Diffs[2].PatchSource != "compare_rest" {
@@ -154,6 +160,45 @@ func TestApplyWebDiffPatchesKeepsCompleteSibling(t *testing.T) {
 	}
 	if !strings.Contains(t2.PatchSkipReason, `"partial.go"`) {
 		t.Fatalf("missing partial-file diagnostic: %q", t2.PatchSkipReason)
+	}
+}
+
+func TestApplyWebDiffPatchesRequiresCompleteContext(t *testing.T) {
+	fixture := `<div data-path="context.go"></div><table>
+<tr><td class="blob-code blob-code-hunk">@@ -1,2 +1,2 @@</td></tr>
+<tr><td class="CONTEXT_CLASS">unchanged</td></tr>
+<tr><td class="blob-code blob-code-deletion">old</td></tr>
+<tr><td class="blob-code blob-code-addition">new</td></tr></table>
+<div data-path="sibling.go"></div><table>
+<tr><td class="blob-code blob-code-hunk">@@ -0,0 +1 @@</td></tr>
+<tr><td class="blob-code blob-code-addition">sibling</td></tr></table>`
+	for _, tc := range []struct {
+		name, contextClass string
+		complete           bool
+	}{
+		{"complete", "blob-code blob-code-context", true},
+		{"context markup drift", "diff-context-cell", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			patches, _, err := webdiff.ParseHTML(strings.NewReader(strings.ReplaceAll(fixture, "CONTEXT_CLASS", tc.contextClass)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t2 := forge.T2Data{Diffs: []forge.FileDiff{
+				{Path: "context.go", Additions: 1, Deletions: 1},
+				{Path: "sibling.go", Additions: 1},
+			}}
+			applyWebDiffPatches(&t2, patches, false, nil)
+			if accepted := t2.Diffs[0].PatchSource == "github_web"; accepted != tc.complete {
+				t.Fatalf("context patch accepted=%v, want %v: %+v", accepted, tc.complete, t2)
+			}
+			if !tc.complete && (t2.Diffs[0].Patch != "" || !strings.Contains(t2.PatchSkipReason, `"context.go"`)) {
+				t.Fatalf("incomplete context was not rejected with a diagnostic: %+v", t2)
+			}
+			if t2.Diffs[1].Patch != "@@ -0,0 +1 @@\n+sibling\n" || t2.Diffs[1].PatchSource != "github_web" {
+				t.Fatalf("complete sibling lost: %+v", t2.Diffs[1])
+			}
+		})
 	}
 }
 

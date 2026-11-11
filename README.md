@@ -42,12 +42,41 @@ Windows). `CGO_ENABLED=1` is the Go default; do not unset it.
 
 ## Auth
 
-- **GitHub**: `gh auth login` (uses the `gh` CLI's stored token). For the
-  round-robin dispatcher, add one or more PATs under `github.tokens` in the
-  config file (mode `0600`) — see the rate-limit note below.
+- **GitHub**: `spoon auth login` (native OAuth; requires the app credentials
+  and callback setup below), or set `GH_TOKEN` / `GITHUB_TOKEN`. For the
+  round-robin dispatcher, add one or more PATs under `github.tokens` — see the
+  token-storage and rate-limit notes below.
 - **GitLab**: `glab auth login`, or set `GITLAB_TOKEN`
 
 Unauthenticated requests work but hit much lower rate limits.
+
+**GitHub OAuth (`spn auth login` or `spoon auth login`)**: authorizes spoon through a GitHub OAuth app
+and saves the resulting token first in `github.tokens`, so reauthorizing with
+new scopes takes precedence over older tokens for the same account. Export
+`SPOON_OAUTH_CLIENT_ID` and `SPOON_OAUTH_CLIENT_SECRET` (environment only), run
+`spn auth login` (or `spoon auth login`), and open the URL it prints on stderr. The command listens on
+`127.0.0.1:8790` for the duration of the login; the app's registered redirect
+URI (`https://spoon.s8n.is/auth` by default, `SPOON_OAUTH_REDIRECT_URI` to
+change) must reach that port through a TLS proxy. `deploy/nginx-spoon.conf` is
+an example loopback-only vhost (replace the certificate paths), with a matching
+`spoon IN A 127.0.0.1` record in the `s8n.is` zone. The token is verified
+against `/user` before it is stored and is never printed. Tokens (from `auth login`,
+`spoon setup` or Settings) are stored in the OS keyring by default (Keychain,
+Secret Service/KWallet, Windows Credential Manager); the config file then holds
+only `keyring:<entry>` references. `SPOON_SECRET_STORE=file` keeps them inline in
+the 0600 config on the next save, as does a machine with no usable keyring (spoon warns).
+Existing keyring references remain readable under the file override; use
+`auth storage migrate --to file` to move them immediately. Tokens already inline
+are moved on the next run, preserving other JSON fields. Automatic migration
+refuses to overwrite tokens changed since loading. `auth login` requires a
+personal config; it refuses the machine-wide system layer.
+`spn auth storage status|test|migrate` inspects and moves them. Unset
+`SPOON_SECRET_STORE=file` before `auth storage migrate --to keyring`, including
+with `--dry-run`. Keyring calls time out after 20 seconds; a blocked backend
+remains serialized until it finishes, and rollback of a timed-out write is
+attempted before another call can enter (a failed rollback warns). `--scope` defaults to
+`public_repo`. Use `spoon auth login --scope repo` for the review-thread commands
+and private repositories. Spoon does not read credentials saved by `gh`.
 
 ### Acquisition contract
 
@@ -62,8 +91,8 @@ enabling it never changes what the local path does.
 ## Configuration
 
 spoon is **zero-configuration**: the first run detects what the host offers
-(gh/glab CLIs, token environment variables), writes a fully-populated default
-config to `~/.config/spoon/config.json`, and drops a `README.md` beside it
+(token environment variables and the optional GitLab `glab` CLI), writes a
+fully-populated default config to `~/.config/spoon/config.json`, and drops a `README.md` beside it
 documenting every field and `SPOON_*` environment variable. Everything is
 enabled by default; edit the file or re-run `spoon setup` to change things.
 Hosts without a home directory use `/etc/spoon/config.json` (which also serves
@@ -225,6 +254,10 @@ what the store retains. `--commit-files` implies both and attributes files
 to at most 100 commits per run by default; override with
 `--commit-file-budget N`.
 
+GitHub GraphQL queries and mutations use [`githubv4`](https://github.com/shurcooL/githubv4).
+Credentials come from tokens saved by `spoon auth login`, configured tokens, or
+`GH_TOKEN`/`GITHUB_TOKEN`.
+
 GitHub traffic is capped at 300 requests/minute by default. Set `--rpm`,
 `SPOON_GITHUB_RPM`, or `github.requestsPerMinute` (maximum 900). Configured
 PATs are probed at startup and round-robin only across distinct GitHub
@@ -236,13 +269,20 @@ mode `0600`.
 `--web-diff` is an explicitly unstable HTML fallback for missing REST patch
 text. It reads a cookie only from `SPOON_GH_COOKIE`, never persists it, and is
 not a supported GitHub API. REST metadata remains authoritative if the HTML
-adapter fails. Each scrape is limited to 512 pages, 16 MiB per page, and 128 MiB
-total. Failed or stalled pagination discards the web patches; individual patches
-must also match REST addition/deletion counts before they are accepted. A capped
-or unknown commit list cannot supply a verified head SHA for this fallback.
-Rejected files retain all count-mismatch diagnostics in `patch_skipped_reason`
-in detailed CLI output. These checks do not repair patches already cached by
-older versions.
+adapter fails. Each scrape is limited to two minutes (including request pacing),
+512 pages, 16 MiB per page, and 128 MiB total. Failed, stalled, or timed-out
+pagination discards the web patches. Individual patches must contain complete
+declared hunks, including context rows, and match REST addition/deletion counts
+before they are accepted. A capped or unknown commit list cannot supply a
+verified head SHA for this fallback. Rejected files retain their diagnostics in
+`patch_skipped_reason` in detailed CLI output; complete sibling patches remain
+usable.
+
+The version-7 store migration invalidates comparisons containing older
+`github_web` patches and removes their derived search and clustering data. T1
+metadata and REST patch payloads are retained. Affected comparison content must
+be fetched and indexed again; newly validated web patches survive later opens
+and schema repairs.
 
 With `--touching` and only literal paths, `spn` also turns on an anonymous,
 best-effort lookup against GitHub's undocumented tree-commit-info page to
@@ -474,7 +514,9 @@ always clusters with this lexical engine — semantic search and persistence liv
 in the `spn` agent CLI. Clusters get deterministic heuristic labels (dominant
 directory prefix + the most discriminative commit/path tokens). Tune with
 `--cluster-epsilon` / `--cluster-min-size`, cap the embedded set with
-`--cluster-top`, or disable with `--no-cluster`.
+`--cluster-top`, or disable with `--no-cluster`. An explicit `--cluster-epsilon 0`
+uses a zero cosine-distance cutoff (identical vectors may still cluster);
+omitting the flag retains the default cutoff.
 
 `--query` relevance is scored over each fork's change digest — by the built-in
 lexical scorer with no extra runtime, or by the Voyage cross-encoder when a key
@@ -571,7 +613,7 @@ internal/
   store/            Global libsql store: repo/fork/compare cache + embeddings
   cluster/          Clustering, novelty, heuristic labels, sibling search
   topics/           Topic-mode selection (best-of-topic scoring, picker UI)
-  setupcheck/       Pre-flight detection (gh/glab CLIs, ONNX runtime, model cache)
+  setupcheck/       Pre-flight detection (tokens, glab CLI, ONNX runtime, model cache)
   repo/             Shared repo-key derivation + cache helpers
   eval/             Embedding evaluation harnesses (HCA, momentum, schema)
   tui/              Bubbletea TUI (model, view, embed run, edit overlay, keymap)

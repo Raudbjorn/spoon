@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/svnbjrn/spoon/internal/secrets"
 )
 
 func TestEnsureDefault_firstRunWritesConfigAndReadme(t *testing.T) {
@@ -38,7 +40,8 @@ func TestEnsureDefault_firstRunWritesConfigAndReadme(t *testing.T) {
 	if rerr != nil {
 		t.Fatalf("README not written: %v", rerr)
 	}
-	for _, want := range []string{"SPOON_NO_CONFIG", "TURSO_DATABASE_URL", "embedder.backend", "spoon setup"} {
+	// Generated instructions must describe native OAuth and its required credentials.
+	for _, want := range []string{"SPOON_NO_CONFIG", "TURSO_DATABASE_URL", "embedder.backend", "spoon setup", "spoon auth login", "SPOON_OAUTH_CLIENT_ID", "SPOON_OAUTH_CLIENT_SECRET"} {
 		if !strings.Contains(string(readme), want) {
 			t.Errorf("README missing %q", want)
 		}
@@ -145,5 +148,48 @@ func TestLoad_legacyOpenVINOBackendNormalizes(t *testing.T) {
 	}
 	if cfg.Embedder.Model != "fast-bge-small-en-v1.5" {
 		t.Errorf("non-backend embedder fields must survive normalization, got %q", cfg.Embedder.Model)
+	}
+}
+
+func TestDetectHostUsesNativeGitHubAuthGuidance(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("GITHUB_TOKEN", "")
+	guidance := strings.Join(detectHost(), "\n")
+	if !strings.Contains(guidance, "spoon auth login") || !strings.Contains(guidance, "SPOON_OAUTH_CLIENT_ID") || !strings.Contains(guidance, "SPOON_OAUTH_CLIENT_SECRET") {
+		t.Errorf("missing native OAuth guidance: %s", guidance)
+	}
+	if strings.Contains(guidance, "gh CLI") || strings.Contains(guidance, "gh auth") || strings.Contains(guidance, "cli.github.com") {
+		t.Errorf("first run still requires gh: %s", guidance)
+	}
+}
+
+func TestBootstrapSnapshotLeavesInlineTokensAlone(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("SPOON_NO_CONFIG", "")
+	t.Setenv("SPOON_SECRET_STORE", "")
+	path, err := DefaultPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	func() {
+		defer UseSecretStore(nil)()
+		if err := Save(path, tokenConfig(tokA)); err != nil {
+			t.Fatal(err)
+		}
+	}()
+	mem := secrets.NewMemoryStore()
+	defer UseSecretStore(mem)()
+
+	snap := BootstrapSnapshot(&bytes.Buffer{})
+	if TokenStorage(snap.Config) != "file" || !strings.Contains(readFile(t, path), tokA) {
+		t.Fatal("BootstrapSnapshot migrated tokens; auth storage needs the pre-migration state")
+	}
+	if names, _ := mem.Names(); len(names) != 0 {
+		t.Fatalf("snapshot wrote keyring entries: %v", names)
+	}
+	if got := Bootstrap(&bytes.Buffer{}); TokenStorage(got.Config) != "keyring" {
+		t.Errorf("Bootstrap storage = %q, want keyring (startup migration)", TokenStorage(got.Config))
 	}
 }

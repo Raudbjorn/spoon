@@ -9,6 +9,7 @@ import (
 
 	"github.com/svnbjrn/spoon/internal/forge"
 	"github.com/svnbjrn/spoon/internal/github/treecommitinfo"
+	"github.com/svnbjrn/spoon/internal/github/webdiff"
 	"github.com/svnbjrn/spoon/internal/heat"
 )
 
@@ -45,7 +46,7 @@ func (p *GHProvider) Auth(_ context.Context) (forge.AuthInfo, error) {
 	conc := 2
 	rl := 60
 	if p.status.Authenticated {
-		tier = forge.AuthCLI
+		tier = forge.AuthToken
 		conc = 10
 		rl = 5000
 	}
@@ -106,7 +107,7 @@ var _ forge.BranchDivergenceProvider = (*GHProvider)(nil)
 // Returns forge.ErrBatchCompareUnavailable when the client has no working
 // GraphQL backend, so callers fall back to the REST path silently rather
 // than treating it as a hard failure.
-func (p *GHProvider) BatchCompare(ctx context.Context, forks []forge.T1Data) (map[string]forge.ForkDivergence, forge.BatchStats, error) {
+func (p *GHProvider) BatchCompare(ctx context.Context, forks []forge.T1Data, cached map[string]*forge.T2Data, minHeadroom float64) (map[string]forge.ForkDivergence, forge.BatchStats, error) {
 	if !p.client.HasGraphQL() {
 		return nil, forge.BatchStats{}, forge.ErrBatchCompareUnavailable
 	}
@@ -118,6 +119,20 @@ func (p *GHProvider) BatchCompare(ctx context.Context, forks []forge.T1Data) (ma
 
 	targets := make([]BatchTarget, 0, len(forks))
 	for _, f := range forks {
+		if t2 := cached[f.ID]; t2 != nil {
+			branch := t2.ComparedBranch
+			if branch == "" && t2.IsBranchWork {
+				branch = t2.ActiveBranch
+			}
+			// Old caches without branch provenance cannot safely use today's default.
+			if branch != "" {
+				targets = append(targets, BatchTarget{
+					ID: f.ID, Owner: f.Owner, Name: f.Name,
+					DefaultBranch: branch, CountsOnly: true,
+				})
+			}
+			continue
+		}
 		// Inherited upstream branches are not fork work; pairing them would
 		// report upstream's own unmerged commits as this fork's divergence.
 		branches := forge.PostForkBranches(f)
@@ -139,7 +154,7 @@ func (p *GHProvider) BatchCompare(ctx context.Context, forks []forge.T1Data) (ma
 			Sides:              sides,
 		})
 	}
-	return p.client.FetchBatchDivergence(ctx, sourceOwner, sourceRepo, sourceDefaultBranch, targets)
+	return p.client.FetchBatchDivergence(ctx, sourceOwner, sourceRepo, sourceDefaultBranch, targets, minHeadroom)
 }
 
 var _ forge.BatchCompareProvider = (*GHProvider)(nil)
@@ -485,6 +500,7 @@ var _ forge.ResolvedCompareProvider = (*GHProvider)(nil)
 // produced; from here on they finish identically.
 func (p *GHProvider) finishT2(ctx context.Context, sourceOwner, sourceRepo string, scan BranchScan, fork forge.T1Data) forge.T2Data {
 	t2 := compareToT2(scan.Compare)
+	t2.ComparedBranch = scan.Branch
 
 	if t2.FilesTruncated {
 		p.fillTruncatedFiles(ctx, sourceOwner, sourceRepo, scan, fork, &t2)
@@ -566,6 +582,13 @@ func applyWebDiffPatches(t2 *forge.T2Data, patches map[string]string, truncated 
 				continue
 			}
 			if patch != "" {
+				if err := webdiff.ValidatePatch(patch); err != nil {
+					if skipReasons.Len() > 0 {
+						skipReasons.WriteString("; ")
+					}
+					fmt.Fprintf(&skipReasons, "web diff incomplete for %q: %v", diff.Path, err)
+					continue
+				}
 				diff.Patch = patch
 				diff.PatchSource = "github_web"
 			}

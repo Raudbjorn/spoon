@@ -17,9 +17,10 @@ import (
 )
 
 const (
-	maxResponseBytes = 16 << 20  // per page
-	maxTotalBytes    = 128 << 20 // cumulative across all pages
-	maxPages         = 512       // bound the pagination loop
+	maxResponseBytes = 16 << 20        // per page
+	maxTotalBytes    = 128 << 20       // cumulative across all pages
+	maxPages         = 512             // bound the pagination loop
+	maxFetchDuration = 2 * time.Minute // includes pacing, the API gate, and every page
 )
 
 type FilePatch struct {
@@ -28,17 +29,19 @@ type FilePatch struct {
 }
 
 type Client struct {
-	http     *http.Client
-	cookie   string
-	gate     func(context.Context) error
-	maxPages int
-	mu       sync.Mutex
-	next     time.Time
+	http         *http.Client
+	cookie       string
+	gate         func(context.Context) error
+	maxPages     int
+	fetchTimeout time.Duration
+	mu           sync.Mutex
+	next         time.Time
 }
 
 func New(cookie string, gate func(context.Context) error) *Client {
 	return &Client{
-		maxPages: maxPages,
+		maxPages:     maxPages,
+		fetchTimeout: maxFetchDuration,
 		http: &http.Client{
 			Timeout: 30 * time.Second,
 			// Do not auto-follow redirects: the session cookie is a sensitive
@@ -106,6 +109,14 @@ func (c *Client) wait(ctx context.Context) error {
 // truncation: true means a later page could not be parsed or pagination stopped
 // advancing, so the caller must not persist the collected patches as whole diffs.
 func (c *Client) Fetch(ctx context.Context, owner, repo, base, head string) (map[string]string, bool, error) {
+	// One operation-wide budget also bounds queued pacing slots and the gate;
+	// http.Client.Timeout only covers an individual HTTP exchange.
+	timeout := c.fetchTimeout
+	if timeout <= 0 {
+		timeout = maxFetchDuration
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	if c.cookie == "" {
 		return nil, false, fmt.Errorf("SPOON_GH_COOKIE is empty")
 	}
@@ -155,6 +166,9 @@ func (c *Client) Fetch(ctx context.Context, owner, repo, base, head string) (map
 			return nil, false, fmt.Errorf("GitHub web diff exceeded %d total bytes", int64(maxTotalBytes))
 		}
 		patches, next, err := ParseHTML(bytes.NewReader(body))
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, false, ctxErr
+		}
 		if err != nil {
 			// A later page failed to parse. We cannot tell which files are
 			// complete and which had hunks spanning into the failed page, so
@@ -188,9 +202,14 @@ func (c *Client) Fetch(ctx context.Context, owner, repo, base, head string) (map
 	for path, b := range acc {
 		out[path] = b.String()
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
 	return out, truncated, nil
 }
 
+// ParseHTML extracts one page, which may contain only part of a file's hunks.
+// Callers must ValidatePatch after concatenating pages and before trusting a patch.
 func ParseHTML(r io.Reader) (map[string]string, int, error) {
 	root, err := html.Parse(r)
 	if err != nil {
@@ -212,8 +231,8 @@ func ParseHTML(r io.Reader) (map[string]string, int, error) {
 			if path := filePath(n); path != "" {
 				current = path
 			}
-			class := attr(n, "class")
-			if current != "" && n.Data == "td" && strings.Contains(class, "blob-code") {
+			classes := strings.Fields(attr(n, "class"))
+			if current != "" && n.Data == "td" && slices.Contains(classes, "blob-code") {
 				line := strings.TrimSuffix(text(n), "\n")
 				b := acc[current]
 				if b == nil {
@@ -222,12 +241,23 @@ func ParseHTML(r io.Reader) (map[string]string, int, error) {
 				}
 				var prefix byte
 				switch {
-				case strings.Contains(class, "addition"):
+				case slices.Contains(classes, "blob-code-addition"):
 					prefix = '+'
-				case strings.Contains(class, "deletion"):
+				case slices.Contains(classes, "blob-code-deletion"):
 					prefix = '-'
-				case strings.Contains(class, "context"):
+				case slices.Contains(classes, "blob-code-context"):
 					prefix = ' '
+				case slices.Contains(classes, "blob-code-hunk"):
+					// Retain declared old/new row counts so missing context is
+					// detectable even when the REST +/- totals still agree.
+					line = strings.TrimSpace(line)
+					if _, _, err := parseHunkHeader(line); err != nil {
+						return nil, -1, err
+					}
+					b.WriteString(line)
+					b.WriteByte('\n')
+				default:
+					return nil, -1, fmt.Errorf("GitHub web diff contains an unrecognized code row")
 				}
 				if prefix != 0 {
 					b.WriteByte(prefix)
@@ -236,7 +266,9 @@ func ParseHTML(r io.Reader) (map[string]string, int, error) {
 				}
 			}
 			if n.Data == "a" && !nextAuthoritative {
-				rel := slices.Contains(strings.Fields(attr(n, "rel")), "next")
+				rel := slices.ContainsFunc(strings.Fields(attr(n, "rel")), func(token string) bool {
+					return strings.EqualFold(token, "next")
+				})
 				// Text-only "Next" links need a valid cursor to distinguish them
 				// from unrelated navigation; rel="next" remains authoritative.
 				if rel || (next < 0 && strings.EqualFold(strings.TrimSpace(text(n)), "next")) {

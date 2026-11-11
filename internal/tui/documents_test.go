@@ -4,12 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	_ "github.com/tursodatabase/go-libsql"
 
 	"github.com/svnbjrn/spoon/internal/forge"
+	"github.com/svnbjrn/spoon/internal/semantic"
 	"github.com/svnbjrn/spoon/internal/store"
 )
 
@@ -104,5 +106,106 @@ func TestSnapshotForkKeyMatchesWhatTheStoreWrites(t *testing.T) {
 	}
 	if want := snap.ForkKey(); got != want {
 		t.Fatalf("store wrote fork_key %q, Snapshot.ForkKey() reports %q", got, want)
+	}
+}
+
+func TestCachedInvalidationReplacesSearchDocumentBeforeAutoIndex(t *testing.T) {
+	ctx := context.Background()
+	db, raw := documentStore(t)
+	fake := &orderFakeForge{tierFakeForge: tierFakeForge{headroom: 0}}
+	m := queueTestModel(fake)
+	m.db = db
+	m.refresh = false
+	m.auth = forge.AuthInfo{Provider: forge.ProviderGitHub, Host: "github.com"}
+	m.parent = &forge.ParentData{FullName: "up/repo"}
+	m.forks = m.forks[:1]
+	m.enriching, m.enrichTotal = true, 1
+	m.embedModels = embedModels{fastEmbed: "test:local", voyage: "test:remote"}
+	fk := tierTestFork()
+	fk.Description = "current repository metadata"
+	cached := &forge.T2Data{Performed: true, ComparedBranch: "main", HeadSHA: "head", AheadCount: 2,
+		Diffs:   []forge.FileDiff{{Path: "obsolete.go", Patch: "+obsolete implementation"}},
+		Commits: []forge.AheadCommit{{SHA: "head", Message: "obsolete feature"}},
+	}
+	m.forks[0].Fork, m.forks[0].T2, m.forks[0].Enriched = fk, cached, true
+	m.cached = store.NewRepoSnapshot([]store.CachedFork{{T1: fk, T2: cached}})
+	repo := store.RepoRecord{Provider: "github", Host: "github.com", Owner: "up", Name: "repo"}
+	snap := store.SnapshotFromForge(repo, fk, cached, 1, 2, time.Now())
+	attachDocument(&snap, &m.forks[0])
+	if !strings.Contains(snap.Document.Body, "obsolete") {
+		t.Fatal("fixture must contain compare evidence in its document")
+	}
+	if err := db.UpsertSnapshot(ctx, snap); err != nil {
+		t.Fatal(err)
+	}
+	models := []string{m.embedModels.fastEmbed, m.embedModels.voyage}
+	for _, model := range models {
+		if err := db.UpsertEmbeddings(ctx, []store.EmbeddingRecord{{DocumentID: snap.Document.DocumentID,
+			Model: model, Dim: 1, Vector: semantic.EncodeVector([]float32{1}), ContentHash: snap.Document.ContentHash,
+		}}); err != nil {
+			t.Fatal(err)
+		}
+		if rows, err := db.SearchRows(ctx, model, "up", "repo"); err != nil || len(rows) != 1 {
+			t.Fatalf("seeded %s vector is not searchable: rows=%d err=%v", model, len(rows), err)
+		}
+	}
+
+	_, cmd := m.handleBatchDivergence(batchDivergenceMsg{ctx: m.enrichCtx,
+		order: []enrichEntry{{fork: fk, cached: cached}},
+		divergence: map[string]forge.ForkDivergence{fk.ID: {Resolved: true, CountsOnly: true,
+			Default: forge.BranchDivergence{Name: "main", TipSHA: "head", AheadBy: 0}}},
+	})
+	want, _ := semantic.BuildDocument(snap.ForkKey(), fk, nil)
+	var body, hash string
+	if err := raw.QueryRowContext(ctx, "SELECT body, content_hash FROM documents WHERE document_id=?", snap.Document.DocumentID).Scan(&body, &hash); err != nil {
+		t.Fatal(err)
+	}
+	if body != want.Body || hash != want.ContentHash || hash == snap.Document.ContentHash || strings.Contains(body, "obsolete") {
+		t.Fatalf("invalidation left stale search evidence: body=%q hash=%q", body, hash)
+	}
+	for _, model := range models {
+		if rows, err := db.SearchRows(ctx, model, "up", "repo"); err != nil || len(rows) != 0 {
+			t.Fatalf("stale %s vector remains searchable: rows=%d err=%v", model, len(rows), err)
+		}
+	}
+
+	coverageRefreshed, reserveSkipped := false, false
+	for _, result := range runBatch(cmd) {
+		switch msg := result.(type) {
+		case embedCoverageMsg:
+			if msg.err != nil {
+				t.Fatal(msg.err)
+			}
+			for _, model := range models {
+				if !msg.coverage[snap.ForkKey()].Stale(model) {
+					t.Fatalf("coverage did not mark %s stale", model)
+				}
+			}
+			coverageRefreshed = true
+		case tier2ResultMsg:
+			reserveSkipped = msg.budgetSkipped
+			m.pendingUpdates = append(m.pendingUpdates, msg)
+		}
+	}
+	if !coverageRefreshed || !reserveSkipped || len(fake.order) != 0 {
+		t.Fatalf("coverage=%v reserveSkipped=%v compare calls=%v", coverageRefreshed, reserveSkipped, fake.order)
+	}
+
+	_, automatic := m.processPendingUpdates()
+	if !m.autoIndexDone || automatic == nil {
+		t.Fatal("reserve completion did not start the automatic indexing pass")
+	}
+	// The unresolved model probe prevents native/network work while the real
+	// automatic worker still persists and offers the final document to indexing.
+	for _, result := range runBatch(automatic) {
+		if done, ok := result.(embedRunDoneMsg); ok && done.err != nil {
+			t.Fatal(done.err)
+		}
+	}
+	for _, model := range models {
+		pending, err := db.PendingDocumentsFor(ctx, model, []string{snap.ForkKey()})
+		if err != nil || len(pending) != 1 || pending[0].Body != want.Body || pending[0].ContentHash != want.ContentHash {
+			t.Fatalf("auto-index input for %s: %+v, err=%v", model, pending, err)
+		}
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/svnbjrn/spoon/internal/config"
 	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/repo"
 )
@@ -114,13 +115,18 @@ func TestRepoCentrality_FullMDGFlag(t *testing.T) {
 	var sawMDG bool
 	prevMDG := repoMDGCentralityFn
 	defer func() { repoMDGCentralityFn = prevMDG }()
-	repoMDGCentralityFn = func(ctx context.Context, p, o, r string) (repo.Centrality, error) {
+	repoMDGCentralityFn = func(ctx context.Context, p, o, r string, effective config.EffectiveConfig) (repo.Centrality, error) {
 		sawMDG = true
+		// --full-mdg must receive the same saved OAuth credentials as other REST paths.
+		if effective.GitHub.Tokens.Value != "saved-oauth" {
+			t.Fatal("MDG lost effective credentials")
+		}
 		return repo.DirectoryCentrality{Provider: p, Owner: o, Repo: r}, nil
 	}
 
 	var stdout, stderr bytes.Buffer
-	exit := runRepoWith([]string{"centrality", "owner/repo", "--full-mdg"}, &stdout, &stderr)
+	effective := config.ResolveEffectiveConfig(nil, map[string]string{"github.tokens": "saved-oauth"}, nil)
+	exit := runRepoWithEffective([]string{"centrality", "owner/repo", "--full-mdg"}, &stdout, &stderr, effective)
 	if exit != 0 {
 		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
 	}

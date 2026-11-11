@@ -2,6 +2,7 @@ package webdiff
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"net/http"
@@ -10,13 +11,15 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // page renders a one-file diff whose "next" link points at start_entry=next.
 func pageHTML(path string, next int) string {
 	return fmt.Sprintf(`<html><body>
 <div class="js-file-header" data-path="%s"></div>
-<table><tr><td class="blob-code blob-code-addition">x()</td></tr></table>
+<table><tr><td class="blob-code blob-code-hunk">@@ -0,0 +1 @@</td></tr>
+<tr><td class="blob-code blob-code-addition">x()</td></tr></table>
 <a rel="next" href="?start_entry=%d">Next</a>
 </body></html>`, path, next)
 }
@@ -102,6 +105,10 @@ func TestParseHTMLPaginationLinkValidation(t *testing.T) {
 		{"text fallback before rel", `<a href="?start_entry=99">Next</a><a rel="next" href="?start_entry=25">More</a>`, 25, false},
 		{"next label", `<a href="?start_entry=25"> Next </a>`, 25, false},
 		{"rel tokens", `<a rel="nofollow next" href="?start_entry=25">More</a>`, 25, false},
+		{"uppercase rel", `<a rel="NEXT" href="?start_entry=25">Older</a>`, 25, false},
+		{"mixed rel tokens", `<a rel="NoFollow NeXt" href="?start_entry=25">More</a>`, 25, false},
+		{"mixed rel outranks text", `<a href="?start_entry=99">Next</a><a rel="NeXt" href="?start_entry=25">Older</a>`, 25, false},
+		{"invalid mixed rel", `<a rel="NoFollow NEXT" href="?start_entry=broken">Older</a>`, -1, true},
 		{"invalid URL", `<a rel="next" href="%zz">Next</a>`, -1, true},
 		{"missing cursor", `<a rel="next" href="?page=2">Next</a>`, -1, true},
 		{"invalid cursor", `<a rel="next" href="?start_entry=broken">Next</a>`, -1, true},
@@ -178,7 +185,7 @@ func TestFetchKeepsPatchesWhenTrailingPageHasNoDiffLines(t *testing.T) {
 	if truncated {
 		t.Fatal("truncated=true; an empty-but-valid trailing page must not discard the collected patches")
 	}
-	if got := patches["a.go"]; got != "+x()\n" {
+	if got := patches["a.go"]; got != "@@ -0,0 +1 @@\n+x()\n" {
 		t.Fatalf("a.go patch = %q, want the first page's patch retained", got)
 	}
 }
@@ -269,15 +276,77 @@ func TestParseHTMLAcceptsMixedTextAndBinaryFiles(t *testing.T) {
 func TestFetchAccumulatesFileAcrossPages(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("start_entry") == "0" {
-			fmt.Fprint(w, pageHTML("a.go", 1))
+			// The first page ends inside a hunk; validate after concatenation.
+			fmt.Fprint(w, strings.Replace(pageHTML("a.go", 1), "@@ -0,0 +1 @@", "@@ -1,2 +1,2 @@", 1))
 			return
 		}
-		fmt.Fprint(w, `<div data-path="a.go"></div><table><tr><td class="blob-code blob-code-deletion">old()</td></tr></table>`)
+		fmt.Fprint(w, `<div data-path="a.go"></div><table>
+<tr><td class="blob-code blob-code-deletion">old()</td></tr>
+<tr><td class="blob-code blob-code-context">kept()</td></tr></table>`)
 	}))
 	defer srv.Close()
 	patches, truncated, err := newTestClient(t, srv).Fetch(context.Background(), "o", "r", "b", "h")
-	if err != nil || truncated || patches["a.go"] != "+x()\n-old()\n" {
+	if err != nil || truncated || patches["a.go"] != "@@ -1,2 +1,2 @@\n+x()\n-old()\n kept()\n" {
 		t.Fatalf("complete continuation lost: patches=%v, truncated=%v, err=%v", patches, truncated, err)
+	}
+	if err := ValidatePatch(patches["a.go"]); err != nil {
+		t.Fatalf("complete cross-page hunk rejected: %v", err)
+	}
+}
+
+func TestFetchOperationDeadlineIncludesAllWaits(t *testing.T) {
+	for _, stage := range []string{"queued pacing", "pagination pacing", "gate", "http", "shorter caller deadline"} {
+		t.Run(stage, func(t *testing.T) {
+			var requests atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				if stage == "http" {
+					<-r.Context().Done()
+					return
+				}
+				fmt.Fprint(w, pageHTML("a.go", 1))
+			}))
+			defer srv.Close()
+			c := newTestClient(t, srv)
+			c.fetchTimeout = 50 * time.Millisecond
+			ctx := context.Background()
+			var parentDeadline, gateDeadline time.Time
+			if stage == "shorter caller deadline" {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, c.fetchTimeout)
+				defer cancel()
+				parentDeadline, _ = ctx.Deadline()
+				c.fetchTimeout = time.Hour
+			}
+			if stage == "queued pacing" {
+				c.next = time.Now().Add(time.Hour)
+			}
+			if stage == "gate" || stage == "shorter caller deadline" {
+				c.gate = func(ctx context.Context) error {
+					gateDeadline, _ = ctx.Deadline()
+					<-ctx.Done()
+					return ctx.Err()
+				}
+			}
+			started := time.Now()
+			patches, _, err := c.Fetch(ctx, "o", "r", "b", "h")
+			if !errors.Is(err, context.DeadlineExceeded) || patches != nil {
+				t.Fatalf("deadline did not discard incomplete work: patches=%v, err=%v", patches, err)
+			}
+			if time.Since(started) > 2*time.Second {
+				t.Fatal("fetch exceeded its overall deadline")
+			}
+			wantRequests := int32(0)
+			if stage == "http" || stage == "pagination pacing" {
+				wantRequests = 1
+			}
+			if requests.Load() != wantRequests {
+				t.Fatalf("requests=%d, want %d", requests.Load(), wantRequests)
+			}
+			if stage == "shorter caller deadline" && !gateDeadline.Equal(parentDeadline) {
+				t.Fatal("fetch extended the caller's shorter deadline")
+			}
+		})
 	}
 }
 
