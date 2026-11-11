@@ -13,7 +13,7 @@ import (
 )
 
 // Build the real released schema rather than opening today's schema and only
-// resetting its version stamp; this exercises every v6 -> v7 upgrade statement.
+// resetting its version stamp; this exercises the actual upgrade statements.
 func schemaV6TestStore(t *testing.T) *Store {
 	t.Helper()
 	return historicalSchemaTestStore(t, 6)
@@ -48,14 +48,24 @@ func historicalSchemaTestStore(t *testing.T, version int) *Store {
 }
 
 func TestWebDiffMigrationInvalidatesLegacyEvidence(t *testing.T) {
+	for _, version := range []int{6, 7} {
+		t.Run(fmt.Sprintf("published_v%d", version), func(t *testing.T) {
+			testWebDiffMigrationInvalidatesLegacyEvidence(t, version)
+		})
+	}
+}
+
+func testWebDiffMigrationInvalidatesLegacyEvidence(t *testing.T, version int) {
 	ctx := context.Background()
 	legacy := schemaV6TestStore(t)
 	now := time.Now().UTC().Truncate(time.Second)
 	fixtures := []struct {
 		name, repo            string
 		webCompare, webCommit bool
+		emptyHead             bool
 	}{
 		{name: "mixed", repo: "affected", webCompare: true},
+		{name: "empty-head", repo: "affected", webCompare: true, emptyHead: true},
 		{name: "rest-sibling", repo: "affected"},
 		{name: "commit-web", repo: "commit-affected", webCommit: true},
 		{name: "rest-only", repo: "unaffected"},
@@ -80,7 +90,15 @@ func TestWebDiffMigrationInvalidatesLegacyEvidence(t *testing.T) {
 			Commits: []forge.AheadCommit{{SHA: "head", Message: "preserved commit", Timestamp: now,
 				Files: []forge.FileDiff{{Path: "commit.go", Additions: 2, Patch: "+commit payload", PatchSource: commitSource}}}},
 		}
+		if fixture.emptyHead {
+			t2.HeadSHA = ""
+			t2.AheadCount = 2 // Truncated commits mean the stored head column is also empty.
+		}
 		snap := SnapshotFromForge(repo, t1, &t2, 8, 2, now)
+		if fixture.name == "rest-only" {
+			// A missing patch alone must not invalidate an authoritative REST T2.
+			snap.CompareFiles = append(snap.CompareFiles, FileRecord{Path: "missing.go"})
+		}
 		snap.Document = DocumentRecord{DocumentID: DocumentID(snap.ForkKey()), ContentHash: fixture.name, Body: "old evidence " + fixture.name, UpdatedAt: now}
 		if err := legacy.UpsertSnapshot(ctx, snap); err != nil {
 			t.Fatal(err)
@@ -118,6 +136,27 @@ func TestWebDiffMigrationInvalidatesLegacyEvidence(t *testing.T) {
 	if _, err := legacy.db.Exec("UPDATE clusters SET lineage_id='shared' WHERE repo_key=?", unaffectedRepo); err != nil {
 		t.Fatal(err)
 	}
+	if version == 7 {
+		// Execute published7, not merely its stamp: it erases the source marker
+		// before8 sees the database, while leaving the derived cluster caches.
+		for _, stmt := range schemaV7 {
+			if _, err := legacy.db.Exec(stmt); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := legacy.db.Exec("PRAGMA user_version=7"); err != nil {
+			t.Fatal(err)
+		}
+		var cleared int
+		if err := legacy.db.QueryRow(`SELECT COUNT(*) FROM forks f JOIN compare_files c ON c.fork_key=f.fork_key
+			WHERE f.t2_json='' AND f.t2_fetched_at='' AND c.patch IS NULL AND c.patch_source=''`).Scan(&cleared); err != nil || cleared != 2 {
+			t.Fatalf("published7 did not erase legacy provenance: count=%d err=%v", cleared, err)
+		}
+		var storedHead string
+		if err := legacy.db.QueryRow(`SELECT head_sha FROM forks WHERE fork_key=?`, snapshots[1].ForkKey()).Scan(&storedHead); err != nil || storedHead != "" {
+			t.Fatalf("empty-head fixture has stored head=%q err=%v", storedHead, err)
+		}
+	}
 	if err := legacy.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +165,6 @@ func TestWebDiffMigrationInvalidatesLegacyEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer current.Close()
-	var version int
 	if err := current.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != SchemaVersion {
 		t.Fatalf("upgrade version=%d err=%v", version, err)
 	}
@@ -213,6 +251,25 @@ func TestWebDiffMigrationInvalidatesLegacyEvidence(t *testing.T) {
 		Vector: []byte{0, 0, 128, 63}, ContentHash: fresh.Document.ContentHash, CreatedAt: now}}); err != nil {
 		t.Fatal(err)
 	}
+	// A still-invalidated fork can rebuild a T1-only document while its cleared
+	// compare rows remain. The one-time fallback must not erase this on repair.
+	metadata := SnapshotFromForge(snapshots[1].Repo, *snapshots[1].T1, nil, 8, 1, now)
+	metadata.Document = DocumentRecord{DocumentID: DocumentID(metadata.ForkKey()), ContentHash: "fresh-metadata",
+		Body: "fresh T1 metadata only", UpdatedAt: now}
+	if err := current.UpsertSnapshot(ctx, metadata); err != nil {
+		t.Fatal(err)
+	}
+	if err := current.UpsertEmbeddings(ctx, []EmbeddingRecord{{DocumentID: metadata.Document.DocumentID, Model: "metadata-model", Dim: 1,
+		Vector: []byte{0, 0, 128, 63}, ContentHash: metadata.Document.ContentHash, CreatedAt: now}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := current.UpsertClusterRun(ctx, ClusterRunRecord{RepoKey: affectedRepo, EmbedderFP: "metadata-model", ComputedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := current.SaveClusters(ctx, affectedRepo, []ClusterRecord{{RepoKey: affectedRepo, ClusterID: "fresh", Centroid: []byte{2}, AnchorCentroid: []byte{2}}},
+		[]ClusterMemberRecord{{RepoKey: affectedRepo, ForkKey: metadata.ForkKey(), ClusterID: "fresh", Embedding: []byte{2}}}); err != nil {
+		t.Fatal(err)
+	}
 	for _, repair := range []bool{false, true} {
 		if repair {
 			if _, err := current.db.Exec("DROP TABLE touched_units"); err != nil {
@@ -240,6 +297,20 @@ func TestWebDiffMigrationInvalidatesLegacyEvidence(t *testing.T) {
 		}
 		if rows, err := current.SearchRows(ctx, "validated-model", "up", "affected"); err != nil || len(rows) != 1 {
 			t.Fatalf("repair=%v lost new vector: %+v %v", repair, rows, err)
+		}
+		var cleared int
+		if err := current.db.QueryRow(`SELECT COUNT(*) FROM forks f JOIN compare_files c ON c.fork_key=f.fork_key
+			WHERE f.fork_key=? AND f.t2_json='' AND f.t2_fetched_at='' AND c.patch IS NULL AND c.patch_source=''`, metadata.ForkKey()).Scan(&cleared); err != nil || cleared != 1 {
+			t.Fatalf("repair=%v T1-only fixture lost cleared compare marker: count=%d err=%v", repair, cleared, err)
+		}
+		if err := current.db.QueryRow("SELECT body FROM documents WHERE fork_key=?", metadata.ForkKey()).Scan(&body); err != nil || body != metadata.Document.Body {
+			t.Fatalf("repair=%v lost new T1-only document: %q %v", repair, body, err)
+		}
+		if rows, err := current.SearchRows(ctx, "metadata-model", "up", "affected"); err != nil || len(rows) != 1 {
+			t.Fatalf("repair=%v lost new T1-only vector: %+v %v", repair, rows, err)
+		}
+		if clusters, err := current.GetClusters(ctx, affectedRepo); err != nil || len(clusters) != 1 || !reflect.DeepEqual(clusters[0].Centroid, []byte{2}) {
+			t.Fatalf("repair=%v lost rebuilt centroid: %+v %v", repair, clusters, err)
 		}
 		if err := current.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != SchemaVersion {
 			t.Fatalf("repair=%v version=%d err=%v", repair, version, err)

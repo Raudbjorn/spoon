@@ -278,11 +278,13 @@ files and leave complete siblings usable. A capped or unknown commit list cannot
 supply a verified head SHA for this fallback. Rejection diagnostics appear in
 `patch_skipped_reason` in detailed CLI output.
 
-The version-7 store migration invalidates comparisons containing older
-`github_web` patches and removes their derived search and clustering data. T1
+Store migrations 7 and 8 invalidate comparisons containing older `github_web`
+patches and remove their derived search and clustering data. T1
 metadata and REST patch payloads are retained. Affected comparison content must
 be fetched and indexed again. Newly validated patches use `github_web_v2`
 provenance and survive later opens and schema repairs.
+Version 8 may also rebuild derived caches for already-invalidated GitHub forks
+whose missing patch text has no source marker.
 
 With `--touching` and only literal paths, `spn` also turns on an anonymous,
 best-effort lookup against GitHub's undocumented tree-commit-info page to
