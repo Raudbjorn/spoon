@@ -200,7 +200,14 @@ func (c *Client) Fetch(ctx context.Context, owner, repo, base, head string) (map
 	}
 	out := make(map[string]string, len(acc))
 	for path, b := range acc {
-		out[path] = b.String()
+		patch := b.String()
+		// A hunk can span pages; validate its context only after accumulation.
+		if !truncated {
+			if err := ValidatePatch(patch); err != nil {
+				return nil, false, fmt.Errorf("GitHub web diff has incomplete hunks for %q: %w", path, err)
+			}
+		}
+		out[path] = patch
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, false, err
@@ -208,8 +215,8 @@ func (c *Client) Fetch(ctx context.Context, owner, repo, base, head string) (map
 	return out, truncated, nil
 }
 
-// ParseHTML extracts one page, which may contain only part of a file's hunks.
-// Callers must ValidatePatch after concatenating pages and before trusting a patch.
+// ParseHTML extracts page fragments, including hunks split across pages.
+// Fetch validates complete patches after concatenation; direct callers must do the same.
 func ParseHTML(r io.Reader) (map[string]string, int, error) {
 	root, err := html.Parse(r)
 	if err != nil {
@@ -234,6 +241,9 @@ func ParseHTML(r io.Reader) (map[string]string, int, error) {
 			classes := strings.Fields(attr(n, "class"))
 			if current != "" && n.Data == "td" && slices.Contains(classes, "blob-code") {
 				line := strings.TrimSuffix(text(n), "\n")
+				if strings.ContainsRune(line, '\n') {
+					return nil, -1, fmt.Errorf("GitHub web diff has multiline rows for %q", current)
+				}
 				b := acc[current]
 				if b == nil {
 					b = &strings.Builder{}

@@ -590,7 +590,7 @@ func applyWebDiffPatches(t2 *forge.T2Data, patches map[string]string, truncated 
 					continue
 				}
 				diff.Patch = patch
-				diff.PatchSource = "github_web"
+				diff.PatchSource = "github_web_v2"
 			}
 		}
 		t2.PatchSkipReason = skipReasons.String()

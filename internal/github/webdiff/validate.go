@@ -17,12 +17,12 @@ type hunkRange struct {
 // a file: a page boundary may split a hunk.
 func ValidatePatch(patch string) error {
 	var oldLeft, newLeft, oldEnd, newEnd int
-	var haveHunk, changed, canMarkNewline bool
+	var haveHunk, canMarkNewline bool
 	for line := range strings.Lines(patch) {
 		line = strings.TrimSuffix(line, "\n")
 		if strings.HasPrefix(line, "@@") {
-			if haveHunk && (oldLeft != 0 || newLeft != 0 || !changed) {
-				return fmt.Errorf("GitHub web diff contains an incomplete or unchanged hunk")
+			if haveHunk && (oldLeft != 0 || newLeft != 0) {
+				return fmt.Errorf("GitHub web diff contains an incomplete hunk")
 			}
 			old, new, err := parseHunkHeader(line)
 			if err != nil {
@@ -33,7 +33,7 @@ func ValidatePatch(patch string) error {
 			}
 			oldEnd, newEnd = old.start+old.count, new.start+new.count
 			oldLeft, newLeft = old.count, new.count
-			haveHunk, changed, canMarkNewline = true, false, false
+			haveHunk, canMarkNewline = true, false
 			continue
 		}
 		if !haveHunk || line == "" {
@@ -46,10 +46,8 @@ func ValidatePatch(patch string) error {
 		switch line[0] {
 		case '+':
 			newLeft--
-			changed = true
 		case '-':
 			oldLeft--
-			changed = true
 		case ' ':
 			oldLeft--
 			newLeft--
@@ -61,7 +59,7 @@ func ValidatePatch(patch string) error {
 		}
 		canMarkNewline = true
 	}
-	if !haveHunk || !changed || oldLeft != 0 || newLeft != 0 {
+	if !haveHunk || oldLeft != 0 || newLeft != 0 {
 		return fmt.Errorf("GitHub web diff lacks complete hunk rows")
 	}
 	return nil
@@ -74,7 +72,7 @@ func parseHunkHeader(line string) (hunkRange, hunkRange, error) {
 	}
 	old, oldOK := parseHunkRange(fields[1], '-')
 	new, newOK := parseHunkRange(fields[2], '+')
-	if !oldOK || !newOK {
+	if !oldOK || !newOK || (old.count == 0 && new.count == 0) {
 		return hunkRange{}, hunkRange{}, fmt.Errorf("GitHub web diff has invalid hunk ranges")
 	}
 	return old, new, nil

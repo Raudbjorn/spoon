@@ -271,18 +271,18 @@ text. It reads a cookie only from `SPOON_GH_COOKIE`, never persists it, and is
 not a supported GitHub API. REST metadata remains authoritative if the HTML
 adapter fails. Each scrape is limited to two minutes (including request pacing),
 512 pages, 16 MiB per page, and 128 MiB total. Failed, stalled, or timed-out
-pagination discards the web patches. Individual patches must contain complete
-declared hunks, including context rows, and match REST addition/deletion counts
-before they are accepted. A capped or unknown commit list cannot supply a
-verified head SHA for this fallback. Rejected files retain their diagnostics in
-`patch_skipped_reason` in detailed CLI output; complete sibling patches remain
-usable.
+pagination and incomplete HTML hunks discard the web patches. Hunk ranges must
+account for every old/new line, including context rows. Individual patches must
+also match REST addition/deletion counts; count mismatches reject only those
+files and leave complete siblings usable. A capped or unknown commit list cannot
+supply a verified head SHA for this fallback. Rejection diagnostics appear in
+`patch_skipped_reason` in detailed CLI output.
 
 The version-7 store migration invalidates comparisons containing older
 `github_web` patches and removes their derived search and clustering data. T1
 metadata and REST patch payloads are retained. Affected comparison content must
-be fetched and indexed again; newly validated web patches survive later opens
-and schema repairs.
+be fetched and indexed again. Newly validated patches use `github_web_v2`
+provenance and survive later opens and schema repairs.
 
 With `--touching` and only literal paths, `spn` also turns on an anonymous,
 best-effort lookup against GitHub's undocumented tree-commit-info page to

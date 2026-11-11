@@ -685,9 +685,8 @@ func (t *wtx) Rollback(ctx context.Context) {
 // stmts is one statement per element: go-libsql executes only the first
 // statement of a multi-statement string, silently dropping the rest.
 var migrations = []struct {
-	version  int
-	stmts    []string
-	dataOnly bool // one-time invalidations must not replay during schema repair
+	version int
+	stmts   []string
 }{
 	{version: 1, stmts: schemaV1},
 	{version: 2, stmts: schemaV2},
@@ -695,7 +694,7 @@ var migrations = []struct {
 	{version: 4, stmts: schemaV4},
 	{version: 5, stmts: schemaV5},
 	{version: 6, stmts: schemaV6},
-	{version: 7, stmts: schemaV7, dataOnly: true},
+	{version: 7, stmts: schemaV7},
 }
 
 // createdTable and addedColumn match the exact shapes every step in the
@@ -858,17 +857,13 @@ func (s *Store) initialize(ctx context.Context) error {
 		return tx.Commit(ctx)
 	}
 	for _, m := range migrations {
-		// A repair pass replays schema steps because drift can occur anywhere.
-		// Data invalidations run only on upgrade; replaying them would evict
-		// evidence fetched by the corrected code after the original upgrade.
+		// A repair pass replays every step, not just those above the stamped
+		// version -- the drift can be anywhere in the set, and the steps are
+		// idempotent.
 		if m.version <= version && !repair {
 			continue
 		}
-		stmts := m.stmts
-		if m.dataOnly && m.version <= version {
-			stmts = nil
-		}
-		for _, stmt := range stmts {
+		for _, stmt := range m.stmts {
 			if _, err := tx.ExecContext(ctx, stmt); err != nil {
 				// ALTER TABLE ... ADD COLUMN has no IF NOT EXISTS, so a re-run
 				// over an already-migrated schema (user_version lost or reset)
@@ -1871,8 +1866,12 @@ var schemaV6 = []string{
 // the next scan rebuilds documents from T1 or a newly validated comparison.
 // Repository-level cluster aggregates and connected lineage prototypes may
 // include the affected vectors and must also be rebuilt, unlike raw REST data.
+// Validated patches use github_web_v2 and survive cleanup replay. A concurrent
+// release used version 6 for legacy cleanup instead of the cluster tables, so
+// repeat main's idempotent v6 CREATEs before touching derived caches. Neither
+// published v6 history is renumbered. Copy the slice to leave schemaV6 intact.
 // Temporary key sets keep the scope stable while dependent rows are removed.
-var schemaV7 = []string{
+var schemaV7 = append(append([]string(nil), schemaV6...), []string{
 	`CREATE TEMP TABLE webdiff_v7_forks AS
 		SELECT fork_key FROM compare_files WHERE patch_source='github_web'
 		UNION SELECT fork_key FROM commit_files WHERE patch_source='github_web'`,
@@ -1896,7 +1895,7 @@ var schemaV7 = []string{
 	`DROP TABLE webdiff_v7_lineages`,
 	`DROP TABLE webdiff_v7_repos`,
 	`DROP TABLE webdiff_v7_forks`,
-}
+}...)
 
 // downgradeStep rolls a store that is one schema step ahead of
 // SchemaVersion back, preserving the user-visible data. It works by

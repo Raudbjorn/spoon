@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -15,6 +16,11 @@ import (
 // resetting its version stamp; this exercises every v6 -> v7 upgrade statement.
 func schemaV6TestStore(t *testing.T) *Store {
 	t.Helper()
+	return historicalSchemaTestStore(t, 6)
+}
+
+func historicalSchemaTestStore(t *testing.T, version int) *Store {
+	t.Helper()
 	t.Setenv("TURSO_DATABASE_URL", "")
 	t.Setenv("TURSO_AUTH_TOKEN", "")
 	path := filepath.Join(t.TempDir(), "spoon.db")
@@ -26,7 +32,7 @@ func schemaV6TestStore(t *testing.T) *Store {
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })
 	for _, migration := range migrations {
-		if migration.version > 6 {
+		if migration.version > version {
 			break
 		}
 		for _, stmt := range migration.stmts {
@@ -35,7 +41,7 @@ func schemaV6TestStore(t *testing.T) *Store {
 			}
 		}
 	}
-	if _, err := db.Exec("PRAGMA user_version=6"); err != nil {
+	if _, err := db.Exec(fmt.Sprintf("PRAGMA user_version=%d", version)); err != nil {
 		t.Fatal(err)
 	}
 	return &Store{db: db, path: path}
@@ -193,10 +199,11 @@ func TestWebDiffMigrationInvalidatesLegacyEvidence(t *testing.T) {
 	}
 
 	// Correctly validated web data fetched after upgrade must survive both a
-	// regular reopen and an unrelated schema repair; cleanup is not a read gate.
+	// regular reopen and an unrelated schema repair; v2 provenance survives cleanup.
 	fresh := snapshots[0]
 	validatedPatch := "@@ -0,0 +1,2 @@\n+validated first line\n+validated second line\n"
 	fresh.CompareFiles[0].Patch = &validatedPatch
+	fresh.CompareFiles[0].PatchSource = "github_web_v2"
 	fresh.Document.ContentHash = "fresh-validated"
 	fresh.Document.Body = "fresh complete evidence"
 	if err := current.UpsertSnapshot(ctx, fresh); err != nil {
@@ -237,5 +244,89 @@ func TestWebDiffMigrationInvalidatesLegacyEvidence(t *testing.T) {
 		if err := current.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != SchemaVersion {
 			t.Fatalf("repair=%v version=%d err=%v", repair, version, err)
 		}
+	}
+}
+
+func TestWebDiffMigrationUpgradesAlternateVersionSix(t *testing.T) {
+	ctx := t.Context()
+	legacy := historicalSchemaTestStore(t, 5)
+	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+	repo := RepoRecord{Provider: "github", Host: "github.com", Owner: "up", Name: "repo", FirstSeen: now, LastSeen: now}
+	seed := func(owner, source string) Snapshot {
+		t.Helper()
+		t1 := forge.T1Data{ID: owner + "/repo", Owner: owner, Name: "repo", DefaultBranch: "main", PushedAt: now}
+		t2 := &forge.T2Data{ComparedBranch: "main", HeadSHA: owner + "-head", AheadCount: 1,
+			Diffs: []forge.FileDiff{{Path: "file.go", Status: "added", Additions: 1, Patch: "@@ -0,0 +1 @@\n+complete\n", PatchSource: source}}}
+		snap := SnapshotFromForge(repo, t1, t2, 1, 2, now)
+		snap.Document = DocumentRecord{DocumentID: DocumentID(snap.ForkKey()), ContentHash: owner, Body: "derived " + owner, UpdatedAt: now}
+		if err := legacy.UpsertSnapshot(ctx, snap); err != nil {
+			t.Fatal(err)
+		}
+		if err := legacy.UpsertEmbeddings(ctx, []EmbeddingRecord{{DocumentID: snap.Document.DocumentID, Model: "m", Dim: 1,
+			Vector: []byte{0, 0, 128, 63}, ContentHash: owner, CreatedAt: now}}); err != nil {
+			t.Fatal(err)
+		}
+		return snap
+	}
+	old := seed("legacy", "github_web")
+	// Commit 387e8e4 published this different v6: cleanup without main's cluster
+	// tables. Reproduce its exact statements, then save new validated evidence.
+	for _, stmt := range []string{
+		`DELETE FROM documents WHERE fork_key IN (SELECT fork_key FROM compare_files WHERE patch_source='github_web')`,
+		`UPDATE forks SET t2_json='', t2_fetched_at='' WHERE fork_key IN (SELECT fork_key FROM compare_files WHERE patch_source='github_web')`,
+		`UPDATE compare_files SET patch=NULL, patch_source='' WHERE patch_source='github_web'`,
+		`PRAGMA user_version=6`,
+	} {
+		if _, err := legacy.db.ExecContext(ctx, stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	verified := seed("verified", "github_web_v2")
+	rest := seed("rest", "compare_rest")
+	var count int
+	if err := legacy.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE name='cluster_runs'`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("alternate v6 fixture already has cluster tables: %d %v", count, err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	current, err := Open(legacy.path)
+	if err != nil {
+		t.Fatalf("upgrade alternate v6: %v", err)
+	}
+	defer current.Close()
+	if intact, err := schemaIntact(ctx, current.db); err != nil || !intact {
+		t.Fatalf("upgrade did not create missing main v6 tables: intact=%v err=%v", intact, err)
+	}
+	if err := current.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&count); err != nil || count != SchemaVersion {
+		t.Fatalf("upgrade version=%d err=%v", count, err)
+	}
+	loaded, err := current.LoadRepoSnapshot(ctx, "github", "github.com", "up", "repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, snap := range []Snapshot{old, verified, rest} {
+		fork := loaded.Fork(snap.T1.ID)
+		if fork == nil || !reflect.DeepEqual(fork.T1, *snap.T1) {
+			t.Fatalf("T1 changed for %s: %+v", snap.T1.ID, fork)
+		}
+		if (loaded.ValidT2(*snap.T1) == nil) != (snap.T1.ID == old.T1.ID) {
+			t.Fatalf("wrong T2 validity for %s: %+v", snap.T1.ID, fork.T2)
+		}
+	}
+	for _, snap := range []Snapshot{verified, rest} {
+		var patch, source, body string
+		if err := current.db.QueryRowContext(ctx, `SELECT patch,patch_source FROM compare_files WHERE fork_key=?`, snap.ForkKey()).Scan(&patch, &source); err != nil || patch != *snap.CompareFiles[0].Patch || source != snap.CompareFiles[0].PatchSource {
+			t.Fatalf("retained patch changed for %s: %q %q %v", snap.T1.ID, patch, source, err)
+		}
+		if err := current.db.QueryRowContext(ctx, `SELECT body FROM documents WHERE fork_key=?`, snap.ForkKey()).Scan(&body); err != nil || body != snap.Document.Body {
+			t.Fatalf("retained document changed for %s: %q %v", snap.T1.ID, body, err)
+		}
+	}
+	if rows, err := current.SearchRows(ctx, "m", "up", "repo"); err != nil || len(rows) != 2 {
+		t.Fatalf("validated/REST vectors lost: %+v %v", rows, err)
+	}
+	if pending, err := current.PendingDocuments(ctx, "new-model"); err != nil || len(pending) != 2 {
+		t.Fatalf("validated/REST documents lost: %+v %v", pending, err)
 	}
 }

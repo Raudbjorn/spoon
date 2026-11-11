@@ -89,8 +89,9 @@ func TestApplyWebDiffPatchesFillsOnlyEmptyPatches(t *testing.T) {
 	if got := t2.Diffs[0].Patch; got != "@@ -0,0 +1 @@\n+from web\n" {
 		t.Errorf("a.go patch = %q, want the web-diff content", got)
 	}
-	if t2.Diffs[0].PatchSource != "github_web" {
-		t.Errorf("a.go patchSource = %q, want github_web", t2.Diffs[0].PatchSource)
+	// Verified patches need distinct provenance so legacy-cache repair preserves them.
+	if t2.Diffs[0].PatchSource != "github_web_v2" {
+		t.Errorf("a.go patchSource = %q, want github_web_v2", t2.Diffs[0].PatchSource)
 	}
 	if got := t2.Diffs[1].Patch; got != "-already from compare\n" {
 		t.Errorf("b.go patch = %q, want the compare-supplied patch untouched", got)
@@ -122,7 +123,8 @@ func TestApplyWebDiffPatchesChecksRESTCounts(t *testing.T) {
 			t2 := forge.T2Data{Diffs: []forge.FileDiff{{Path: "a.go", Additions: 2, Deletions: 1}}}
 			applyWebDiffPatches(&t2, map[string]string{"a.go": tc.patch}, false, nil)
 			if tc.complete {
-				if t2.Diffs[0].Patch != tc.patch || t2.Diffs[0].PatchSource != "github_web" || t2.PatchSkipReason != "" {
+				// Accepted patches must survive legacy-cache invalidation.
+				if t2.Diffs[0].Patch != tc.patch || t2.Diffs[0].PatchSource != "github_web_v2" || t2.PatchSkipReason != "" {
 					t.Fatalf("complete patch rejected: %+v, skip reason %q", t2.Diffs[0], t2.PatchSkipReason)
 				}
 				return
@@ -148,11 +150,12 @@ func TestApplyWebDiffPatchesKeepsCompleteSibling(t *testing.T) {
 		"complete.go": "@@ -1 +1 @@\n-old\n+new\n",
 		"rest.go":     "+overwrite\n",
 	}, false, nil)
-	if t2.Diffs[0].Patch != "" || t2.Diffs[0].PatchSource == "github_web" {
+	// Rejected fragments cannot claim v2; verified siblings retain that provenance.
+	if t2.Diffs[0].Patch != "" || t2.Diffs[0].PatchSource == "github_web_v2" {
 		t.Fatalf("partial patch accepted: %+v", t2.Diffs[0])
 	}
 	// The accepted sibling keeps its hunk header so completeness remains verifiable.
-	if t2.Diffs[1].Patch != "@@ -1 +1 @@\n-old\n+new\n" || t2.Diffs[1].PatchSource != "github_web" {
+	if t2.Diffs[1].Patch != "@@ -1 +1 @@\n-old\n+new\n" || t2.Diffs[1].PatchSource != "github_web_v2" {
 		t.Fatalf("complete sibling lost: %+v", t2.Diffs[1])
 	}
 	if t2.Diffs[2].Patch != "+rest\n" || t2.Diffs[2].PatchSource != "compare_rest" {
@@ -189,13 +192,13 @@ func TestApplyWebDiffPatchesRequiresCompleteContext(t *testing.T) {
 				{Path: "sibling.go", Additions: 1},
 			}}
 			applyWebDiffPatches(&t2, patches, false, nil)
-			if accepted := t2.Diffs[0].PatchSource == "github_web"; accepted != tc.complete {
+			if accepted := t2.Diffs[0].PatchSource == "github_web_v2"; accepted != tc.complete {
 				t.Fatalf("context patch accepted=%v, want %v: %+v", accepted, tc.complete, t2)
 			}
 			if !tc.complete && (t2.Diffs[0].Patch != "" || !strings.Contains(t2.PatchSkipReason, `"context.go"`)) {
 				t.Fatalf("incomplete context was not rejected with a diagnostic: %+v", t2)
 			}
-			if t2.Diffs[1].Patch != "@@ -0,0 +1 @@\n+sibling\n" || t2.Diffs[1].PatchSource != "github_web" {
+			if t2.Diffs[1].Patch != "@@ -0,0 +1 @@\n+sibling\n" || t2.Diffs[1].PatchSource != "github_web_v2" {
 				t.Fatalf("complete sibling lost: %+v", t2.Diffs[1])
 			}
 		})

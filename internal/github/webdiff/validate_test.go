@@ -21,7 +21,10 @@ func TestValidatePatchProvesContextAndHunkCompleteness(t *testing.T) {
 		{"unrecognized row", "@@ -1 +1 @@\nold\n+new\n", false},
 		{"extra context", "@@ -1 +1 @@\n context\n-old\n+new\n", false},
 		{"overlapping hunks", "@@ -1 +1 @@\n-old\n+new\n@@ -1 +1 @@\n-x\n+y\n", false},
-		{"unchanged hunk", "@@ -1 +1 @@\n context\n", false},
+		// Expanded context is complete when both declared row counts match;
+		// changed rows are not required to prove that no context was omitted.
+		{"unchanged hunk", "@@ -1 +1 @@\n context\n", true},
+		{"empty hunk", "@@ -0,0 +0,0 @@\n", false},
 		{"missing range", "@@\n-old\n+new\n", false},
 		{"invalid range", "@@ -1,-1 +1 @@\n-old\n+new\n", false},
 		{"invalid zero start", "@@ -0 +1 @@\n-old\n+new\n", false},
