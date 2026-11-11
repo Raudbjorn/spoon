@@ -81,6 +81,17 @@ class AgentAnchorTests(unittest.TestCase):
                 # Reference/fixture trees are not runnable package-test anchors.
                 self.assertIn(f"missing top-level test: {name}", "\n".join(check_agents(self.root)))
 
+    def test_test_names_ignore_non_test_and_prefixed_filenames(self):
+        for index, filename in enumerate((".scratch_test.go", "_scratch_test.go", "ordinary.go")):
+            with self.subTest(filename=filename):
+                name = f"TestIgnoredFilename{index}"
+                (self.root / "internal/example" / filename).write_text(
+                    f"package example\nfunc {name}() {{}}\n", encoding="utf-8"
+                )
+                self.write_agent(developer_instructions=self.body + f" {name}")
+                # Go ignores prefixed filenames and does not run tests from ordinary source files.
+                self.assertIn(f"missing top-level test: {name}", "\n".join(check_agents(self.root)))
+
     def test_module_vendor_experiment_and_script_paths_must_exist(self):
         files = ("go.mod", "go.sum", "scripts/check-agent-anchors.py")
         directories = ("vendor/", "experiments/started/behavioral-embeddings")

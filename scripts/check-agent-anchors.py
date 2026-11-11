@@ -25,7 +25,7 @@ def go_test_names(root: Path) -> set[str]:
             if name not in {"vendor", "testdata"} and not name.startswith((".", "_"))
         ]
         for filename in files:
-            if not filename.endswith("_test.go"):
+            if filename.startswith((".", "_")) or not filename.endswith("_test.go"):
                 continue
             source = (Path(directory) / filename).read_text(encoding="utf-8")
             source = GO_NON_CODE.sub(lambda m: " " + "\n" * m.group().count("\n"), source)
