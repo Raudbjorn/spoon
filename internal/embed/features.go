@@ -147,6 +147,7 @@ func buildDiffChunk(diffs []forge.FileDiff, maxChars int) (string, bool) {
 	return string(out), truncated
 }
 
+// diffLine supplies patch text or a canonical file header for embedding normalization.
 func diffLine(d forge.FileDiff) string {
 	if d.Path == "" {
 		return ""
@@ -155,7 +156,7 @@ func diffLine(d forge.FileDiff) string {
 		if hunkHeader.MatchString(d.Patch) {
 			return d.Patch
 		}
-		// A headerless patch — github_web scrapes bare +/- lines with no
+		// A headerless patch — legacy github_web scraped bare +/- lines with no
 		// ---/+++ or @@ header. NormalizeDiff rewrites a real hunk header to
 		// "@@@@", so leaving these alone makes an identical change embed
 		// differently depending on which source fetched it. Detect the missing

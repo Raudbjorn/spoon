@@ -9,6 +9,7 @@ import (
 
 	"github.com/svnbjrn/spoon/internal/forge"
 	"github.com/svnbjrn/spoon/internal/github/treecommitinfo"
+	"github.com/svnbjrn/spoon/internal/github/webdiff"
 	"github.com/svnbjrn/spoon/internal/heat"
 )
 
@@ -45,7 +46,7 @@ func (p *GHProvider) Auth(_ context.Context) (forge.AuthInfo, error) {
 	conc := 2
 	rl := 60
 	if p.status.Authenticated {
-		tier = forge.AuthCLI
+		tier = forge.AuthToken
 		conc = 10
 		rl = 5000
 	}
@@ -581,8 +582,15 @@ func applyWebDiffPatches(t2 *forge.T2Data, patches map[string]string, truncated 
 				continue
 			}
 			if patch != "" {
+				if err := webdiff.ValidatePatch(patch); err != nil {
+					if skipReasons.Len() > 0 {
+						skipReasons.WriteString("; ")
+					}
+					fmt.Fprintf(&skipReasons, "web diff incomplete for %q: %v", diff.Path, err)
+					continue
+				}
 				diff.Patch = patch
-				diff.PatchSource = "github_web"
+				diff.PatchSource = "github_web_v2"
 			}
 		}
 		t2.PatchSkipReason = skipReasons.String()

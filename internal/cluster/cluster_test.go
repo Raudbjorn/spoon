@@ -316,6 +316,29 @@ func TestCluster_EpsilonDefault(t *testing.T) {
 	}
 }
 
+func TestCluster_ExplicitZeroEpsilon(t *testing.T) {
+	points := []Point{
+		{ForkID: "a/1", Vec: []float32{1, 0}},
+		{ForkID: "a/2", Vec: []float32{1, 0}},
+		{ForkID: "b/1", Vec: []float32{0.8, 0.6}},
+	}
+	for _, explicit := range []bool{false, true} {
+		_, assignments := Run(points, Options{EpsilonSet: explicit, MinClusterSize: 2})
+		wantThird := "c0"
+		if explicit {
+			wantThird = "noise"
+		}
+		if assignments[0].Cluster != "c0" || assignments[1].Cluster != "c0" || assignments[2].Cluster != wantThird {
+			t.Fatalf("explicit zero=%v: assignments=%+v", explicit, assignments)
+		}
+		for _, assignment := range assignments {
+			if math.IsNaN(assignment.Novelty) || math.IsInf(assignment.Novelty, 0) {
+				t.Fatalf("explicit zero=%v: non-finite novelty: %+v", explicit, assignment)
+			}
+		}
+	}
+}
+
 func TestCluster_NonMutation(t *testing.T) {
 	base := []float32{1, 0, 0}
 	pts := []Point{

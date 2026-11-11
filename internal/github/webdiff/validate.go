@@ -1,0 +1,120 @@
+package webdiff
+
+import (
+	"fmt"
+	"strconv"
+	"strings"
+)
+
+type hunkRange struct {
+	start int
+	count int
+}
+
+// ValidatePatch proves that every declared hunk contains all of its old and
+// new rows, including context, with consistent unchanged gaps between hunks.
+// Matching REST addition/deletion totals alone cannot detect lost context rows.
+// Validate only after joining all pages for a file: a page boundary may split a hunk.
+func ValidatePatch(patch string) error {
+	var oldLeft, newLeft, oldEnd, newEnd int
+	var haveHunk, canMarkNewline bool
+	for line := range strings.Lines(patch) {
+		line = strings.TrimSuffix(line, "\n")
+		if strings.HasPrefix(line, "@@") {
+			if haveHunk && (oldLeft != 0 || newLeft != 0) {
+				return fmt.Errorf("GitHub web diff contains an incomplete hunk")
+			}
+			old, new, err := parseHunkHeader(line)
+			if err != nil {
+				return err
+			}
+			// Nonempty ranges name their first line (one-based); empty ranges
+			// name the preceding line. Normalize both to zero-based boundaries
+			// before comparing gaps, including adjacent insertion/deletion hunks.
+			oldStart, newStart := old.start, new.start
+			if old.count > 0 {
+				oldStart--
+			}
+			if new.count > 0 {
+				newStart--
+			}
+			if haveHunk && (oldStart < oldEnd || newStart < newEnd) {
+				return fmt.Errorf("GitHub web diff contains overlapping or reordered hunks")
+			}
+			if haveHunk && oldStart-oldEnd != newStart-newEnd {
+				return fmt.Errorf("GitHub web diff contains inconsistent unchanged gaps between hunks")
+			}
+			oldEnd, newEnd = oldStart+old.count, newStart+new.count
+			oldLeft, newLeft = old.count, new.count
+			haveHunk, canMarkNewline = true, false
+			continue
+		}
+		if !haveHunk || line == "" {
+			return fmt.Errorf("GitHub web diff contains rows without a hunk header")
+		}
+		if line == `\ No newline at end of file` && canMarkNewline {
+			canMarkNewline = false
+			continue
+		}
+		switch line[0] {
+		case '+':
+			newLeft--
+		case '-':
+			oldLeft--
+		case ' ':
+			oldLeft--
+			newLeft--
+		default:
+			return fmt.Errorf("GitHub web diff contains an unrecognized hunk row")
+		}
+		if oldLeft < 0 || newLeft < 0 {
+			return fmt.Errorf("GitHub web diff contains more rows than its hunk declares")
+		}
+		canMarkNewline = true
+	}
+	if !haveHunk || oldLeft != 0 || newLeft != 0 {
+		return fmt.Errorf("GitHub web diff lacks complete hunk rows")
+	}
+	return nil
+}
+
+// parseHunkHeader reads a unified-diff header without including source text in errors.
+func parseHunkHeader(line string) (hunkRange, hunkRange, error) {
+	fields := strings.Fields(line)
+	if len(fields) < 4 || fields[0] != "@@" || fields[3] != "@@" {
+		return hunkRange{}, hunkRange{}, fmt.Errorf("GitHub web diff has an invalid hunk header")
+	}
+	old, oldOK := parseHunkRange(fields[1], '-')
+	new, newOK := parseHunkRange(fields[2], '+')
+	if !oldOK || !newOK || (old.count == 0 && new.count == 0) {
+		return hunkRange{}, hunkRange{}, fmt.Errorf("GitHub web diff has invalid hunk ranges")
+	}
+	return old, new, nil
+}
+
+// parseHunkRange checks a signed line range, including count defaults and overflow.
+func parseHunkRange(field string, sign byte) (hunkRange, bool) {
+	if len(field) < 2 || field[0] != sign {
+		return hunkRange{}, false
+	}
+	startText, countText, hasCount := strings.Cut(field[1:], ",")
+	if !hasCount {
+		countText = "1"
+	}
+	decimal := func(s string) (int, bool) {
+		for _, r := range s {
+			if r < '0' || r > '9' {
+				return 0, false
+			}
+		}
+		n, err := strconv.Atoi(s)
+		return n, err == nil
+	}
+	start, startOK := decimal(startText)
+	count, countOK := decimal(countText)
+	maxInt := int(^uint(0) >> 1)
+	if !startOK || !countOK || count > maxInt-start || (start == 0 && count > 0) {
+		return hunkRange{}, false
+	}
+	return hunkRange{start: start, count: count}, true
+}

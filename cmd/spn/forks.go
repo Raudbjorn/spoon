@@ -191,7 +191,6 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 	// did not address this knob". Used by OwnerCacheTTL (default 24h)
 	// and topic-mode SiblingSimEnabled (default off).
 	ownerCacheTTLSet := false
-	clusterEpsilonSet := false
 	siblingSimFlagSet := false
 	noSiblingSimFlagSet := false
 	siblingSimModeSet := false
@@ -348,7 +347,7 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 				return agentio.NewError(agentio.CodeBadInput, "--cluster-epsilon requires a non-negative number", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
 			}
 			opts.Cluster.Epsilon = f
-			clusterEpsilonSet = true
+			opts.Cluster.EpsilonSet = true
 		case "--cluster-min-size":
 			if i+1 >= len(args) {
 				return agentio.NewError(agentio.CodeBadInput, "--cluster-min-size requires a value", agentio.RemediationBadInput("forks", "list")).Emit(stderr)
@@ -660,9 +659,9 @@ func doForksListWithDeps(args []string, stdout, stderr io.Writer, effective conf
 		}
 	}
 	// Only fill the backend default when the user did not set epsilon: a struct
-	// zero and an explicit --cluster-epsilon 0 (force singleton clusters) are
+	// zero and an explicit --cluster-epsilon 0 (zero distance cutoff) are
 	// otherwise indistinguishable, and the latter was silently overwritten.
-	if !clusterEpsilonSet {
+	if !opts.Cluster.EpsilonSet {
 		if fastembedActive {
 			opts.Cluster.Epsilon = 0.35
 		} else {

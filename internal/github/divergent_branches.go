@@ -7,10 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 
-	ghAPI "github.com/cli/go-gh/v2/pkg/api"
+	"github.com/shurcooL/githubv4"
 )
 
 // Counting, for every fork, how many of its branches carry commits the
@@ -124,7 +125,7 @@ type refsNode struct {
 				OID string `json:"oid"`
 			} `json:"target"`
 		} `json:"nodes"`
-	} `json:"refs"`
+	} `json:"refs" graphql:"refs(refPrefix: \"refs/heads/\", first: $branchPageSize)"`
 }
 
 type compareBatch struct {
@@ -138,10 +139,10 @@ func (r *compareBatch) graphqlRateLimit() *gqlRateLimit { return &r.RL }
 
 // isGraphQLResponseError reports whether err is a GraphQL-level error, i.e. one
 // carried in the "errors" array of an otherwise successful HTTP 200 response.
-// go-gh decodes "data" into the caller's struct before returning it, so partial
+// The GraphQL transport decodes "data" into the caller's struct before returning it, so partial
 // results are already available.
 func isGraphQLResponseError(err error) bool {
-	var gqlErr *ghAPI.GraphQLError
+	var gqlErr *gqlResponseError
 	return errors.As(err, &gqlErr)
 }
 
@@ -150,7 +151,7 @@ func isGraphQLResponseError(err error) bool {
 // listing and comparison. Any other error class means the query itself is
 // suspect and the batch must not be trusted.
 func isPartialLookupError(err error) bool {
-	var gqlErr *ghAPI.GraphQLError
+	var gqlErr *gqlResponseError
 	if !errors.As(err, &gqlErr) || len(gqlErr.Errors) == 0 {
 		return false
 	}
@@ -160,22 +161,6 @@ func isPartialLookupError(err error) bool {
 		}
 	}
 	return true
-}
-
-// gqlString renders s as a GraphQL string literal. GraphQL string syntax is
-// JSON's, so this both quotes and escapes — necessary because branch names and
-// owner logins reach the query as literals, not bound variables (aliases and
-// arguments in a dynamically built document cannot be parameterised).
-//
-// json.Marshal, not strconv.Quote: Go's quoted-string syntax accepts escapes
-// JSON/GraphQL do not (\v, \a, hex byte escapes for non-UTF-8 input), so a
-// value containing one would have produced a syntax error in the query
-// document. Unreachable today — git ref-name and GitHub login rules forbid
-// the bytes that would trigger it — but json.Marshal is the exactly-right
-// tool and no more code.
-func gqlString(s string) string {
-	b, _ := json.Marshal(s) // marshaling a string cannot fail
-	return string(b)
 }
 
 // FetchDivergentBranchCounts counts, per fork, the branches carrying commits
@@ -229,16 +214,19 @@ func (c *Client) FetchDivergentBranchCounts(
 	// Phase A — enumerate branches.
 	for _, chunk := range slidingChunks(len(forks), refsBatchSize) {
 		batch := forks[chunk.lo:chunk.hi]
-		var q strings.Builder
-		q.WriteString("query {\n")
+		fields := make([]reflect.StructField, 0, len(batch)+1)
+		vars := make(map[string]interface{}, len(batch)*2)
 		for i, f := range batch {
-			fmt.Fprintf(&q, "  f%d: repository(owner: %s, name: %s) { refs(refPrefix: \"refs/heads/\", first: %d) { totalCount nodes { name target { oid } } } }\n",
-				i, gqlString(f.Owner), gqlString(f.Name), branchPageSize)
+			fields = append(fields, gqlField(fmt.Sprintf("F%d", i), fmt.Sprintf("f%d: repository(owner: $owner%d, name: $name%d)", i, i, i), (*refsNode)(nil)))
+			vars[fmt.Sprintf("owner%d", i)] = githubv4.String(f.Owner)
+			vars[fmt.Sprintf("name%d", i)] = githubv4.String(f.Name)
 		}
-		q.WriteString("  rateLimit { limit remaining used resetAt cost }\n}")
+		vars["branchPageSize"] = githubv4.Int(branchPageSize)
+		fields = append(fields, gqlField("RateLimit", "rateLimit", gqlRateLimit{}))
+		query := gqlObject(fields...)
 
 		var resp gqlAliasBatch
-		if err := c.doGraphQLWithRetry(ctx, q.String(), nil, &resp); err != nil {
+		if err := c.doGraphQLWithRetry(ctx, query, vars, &resp); err != nil {
 			if !isPartialLookupError(err) {
 				return nil, fmt.Errorf("list fork branches: %w", err)
 			}
@@ -283,18 +271,17 @@ func (c *Client) FetchDivergentBranchCounts(
 
 	for _, chunk := range slidingChunks(len(pairs), compareBatchSize) {
 		batch := pairs[chunk.lo:chunk.hi]
-		var q strings.Builder
-		q.WriteString("query {\n")
-		fmt.Fprintf(&q, "  repository(owner: %s, name: %s) {\n", gqlString(baseOwner), gqlString(baseRepo))
-		fmt.Fprintf(&q, "    ref(qualifiedName: %s) {\n", gqlString(qualified))
-		for i, p := range batch {
-			fmt.Fprintf(&q, "      c%d: compare(headRef: %s) { aheadBy }\n",
-				i, gqlString(p.owner+":"+p.branch))
+		fields := make([]reflect.StructField, 0, len(batch))
+		for i := range batch {
+			fields = append(fields, gqlField(fmt.Sprintf("C%d", i), fmt.Sprintf("c%d: compare(headRef: $head%d)", i, i), (*struct{ AheadBy int })(nil)))
 		}
-		q.WriteString("    }\n  }\n  rateLimit { limit remaining used resetAt cost }\n}")
+		query, vars := gqlRefQuery(baseOwner, baseRepo, qualified, fields)
+		for i, p := range batch {
+			vars[fmt.Sprintf("head%d", i)] = githubv4.String(p.owner + ":" + p.branch)
+		}
 
 		var resp compareBatch
-		if err := c.doGraphQLWithRetry(ctx, q.String(), nil, &resp); err != nil {
+		if err := c.doGraphQLWithRetry(ctx, query, vars, &resp); err != nil {
 			if !isPartialLookupError(err) {
 				return nil, fmt.Errorf("compare fork branches: %w", err)
 			}

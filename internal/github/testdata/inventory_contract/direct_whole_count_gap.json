@@ -12,9 +12,9 @@
           {"databaseId": 3001, "nameWithOwner": "chunkhound/chunkhound-fork-1", "name": "chunkhound-fork-1", "forkCount": 5, "parent": {"nameWithOwner": "chunkhound/chunkhound", "databaseId": 3000}, "pushedAt": "2025-07-01T00:00:00Z"},
           {"databaseId": 3002, "nameWithOwner": "chunkhound/chunkhound-fork-2", "name": "chunkhound-fork-2", "forkCount": 0, "parent": {"nameWithOwner": "chunkhound/chunkhound", "databaseId": 3000}, "pushedAt": "2025-06-15T00:00:00Z"}
         ]
-      },
-      "rateLimit": {"cost": 1}
-    }
+      }
+    },
+    "rateLimit": {"cost": 1}
   },
   "note": "118 direct (totalCount), 128 whole network (forkCount). 10 unresolved = forkCount - totalCount."
 }

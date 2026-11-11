@@ -202,6 +202,9 @@ func runActionWithDeps(id ActionID, m *Model, deps ActionDeps) (string, error) {
 		if err := deps.Save(m.Path, m.Config); err != nil {
 			return "", err
 		}
+		if cause := m.Config.SecretCleanupError(); cause != nil {
+			return "saved; warning: " + cause.Error(), nil
+		}
 		return "saved", nil
 	case ActionFastEmbedInstall:
 		if m.Config == nil {

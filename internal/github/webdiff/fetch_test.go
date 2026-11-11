@@ -2,6 +2,7 @@ package webdiff
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"net/http"
@@ -10,13 +11,17 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
+	"time"
 )
 
+// Fixtures carry real hunk ranges: without them context completeness is unverifiable.
 // page renders a one-file diff whose "next" link points at start_entry=next.
 func pageHTML(path string, next int) string {
 	return fmt.Sprintf(`<html><body>
 <div class="js-file-header" data-path="%s"></div>
-<table><tr><td class="blob-code blob-code-addition">x()</td></tr></table>
+<table><tr><td class="blob-code blob-code-hunk">@@ -0,0 +1 @@</td></tr>
+<tr><td class="blob-code blob-code-addition">x()</td></tr></table>
 <a rel="next" href="?start_entry=%d">Next</a>
 </body></html>`, path, next)
 }
@@ -71,7 +76,7 @@ func TestFetchBoundsPagination(t *testing.T) {
 func TestParseHTMLNextLinkPrefersRel(t *testing.T) {
 	fixture := `<html><body>
 <div class="js-file-header" data-path="a.go"></div>
-<table><tr><td class="blob-code blob-code-addition">x()</td></tr></table>
+<table><tr><td class="blob-code blob-code-hunk">@@ -0,0 +1 @@</td></tr><tr><td class="blob-code blob-code-addition">x()</td></tr></table>
 <a href="?start_entry=99">next release</a>
 <a rel="next" href="?start_entry=25">Older</a>
 </body></html>`
@@ -84,6 +89,7 @@ func TestParseHTMLNextLinkPrefersRel(t *testing.T) {
 	}
 }
 
+// TestParseHTMLPaginationLinkValidation checks case-insensitive next relations and rejects invalid pagination targets.
 func TestParseHTMLPaginationLinkValidation(t *testing.T) {
 	for _, tc := range []struct {
 		name, link string
@@ -102,6 +108,12 @@ func TestParseHTMLPaginationLinkValidation(t *testing.T) {
 		{"text fallback before rel", `<a href="?start_entry=99">Next</a><a rel="next" href="?start_entry=25">More</a>`, 25, false},
 		{"next label", `<a href="?start_entry=25"> Next </a>`, 25, false},
 		{"rel tokens", `<a rel="nofollow next" href="?start_entry=25">More</a>`, 25, false},
+		{"uppercase rel", `<a rel="NEXT" href="?start_entry=25">Older</a>`, 25, false},
+		{"mixed rel tokens", `<a rel="NoFollow NeXt" href="?start_entry=25">More</a>`, 25, false},
+		{"mixed rel outranks text", `<a href="?start_entry=99">Next</a><a rel="NeXt" href="?start_entry=25">Older</a>`, 25, false},
+		{"invalid mixed rel", `<a rel="NoFollow NEXT" href="?start_entry=broken">Older</a>`, -1, true},
+		{"mixed case rel tokens", `<a rel="nofollow NeXt" href="?start_entry=25">More</a>`, 25, false},
+		{"uppercase invalid cursor", `<a rel="NEXT" href="?page=2">More</a>`, -1, true},
 		{"invalid URL", `<a rel="next" href="%zz">Next</a>`, -1, true},
 		{"missing cursor", `<a rel="next" href="?page=2">Next</a>`, -1, true},
 		{"invalid cursor", `<a rel="next" href="?start_entry=broken">Next</a>`, -1, true},
@@ -109,7 +121,7 @@ func TestParseHTMLPaginationLinkValidation(t *testing.T) {
 		{"invalid rel after text fallback", `<a href="?start_entry=25">Next</a><a rel="next" href="?page=2">More</a>`, -1, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			fixture := `<div data-path="a.go"></div><table><tr><td class="blob-code blob-code-addition">x()</td></tr></table>` + tc.link
+			fixture := `<div data-path="a.go"></div><table><tr><td class="blob-code blob-code-hunk">@@ -0,0 +1 @@</td></tr><tr><td class="blob-code blob-code-addition">x()</td></tr></table>` + tc.link
 			_, next, err := ParseHTML(strings.NewReader(fixture))
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("err=%v, wantErr=%v", err, tc.wantErr)
@@ -178,7 +190,8 @@ func TestFetchKeepsPatchesWhenTrailingPageHasNoDiffLines(t *testing.T) {
 	if truncated {
 		t.Fatal("truncated=true; an empty-but-valid trailing page must not discard the collected patches")
 	}
-	if got := patches["a.go"]; got != "+x()\n" {
+	// Retained headers carry the evidence used to check context completeness.
+	if got := patches["a.go"]; got != "@@ -0,0 +1 @@\n+x()\n" {
 		t.Fatalf("a.go patch = %q, want the first page's patch retained", got)
 	}
 }
@@ -218,7 +231,7 @@ func TestFetchTruncatesOnPartlyParsedPage(t *testing.T) {
 			return
 		}
 		fmt.Fprint(w, `<div data-path="b.go"></div>
-<table><tr><td class="blob-code blob-code-addition">readable()</td></tr></table>
+<table><tr><td class="blob-code blob-code-hunk">@@ -0,0 +1 @@</td></tr><tr><td class="blob-code blob-code-addition">readable()</td></tr></table>
 <div data-path="a.go"></div>
 <table><tr><td class="diff-hunk-cell">lost()</td></tr></table>`)
 	}))
@@ -256,28 +269,119 @@ func TestFetchTruncatesOnBrokenPagination(t *testing.T) {
 	}
 }
 
+// TestParseHTMLAcceptsMixedTextAndBinaryFiles preserves textual hunks beside explicitly nontextual files.
 func TestParseHTMLAcceptsMixedTextAndBinaryFiles(t *testing.T) {
 	fixture := `<div data-path="a.go"></div>
-<table><tr><td class="blob-code blob-code-addition">x()</td></tr></table>
+<table><tr><td class="blob-code blob-code-hunk">@@ -0,0 +1 @@</td></tr><tr><td class="blob-code blob-code-addition">x()</td></tr></table>
 <div data-path="logo.png"></div><span>Binary file not shown</span>`
 	patches, _, err := ParseHTML(strings.NewReader(fixture))
-	if err != nil || patches["a.go"] != "+x()\n" || len(patches) != 1 {
+	// A textual sibling retains its hunk header even beside an empty binary entry.
+	if err != nil || patches["a.go"] != "@@ -0,0 +1 @@\n+x()\n" || len(patches) != 1 {
 		t.Fatalf("mixed page lost its textual patch: patches=%v, err=%v", patches, err)
 	}
 }
 
+// TestFetchAccumulatesFileAcrossPages validates a hunk only after all of its pages have arrived.
 func TestFetchAccumulatesFileAcrossPages(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("start_entry") == "0" {
+			// The first page ends inside a hunk; validate after concatenation.
+			fmt.Fprint(w, strings.Replace(pageHTML("a.go", 1), "@@ -0,0 +1 @@", "@@ -1,2 +1,2 @@", 1))
+			return
+		}
+		fmt.Fprint(w, `<div data-path="a.go"></div><table>
+<tr><td class="blob-code blob-code-deletion">old()</td></tr>
+<tr><td class="blob-code blob-code-context">kept()</td></tr></table>`)
+	}))
+	defer srv.Close()
+	patches, truncated, err := newTestClient(t, srv).Fetch(context.Background(), "o", "r", "b", "h")
+	if err != nil || truncated || patches["a.go"] != "@@ -1,2 +1,2 @@\n+x()\n-old()\n kept()\n" {
+		t.Fatalf("complete continuation lost: patches=%v, truncated=%v, err=%v", patches, truncated, err)
+	}
+	if err := ValidatePatch(patches["a.go"]); err != nil {
+		t.Fatalf("complete cross-page hunk rejected: %v", err)
+	}
+}
+
+// TestFetchAccumulatesSeparateHunksAcrossPages retains ordered hunk headers across pagination.
+func TestFetchAccumulatesSeparateHunksAcrossPages(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("start_entry") == "0" {
 			fmt.Fprint(w, pageHTML("a.go", 1))
 			return
 		}
-		fmt.Fprint(w, `<div data-path="a.go"></div><table><tr><td class="blob-code blob-code-deletion">old()</td></tr></table>`)
+		// Preserve both headers, with ordered ranges: the second page deletes
+		// a later line instead of rewinding to before the first page's insertion.
+		fmt.Fprint(w, `<div data-path="a.go"></div><table>
+<tr><td class="blob-code blob-code-hunk">@@ -10 +10,0 @@</td></tr>
+<tr><td class="blob-code blob-code-deletion">old()</td></tr></table>`)
 	}))
 	defer srv.Close()
 	patches, truncated, err := newTestClient(t, srv).Fetch(context.Background(), "o", "r", "b", "h")
-	if err != nil || truncated || patches["a.go"] != "+x()\n-old()\n" {
-		t.Fatalf("complete continuation lost: patches=%v, truncated=%v, err=%v", patches, truncated, err)
+	if err != nil || truncated || patches["a.go"] != "@@ -0,0 +1 @@\n+x()\n@@ -10 +10,0 @@\n-old()\n" {
+		t.Fatalf("separate hunks lost across pages: patches=%v truncated=%v err=%v", patches, truncated, err)
+	}
+}
+
+// TestFetchOperationDeadlineIncludesAllWaits bounds each wait using virtual time, which advances only after the fetch reaches a blocking stage.
+func TestFetchOperationDeadlineIncludesAllWaits(t *testing.T) {
+	for _, stage := range []string{"queued pacing", "pagination pacing", "gate", "http", "shorter caller deadline"} {
+		t.Run(stage, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				var requests atomic.Int32
+				c := New("test-cookie", nil)
+				c.http.Transport = deadlineRoundTrip(func(r *http.Request) (*http.Response, error) {
+					requests.Add(1)
+					if stage == "http" {
+						<-r.Context().Done()
+						return nil, r.Context().Err()
+					}
+					w := httptest.NewRecorder()
+					fmt.Fprint(w, pageHTML("a.go", 1))
+					resp := w.Result()
+					resp.Request = r
+					return resp, nil
+				})
+				c.fetchTimeout = 50 * time.Millisecond
+				ctx := context.Background()
+				var parentDeadline, gateDeadline time.Time
+				if stage == "shorter caller deadline" {
+					var cancel context.CancelFunc
+					ctx, cancel = context.WithTimeout(ctx, c.fetchTimeout)
+					defer cancel()
+					parentDeadline, _ = ctx.Deadline()
+					c.fetchTimeout = time.Hour
+				}
+				if stage == "queued pacing" {
+					c.next = time.Now().Add(time.Hour)
+				}
+				if stage == "gate" || stage == "shorter caller deadline" {
+					c.gate = func(ctx context.Context) error {
+						gateDeadline, _ = ctx.Deadline()
+						<-ctx.Done()
+						return ctx.Err()
+					}
+				}
+				started := time.Now()
+				patches, _, err := c.Fetch(ctx, "o", "r", "b", "h")
+				if !errors.Is(err, context.DeadlineExceeded) || patches != nil {
+					t.Fatalf("deadline did not discard incomplete work: patches=%v, err=%v", patches, err)
+				}
+				if time.Since(started) > 2*time.Second {
+					t.Fatal("fetch exceeded its overall deadline")
+				}
+				wantRequests := int32(0)
+				if stage == "http" || stage == "pagination pacing" {
+					wantRequests = 1
+				}
+				if requests.Load() != wantRequests {
+					t.Fatalf("requests=%d, want %d", requests.Load(), wantRequests)
+				}
+				if stage == "shorter caller deadline" && !gateDeadline.Equal(parentDeadline) {
+					t.Fatal("fetch extended the caller's shorter deadline")
+				}
+			})
+		})
 	}
 }
 
@@ -327,3 +431,133 @@ func TestFetchDoesNotFollowRedirects(t *testing.T) {
 		})
 	}
 }
+
+// TestFetchRejectsMissingContext rejects incomplete hunks and unrecognized code-row markup.
+func TestFetchRejectsMissingContext(t *testing.T) {
+	for _, tc := range []struct{ name, body string }{
+		{"missing context", `<tr><td class="blob-code blob-code-hunk">@@ -1,2 +1,2 @@</td></tr><tr><td class="blob-code blob-code-deletion">old</td></tr><tr><td class="blob-code blob-code-addition">new</td></tr>`},
+		{"changed context markup", `<tr><td class="blob-code blob-code-hunk">@@ -1,2 +1,2 @@</td></tr><tr><td class="changed-context-class">lost context</td></tr><tr><td class="blob-code blob-code-deletion">old</td></tr><tr><td class="blob-code blob-code-addition">new</td></tr>`},
+		{"missing header", `<tr><td class="blob-code blob-code-deletion">old</td></tr><tr><td class="blob-code blob-code-addition">new</td></tr>`},
+		{"unknown code row", `<tr><td class="blob-code blob-code-hunk">@@ -1 +1 @@</td></tr><tr><td class="blob-code unknown">lost</td></tr><tr><td class="blob-code blob-code-deletion">old</td></tr><tr><td class="blob-code blob-code-addition">new</td></tr>`},
+		{"multiline row", "<tr><td class=\"blob-code blob-code-hunk\">@@ -1 +1 @@</td></tr><tr><td class=\"blob-code blob-code-deletion\">old\n+new</td></tr>"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprint(w, `<div data-path="a.go"></div><table>`+tc.body+`</table>`)
+			}))
+			defer srv.Close()
+			patches, truncated, err := newTestClient(t, srv).Fetch(context.Background(), "o", "r", "b", "h")
+			if err == nil || patches != nil {
+				t.Fatalf("accepted incomplete context despite matching +/- counts: patches=%v truncated=%v err=%v", patches, truncated, err)
+			}
+		})
+	}
+}
+
+// TestFetchRejectsMalformedHunkEvenBesideCompleteFile discards an entire scrape containing a malformed hunk.
+func TestFetchRejectsMalformedHunkEvenBesideCompleteFile(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `<div data-path="complete.go"></div><table>
+<tr><td class="blob-code blob-code-hunk">@@ -0,0 +1 @@</td></tr>
+<tr><td class="blob-code blob-code-addition">valid</td></tr></table>
+<div data-path="partial.go"></div><table>
+<tr><td class="blob-code blob-code-hunk">@@ -1,2 +1,2 @@</td></tr>
+<tr><td class="blob-code blob-code-deletion">old</td></tr>
+<tr><td class="blob-code blob-code-addition">new</td></tr></table>`)
+	}))
+	defer srv.Close()
+	patches, _, err := newTestClient(t, srv).Fetch(context.Background(), "o", "r", "b", "h")
+	// Fetch's published contract rejects an untrustworthy scrape wholesale;
+	// the adapter's per-file REST checks are a separate acceptance boundary.
+	if err == nil || patches != nil {
+		t.Fatalf("malformed scrape leaked valid-looking sibling: patches=%v err=%v", patches, err)
+	}
+}
+
+// TestFetchDeadlineDiscardsCollectedPatches expires only after collecting a page and reaching the next HTTP or pacing wait.
+func TestFetchDeadlineDiscardsCollectedPatches(t *testing.T) {
+	for _, waitIn := range []string{"request", "pacing"} {
+		t.Run(waitIn, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				var requests atomic.Int32
+				c := New("test-cookie", nil)
+				c.http.Transport = deadlineRoundTrip(func(r *http.Request) (*http.Response, error) {
+					requests.Add(1)
+					if waitIn == "request" && r.URL.Query().Get("start_entry") != "0" {
+						<-r.Context().Done()
+						return nil, r.Context().Err()
+					}
+					w := httptest.NewRecorder()
+					fmt.Fprint(w, pageHTML("a.go", 1))
+					resp := w.Result()
+					resp.Request = r
+					return resp, nil
+				})
+				wantRequests := int32(1)
+				if waitIn == "request" {
+					wantRequests = 2
+					// Exercise a later HTTP request without spending the budget pacing.
+					c.gate = func(context.Context) error {
+						c.next = time.Time{}
+						return nil
+					}
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+				defer cancel()
+				patches, _, err := c.Fetch(ctx, "o", "r", "b", "h")
+				if !errors.Is(err, context.DeadlineExceeded) || patches != nil || requests.Load() != wantRequests {
+					t.Fatalf("deadline failed: patches=%v requests=%d err=%v", patches, requests.Load(), err)
+				}
+			})
+		})
+	}
+}
+
+// TestFetchSuppliesOverallDeadline verifies that the request gate receives the whole-fetch deadline.
+func TestFetchSuppliesOverallDeadline(t *testing.T) {
+	var deadline time.Time
+	c := New("cookie", func(ctx context.Context) error {
+		deadline, _ = ctx.Deadline()
+		return context.Canceled // Inspect the context without contacting GitHub.
+	})
+	before := time.Now()
+	_, _, err := c.Fetch(context.Background(), "o", "r", "b", "h")
+	if !errors.Is(err, context.Canceled) || deadline.IsZero() || deadline.After(before.Add(2*time.Minute+time.Second)) {
+		t.Fatalf("scrape lacks a bounded overall deadline: deadline=%v err=%v", deadline, err)
+	}
+}
+
+// TestFetchValidatesHunkAcrossPages checks context completeness after joining a split hunk.
+func TestFetchValidatesHunkAcrossPages(t *testing.T) {
+	for _, omitContext := range []bool{false, true} {
+		t.Run(fmt.Sprintf("omit_context=%v", omitContext), func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprint(w, `<div data-path="a.go"></div><table>`)
+				if r.URL.Query().Get("start_entry") == "0" {
+					fmt.Fprint(w, `<tr><td class="blob-code blob-code-hunk">@@ -1,2 +1,2 @@</td></tr><tr><td class="blob-code blob-code-deletion">old</td></tr></table><a rel="NEXT" href="?start_entry=1">More</a>`)
+					return
+				}
+				fmt.Fprint(w, `<tr><td class="blob-code blob-code-addition">new</td></tr>`)
+				if !omitContext {
+					fmt.Fprint(w, `<tr><td class="blob-code blob-code-context">keep</td></tr>`)
+				}
+				fmt.Fprint(w, `</table>`)
+			}))
+			defer srv.Close()
+			patches, truncated, err := newTestClient(t, srv).Fetch(context.Background(), "o", "r", "b", "h")
+			if omitContext {
+				if err == nil || patches != nil {
+					t.Fatalf("accepted split hunk with lost context: patches=%v err=%v", patches, err)
+				}
+			} else if err != nil || truncated || patches["a.go"] != "@@ -1,2 +1,2 @@\n-old\n+new\n keep\n" {
+				t.Fatalf("lost complete split hunk: patches=%v truncated=%v err=%v", patches, truncated, err)
+			}
+		})
+	}
+}
+
+// deadlineRoundTrip serves fixtures in the synctest bubble without real network scheduling.
+type deadlineRoundTrip func(*http.Request) (*http.Response, error)
+
+// RoundTrip handles one request synchronously with the test clock.
+func (f deadlineRoundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

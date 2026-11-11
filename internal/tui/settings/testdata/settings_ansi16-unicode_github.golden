@@ -7,6 +7,7 @@
 │ [1;37m> [7mG[0mitHub tokens: ************ [FILE][0m                                         │
 │ [2;90mOne token per line; values are always masked.[0m                                │
 │ [37m  Requests per minute: 300 [FILE][0m                                            │
+│ [37m  Token storage: keyring [DEFAULT][0m                                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 [2;90m[p] Probe provider credentials  [o] Check store  [f] Check FastEmbed  [v] Check[0m
 [37;40m[tab][0m section [37;40m[enter][0m edit [37;40m[esc][0m back
