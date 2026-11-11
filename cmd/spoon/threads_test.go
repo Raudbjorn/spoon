@@ -1,12 +1,43 @@
 package main
 
 import (
+	"bytes"
+	"errors"
 	"strings"
 	"testing"
 
+	gh "github.com/svnbjrn/spoon/internal/github"
 	"github.com/svnbjrn/spoon/internal/threadsops"
 	"github.com/svnbjrn/spoon/internal/tui/theme"
 )
+
+func TestWorkspacePRsReportsIncompleteDiscovery(t *testing.T) {
+	failed := threadsops.WorkspaceDiscovery{Repo: threadsops.WorkspaceRepo{Dir: "/workspace/failed"}, Err: errors.New("403 forbidden")}
+	matched := threadsops.WorkspaceDiscovery{PR: &gh.PullRequest{Number: 42}}
+	for _, tc := range []struct {
+		name                 string
+		results              []threadsops.WorkspaceDiscovery
+		wantCount            int
+		wantErr, wantWarning bool
+	}{
+		{"no matches", []threadsops.WorkspaceDiscovery{{}}, 0, false, false},
+		{"all failed", []threadsops.WorkspaceDiscovery{failed}, 0, true, true},
+		{"failure and no match", []threadsops.WorkspaceDiscovery{failed, {}}, 0, true, true},
+		{"partial success", []threadsops.WorkspaceDiscovery{failed, matched}, 1, false, true},
+		{"success", []threadsops.WorkspaceDiscovery{matched}, 1, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stderr bytes.Buffer
+			prs, err := workspacePRs(tc.results, &stderr)
+			if len(prs) != tc.wantCount || (err != nil) != tc.wantErr || (stderr.Len() > 0) != tc.wantWarning {
+				t.Fatalf("prs=%v err=%v stderr=%q", prs, err, stderr.String())
+			}
+			if tc.wantWarning && !strings.Contains(stderr.String(), "/workspace/failed: 403 forbidden") {
+				t.Fatalf("missing repository error: %q", stderr.String())
+			}
+		})
+	}
+}
 
 func TestParseThreadsFlags(t *testing.T) {
 	cases := []struct {

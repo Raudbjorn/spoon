@@ -3,7 +3,9 @@ package threadsops
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,11 +22,14 @@ type WorkspaceRepo struct {
 	Owner         string // parsed from OriginURL via forge.ParseRepoURL
 	Repo          string // parsed repository name
 	Provider      string // "github" / "gitlab" / "gitea"
+	Host          string // origin host; never inferred from the API client
 	CurrentBranch string // current branch name, or empty if detached HEAD
 
-	UpstreamURL   string // raw value of remote.upstream.url, if present
-	UpstreamOwner string // parsed owner of upstream remote, if present
-	UpstreamRepo  string // parsed repository name of upstream remote, if present
+	UpstreamURL      string // raw value of remote.upstream.url, if present
+	UpstreamOwner    string // parsed owner of upstream remote, if present
+	UpstreamRepo     string // parsed repository name of upstream remote, if present
+	UpstreamProvider string
+	UpstreamHost     string
 }
 
 // ScanOptions configures workspace repository scanning.
@@ -36,7 +41,18 @@ type ScanOptions struct {
 // PRFetcher abstracts looking up an open pull request by head ref.
 // github.Client implements this via FindOpenPRForHead.
 type PRFetcher interface {
+	Host() string
 	FindOpenPRForHead(ctx context.Context, owner, repo, headOwner, headBranch string) (*github.PullRequest, error)
+}
+
+// parseRemoteIdentity rejects local paths instead of treating them as GitHub shorthand.
+func parseRemoteIdentity(raw string) (forge.Provider, string, string, string, error) {
+	normalized := normalizeRemoteURL(raw)
+	u, err := url.Parse(normalized)
+	if err != nil || u.Hostname() == "" || (u.Scheme != "https" && u.Scheme != "http") {
+		return 0, "", "", "", fmt.Errorf("remote has no supported host")
+	}
+	return forge.ParseRepoURL(normalized, "", 0)
 }
 
 // DiscoverOptions configures concurrent pull request discovery in a workspace.
@@ -211,10 +227,10 @@ func readRepoDetails(repoPath string) (WorkspaceRepo, error) {
 
 	// 3. Parse Origin URL
 	if repo.OriginURL != "" {
-		normalized := normalizeRemoteURL(repo.OriginURL)
-		prov, _, owner, repoName, err := forge.ParseRepoURL(normalized, "github.com", 0)
+		prov, host, owner, repoName, err := parseRemoteIdentity(repo.OriginURL)
 		if err == nil {
 			repo.Provider = prov.String()
+			repo.Host = host
 			repo.Owner = owner
 			repo.Repo = repoName
 		}
@@ -222,9 +238,10 @@ func readRepoDetails(repoPath string) (WorkspaceRepo, error) {
 
 	// 4. Parse Upstream URL if present
 	if repo.UpstreamURL != "" {
-		normalized := normalizeRemoteURL(repo.UpstreamURL)
-		_, _, upOwner, upRepo, err := forge.ParseRepoURL(normalized, "github.com", 0)
+		prov, host, upOwner, upRepo, err := parseRemoteIdentity(repo.UpstreamURL)
 		if err == nil {
+			repo.UpstreamProvider = prov.String()
+			repo.UpstreamHost = host
 			repo.UpstreamOwner = upOwner
 			repo.UpstreamRepo = upRepo
 		}
@@ -234,6 +251,7 @@ func readRepoDetails(repoPath string) (WorkspaceRepo, error) {
 }
 
 // ScanWorkspace searches root and its subdirectories up to opts.Depth for git repositories.
+// From inside a checkout, it scans the checkout's parent to include siblings.
 func ScanWorkspace(root string, opts ScanOptions) ([]WorkspaceRepo, error) {
 	depth := opts.Depth
 	if depth <= 0 {
@@ -245,7 +263,21 @@ func ScanWorkspace(root string, opts ScanOptions) ([]WorkspaceRepo, error) {
 
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
-		absRoot = root
+		return nil, err
+	}
+	if fi, err := os.Stat(absRoot); err != nil {
+		return nil, err
+	} else if !fi.IsDir() {
+		return nil, fmt.Errorf("workspace root is not a directory: %s", absRoot)
+	}
+	for dir := absRoot; ; dir = filepath.Dir(dir) {
+		if _, _, err := resolveGitDir(dir); err == nil {
+			absRoot = filepath.Dir(dir)
+			break
+		}
+		if filepath.Dir(dir) == dir {
+			break
+		}
 	}
 
 	ignored := make(map[string]bool)
@@ -327,6 +359,10 @@ func DiscoverPRsInWorkspace(ctx context.Context, fetcher PRFetcher, repos []Work
 		if r.CurrentBranch == "" || r.Owner == "" || r.Repo == "" || fetcher == nil {
 			continue
 		}
+		if r.Provider != "github" || !strings.EqualFold(r.Host, fetcher.Host()) {
+			results[i].Err = fmt.Errorf("origin is not served by GitHub host %s", fetcher.Host())
+			continue
+		}
 
 		wg.Add(1)
 		go func(idx int, repo WorkspaceRepo) {
@@ -340,36 +376,25 @@ func DiscoverPRsInWorkspace(ctx context.Context, fetcher PRFetcher, repos []Work
 			}
 			defer func() { <-sem }()
 
-			// If upstream remote is configured, check upstream PRs first
-			targetOwner := repo.Owner
-			targetRepo := repo.Repo
-			if repo.UpstreamOwner != "" && repo.UpstreamRepo != "" {
-				targetOwner = repo.UpstreamOwner
-				targetRepo = repo.UpstreamRepo
-			}
-
-			pr, err := fetcher.FindOpenPRForHead(ctx, targetOwner, targetRepo, repo.Owner, repo.CurrentBranch)
-			if err != nil {
-				// If upstream query failed and upstream differs from origin, attempt origin fallback
-				if repo.UpstreamRepo != "" {
-					prOrig, errOrig := fetcher.FindOpenPRForHead(ctx, repo.Owner, repo.Repo, repo.Owner, repo.CurrentBranch)
-					if errOrig == nil && prOrig != nil {
-						results[idx].PR = prOrig
+			// Both the head and target must belong to the client's host.
+			if repo.UpstreamURL != "" || repo.UpstreamRepo != "" {
+				if repo.UpstreamProvider != "github" || !strings.EqualFold(repo.UpstreamHost, fetcher.Host()) || repo.UpstreamOwner == "" || repo.UpstreamRepo == "" {
+					results[idx].Err = fmt.Errorf("upstream is not served by GitHub host %s", fetcher.Host())
+				} else if !strings.EqualFold(repo.UpstreamOwner+"/"+repo.UpstreamRepo, repo.Owner+"/"+repo.Repo) {
+					pr, err := fetcher.FindOpenPRForHead(ctx, repo.UpstreamOwner, repo.UpstreamRepo, repo.Owner, repo.CurrentBranch)
+					if err != nil {
+						results[idx].Err = fmt.Errorf("upstream lookup: %w", err)
+					}
+					if pr != nil {
+						results[idx].PR = pr
 						return
 					}
 				}
-				results[idx].Err = err
-				return
 			}
-
-			// If no upstream PR was found, check if an open PR exists against the origin fork itself
-			if pr == nil && repo.UpstreamRepo != "" {
-				prOrig, errOrig := fetcher.FindOpenPRForHead(ctx, repo.Owner, repo.Repo, repo.Owner, repo.CurrentBranch)
-				if errOrig == nil {
-					pr = prOrig
-				}
+			pr, err := fetcher.FindOpenPRForHead(ctx, repo.Owner, repo.Repo, repo.Owner, repo.CurrentBranch)
+			if err != nil {
+				results[idx].Err = errors.Join(results[idx].Err, fmt.Errorf("origin lookup: %w", err))
 			}
-
 			results[idx].PR = pr
 		}(i, r)
 	}
