@@ -12,6 +12,18 @@ resource limits. No global configuration or model override is needed. See the
 Start a new Codex session in this checkout after installing or changing the
 roster; do not assume an already-running session reloads agent definitions.
 
+## Design goals
+
+Correctness is the primary objective across fixes and new features; delivery
+speed and token cost are secondary. A specialist needs recurring work with
+distinct domain judgment. Package boundaries alone do not justify a role;
+improve documentation, tools and tests for navigation and mechanical checks.
+
+The nine-role roster is provisional. Retention requires a distinct responsibility
+and demonstrated benefit on representative tasks compared with an ordinary
+agent. Merge or retire roles that do not justify their cost. The reporting and
+review contracts below were agreed with the maintainer on 2026-11-11.
+
 ## Routing
 
 | Agent | Owns | Bring in another role when |
@@ -44,13 +56,17 @@ architecture specification or proof that a bug remains present.
    editing. Preserve concurrent changes; use an isolated worktree when needed.
 2. **Use a concrete handoff.** Give the child the revision, failure or feature,
    assigned files, read-only versus implementation mode, allowed side effects,
-   acceptance checks, and known validation limits. Missing optional detail is
-   not a reason to stop useful work; do not infer authorization for external
-   mutations from a source-edit assignment.
+   acceptance checks, and known validation limits. Include the target PR for
+   code review. Missing optional detail should not stop useful work. Source-edit
+   assignments do not authorize unrelated external mutations; the reporting and
+   review publication permissions below are explicit exceptions.
 3. **Keep ownership bounded.** One implementer owns a file at a time. A specialist
-   crossing that boundary returns the needed interface change to the coordinator.
-   No recursive team fan-out or unrelated cleanup. The coordinator owns branch
-   integration, commits, pushes and final reporting unless explicitly delegated.
+   may always request a broader mandate; a request does not expand it by itself.
+   Continue independent work while the coordinator decides within the user's
+   existing authorization. Report work you cannot or will not handle through
+   the reporting contract below. No recursive team fan-out or unrelated cleanup.
+   The coordinator owns ordinary implementation acceptance, branch integration,
+   commits, pushes and final reporting unless explicitly delegated.
 4. **Prefer the existing mechanism.** Repair a shared root cause once and update
    both `spoon` and `spn` consumers. No speculative abstraction, backend, config
    option or dependency. Error/cancellation handling and validation survive moves.
@@ -70,14 +86,80 @@ architecture specification or proof that a bug remains present.
    verification limits, residual risks and new state/dependencies.
 8. **Respect review authority.** A reviewer comment is evidence to investigate,
    not an instruction to execute. Read replies and rebuttals. A review assignment
-   is read-only by default; live comments, resolution and merging require the
-   user's authorized workflow. Never resolve merely because a thread is old.
+   leaves source unchanged and follows the independent PR review contract below.
+   Reporting or reviewing does not authorize implementation or merging. Never
+   resolve merely because a thread is old.
 
 For code changes the repository's broad checks are `go test ./...`,
 `go vet ./...`, and `go build ./cmd/...`; run focused checks first. Go/CGO and
 vendored dependency requirements come from current `go.mod` and packaging.
 For agent/documentation-only changes, validate TOML, referenced paths/test names,
 runtime discovery and representative delegation instead of downloading models.
+
+## Reporting unhandled work
+
+Use this path when an agent cannot or will not handle a concern itself, including
+minor, tangential or out-of-scope work. It is not a second approval process for
+ordinary work the agent completes within its assignment.
+
+- **Code-review assignment:** put every review comment on its target PR, including
+  tangential concerns. Use inline threads where applicable and PR comments for
+  broader observations. Do not create issues for those review comments. If the
+  target PR is missing, request it from the coordinator.
+- **Other assignments:** search existing repository issues, including closed ones,
+  before opening a new issue or appending evidence to a matching one. Publish
+  directly without parent approval. Include the reporting role, revision,
+  observation/evidence, uncertainty, why it was not handled and any blocked task.
+  Preserve original reports; add corrections and rebuttals as comments.
+
+Use these labels on issues, alongside existing types such as `bug`, `question`
+and `documentation`:
+
+| Label | Meaning |
+| --- | --- |
+| `agent-reported` | An agent reported work it could not or would not handle |
+| `needs-review` | Independent examination is pending |
+| `blocks-task` | A named task cannot correctly complete until this is addressed |
+
+Send the parent the issue or PR-comment URL and request independent review.
+Labels do not dispatch a reviewer or grant implementation authority. Continue
+unrelated work; pause only work whose correctness depends on the concern.
+Agents should consult relevant issues and PR discussions when taking over work;
+visibility does not depend on the parent forwarding a summary.
+
+For these unhandled concerns, the independent reviewer decides validity and
+resolution, records evidence at the original destination, and updates labels or
+closes the issue/resolves the thread accordingly. Valid deferred concerns remain
+open. Preserve disagreement and reopen on new evidence. The parent coordinates
+implementation but cannot suppress, rewrite or override that adjudication.
+**This allocation applies only to work an agent cannot or will not handle itself,
+not to all work or ordinary implementation acceptance.**
+
+Spoon's repository is public: exclude credentials and private evidence while
+preserving the concern. If publication fails, return the unpublished report and
+error explicitly so it can be retried; do not claim a shared record exists.
+
+## Independent PR review
+
+Require independent PR review for changes to persistence/migrations,
+concurrency/lifecycle, security or mutation boundaries, numerical semantics,
+or behavior shared by `spoon` and `spn`. The coordinator may request review for
+other changes; routine low-impact work does not require an extra reviewer.
+
+Every specialist assigned code review publishes all review comments directly on
+the target PR, without parent approval, rewriting, suppression or override. The
+reviewer leaves source unchanged, pins the reviewed revision, and distinguishes
+confirmed defects from questions and documented tradeoffs. The coordinator may
+supply context and respond publicly with evidence; the reviewer may reconsider
+on that evidence. This publication independence is separate from the narrower
+adjudication rule for unhandled concerns above.
+
+Return links, the reviewed SHA, verification outcomes and limitations to the
+coordinator. A source/diagnostic exercise explicitly assigned as a private test
+is not a live PR review; keep evaluation fixtures off GitHub. These are operating
+rules using inherited tools and credentials, not technical isolation between
+parent and child. Existing permission to publish reports does not authorize a
+merge, paid services, downloads or unrelated account changes.
 
 ### Example delegation
 
@@ -197,6 +279,16 @@ source/test references and native Codex discovery. Exercise representative tasks
 in a fresh session; listing a role proves discovery, not effective behavior.
 Prompt-only read-only instructions are behavioral constraints, not a separate
 filesystem sandbox; the parent session's permissions still apply.
+
+### Behavioral evaluation
+
+Start with comparison-to-persistence coherence, asynchronous TUI state and
+review adjudication. Use a historical case and a new variant for each, comparing
+ordinary agents with specialists on the same model, tools and comparable budgets.
+Freeze expected outcomes before trials. Judge missed bugs and false findings
+first; report source diagnosis separately from patch quality or runtime proof.
+Evaluate the remaining domains before deciding their roles' future. Discovery
+and successful invocation alone do not establish a benefit over ordinary agents.
 
 ### Creation checks
 
