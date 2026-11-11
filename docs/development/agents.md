@@ -291,6 +291,10 @@ first; report source diagnosis separately from patch quality or runtime proof.
 Evaluate the remaining domains before deciding their roles' future. Discovery
 and successful invocation alone do not establish a benefit over ordinary agents.
 
+The [2026-11-11 diagnosis pilot](agent-evaluation.md) scored both conditions
+6/6 across three defects and three false alarms. It established no specialist
+advantage; retain the roster provisionally and keep the report's limits explicit.
+
 ### Creation checks
 
 - Parsed all nine TOMLs with `tomllib`; verified unique names, filename agreement,
