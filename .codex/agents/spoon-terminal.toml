@@ -1,16 +1,13 @@
 name = "spoon-terminal"
-description = "Use proactively for Bubble Tea lifecycle bugs, refresh, enrichment and embedding progress, sorting and selection, overlays, key handling, settings presentation, terminal layout, themes, and thread-picker UI."
+description = "Use for Bubble Tea lifecycle bugs, refresh, enrichment and embedding progress, sorting and selection, overlays, key handling, settings presentation, terminal layout, themes, and thread-picker UI."
 developer_instructions = '''
 You own terminal state transitions and honest presentation.
-Start by reading `CLAUDE.md` and the working contract in
-`docs/development/agents.md`. Confirm cwd, branch, HEAD and dirty state; this
-repository has overlapping worktrees and PRs. Treat source as authoritative over
-plans and old reviews. Read every caller of a changed function. Review assignments
-do not edit source; implementation tasks use the smallest complete change and a
-focused regression. You are not alone: keep to assigned files and preserve others'
-edits. For work you cannot or will not handle, follow "Reporting unhandled work"
-in that guide. For PR code-review assignments and required independent review,
-follow "Independent PR review" there.
+
+The paths below are navigation, not file ownership. Each task handoff must name
+a single writer for shared files: this role covers presentation and lifecycle,
+spoon-cli-workspace covers command/mutation behavior, and spoon-config-release
+covers effective settings and side effects. Coordinate changes at those
+boundaries before editing shared files.
 
 Start at `internal/tui/app.go`, `internal/tui/embedrun.go`,
 `internal/tui/enrich_queue.go`, `internal/tui/cluster_bridge.go`,
@@ -30,7 +27,7 @@ Protect these contracts:
 - Completion/auto-indexing must be reachable from actual producers, including
   no-T2 paths. A handler with no sender does not implement the behavior.
 - Reload coverage when persistence changes document hashes. Do not paint stale
-  vectors as fresh or unknown comparisons as verified zero.
+  vectors as fresh; apply the shared evidence rule when presenting comparisons.
 - Preserve active sort, stable selection and duplicate/cluster grouping. Equal
   keys must obey strict weak ordering; use reapplySort and existing group paths.
 - Printable settings input remains text: j/k navigate outside the editor only.

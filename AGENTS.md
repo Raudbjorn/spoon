@@ -6,9 +6,31 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 
 `spoon` finds useful forks of a Git repository (GitHub, GitLab, Gitea): it enumerates forks, enriches each with activity/divergence signals, and ranks them. Two binaries share one pipeline and never fork behaviour, only output shape: `spoon` (Bubbletea TUI, `cmd/spoon`) and `spn` (JSON/NDJSON/CSV agent CLI, `cmd/spn`). README.md has the full user-facing reference and architecture diagrams.
 
-When implementing changes, delegating work, reviewing a PR, or reporting work
-you cannot or will not handle, read `docs/development/agents.md` for routing,
-authority, reporting and required independent-review rules.
+## Development and delegation
+
+- Confirm cwd, branch, HEAD and dirty files before work. Source and current
+  callers take precedence over plans and historical reviews.
+- Keep to the assigned outcome and files; preserve other contributors' edits.
+  One implementer owns each shared file per task. Request a broader mandate when
+  needed; the request alone does not grant it. Continue independent work if the
+  runtime supports messaging; otherwise return the request and unfinished scope.
+- Review assignments leave source unchanged. Implementations use the smallest
+  complete change, trace affected callers and add focused regressions for changed
+  nontrivial behavior. Report the revision, evidence and verification limits.
+- Use fixtures, temporary databases, isolated XDG paths and fake credentials.
+  Development does not authorize opening a user's live store, spending API or
+  paid-service budgets, downloading models, or exercising real PR mutations.
+  Honor existing session authorization; do not ask again merely because it was
+  omitted from a handoff. Test gates and inherited credentials are not permission.
+  Never expose secret values; authorized authentication uses existing mechanisms.
+- When implementing, delegating or reviewing, read the relevant working-contract
+  and review sections in `docs/development/agents.md`. For work you cannot or will
+  not handle, use its reporting procedure. These sections explicitly authorize
+  direct issue/review publication and define the narrower adjudication boundary.
+  The coordinator must arrange required independent review; labels do not do it.
+
+These rules are shared by all native roles; do not reread `CLAUDE.md` for the
+duplicate repository guidance. Role entrypoints guide navigation, not ownership.
 
 ## Commands
 
