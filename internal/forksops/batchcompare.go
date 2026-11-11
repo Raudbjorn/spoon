@@ -162,14 +162,10 @@ func logCompareResolvedFallback(logger io.Writer, forkID string, err error) {
 // contributors-only share -- perRequestCost(3)-perRequestCost(2) -- to
 // every resolved fork, not just the unresolved ones already folded into
 // perRequestCost(tier).
-func batchEstimate(pending []forge.T1Data, divergence map[string]forge.ForkDivergence, tier int, isCached ...func(forge.T1Data) bool) (divergent, resolved, restEstimate int) {
-	var cachedFn func(forge.T1Data) bool
-	if len(isCached) > 0 && isCached[0] != nil {
-		cachedFn = isCached[0]
-	}
+func batchEstimate(pending []forge.T1Data, divergence map[string]forge.ForkDivergence, tier int, isCached func(forge.T1Data) bool) (divergent, resolved, restEstimate int) {
 	unresolved := 0
 	for _, f := range pending {
-		cached := cachedFn != nil && cachedFn(f)
+		cached := isCached != nil && isCached(f)
 		d, ok := divergence[f.ID]
 		if !ok || !d.Resolved {
 			if !cached {
@@ -190,32 +186,69 @@ func batchEstimate(pending []forge.T1Data, divergence map[string]forge.ForkDiver
 	return divergent, resolved, restEstimate
 }
 
-// refreshCachedBehind updates a cached T2's BehindCount in-place from the
-// batch divergence result when the batch resolved the fork.
+// refreshCachedBehind updates a cached T2's BehindCount and AheadCount in-place
+// from the batch divergence result when the batch resolved the fork.
 func refreshCachedBehind(t2 *forge.T2Data, d forge.ForkDivergence) bool {
 	if t2 == nil || !d.Resolved {
 		return false
 	}
-	behind := d.Default.BehindBy
-	found := true
-	if t2.IsBranchWork && t2.ActiveBranch != "" && t2.ActiveBranch != d.Default.Name {
-		found = false
-		for _, side := range d.Sides {
-			if side.Name == t2.ActiveBranch {
-				behind = side.BehindBy
-				found = true
-				break
+	var targetBranch *forge.BranchDivergence
+
+	if t2.IsBranchWork && t2.ActiveBranch != "" {
+		if t2.ActiveBranch == d.Default.Name {
+			targetBranch = &d.Default
+		} else {
+			for i := range d.Sides {
+				if d.Sides[i].Name == t2.ActiveBranch {
+					targetBranch = &d.Sides[i]
+					break
+				}
 			}
 		}
+	} else if t2.ActiveBranch != "" {
+		if t2.ActiveBranch == d.Default.Name {
+			targetBranch = &d.Default
+		} else {
+			for i := range d.Sides {
+				if d.Sides[i].Name == t2.ActiveBranch {
+					targetBranch = &d.Sides[i]
+					break
+				}
+			}
+		}
+	} else {
+		// Cached comparison on default branch.
+		// If tip SHAs are available on both sides, verify they match to avoid
+		// combining divergence data from different branches after a default-branch change.
+		if t2.HeadSHA != "" && d.Default.TipSHA != "" && t2.HeadSHA != d.Default.TipSHA {
+			// Default branch tip changed; check if the original branch is in sides.
+			for i := range d.Sides {
+				if d.Sides[i].TipSHA == t2.HeadSHA {
+					targetBranch = &d.Sides[i]
+					break
+				}
+			}
+		} else {
+			targetBranch = &d.Default
+		}
 	}
-	if !found {
+
+	if targetBranch == nil {
 		return false
 	}
-	if t2.BehindCount != behind {
-		t2.BehindCount = behind
-		return true
+
+	changed := false
+	if t2.BehindCount != targetBranch.BehindBy {
+		t2.BehindCount = targetBranch.BehindBy
+		changed = true
 	}
-	return false
+	// Reconcile AheadCount: if the batch reports 0 ahead (e.g. all work was merged
+	// upstream), clear stale cached ahead count so the fork isn't reported as ahead.
+	if targetBranch.AheadBy == 0 && t2.AheadCount != 0 {
+		t2.AheadCount = 0
+		changed = true
+	}
+	return changed
 }
 
 // RefreshCachedBehind is refreshCachedBehind for callers outside this package.

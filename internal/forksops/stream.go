@@ -944,7 +944,13 @@ func Stream(ctx context.Context, provider forge.Forge, owner, repo string, opts 
 							}
 						}
 					}
-					if tier >= 3 && enrich && r.Err == nil {
+					if tier >= 3 && enrich && r.Err == nil && !opts.ReserveDisabled && provider.Headroom() < ReserveHeadroom {
+						r.T3Skip = &StageSkip{
+							Stage:  "contributors",
+							ForkID: s.fork.ID,
+							Reason: "rate-limit reserve reached; re-run after the window resets to enrich",
+						}
+					} else if tier >= 3 && enrich && r.Err == nil {
 						t3, terr := provider.Contributors(ctx, s.fork)
 						if terr != nil {
 							var rl *gh.RateLimitError

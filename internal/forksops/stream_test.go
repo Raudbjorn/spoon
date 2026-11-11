@@ -274,7 +274,7 @@ func TestBatchEstimate_ContributorsCostAtTier3(t *testing.T) {
 		pending = append(pending, forge.T1Data{ID: fmt.Sprintf("o/unresolved%d", i)})
 	}
 
-	divergent, resolved, tier2Estimate := batchEstimate(pending, divergence, 2)
+	divergent, resolved, tier2Estimate := batchEstimate(pending, divergence, 2, nil)
 	if divergent != 10 {
 		t.Errorf("divergent = %d, want 10", divergent)
 	}
@@ -288,7 +288,7 @@ func TestBatchEstimate_ContributorsCostAtTier3(t *testing.T) {
 		t.Errorf("tier2Estimate = %d, want 25 (10 divergent + 5*3 unresolved)", tier2Estimate)
 	}
 
-	_, _, tier3Estimate := batchEstimate(pending, divergence, 3)
+	_, _, tier3Estimate := batchEstimate(pending, divergence, 3, nil)
 	// tier 3: every resolved fork (all 100) still pays a Contributors call
 	// -- perRequestCost(3)-perRequestCost(2) = 2 -- on top of the 10
 	// divergent compares; unresolved forks pay the full perRequestCost(3)=5

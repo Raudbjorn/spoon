@@ -128,6 +128,80 @@ func TestRefreshCachedBehind_NilT2(t *testing.T) {
 	}
 }
 
+func TestRefreshCachedBehind_ReconcilesAheadCountZero(t *testing.T) {
+	t2 := &forge.T2Data{
+		Performed:   true,
+		AheadCount:  3,
+		BehindCount: 2,
+	}
+	d := forge.ForkDivergence{
+		Resolved: true,
+		Default:  forge.BranchDivergence{Name: "main", AheadBy: 0, BehindBy: 5},
+	}
+
+	changed := RefreshCachedBehind(t2, d)
+	if !changed {
+		t.Fatal("expected RefreshCachedBehind to report changed=true when ahead cleared")
+	}
+	if t2.AheadCount != 0 {
+		t.Fatalf("AheadCount = %d, want 0 (cleared stale ahead)", t2.AheadCount)
+	}
+	if t2.BehindCount != 5 {
+		t.Fatalf("BehindCount = %d, want 5", t2.BehindCount)
+	}
+}
+
+func TestRefreshCachedBehind_DefaultBranchTipMismatch_NotFoundInSides(t *testing.T) {
+	t2 := &forge.T2Data{
+		Performed:   true,
+		AheadCount:  3,
+		BehindCount: 2,
+		HeadSHA:     "oldsha123",
+	}
+	d := forge.ForkDivergence{
+		Resolved: true,
+		Default:  forge.BranchDivergence{Name: "main", TipSHA: "newsha456", BehindBy: 10},
+		Sides: []forge.BranchDivergence{
+			{Name: "other", TipSHA: "othersha789", BehindBy: 4},
+		},
+	}
+
+	changed := RefreshCachedBehind(t2, d)
+	if changed {
+		t.Fatal("expected changed=false when default branch tip changed and old branch not in sides")
+	}
+	if t2.BehindCount != 2 {
+		t.Fatalf("BehindCount = %d, want 2 (original count preserved)", t2.BehindCount)
+	}
+	if t2.AheadCount != 3 {
+		t.Fatalf("AheadCount = %d, want 3 (original count preserved)", t2.AheadCount)
+	}
+}
+
+func TestRefreshCachedBehind_DefaultBranchTipMismatch_FoundInSides(t *testing.T) {
+	t2 := &forge.T2Data{
+		Performed:   true,
+		AheadCount:  3,
+		BehindCount: 2,
+		HeadSHA:     "oldsha123",
+	}
+	d := forge.ForkDivergence{
+		Resolved: true,
+		Default:  forge.BranchDivergence{Name: "main", TipSHA: "newsha456", BehindBy: 10},
+		Sides: []forge.BranchDivergence{
+			{Name: "old-default", TipSHA: "oldsha123", AheadBy: 3, BehindBy: 7},
+		},
+	}
+
+	changed := RefreshCachedBehind(t2, d)
+	if !changed {
+		t.Fatal("expected changed=true when old default branch found in sides")
+	}
+	if t2.BehindCount != 7 {
+		t.Fatalf("BehindCount = %d, want 7 (from side matching old HeadSHA)", t2.BehindCount)
+	}
+}
+
 func TestBatchEstimate_CachedForksExcludedFromRestEstimate(t *testing.T) {
 	pending := []forge.T1Data{
 		{ID: "o/cached1"},
