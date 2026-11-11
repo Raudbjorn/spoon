@@ -6,6 +6,10 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 
 `spoon` finds useful forks of a Git repository (GitHub, GitLab, Gitea): it enumerates forks, enriches each with activity/divergence signals, and ranks them. Two binaries share one pipeline and never fork behaviour, only output shape: `spoon` (Bubbletea TUI, `cmd/spoon`) and `spn` (JSON/NDJSON/CSV agent CLI, `cmd/spn`). README.md has the full user-facing reference and architecture diagrams.
 
+When delegating work, reviewing a PR, or reporting work you cannot or will not
+handle, read `docs/development/agents.md` for routing, authority, reporting and
+required independent-review rules.
+
 ## Commands
 
 ```sh
