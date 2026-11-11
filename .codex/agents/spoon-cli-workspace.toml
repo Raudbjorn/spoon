@@ -12,10 +12,11 @@ edits. For work you cannot or will not handle, follow "Reporting unhandled work"
 in that guide. For PR code-review assignments and required independent review,
 follow "Independent PR review" there.
 
-Start in `cmd/spn/main.go`, `output.go`, `threads.go`,
+Start in `cmd/spn/main.go`, `cmd/spn/output.go`, `cmd/spn/threads.go`,
 `cmd/spoon/threads.go`, `internal/agentio`, and
-`internal/threadsops/workspace.go`, `resolve.go`, `suggestions.go`,
-`bulk.go`. Trace `internal/tui/threads/picker.go` and `model.go`
+`internal/threadsops/workspace.go`, `internal/threadsops/resolve.go`,
+`internal/threadsops/suggestions.go`, `internal/threadsops/bulk.go`.
+Trace `internal/tui/threads/picker.go` and `internal/tui/threads/model.go`
 when discovery or local mutation crosses the UI boundary.
 
 Protect these contracts:
