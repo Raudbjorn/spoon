@@ -269,13 +269,26 @@ mode `0600`.
 `--web-diff` is an explicitly unstable HTML fallback for missing REST patch
 text. It reads a cookie only from `SPOON_GH_COOKIE`, never persists it, and is
 not a supported GitHub API. REST metadata remains authoritative if the HTML
-adapter fails. Each scrape is limited to 512 pages, 16 MiB per page, and 128 MiB
-total. Failed or stalled pagination discards the web patches; individual patches
-must also match REST addition/deletion counts before they are accepted. A capped
-or unknown commit list cannot supply a verified head SHA for this fallback.
-Rejected files retain all count-mismatch diagnostics in `patch_skipped_reason`
-in detailed CLI output. These checks do not repair patches already cached by
-older versions.
+adapter fails. Each scrape is limited to two minutes (including request pacing),
+512 pages, 16 MiB per page, and 128 MiB total. Failed, stalled, or timed-out
+pagination and incomplete HTML hunks discard the web patches. Hunk ranges must
+account for every old/new line, including context rows, and the unchanged gaps
+between hunks must match on both sides. Individual patches must also match
+REST addition/deletion counts; count mismatches reject only those
+files and leave complete siblings usable. A capped or unknown commit list cannot
+supply a verified head SHA for this fallback. Rejection diagnostics appear in
+`patch_skipped_reason` in detailed CLI output.
+
+Store migrations 7 and 8 invalidate comparisons containing older `github_web`
+patches and remove their derived search and clustering data. T1
+metadata and REST patch payloads are retained. Affected comparison content must
+be fetched and indexed again. Newly validated patches use `github_web_v2`
+provenance and survive later opens and schema repairs.
+Version 8 may also rebuild derived caches for already-invalidated GitHub forks
+whose missing patch text has no source marker.
+The separate JSON cluster cache now uses format version 4, so older cached
+assignments and labels are recomputed once, including for stores already on
+schema version 8. This also refreshes unaffected repositories' old cluster caches.
 
 With `--touching` and only literal paths, `spn` also turns on an anonymous,
 best-effort lookup against GitHub's undocumented tree-commit-info page to

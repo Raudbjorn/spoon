@@ -685,8 +685,9 @@ func (t *wtx) Rollback(ctx context.Context) {
 // stmts is one statement per element: go-libsql executes only the first
 // statement of a multi-statement string, silently dropping the rest.
 var migrations = []struct {
-	version int
-	stmts   []string
+	version  int
+	stmts    []string
+	dataOnly bool // One-time invalidations must not replay during schema repair.
 }{
 	{version: 1, stmts: schemaV1},
 	{version: 2, stmts: schemaV2},
@@ -694,6 +695,8 @@ var migrations = []struct {
 	{version: 4, stmts: schemaV4},
 	{version: 5, stmts: schemaV5},
 	{version: 6, stmts: schemaV6},
+	{version: 7, stmts: schemaV7},
+	{version: 8, stmts: schemaV8, dataOnly: true},
 }
 
 // createdTable and addedColumn match the exact shapes every step in the
@@ -793,6 +796,8 @@ func schemaIntact(ctx context.Context, q querier) (bool, error) {
 	return true, nil
 }
 
+// initialize upgrades the schema atomically and repairs drift without replaying
+// one-time data cleanup against evidence rebuilt after its original migration.
 func (s *Store) initialize(ctx context.Context) error {
 	var version int
 	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
@@ -856,13 +861,17 @@ func (s *Store) initialize(ctx context.Context) error {
 		return tx.Commit(ctx)
 	}
 	for _, m := range migrations {
-		// A repair pass replays every step, not just those above the stamped
-		// version -- the drift can be anywhere in the set, and the steps are
-		// idempotent.
+		// A repair pass replays schema steps because drift can occur anywhere.
+		// One-time data invalidations skip replay so newly rebuilt evidence
+		// survives later repairs even when its original provenance was erased.
 		if m.version <= version && !repair {
 			continue
 		}
-		for _, stmt := range m.stmts {
+		stmts := m.stmts
+		if m.dataOnly && m.version <= version {
+			stmts = nil
+		}
+		for _, stmt := range stmts {
 			if _, err := tx.ExecContext(ctx, stmt); err != nil {
 				// ALTER TABLE ... ADD COLUMN has no IF NOT EXISTS, so a re-run
 				// over an already-migrated schema (user_version lost or reset)
@@ -1856,6 +1865,57 @@ var schemaV6 = []string{
 	`CREATE TABLE IF NOT EXISTS lineage_occurrences (lineage_id TEXT NOT NULL, repo_key TEXT NOT NULL, cluster_id TEXT NOT NULL, member_count INTEGER NOT NULL, first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, PRIMARY KEY (lineage_id, repo_key, cluster_id))`,
 	`CREATE INDEX IF NOT EXISTS lineage_occurrences_repo_idx ON lineage_occurrences(repo_key)`,
 	`CREATE TABLE IF NOT EXISTS touched_units (fork_key TEXT NOT NULL, path TEXT NOT NULL, base_sha TEXT NOT NULL, head_sha TEXT NOT NULL, tier INTEGER NOT NULL, units_json TEXT NOT NULL, skipped_reason TEXT, PRIMARY KEY (fork_key, path, base_sha, head_sha, tier))`,
+}
+
+// Legacy HTML patches lack proof of complete hunks; force refetch and remove
+// their derived search data while preserving REST file metadata and commits.
+// New validated patches use github_web_v2 so migration replay leaves them alone.
+// Replay v6: PR #147 briefly published version 6 without these tables.
+var schemaV7 = append(schemaV6,
+	`DELETE FROM documents WHERE fork_key IN (SELECT fork_key FROM compare_files WHERE patch_source='github_web')`,
+	`UPDATE forks SET t2_json='', t2_fetched_at='' WHERE fork_key IN (SELECT fork_key FROM compare_files WHERE patch_source='github_web')`,
+	`UPDATE compare_files SET patch=NULL, patch_source='' WHERE patch_source='github_web'`,
+)
+
+// schemaV8 clears derived evidence left by the published v7 cleanup, including
+// legacy commit-file patches. V7 erased the original compare provenance, so
+// also rebuild GitHub forks with no reusable T2 and cleared compare patches.
+// That conservative match can include other already-invalidated comparisons;
+// current REST/v2 T2 data is excluded. Empty head SHAs must not exclude legacy
+// caches. This fallback runs once: repair must retain freshly rebuilt T1-only
+// documents even if their cleared compare rows remain. T1, REST patches and
+// commits survive; affected documents, vectors, touched units, repository
+// clusters and connected lineages are rebuilt.
+var schemaV8 = []string{
+	`CREATE TEMP TABLE webdiff_v8_forks AS
+		SELECT fork_key FROM compare_files WHERE patch_source='github_web'
+		UNION SELECT fork_key FROM commit_files WHERE patch_source='github_web'
+		UNION SELECT f.fork_key FROM forks f JOIN repos r ON r.repo_key=f.repo_key
+		WHERE r.provider='github' AND f.t2_json='' AND f.t2_fetched_at=''
+		AND EXISTS (SELECT 1 FROM compare_files c WHERE c.fork_key=f.fork_key AND c.patch IS NULL AND c.patch_source='')`,
+	`CREATE TEMP TABLE webdiff_v8_repos AS
+		SELECT DISTINCT repo_key FROM forks WHERE fork_key IN (SELECT fork_key FROM webdiff_v8_forks)`,
+	`CREATE TEMP TABLE webdiff_v8_lineages AS
+		SELECT lineage_id FROM global_lineage WHERE origin_repo IN (SELECT repo_key FROM webdiff_v8_repos)
+		UNION SELECT lineage_id FROM lineage_occurrences WHERE repo_key IN (SELECT repo_key FROM webdiff_v8_repos)
+		UNION SELECT lineage_id FROM clusters WHERE repo_key IN (SELECT repo_key FROM webdiff_v8_repos) AND lineage_id IS NOT NULL`,
+	`DELETE FROM documents WHERE fork_key IN (SELECT fork_key FROM webdiff_v8_forks)`,
+	`UPDATE forks SET t2_json='', head_sha='', t2_fetched_at='' WHERE fork_key IN (SELECT fork_key FROM webdiff_v8_forks)`,
+	`UPDATE compare_files SET patch=NULL, patch_source='' WHERE patch_source='github_web'`,
+	`UPDATE commit_files SET patch=NULL, patch_source='' WHERE patch_source='github_web'`,
+	`DELETE FROM touched_units WHERE fork_key IN (SELECT fork_key FROM webdiff_v8_forks)`,
+	// JSON assignments/labels are independent of these tables. Cluster cache
+	// schema 4 invalidates older JSON through LoadCache, including already-v8
+	// stores whose affected repository set is no longer available here.
+	`DELETE FROM cluster_runs WHERE repo_key IN (SELECT repo_key FROM webdiff_v8_repos)`,
+	`DELETE FROM clusters WHERE repo_key IN (SELECT repo_key FROM webdiff_v8_repos)`,
+	`DELETE FROM cluster_members WHERE repo_key IN (SELECT repo_key FROM webdiff_v8_repos)`,
+	`UPDATE clusters SET lineage_id=NULL WHERE lineage_id IN (SELECT lineage_id FROM webdiff_v8_lineages)`,
+	`DELETE FROM lineage_occurrences WHERE repo_key IN (SELECT repo_key FROM webdiff_v8_repos) OR lineage_id IN (SELECT lineage_id FROM webdiff_v8_lineages)`,
+	`DELETE FROM global_lineage WHERE lineage_id IN (SELECT lineage_id FROM webdiff_v8_lineages)`,
+	`DROP TABLE webdiff_v8_lineages`,
+	`DROP TABLE webdiff_v8_repos`,
+	`DROP TABLE webdiff_v8_forks`,
 }
 
 // downgradeStep rolls a store that is one schema step ahead of

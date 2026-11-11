@@ -7,7 +7,7 @@ import (
 	"github.com/svnbjrn/spoon/internal/forge"
 )
 
-// github_web patches are scraped as bare +/- lines with no ---/+++ or @@ hunk
+// Legacy github_web patches were scraped as bare +/- lines with no ---/+++ or @@ hunk
 // header, while REST patches carry both. NormalizeDiff rewrites a real hunk
 // header to "@@@@", so without canonicalization the same change embeds
 // differently depending on which source fetched it — and DiffChunk feeds

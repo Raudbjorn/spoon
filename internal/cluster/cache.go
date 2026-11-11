@@ -9,8 +9,11 @@ import (
 )
 
 // SchemaVersion is the current on-disk schema version. Bump when the
-// ClusterCache shape changes in a way that invalidates older files.
-const SchemaVersion = 3
+// ClusterCache shape or evidence requirements invalidate older files. Version 4
+// rejects assignments and labels derived from unvalidated web patches, including
+// caches left behind by stores that already completed SQL migration 8. All older
+// JSON caches recompute once because those stores erased the affected repo set.
+const SchemaVersion = 4
 
 // cacheTTL is the maximum age of a cached cluster result before it is
 // considered stale.
