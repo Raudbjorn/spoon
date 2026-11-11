@@ -1,15 +1,16 @@
 package threadsops
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/svnbjrn/spoon/internal/forge"
 	"github.com/svnbjrn/spoon/internal/github"
@@ -18,14 +19,14 @@ import (
 // WorkspaceRepo describes a sibling git checkout found in a workspace scan.
 type WorkspaceRepo struct {
 	Dir           string // absolute path to repository directory
-	OriginURL     string // raw value of remote.origin.url
+	OriginURL     string // decoded value of remote.origin.url
 	Owner         string // parsed from OriginURL via forge.ParseRepoURL
 	Repo          string // parsed repository name
 	Provider      string // "github" / "gitlab" / "gitea"
 	Host          string // origin host; never inferred from the API client
 	CurrentBranch string // current branch name, or empty if detached HEAD
 
-	UpstreamURL      string // raw value of remote.upstream.url, if present
+	UpstreamURL      string // decoded value of remote.upstream.url, if present
 	UpstreamOwner    string // parsed owner of upstream remote, if present
 	UpstreamRepo     string // parsed repository name of upstream remote, if present
 	UpstreamProvider string
@@ -185,42 +186,27 @@ func readRepoDetails(repoPath string) (WorkspaceRepo, error) {
 
 	// 2. Read config for remotes
 	configFile := filepath.Join(commonDir, "config")
-	if f, err := os.Open(configFile); err == nil {
-		defer f.Close()
-		scanner := bufio.NewScanner(f)
-		currentRemote := ""
-		for scanner.Scan() {
-			line := strings.TrimSpace(scanner.Text())
-			if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
-				sec := strings.TrimSpace(line[1 : len(line)-1])
-				fields := strings.Fields(sec)
-				if len(fields) >= 2 && strings.EqualFold(fields[0], "remote") {
-					currentRemote = strings.Trim(fields[1], `"'`)
-				} else {
-					currentRemote = ""
-				}
-				continue
+	// Git handles quotes, escapes, comments, and continuations in config values.
+	const gitConfigTimeout = 5 * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), gitConfigTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "config", "--file", configFile, "--null", "--get-regexp", `^remote\.(origin|upstream)\.url$`).Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+			return repo, fmt.Errorf("read remote config: %w", err)
+		}
+	}
+	for _, entry := range strings.Split(string(out), "\x00") {
+		key, val, _ := strings.Cut(entry, "\n")
+		switch key {
+		case "remote.origin.url":
+			if repo.OriginURL == "" {
+				repo.OriginURL = val
 			}
-
-			if currentRemote == "" {
-				continue
-			}
-
-			if eqIdx := strings.Index(line, "="); eqIdx > 0 {
-				key := strings.TrimSpace(line[:eqIdx])
-				val := strings.TrimSpace(line[eqIdx+1:])
-				if strings.EqualFold(key, "url") {
-					switch strings.ToLower(currentRemote) {
-					case "origin":
-						if repo.OriginURL == "" {
-							repo.OriginURL = val
-						}
-					case "upstream":
-						if repo.UpstreamURL == "" {
-							repo.UpstreamURL = val
-						}
-					}
-				}
+		case "remote.upstream.url":
+			if repo.UpstreamURL == "" {
+				repo.UpstreamURL = val
 			}
 		}
 	}

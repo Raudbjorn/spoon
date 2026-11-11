@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -10,6 +11,51 @@ import (
 
 	"github.com/svnbjrn/spoon/internal/forge"
 )
+
+type missingProbeFake struct {
+	err    error
+	probed []forge.T1Data
+}
+
+func (f *missingProbeFake) BatchCompare(context.Context, []forge.T1Data, float64) (map[string]forge.ForkDivergence, forge.BatchStats, error) {
+	return map[string]forge.ForkDivergence{"resolved": {Resolved: true}}, forge.BatchStats{Queries: 1}, f.err
+}
+
+func (f *missingProbeFake) MissingRepos(_ context.Context, forks []forge.T1Data) (map[string]bool, error) {
+	f.probed = append(f.probed, forks...)
+	return map[string]bool{"unresolved": true}, nil
+}
+
+func TestBatchDivergenceCmd_ReserveStopsMissingRepoProbes(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		err       error
+		wantProbe bool
+	}{
+		{"reserve", forge.ErrRateReserve, false},
+		{"wrapped reserve", fmt.Errorf("phase A: %w", forge.ErrRateReserve), false},
+		{"partial result", nil, true},
+		{"other failure", errors.New("lookup failed"), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &missingProbeFake{err: tc.err}
+			msg := batchDivergenceCmd(context.Background(), fake, []enrichEntry{
+				{fork: forge.T1Data{ID: "resolved"}},
+				{fork: forge.T1Data{ID: "unresolved"}},
+			})().(batchDivergenceMsg)
+			if !errors.Is(msg.err, tc.err) || msg.stats.Queries != 1 || !msg.divergence["resolved"].Resolved {
+				t.Fatalf("batch evidence lost: %+v", msg)
+			}
+			if tc.wantProbe {
+				if len(fake.probed) != 1 || fake.probed[0].ID != "unresolved" || !msg.missing["unresolved"] {
+					t.Fatalf("probed=%v missing=%v; want only the unresolved fork", fake.probed, msg.missing)
+				}
+			} else if len(fake.probed) != 0 || len(msg.missing) != 0 {
+				t.Fatalf("reserve must stop probes: probed=%v missing=%v", fake.probed, msg.missing)
+			}
+		})
+	}
+}
 
 // orderFakeForge records the order Compare is called in.
 type orderFakeForge struct {

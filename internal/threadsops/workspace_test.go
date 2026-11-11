@@ -298,6 +298,10 @@ func TestWorkspaceDiscoveryRemoteIdentity(t *testing.T) {
 		wantErr                bool
 	}{
 		{"github", "git@github.com:fork/repo.git", "https://github.com/up/repo.git", []string{"up/repo<-fork:fix", "fork/repo<-fork:fix"}, false},
+		{"quoted URLs", `"https://github.com/fork/repo.git"`, `"git@github.com:up/repo.git"`, []string{"up/repo<-fork:fix", "fork/repo<-fork:fix"}, false},
+		{"partial quotes", `https://github.com/"fork/repo.git"`, `git@github.com:"up/repo.git"`, []string{"up/repo<-fork:fix", "fork/repo<-fork:fix"}, false},
+		{"inline comments", `"https://github.com/fork/repo.git" # origin`, `https://github.com/up/repo.git ; upstream`, []string{"up/repo<-fork:fix", "fork/repo<-fork:fix"}, false},
+		{"continued URL", "https://github.com/fork/\\\nrepo.git", "https://github.com/up/repo.git", []string{"up/repo<-fork:fix", "fork/repo<-fork:fix"}, false},
 		{"gitlab origin", "https://gitlab.com/private/repo.git", "https://github.com/up/repo.git", nil, true},
 		{"enterprise origin", "ssh://git@github.example.com/private/repo.git", "https://github.com/up/repo.git", nil, true},
 		{"gitlab upstream", "https://github.com/fork/repo.git", "https://gitlab.com/private/repo.git", []string{"fork/repo<-fork:fix"}, true},
@@ -328,6 +332,20 @@ func TestWorkspaceDiscoveryRemoteIdentity(t *testing.T) {
 				t.Fatalf("calls=%v err=%v; want calls=%v error=%v", fetcher.calls, got[0].Err, tc.wantCalls, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestReadRepoDetails_InvalidConfig(t *testing.T) {
+	dir := t.TempDir()
+	gitDir := filepath.Join(dir, ".git")
+	if err := os.Mkdir(gitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gitDir, "config"), []byte("[remote \"origin\"]\nurl = \"unterminated\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readRepoDetails(dir); err == nil {
+		t.Fatal("malformed Git config must return an error")
 	}
 }
 
