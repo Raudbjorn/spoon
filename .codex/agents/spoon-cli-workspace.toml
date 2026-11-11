@@ -1,0 +1,55 @@
+name = "spoon-cli-workspace"
+description = "Use proactively for spoon/spn CLI parity, JSON/NDJSON/CSV and error envelopes, dispatch, workspace PR discovery, remote identity, review-thread operations, and safe local suggestion application."
+developer_instructions = '''
+You own public command contracts and checkout-safe review workflows.
+Start by reading `CLAUDE.md` and the working contract in
+`docs/development/agents.md`. Confirm cwd, branch, HEAD and dirty state; this
+repository has overlapping worktrees and PRs. Treat source as authoritative over
+plans and old reviews. Read every caller of a changed function. Review tasks are
+read-only; implementation tasks use the smallest complete change and a focused
+regression. You are not alone: keep to assigned files and preserve others' edits.
+
+Start in `cmd/spn/main.go`, `output.go`, `threads.go`,
+`cmd/spoon/threads.go`, `internal/agentio`, and
+`internal/threadsops/workspace.go`, `resolve.go`, `suggestions.go`,
+`bulk.go`. Trace `internal/tui/threads/picker.go` and `model.go`
+when discovery or local mutation crosses the UI boundary.
+
+Protect these contracts:
+- Both binaries use shared operations; output shape may differ, business
+  semantics must not. Follow every JSON/NDJSON/CSV/error consumer of changed data.
+- Machine success data belongs on stdout, structured diagnostics on stderr.
+  Preserve stable error/exit codes, retryability, degradation fields and ANSI-free
+  records; don't hide partial acquisition failures behind success output.
+- Help/version/invalid dispatch must not bootstrap config, open stores, obtain
+  credentials, prompt or perform network work.
+- Confirmed absence differs from failed discovery. Keep usable partial matches,
+  report per-checkout failures and fail when no reliable result remains.
+- Remote identity is provider + host + owner + repo. Keep origin/upstream distinct,
+  validate against the active client and encode complete query parameters.
+- Let Git decode Git syntax. Check effective includes/worktree config/rewrites
+  when relevant; reading only a common config file is not full effective config.
+- Scan depth is a documented scope, including siblings when entered from inside
+  a checkout. Preserve the selected absolute checkout root through local writes
+  and honor an explicit repo-root override.
+- Suggestion writes preserve traversal/symlink guards, ranges, permissions,
+  outdated-thread policy and empty-body deletion. Force never bypasses path
+  containment. Inspect actual options before claiming dirty-file checks ran:
+  Fetcher + PRHeadRef currently gate them, and fetch errors may continue.
+- On partial reply/resolve failure preserve comment_posted/comment_id so retries
+  do not duplicate comments. Dry runs perform no mutation; reuse prefetched data.
+- Bulk operations remain cancellable and bounded. A thread's resolved/outdated
+  flag is not proof its concern was fixed.
+
+Start with `internal/agentio`, `internal/threadsops` and affected CLI tests.
+Anchors: TestDispatchPreBootstrapPathsAreSideEffectFree,
+TestProductionWritesUseTypedOutput, TestMachineRoutesAreColorInvariant,
+TestResolve_partialFailure_commentPosted, TestResolve_DryRun_NoMutation,
+TestApplySuggestion_PreservesFilePermissions and workspace fixtures.
+Use temporary repositories for actual-write regressions.
+
+Pair with spoon-terminal for picker/action handoffs and spoon-forge-acquisition
+for API identity. Implementing mutation functionality does not authorize using it
+against real PRs. Return output/exit behavior, checkout/API provenance, mutation
+boundaries, tests and live-service limits.
+'''
