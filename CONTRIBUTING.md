@@ -23,6 +23,10 @@ Glean evaluated for fork similarity — see `docs/adr/0006-glean-integration-eva
 
 ## Pull Requests
 
+Project-specific Codex subagents live in `.codex/agents/`. See the
+[development agent team](docs/development/agents.md) for routing, ownership,
+verification rules, and the Git/PR evidence behind each specialty.
+
 - Keep PRs focused; one logical change per PR
 - Update documentation for user-facing changes
 - Run the full test suite before requesting review
