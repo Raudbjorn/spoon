@@ -450,6 +450,7 @@ func downloadFromGcs(model EmbeddingModel, cacheDir string, showDownloadProgress
 		reader := progressbar.NewReader(response.Body, bar)
 		err = untar(&reader, cacheDir)
 	} else {
+		fmt.Printf("Downloading %s...", model)
 		err = untar(response.Body, cacheDir)
 	}
 
