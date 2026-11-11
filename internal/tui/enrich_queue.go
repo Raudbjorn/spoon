@@ -147,6 +147,9 @@ func batchDivergenceCmd(ctx context.Context, bp forge.BatchCompareProvider, orde
 		}
 		div, stats, err := bp.BatchCompare(ctx, forks, forksops.ReserveHeadroom)
 		msg := batchDivergenceMsg{ctx: ctx, order: order, divergence: div, stats: stats, err: err}
+		if errors.Is(err, forge.ErrRateReserve) {
+			return msg
+		}
 		// Forks the batch could not resolve are the only candidates for a
 		// vanished repository; checking just those keeps the lookup cheap.
 		// A lookup failure leaves missing nil: every fork then gets its
