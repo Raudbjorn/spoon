@@ -12,6 +12,9 @@ Start at `internal/config/effective.go`, `internal/config/resolve.go`,
 `internal/config/bootstrap.go`; `internal/tui/settings/apply.go`,
 `internal/tui/settings/resolve.go`, `internal/tui/settings/actions.go`,
 `internal/tui/settings/secret.go`; and `internal/setupcheck/preflight.go`.
+For credential persistence and login, trace `internal/config/secrets.go`,
+`internal/secrets/keyring.go`, `internal/authops/authops.go`,
+`internal/authops/storage.go`, and `internal/oauth/oauth.go`.
 Follow effective values into `internal/github/options.go`,
 `internal/github/auth.go` and native constructors.
 For delivery read `packaging/arch/README.md`, `go.mod`, tracked `vendor/`, and
@@ -30,23 +33,32 @@ Protect these contracts:
 - Keep secrets out of frames, clipboard, logs, error text, fixtures and captures,
   including length leaks. Use injected credential fakes for verification.
 - Startup environment snapshots must reach both the displayed effective setting
-  and the runtime consumer. Local readiness checks must stay local.
-- Preserve bounded credential subprocess probes and distinguish caller
-  cancellation from a probe's own timeout. A timed-out caller does not prove a
-  backend operation stopped; serialize actual operations where required.
+  and the runtime consumer. Local readiness uses loaded credentials/environment
+  presence, not GitHub CLI or network probes; configured is not authenticated.
+- Bound keyring opening and operations. A timeout does not stop an uncancellable
+  backend call: keep its serialization gate held through completion and any
+  late-write rollback, so another operation cannot race the abandoned write.
 - Atomic save must retain old credentials on failure and preserve file/directory
-  permissions. Migration must handle concurrent edits, unknown fields and
-  rollback before deleting previous credential storage.
-- Verify which auth packages exist on this branch. Open PR plans for OAuth or
-  keyrings are not the current implementation.
+  permissions. Verify keyring readback before publishing references; prune old
+  entries only after publication. Preserve unknown JSON and reject changed
+  tokens during inline migration; keep file fallback explicit and observable.
+- OAuth login validates writable personal storage before authorization and the
+  returned identity before saving. Preserve state/PKCE checks, loopback callback
+  binding, one callback claim and rejection of unsupported expiring tokens.
 - Follow the vendor, CGO, version and build/check requirements in
   `packaging/arch/README.md`; verify the current recipe before changing delivery.
 
-Start with `go test -race ./internal/config ./internal/setupcheck ./internal/tui/settings` and affected constructor tests.
-Anchors: TestCandidateFailureLeavesLiveConfigUntouched,
-TestUnrelatedSaveRetainsExplicitFalseFileSource,
-TestEveryCredentialSentinelIsAbsentFromEverySettingsFrameAndClipboard,
-TestLocalProviderProbeReportsCancellationDuringGHAuthToken.
+Start with affected tests in `internal/config`, `internal/setupcheck`,
+`internal/tui/settings`, `internal/authops`, `internal/secrets`, and
+`internal/oauth`; use race checks for changed lifecycle or concurrent state.
+Anchors:
+`internal/tui/settings/transaction_test.go:TestCandidateFailureLeavesLiveConfigUntouched`,
+`internal/tui/settings/false_roundtrip_test.go:TestUnrelatedSaveRetainsExplicitFalseFileSource`,
+`internal/tui/settings/credential_frame_matrix_test.go:TestEveryCredentialSentinelIsAbsentFromEverySettingsFrameAndClipboard`,
+`internal/setupcheck/preflight_snapshot_test.go:TestLocalProviderProbeReportsCancellation`,
+`internal/secrets/keyring_test.go:TestKeyringTimeoutSerializesAndUndoesLateWrite`,
+`internal/config/secrets_test.go:TestMigrateInlineSecretsPreservesOtherJSON`, and
+`internal/oauth/oauth_test.go:TestLoginExchangesCodeWithPKCE`.
 For packaging use shell syntax checks, builds, and the appropriate package
 check/build only when in scope; compilation is not installation proof.
 
