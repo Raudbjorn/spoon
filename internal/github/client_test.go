@@ -15,6 +15,38 @@ import (
 	gogithub "github.com/google/go-github/v90/github"
 )
 
+func TestClientHostMatchesRESTOrigin(t *testing.T) {
+	for _, key := range []string{"GH_HOST", "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"} {
+		t.Setenv(key, "")
+	}
+	for _, tc := range []struct {
+		name, host, tokenKey, want string
+		tokens                     []string
+	}{
+		{name: "public anonymous", want: "github.com"},
+		{name: "enterprise server", host: "git.example.com", tokenKey: "GH_ENTERPRISE_TOKEN", want: "git.example.com"},
+		{name: "enterprise cloud", host: "tenant.ghe.com", tokenKey: "GH_TOKEN", want: "tenant.ghe.com"},
+		{name: "anonymous fallback", host: "git.example.com", want: "github.com"},
+		{name: "saved public token", host: "git.example.com", tokens: []string{"saved-public-token"}, want: "github.com"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("GH_HOST", tc.host)
+			if tc.tokenKey != "" {
+				t.Setenv(tc.tokenKey, "test-token")
+			}
+			c, err := NewClientWithOptions(ClientOptions{Tokens: tc.tokens})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			t.Setenv("GH_HOST", "changed-after-construction.example")
+			if got := c.Host(); got != tc.want {
+				t.Fatalf("Host() = %q, want %q for REST origin %s", got, tc.want, c.rest.BaseURL())
+			}
+		})
+	}
+}
+
 func TestNextPageURL(t *testing.T) {
 	tests := []struct {
 		name string

@@ -69,9 +69,23 @@ type ClientOptions struct {
 
 type apiResource uint8
 
-// defaultHost is the only GitHub host this provider talks to. It is also what
-// AuthStatus.Host reports, which callers interpolate into user-facing URLs.
+// defaultHost is used for public GitHub credentials and anonymous access.
 const defaultHost = "github.com"
+
+// Host reports the repository host served by this client.
+func (c *Client) Host() string {
+	if c.rest == nil {
+		return defaultHost
+	}
+	api, err := url.Parse(c.rest.BaseURL())
+	if err != nil {
+		return ""
+	}
+	if api.Path == "/" {
+		return strings.TrimPrefix(api.Host, "api.")
+	}
+	return api.Host
+}
 
 // computeAuthScopeID returns the first 16 lowercase hex chars of SHA-256 over
 // provider, normalized host, and the sorted trimmed credential token set joined

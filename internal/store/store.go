@@ -119,6 +119,12 @@ type Snapshot struct {
 	// already live relationally in compare_files/commits and would double the
 	// row size (patches included). Written only when T2Present.
 	T2 *forge.T2Data
+	// T2Refresh updates only BehindCount on the same stored comparison;
+	// cached reads omit patches and must never replace relational rows.
+	T2Refresh *forge.T2Data
+	// T2Invalidate disables reuse of the matching old comparison while
+	// preserving its patch and commit rows until a replacement is fetched.
+	T2Invalidate *forge.T2Data
 }
 
 // RepoSnapshot is the read-side view of one upstream and its cached forks.
@@ -163,9 +169,8 @@ func (s *RepoSnapshot) Fork(id string) *CachedFork {
 }
 
 // ValidT2 returns the stored compare for the fork matching t1, when the
-// stored pushed_at equals the live one. Validity is content-addressed: a push
-// moves pushed_at, so equality means the stored compare still describes the
-// fork's current state — no TTL involved. Returns nil on miss or staleness.
+// stored pushed_at and compared default branch still match the live listing.
+// Returns nil on miss or staleness; upstream changes are checked by the batch.
 //
 // The returned T2 carries no file patch text (see LoadRepoSnapshot); diff
 // stats, commits and triage scalars are complete.
@@ -174,7 +179,17 @@ func (s *RepoSnapshot) ValidT2(t1 forge.T1Data) *forge.T2Data {
 	if cf == nil || cf.T2 == nil || !cf.T1.PushedAt.Equal(t1.PushedAt) {
 		return nil
 	}
-	return cf.T2
+	t2 := *cf.T2
+	if t2.ComparedBranch == "" {
+		t2.ComparedBranch = cf.T1.DefaultBranch
+		if t2.IsBranchWork {
+			t2.ComparedBranch = t2.ActiveBranch
+		}
+	}
+	if !t2.IsBranchWork && t2.ComparedBranch != t1.DefaultBranch {
+		return nil
+	}
+	return &t2
 }
 
 // CachedFork is one fork reconstructed from the store. T2 is nil when the fork
@@ -678,6 +693,7 @@ var migrations = []struct {
 	{version: 3, stmts: schemaV3},
 	{version: 4, stmts: schemaV4},
 	{version: 5, stmts: schemaV5},
+	{version: 6, stmts: schemaV6},
 }
 
 // createdTable and addedColumn match the exact shapes every step in the
@@ -1006,6 +1022,43 @@ func upsertSnapshotTx(ctx context.Context, tx *wtx, snap Snapshot) error {
 	if snap.Repo.APIVersion != "" || snap.Repo.AcquisitionMethod != "" || snap.Repo.AuthScopeID != "" {
 		if _, err = tx.ExecContext(ctx, `UPDATE repos SET api_version=?,acquisition_method=?,auth_scope_id=? WHERE repo_key=?`, snap.Repo.APIVersion, snap.Repo.AcquisitionMethod, snap.Repo.AuthScopeID, repoKey); err != nil {
 			return fmt.Errorf("update repo scope: %w", err)
+		}
+	}
+	if !snap.T2Present && snap.T1 != nil {
+		// Pin legacy comparison identity before a listing changes its default branch.
+		if _, err = tx.ExecContext(ctx, `UPDATE forks SET t2_json=json_set(t2_json, '$.ComparedBranch',
+			CASE WHEN json_extract(t2_json, '$.IsBranchWork') THEN coalesce(json_extract(t2_json, '$.ActiveBranch'), '')
+			ELSE coalesce(json_extract(t1_json, '$.DefaultBranch'), '') END)
+			WHERE fork_key=? AND t1_json<>'' AND t2_json<>'' AND coalesce(json_extract(t2_json, '$.ComparedBranch'), '')=''`, forkKey); err != nil {
+			return fmt.Errorf("preserve cached comparison branch: %w", err)
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE forks SET t2_json='', head_sha='', t2_fetched_at=''
+			WHERE fork_key=? AND t2_json<>'' AND (pushed_at<>? OR
+			(coalesce(json_extract(t2_json, '$.IsBranchWork'), 0)=0
+			AND coalesce(json_extract(t2_json, '$.ComparedBranch'), '')<>?))`,
+			forkKey, ts(snap.Fork.PushedAt), snap.T1.DefaultBranch); err != nil {
+			return fmt.Errorf("invalidate changed fork comparison: %w", err)
+		}
+	}
+	if t2 := snap.T2Invalidate; !snap.T2Present && t2 != nil && t2.ComparedBranch != "" {
+		// Legacy compares may lack a head SHA but still have a disproven ahead count.
+		// Match the original identity, including an empty head, before disabling reuse.
+		if _, err = tx.ExecContext(ctx, `UPDATE forks SET t2_json='', head_sha='', t2_fetched_at=''
+			WHERE fork_key=? AND pushed_at=? AND t2_json<>''
+			AND json_extract(t2_json, '$.HeadSHA')=? AND json_extract(t2_json, '$.ComparedBranch')=?
+			AND json_extract(t2_json, '$.BaseSHA')=? AND json_extract(t2_json, '$.AheadCount')=?`,
+			forkKey, ts(snap.Fork.PushedAt), t2.HeadSHA, t2.ComparedBranch, t2.BaseSHA, t2.AheadCount); err != nil {
+			return fmt.Errorf("invalidate cached comparison: %w", err)
+		}
+	}
+	if t2 := snap.T2Refresh; !snap.T2Present && t2 != nil && t2.HeadSHA != "" && t2.ComparedBranch != "" {
+		// Check the old row before the T1 upsert; another scan may have replaced it.
+		if _, err = tx.ExecContext(ctx, `UPDATE forks SET t2_json=json_set(t2_json, '$.BehindCount', ?)
+			WHERE fork_key=? AND pushed_at=? AND t2_json<>''
+			AND json_extract(t2_json, '$.HeadSHA')=? AND json_extract(t2_json, '$.ComparedBranch')=?
+			AND json_extract(t2_json, '$.BaseSHA')=? AND json_extract(t2_json, '$.AheadCount')=?`,
+			t2.BehindCount, forkKey, ts(snap.Fork.PushedAt), t2.HeadSHA, t2.ComparedBranch, t2.BaseSHA, t2.AheadCount); err != nil {
+			return fmt.Errorf("refresh cached behind count: %w", err)
 		}
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO forks(fork_key,repo_key,forge_id,owner,name,url,description,language,topics_json,stars,pushed_at,heat,tier,updated_at,merge_commits,merge_commit_truncated)
@@ -1788,6 +1841,21 @@ var schemaV5 = []string{
 	`ALTER TABLE forks ADD COLUMN merge_commit_truncated INTEGER NOT NULL DEFAULT 0`,
 	`CREATE TABLE IF NOT EXISTS merge_commit_history (fork_key TEXT NOT NULL REFERENCES forks(fork_key) ON DELETE CASCADE, idx INTEGER NOT NULL, parents INTEGER NOT NULL, PRIMARY KEY(fork_key, idx))`,
 	`CREATE INDEX IF NOT EXISTS merge_commit_history_fork_idx ON merge_commit_history(fork_key)`,
+}
+
+// schemaV6 adds SQLite persistence for Continual Category Discovery (cluster_runs,
+// clusters, cluster_members), Cross-Repo Lineage (global_lineage, lineage_occurrences),
+// and Touched Units attribution (touched_units), consolidating flat-file caches
+// into spoon.db.
+var schemaV6 = []string{
+	`CREATE TABLE IF NOT EXISTS cluster_runs (repo_key TEXT PRIMARY KEY, embedder_fp TEXT NOT NULL, computed_at TEXT NOT NULL, last_reassigned_at TEXT NOT NULL, next_cluster_seq INTEGER NOT NULL DEFAULT 0)`,
+	`CREATE TABLE IF NOT EXISTS clusters (repo_key TEXT NOT NULL, cluster_id TEXT NOT NULL, centroid BLOB NOT NULL, anchor_centroid BLOB NOT NULL, member_count INTEGER NOT NULL, label TEXT NOT NULL, summary TEXT, lineage_id TEXT, stable_since TEXT NOT NULL, PRIMARY KEY (repo_key, cluster_id))`,
+	`CREATE TABLE IF NOT EXISTS cluster_members (repo_key TEXT NOT NULL, fork_key TEXT NOT NULL, head_sha TEXT NOT NULL, cluster_id TEXT, embedding BLOB NOT NULL, PRIMARY KEY (repo_key, fork_key))`,
+	`CREATE INDEX IF NOT EXISTS cluster_members_cluster_idx ON cluster_members(repo_key, cluster_id)`,
+	`CREATE TABLE IF NOT EXISTS global_lineage (lineage_id TEXT PRIMARY KEY, embedder_fp TEXT NOT NULL, centroid BLOB NOT NULL, label TEXT NOT NULL, origin_repo TEXT NOT NULL, origin_cluster_id TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL)`,
+	`CREATE TABLE IF NOT EXISTS lineage_occurrences (lineage_id TEXT NOT NULL, repo_key TEXT NOT NULL, cluster_id TEXT NOT NULL, member_count INTEGER NOT NULL, first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, PRIMARY KEY (lineage_id, repo_key, cluster_id))`,
+	`CREATE INDEX IF NOT EXISTS lineage_occurrences_repo_idx ON lineage_occurrences(repo_key)`,
+	`CREATE TABLE IF NOT EXISTS touched_units (fork_key TEXT NOT NULL, path TEXT NOT NULL, base_sha TEXT NOT NULL, head_sha TEXT NOT NULL, tier INTEGER NOT NULL, units_json TEXT NOT NULL, skipped_reason TEXT, PRIMARY KEY (fork_key, path, base_sha, head_sha, tier))`,
 }
 
 // downgradeStep rolls a store that is one schema step ahead of

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -87,10 +88,11 @@ func (f *fakeForge) Headroom() float64 {
 type batchFakeForge struct {
 	*fakeForge
 
-	batch      map[string]forge.ForkDivergence
-	batchErr   error
-	batchStats forge.BatchStats
-	batchCalls int // count of BatchCompare invocations
+	batch              map[string]forge.ForkDivergence
+	batchErr           error
+	batchStats         forge.BatchStats
+	batchCalls         int
+	headroomAfterBatch *float64
 
 	// resolvedCalls, when non-nil, has "<forkID>@<branch>" appended for
 	// every CompareResolved call, so a test can assert both which forks
@@ -103,8 +105,11 @@ type batchFakeForge struct {
 	resolvedErr map[string]error
 }
 
-func (f *batchFakeForge) BatchCompare(_ context.Context, _ []forge.T1Data) (map[string]forge.ForkDivergence, forge.BatchStats, error) {
+func (f *batchFakeForge) BatchCompare(_ context.Context, _ []forge.T1Data, _ map[string]*forge.T2Data, _ float64) (map[string]forge.ForkDivergence, forge.BatchStats, error) {
 	f.batchCalls++
+	if f.headroomAfterBatch != nil {
+		f.headroom = f.headroomAfterBatch
+	}
 	if f.batchErr != nil {
 		return f.batch, f.batchStats, f.batchErr
 	}
@@ -274,7 +279,7 @@ func TestBatchEstimate_ContributorsCostAtTier3(t *testing.T) {
 		pending = append(pending, forge.T1Data{ID: fmt.Sprintf("o/unresolved%d", i)})
 	}
 
-	divergent, resolved, tier2Estimate := batchEstimate(pending, divergence, 2)
+	divergent, resolved, tier2Estimate := batchEstimate(pending, divergence, 2, nil)
 	if divergent != 10 {
 		t.Errorf("divergent = %d, want 10", divergent)
 	}
@@ -288,7 +293,7 @@ func TestBatchEstimate_ContributorsCostAtTier3(t *testing.T) {
 		t.Errorf("tier2Estimate = %d, want 25 (10 divergent + 5*3 unresolved)", tier2Estimate)
 	}
 
-	_, _, tier3Estimate := batchEstimate(pending, divergence, 3)
+	_, _, tier3Estimate := batchEstimate(pending, divergence, 3, nil)
 	// tier 3: every resolved fork (all 100) still pays a Contributors call
 	// -- perRequestCost(3)-perRequestCost(2) = 2 -- on top of the 10
 	// divergent compares; unresolved forks pay the full perRequestCost(3)=5
@@ -1063,7 +1068,8 @@ func TestStream_priorsLaneSplit_matchedBeforeUnmatched(t *testing.T) {
 	now := time.Now()
 	newForge := func() *fakeForge {
 		return &fakeForge{
-			parent: forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
+			concurrency: 1,
+			parent:      forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
 			forks: []forge.T1Data{
 				{ID: "o/docs", Owner: "o", Name: "docs", Stars: 500, SubForkCount: 20, PushedAt: now, DefaultBranch: "main"},
 				{ID: "o/auth", Owner: "o", Name: "auth", Stars: 1, PushedAt: now, DefaultBranch: "main"},
@@ -1873,5 +1879,158 @@ func TestStream_compareResolvedError_fallsBackToCompareOnce(t *testing.T) {
 	}
 	if r.Err != nil {
 		t.Errorf("a CompareResolved failure followed by a successful Compare should not be a fork error, got %+v", r.Err)
+	}
+}
+
+func TestStream_cachedForkRefreshesBehindCountFromBatch(t *testing.T) {
+	now := time.Now()
+	cachedT2 := forge.T2Data{
+		Performed:   true,
+		AheadCount:  0,
+		BehindCount: 2, // older behind count in cache
+		HeadSHA:     "main-tip",
+	}
+	ff := &batchFakeForge{
+		fakeForge: &fakeForge{
+			parent: forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
+			forks: []forge.T1Data{
+				{ID: "o/cached", Owner: "o", Name: "cached", DefaultBranch: "main", PushedAt: now},
+			},
+		},
+		batch: map[string]forge.ForkDivergence{
+			"o/cached": {
+				Resolved: true,
+				Default:  forge.BranchDivergence{Name: "main", TipSHA: "main-tip", AheadBy: 0, BehindBy: 15},
+			},
+		},
+	}
+	opts := Options{
+		Tier: 2,
+		CachedT2: func(f forge.T1Data) *forge.T2Data {
+			if f.ID == "o/cached" {
+				copyT2 := cachedT2
+				return &copyT2
+			}
+			return nil
+		},
+	}
+	ch, err := Stream(context.Background(), ff, "o", "r", opts)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	r := <-ch
+	if r.Err != nil {
+		t.Fatalf("unexpected error: %+v", r.Err)
+	}
+	if r.T2 == nil {
+		t.Fatal("expected T2 on result")
+	}
+	// A fresh zero-ahead comparison replaces cached evidence wholesale.
+	if r.T2FromCache {
+		t.Error("expected a fresh batch comparison")
+	}
+	if r.T2.BehindCount != 15 {
+		t.Errorf("expected refreshed BehindCount = 15, got %d", r.T2.BehindCount)
+	}
+}
+
+func TestStreamCachedComparisonCoherence(t *testing.T) {
+	for _, tc := range []struct {
+		name, tip, branch string
+		ahead             int
+		wantCached        bool
+	}{
+		{"same comparison", "old-tip", "feature", 3, true},
+		{"equal count different tip", "new-tip", "feature", 3, false},
+		{"same tip changed count", "old-tip", "feature", 2, false},
+		{"same tip different branch", "old-tip", "other", 3, false},
+		{"zero ahead replaces old diffs", "new-tip", "main", 0, false},
+		{"missing tip", "", "feature", 3, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cached := forge.T2Data{Performed: true, AheadCount: 3, BehindCount: 2, HeadSHA: "old-tip", BaseSHA: "old-base", IsBranchWork: true, ActiveBranch: "feature", Diffs: []forge.FileDiff{{Path: "old.go"}}}
+			original := cached
+			now := time.Now()
+			branch := forge.BranchDivergence{Name: tc.branch, TipSHA: tc.tip, AheadBy: tc.ahead, BehindBy: 15}
+			div := forge.ForkDivergence{Resolved: true, Default: forge.BranchDivergence{Name: "main"}, Sides: []forge.BranchDivergence{branch}}
+			if tc.ahead == 0 {
+				div.Default = branch
+				div.Sides = nil
+			}
+			fresh := forge.T2Data{Performed: true, AheadCount: tc.ahead, BehindCount: 15, HeadSHA: tc.tip, BaseSHA: "fresh-base", IsBranchWork: true, ActiveBranch: tc.branch, Diffs: []forge.FileDiff{{Path: "fresh.go"}}}
+			var resolved []string
+			ff := &batchFakeForge{fakeForge: &fakeForge{
+				parent: forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
+				forks:  []forge.T1Data{{ID: "o/cached", Owner: "o", Name: "cached", DefaultBranch: "main", PushedAt: now}},
+				t2:     map[string]forge.T2Data{"o/cached": fresh},
+			}, batch: map[string]forge.ForkDivergence{"o/cached": div}, resolvedCalls: &resolved}
+			var summary CompareSummary
+			ch, err := Stream(context.Background(), ff, "o", "r", Options{Tier: 2, CompareReport: &summary, CachedT2: func(forge.T1Data) *forge.T2Data { return &cached }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got Result
+			for r := range ch {
+				got = r
+			}
+			if got.Err != nil || got.T2 == nil || got.T2FromCache != tc.wantCached {
+				t.Fatalf("result=%+v", got)
+			}
+			if !reflect.DeepEqual(cached, original) {
+				t.Fatalf("mutated caller cache: %+v", cached)
+			}
+			want := fresh
+			wantREST := 1
+			if tc.wantCached {
+				want = original
+				want.BehindCount = 15
+				wantREST = 0
+			}
+			if tc.ahead == 0 {
+				want = synthesiseT2(div)
+				wantREST = 0
+			}
+			if !reflect.DeepEqual(*got.T2, want) || len(resolved) != wantREST || summary.REST != wantREST {
+				t.Fatalf("T2=%+v want=%+v REST=%d calls=%v", got.T2, want, summary.REST, resolved)
+			}
+			wantCached := 0
+			if tc.wantCached {
+				wantCached = 1
+			}
+			if summary.Cached != wantCached {
+				t.Fatalf("cached tally=%d want=%d", summary.Cached, wantCached)
+			}
+		})
+	}
+}
+
+func TestStreamBatchRespectsReserveAndServesCache(t *testing.T) {
+	for _, disabled := range []bool{false, true} {
+		t.Run(fmt.Sprint(disabled), func(t *testing.T) {
+			low := 0.05
+			now := time.Now()
+			cached := forge.T2Data{Performed: true, AheadCount: 3, BehindCount: 2, HeadSHA: "cached-tip"}
+			ff := &batchFakeForge{fakeForge: &fakeForge{
+				parent:   forge.ParentData{DefaultBranch: "main", PushedAt: now.Add(-time.Hour)},
+				forks:    []forge.T1Data{{ID: "o/cached", Owner: "o", Name: "cached", DefaultBranch: "main", PushedAt: now}},
+				headroom: &low,
+			}}
+			ch, err := Stream(context.Background(), ff, "o", "r", Options{Tier: 2, ReserveDisabled: disabled, CachedT2: func(forge.T1Data) *forge.T2Data { return &cached }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for got := range ch {
+				if got.Err != nil || got.BudgetSkip != nil || !got.T2FromCache || !reflect.DeepEqual(got.T2, &cached) {
+					t.Fatalf("result=%+v", got)
+				}
+			}
+			want := 0
+			if disabled {
+				want = 1
+			}
+			if ff.batchCalls != want {
+				t.Fatalf("batch calls=%d want=%d", ff.batchCalls, want)
+			}
+		})
 	}
 }

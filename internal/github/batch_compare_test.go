@@ -51,6 +51,36 @@ func TestIsBatchServerFailure(t *testing.T) {
 	}
 }
 
+func TestBatchDivergenceStopsAtReserveBetweenRequests(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		targets      int
+		reserve      float64
+		wantRequests int
+		wantErr      bool
+	}{
+		{"phase A chunks", batchCompareSize + 1, 0.1, 1, true},
+		{"phase B gate", 1, 0.1, 1, false},
+		{"reserve disabled", 1, 0, 2, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lowRate := `"rateLimit":{"limit":5000,"remaining":100,"used":4900,"resetAt":"2030-01-01T00:00:00Z","cost":1}`
+			phaseA := `{"data":{"repository":{"ref":{"c0":{"aheadBy":1,"behindBy":2}}},` + lowRate + `}}`
+			phaseB := `{"data":{"repository":{"ref":{}},` + lowRate + `}}`
+			srv, docs := batchStub(t, phaseA, phaseB)
+			c := newTestClientGQL(t, srv)
+			targets := make([]BatchTarget, tc.targets)
+			for i := range targets {
+				targets[i] = BatchTarget{ID: fmt.Sprint(i), Owner: "fork", Name: "repo", DefaultBranch: "main"}
+			}
+			_, stats, err := c.FetchBatchDivergence(context.Background(), "up", "repo", "main", targets, tc.reserve)
+			if errors.Is(err, forge.ErrRateReserve) != tc.wantErr || len(docs()) != tc.wantRequests || stats.Queries != tc.wantRequests {
+				t.Fatalf("err=%v requests=%d stats=%+v", err, len(docs()), stats)
+			}
+		})
+	}
+}
+
 // batchStub answers FetchBatchDivergence's two phases, routing on the
 // "commits(last:" substring that only Phase B's nested tip+PR selection set
 // carries (both phases otherwise share the same repository{ref{compare...}}
@@ -104,7 +134,7 @@ func TestFetchBatchDivergence_ZeroAheadSkipsPhaseB(t *testing.T) {
 		[]BatchTarget{{
 			ID: "alive/repo", Owner: "alive", Name: "repo",
 			DefaultBranch: "main", DefaultTipSHA: "abc123", DefaultCommittedAt: seedTime,
-		}})
+		}}, 0)
 	if err != nil {
 		t.Fatalf("FetchBatchDivergence: %v", err)
 	}
@@ -160,7 +190,7 @@ func TestFetchBatchDivergence_SideBranchWinner(t *testing.T) {
 			ID: "o/repo", Owner: "o", Name: "repo",
 			DefaultBranch: "main", DefaultTipSHA: "mainSHA", DefaultCommittedAt: seedTime,
 			Sides: []BatchBranch{{Name: "feature", TipSHA: "featureSeed", CommittedAt: seedTime}},
-		}})
+		}}, 0)
 	if err != nil {
 		t.Fatalf("FetchBatchDivergence: %v", err)
 	}
@@ -208,7 +238,7 @@ func TestFetchBatchDivergence_MergedPRMarksUpstreamed(t *testing.T) {
 	c := newTestClientGQL(t, srv)
 
 	got, _, err := c.FetchBatchDivergence(context.Background(), "up", "stream", "main",
-		[]BatchTarget{{ID: "o/repo", Owner: "o", Name: "repo", DefaultBranch: "main"}})
+		[]BatchTarget{{ID: "o/repo", Owner: "o", Name: "repo", DefaultBranch: "main"}}, 0)
 	if err != nil {
 		t.Fatalf("FetchBatchDivergence: %v", err)
 	}
@@ -240,7 +270,7 @@ func TestFetchBatchDivergence_PartialNotFoundLeavesForkUnresolved(t *testing.T) 
 		[]BatchTarget{
 			{ID: "alive/repo", Owner: "alive", Name: "repo", DefaultBranch: "main"},
 			{ID: "deleted/repo", Owner: "deleted", Name: "repo", DefaultBranch: "main"},
-		})
+		}, 0)
 	if err != nil {
 		t.Fatalf("a partial NOT_FOUND must not fail the batch: %v", err)
 	}
@@ -291,7 +321,7 @@ func TestFetchBatchDivergence_UnresolvedDefaultForcesUnresolvedDespiteResolvedSi
 		[]BatchTarget{{
 			ID: "o/repo", Owner: "o", Name: "repo", DefaultBranch: "main",
 			Sides: []BatchBranch{{Name: "feature", TipSHA: "featureSeed"}},
-		}})
+		}}, 0)
 	if err != nil {
 		t.Fatalf("a partial NOT_FOUND must not fail the batch: %v", err)
 	}
@@ -332,7 +362,7 @@ func TestFetchBatchDivergence_ResolvedDefaultWithAheadSideStaysResolved(t *testi
 		[]BatchTarget{{
 			ID: "o/repo", Owner: "o", Name: "repo", DefaultBranch: "main",
 			Sides: []BatchBranch{{Name: "feature", TipSHA: "featureSeed"}},
-		}})
+		}}, 0)
 	if err != nil {
 		t.Fatalf("FetchBatchDivergence: %v", err)
 	}
@@ -358,7 +388,7 @@ func TestFetchBatchDivergence_UnresolvedUpstreamRefErrors(t *testing.T) {
 	c := newTestClientGQL(t, srv)
 
 	_, _, err := c.FetchBatchDivergence(context.Background(), "up", "stream", "main",
-		[]BatchTarget{{ID: "o/repo", Owner: "o", Name: "repo", DefaultBranch: "main"}})
+		[]BatchTarget{{ID: "o/repo", Owner: "o", Name: "repo", DefaultBranch: "main"}}, 0)
 	if err == nil {
 		t.Fatal("expected an error when the upstream ref does not resolve")
 	}
@@ -376,7 +406,7 @@ func TestFetchBatchDivergence_RejectsNonLookupGraphQLError(t *testing.T) {
 	c := newTestClientGQL(t, srv)
 
 	_, _, err := c.FetchBatchDivergence(context.Background(), "up", "stream", "main",
-		[]BatchTarget{{ID: "o/repo", Owner: "o", Name: "repo", DefaultBranch: "main"}})
+		[]BatchTarget{{ID: "o/repo", Owner: "o", Name: "repo", DefaultBranch: "main"}}, 0)
 	if err == nil {
 		t.Fatal("a RATE_LIMITED error was swallowed; the sweep must fail loudly")
 	}
@@ -412,7 +442,7 @@ func TestFetchBatchDivergence_PhaseBFailureFallsBackToListingTip(t *testing.T) {
 		[]BatchTarget{{
 			ID: "o/repo", Owner: "o", Name: "repo",
 			DefaultBranch: "main", DefaultTipSHA: "listingSHA", DefaultCommittedAt: seedTime,
-		}})
+		}}, 0)
 	if err != nil {
 		t.Fatalf("a Phase B failure must not fail the whole batch: %v", err)
 	}
@@ -498,7 +528,7 @@ func TestFetchBatchDivergence_PhaseAHalvingRecoversFromOversizedDocument(t *test
 		}
 	}
 
-	got, stats, err := c.FetchBatchDivergence(context.Background(), "up", "stream", "main", targets)
+	got, stats, err := c.FetchBatchDivergence(context.Background(), "up", "stream", "main", targets, 0)
 	if err != nil {
 		t.Fatalf("adaptive halving must recover from an oversized-document server failure: %v", err)
 	}
@@ -559,7 +589,7 @@ func TestFetchBatchDivergence_PhaseAPersistentFailureDropsWithoutError(t *testin
 		}
 	}
 
-	got, stats, err := c.FetchBatchDivergence(context.Background(), "up", "stream", "main", targets)
+	got, stats, err := c.FetchBatchDivergence(context.Background(), "up", "stream", "main", targets, 0)
 	if err != nil {
 		t.Fatalf("a persistent server failure must not fail the whole batch: %v", err)
 	}
@@ -620,7 +650,7 @@ func TestFetchBatchDivergence_PartialDropWithinTargetForcesUnresolved(t *testing
 		target.Sides = append(target.Sides, BatchBranch{Name: fmt.Sprintf("side%d", i), TipSHA: fmt.Sprintf("sideSeed%d", i)})
 	}
 
-	got, stats, err := c.FetchBatchDivergence(context.Background(), "up", "stream", "main", []BatchTarget{target})
+	got, stats, err := c.FetchBatchDivergence(context.Background(), "up", "stream", "main", []BatchTarget{target}, 0)
 	if err != nil {
 		t.Fatalf("a partial drop within one target must not fail the whole batch: %v", err)
 	}
@@ -684,7 +714,7 @@ func TestFetchBatchDivergence_PhaseBHalvingDropsAtFloorWithoutError(t *testing.T
 		}
 	}
 
-	got, stats, err := c.FetchBatchDivergence(context.Background(), "up", "stream", "main", targets)
+	got, stats, err := c.FetchBatchDivergence(context.Background(), "up", "stream", "main", targets, 0)
 	if err != nil {
 		t.Fatalf("a persistent Phase B failure must not fail the whole batch: %v", err)
 	}
@@ -800,7 +830,7 @@ func TestFetchBatchDivergence_PhaseAAliasScopedErrorRetriesJustThatAlias(t *test
 		targets[i] = BatchTarget{ID: fmt.Sprintf("o/repo%d", i), Owner: "o", Name: fmt.Sprintf("repo%d", i), DefaultBranch: "main"}
 	}
 
-	got, stats, err := c.FetchBatchDivergence(context.Background(), "up", "stream", "main", targets)
+	got, stats, err := c.FetchBatchDivergence(context.Background(), "up", "stream", "main", targets, 0)
 	if err != nil {
 		t.Fatalf("an alias-scoped GraphQL error must not fail the whole batch: %v", err)
 	}
@@ -868,7 +898,7 @@ func TestFetchBatchDivergence_PhaseAAliasScopedErrorDropsAfterRetryCap(t *testin
 		targets[i] = BatchTarget{ID: fmt.Sprintf("o/repo%d", i), Owner: "o", Name: fmt.Sprintf("repo%d", i), DefaultBranch: "main"}
 	}
 
-	got, stats, err := c.FetchBatchDivergence(context.Background(), "up", "stream", "main", targets)
+	got, stats, err := c.FetchBatchDivergence(context.Background(), "up", "stream", "main", targets, 0)
 	if err != nil {
 		t.Fatalf("a persistently alias-scoped error must not fail the whole batch: %v", err)
 	}
@@ -963,7 +993,7 @@ func TestFetchBatchDivergence_PhaseBAliasScopedErrorRetriesThenFallsBack(t *test
 		{ID: "o/repo2", Owner: "o", Name: "repo2", DefaultBranch: "main", DefaultTipSHA: "seed2", DefaultCommittedAt: seedTime},
 	}
 
-	got, stats, err := c.FetchBatchDivergence(context.Background(), "up", "stream", "main", targets)
+	got, stats, err := c.FetchBatchDivergence(context.Background(), "up", "stream", "main", targets, 0)
 	if err != nil {
 		t.Fatalf("a Phase B alias-scoped error must not fail the whole batch: %v", err)
 	}
@@ -1014,7 +1044,7 @@ func TestGHProviderBatchCompare_SkipsInheritedBranches(t *testing.T) {
 			{Name: "my-work", CommittedDate: created.AddDate(0, 1, 0)},
 		},
 	}
-	if _, _, err := p.BatchCompare(context.Background(), []forge.T1Data{fork}); err != nil {
+	if _, _, err := p.BatchCompare(context.Background(), []forge.T1Data{fork}, nil, 0); err != nil {
 		t.Fatalf("BatchCompare: %v", err)
 	}
 	joined := strings.Join(docs(), "\n")
@@ -1023,5 +1053,89 @@ func TestGHProviderBatchCompare_SkipsInheritedBranches(t *testing.T) {
 	}
 	if !strings.Contains(joined, "my-work") {
 		t.Error("the post-fork branch was not paired")
+	}
+}
+
+func TestGHProviderBatchCompare_CachedBranchOnly(t *testing.T) {
+	phaseA := `{"data":{"repository":{"ref":{
+		"c0":{"aheadBy":3,"behindBy":7,"headTarget":{"oid":"cached-head"}},
+		"c1":{"aheadBy":1,"behindBy":2}
+	}},` + rl + `}}`
+	phaseB := `{"data":{"repository":{"ref":{
+		"c0":{"commits":{"nodes":[{"oid":"live-head","associatedPullRequests":{"nodes":[]}}]}}
+	}},` + rl + `}}`
+	srv, docs := batchStub(t, phaseA, phaseB)
+	p := NewGHProvider(newTestClientGQL(t, srv), AuthStatus{})
+	p.SetCompareBaseline("up", "stream", "main")
+	created := time.Now()
+	forks := []forge.T1Data{
+		{ID: "cached/repo", Owner: "cached", Name: "repo", DefaultBranch: "new-default", CreatedAt: created,
+			Branches: []forge.BranchRef{{Name: "old-branch", CommittedDate: created.Add(-time.Hour)}, {Name: "unused", CommittedDate: created.Add(time.Hour)}}},
+		{ID: "live/repo", Owner: "live", Name: "repo", DefaultBranch: "main"},
+		{ID: "unknown/repo", Owner: "unknown", Name: "repo", DefaultBranch: "main"},
+	}
+	cached := map[string]*forge.T2Data{
+		"cached/repo":  {ComparedBranch: "old-branch", HeadSHA: "cached-head", AheadCount: 3},
+		"unknown/repo": {HeadSHA: "unknown-head"},
+	}
+	got, stats, err := p.BatchCompare(context.Background(), forks, cached, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queries := docs()
+	if len(queries) != 2 || stats.Queries != 2 {
+		t.Fatalf("queries=%v stats=%+v", queries, stats)
+	}
+	var phaseARequest struct {
+		Query     string         `json:"query"`
+		Variables map[string]any `json:"variables"`
+	}
+	if err := json.Unmarshal([]byte(queries[0]), &phaseARequest); err != nil {
+		t.Fatal(err)
+	}
+	// Typed GraphQL carries branch names and conditional selections in variables.
+	if phaseARequest.Variables["head0"] != "cached:old-branch" ||
+		phaseARequest.Variables["countsOnly0"] != true || phaseARequest.Variables["countsOnly1"] != false ||
+		!strings.Contains(phaseARequest.Query, `headTarget @include(if: $countsOnly0){oid}`) {
+		t.Fatalf("cached branch/identity missing: %s", queries[0])
+	}
+	for _, unwanted := range []string{"new-default", "unused", "unknown:", "cached:"} {
+		if strings.Contains(queries[1], unwanted) {
+			t.Errorf("Phase B queried %q: %s", unwanted, queries[1])
+		}
+	}
+	for _, unwanted := range []string{"new-default", "unused", "unknown:"} {
+		if strings.Contains(queries[0], unwanted) {
+			t.Errorf("Phase A queried %q: %s", unwanted, queries[0])
+		}
+	}
+	if !strings.Contains(queries[1], "live:main") {
+		t.Fatalf("uncached tip enrichment missing: %s", queries[1])
+	}
+	refresh := got["cached/repo"]
+	if !refresh.CountsOnly || !refresh.Resolved || refresh.Default.Name != "old-branch" || refresh.Default.TipSHA != "cached-head" || refresh.Default.BehindBy != 7 || len(refresh.Sides) != 0 {
+		t.Fatalf("cached result = %+v", refresh)
+	}
+	if got["live/repo"].CountsOnly || got["live/repo"].Default.TipSHA != "live-head" {
+		t.Fatalf("live result = %+v", got["live/repo"])
+	}
+}
+
+func TestFetchBatchDivergence_CachedAheadSkipsPhaseB(t *testing.T) {
+	phaseA := `{"data":{"repository":{"ref":{"c0":{"aheadBy":4,"behindBy":7,"headTarget":{"oid":"actual-head"}}}},` + rl + `}}`
+	srv, docs := batchStub(t, phaseA, "")
+	c := newTestClientGQL(t, srv)
+	got, stats, err := c.FetchBatchDivergence(context.Background(), "up", "stream", "main", []BatchTarget{{
+		ID: "f/repo", Owner: "f", Name: "repo", DefaultBranch: "feature", DefaultTipSHA: "stale-listing-head", CountsOnly: true,
+		Sides: []BatchBranch{{Name: "unused"}},
+	}}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(docs()) != 1 || stats.Queries != 1 || strings.Contains(docs()[0], "unused") {
+		t.Fatalf("unexpected queries: %v stats=%+v", docs(), stats)
+	}
+	if got["f/repo"].Default.TipSHA != "actual-head" {
+		t.Fatalf("used seed instead of queried head: %+v", got)
 	}
 }
